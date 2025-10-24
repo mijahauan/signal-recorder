@@ -187,11 +187,13 @@ class RadiodControl:
             import struct
             # Get loopback interface index
             lo_index = socket.if_nametoindex('lo')
-            # Create ip_mreqn structure: imr_multiaddr (4 bytes), imr_address (4 bytes), imr_ifindex (4 bytes)
-            # We set imr_multiaddr to 0.0.0.0, imr_address to 127.0.0.1, imr_ifindex to lo interface
-            mreqn = struct.pack('=4s4si', 
-                               socket.inet_aton('0.0.0.0'),  # imr_multiaddr (not used for IF setting)
-                               socket.inet_aton('127.0.0.1'),  # imr_address (loopback)
+            # Create ip_mreqn structure matching ka9q-radio's setup_ipv4_loopback:
+            # struct ip_mreqn { imr_multiaddr (4 bytes), imr_address (4 bytes), imr_ifindex (4 bytes) }
+            # imr_address = 127.0.0.1 (INADDR_LOOPBACK), imr_ifindex = loopback interface
+            # Note: imr_multiaddr is not used for IP_MULTICAST_IF, can be 0
+            mreqn = struct.pack('=4sIi',  # Use 'I' for network byte order uint32
+                               b'\x00\x00\x00\x00',  # imr_multiaddr (not used)
+                               socket.htonl(0x7F000001),  # imr_address = 127.0.0.1 in network byte order
                                lo_index)  # imr_ifindex (loopback interface index)
             logger.debug(f"Setting IP_MULTICAST_IF with ip_mreqn: lo_index={lo_index}, mreqn={mreqn.hex()}")
             self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, mreqn)
