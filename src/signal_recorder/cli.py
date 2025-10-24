@@ -48,7 +48,8 @@ def cmd_discover(args):
     
     # Resolve and discover
     status_stream = args.status if hasattr(args, 'status') and args.status else None
-    discovery = StreamDiscovery(args.radiod, status_stream=status_stream)
+    status_port = args.status_port if hasattr(args, 'status_port') and args.status_port else None
+    discovery = StreamDiscovery(args.radiod, status_stream=status_stream, status_port=status_port)
     
     try:
         address, port = discovery.resolve()
@@ -251,6 +252,8 @@ Examples:
                                 help='Radiod data stream name (e.g., wwv-iq.local)')
     discover_parser.add_argument('--status',
                                 help='Status stream name if different from data (e.g., hf-status.local)')
+    discover_parser.add_argument('--status-port', type=int,
+                                help='Explicit status port (default: use resolved port or 5006)')
     discover_parser.add_argument('--timeout', type=float, default=5.0,
                                 help='Discovery timeout in seconds (default: 5.0)')
     discover_parser.set_defaults(func=cmd_discover)
