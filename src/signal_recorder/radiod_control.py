@@ -16,18 +16,55 @@ logger = logging.getLogger(__name__)
 
 
 # Status types from ka9q-radio/src/status.h
+# These MUST match the enum values in status.h exactly!
 class StatusType:
     EOL = 0
     COMMAND_TAG = 1
     CMD_CNT = 2
     GPS_TIME = 3
     DESCRIPTION = 4
-    OUTPUT_SSRC = 14
-    OUTPUT_SAMPRATE = 16
-    RADIO_FREQUENCY = 25
-    PRESET = 29
-    LOW_EDGE = 42
-    HIGH_EDGE = 43
+    STATUS_DEST_SOCKET = 5
+    SETOPTS = 6
+    CLEAROPTS = 7
+    RTP_TIMESNAP = 8
+    UNUSED4 = 9
+    INPUT_SAMPRATE = 10
+    UNUSED6 = 11
+    UNUSED7 = 12
+    INPUT_SAMPLES = 13
+    UNUSED8 = 14
+    UNUSED9 = 15
+    OUTPUT_DATA_SOURCE_SOCKET = 16
+    OUTPUT_DATA_DEST_SOCKET = 17
+    OUTPUT_SSRC = 18  # Was 14 - WRONG!
+    OUTPUT_TTL = 19
+    OUTPUT_SAMPRATE = 20  # Was 16 - WRONG!
+    OUTPUT_METADATA_PACKETS = 21
+    OUTPUT_DATA_PACKETS = 22
+    OUTPUT_ERRORS = 23
+    CALIBRATE = 24
+    LNA_GAIN = 25
+    MIXER_GAIN = 26
+    IF_GAIN = 27
+    DC_I_OFFSET = 28
+    DC_Q_OFFSET = 29
+    IQ_IMBALANCE = 30
+    IQ_PHASE = 31
+    DIRECT_CONVERSION = 32
+    RADIO_FREQUENCY = 33  # Was 25 - WRONG!
+    FIRST_LO_FREQUENCY = 34
+    SECOND_LO_FREQUENCY = 35
+    SHIFT_FREQUENCY = 36
+    DOPPLER_FREQUENCY = 37
+    DOPPLER_FREQUENCY_RATE = 38
+    LOW_EDGE = 39  # Was 42 - WRONG!
+    HIGH_EDGE = 40  # Was 43 - WRONG!
+    KAISER_BETA = 41
+    FILTER_BLOCKSIZE = 42
+    FILTER_FIR_LENGTH = 43
+    FILTER2 = 44
+    # ... (skipping many intermediate values)
+    PRESET = 87  # Was 29 - COMPLETELY WRONG!
 
 
 # Command packet type
