@@ -129,10 +129,12 @@ def decode_status_metadata(packet: bytes) -> Dict:
         Dictionary of decoded metadata fields
     """
     if len(packet) < 2 or packet[0] != 0:  # Must be STATUS packet type
+        logger.debug(f"Invalid packet: len={len(packet)}, type={packet[0] if packet else 'empty'}")
         return {}
     
     metadata = {}
     offset = 1  # Skip packet type byte
+    logger.debug(f"Decoding STATUS packet, length={len(packet)}")
     
     while offset < len(packet):
         if offset + 2 > len(packet):
@@ -156,6 +158,7 @@ def decode_status_metadata(packet: bytes) -> Dict:
             # Decode based on tag type
             if tag == StatusType.OUTPUT_SSRC and length == 4:
                 metadata['ssrc'] = struct.unpack('>I', value_bytes)[0]
+                logger.debug(f"Found SSRC: 0x{metadata['ssrc']:08x}")
             elif tag == StatusType.OUTPUT_SAMPRATE and length == 4:
                 metadata['sample_rate'] = struct.unpack('>I', value_bytes)[0]
             elif tag == StatusType.RADIO_FREQUENCY and length == 8:
@@ -273,6 +276,7 @@ class StreamDiscovery:
                     
                     if data[0] == 0:  # STATUS packet type
                         metadata_dict = decode_status_metadata(data)
+                        logger.debug(f"Decoded metadata: {metadata_dict}")
                         
                         if 'ssrc' in metadata_dict:
                             ssrc = metadata_dict['ssrc']
