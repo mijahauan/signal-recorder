@@ -181,6 +181,10 @@ class RadiodControl:
             raise RuntimeError("Not connected to radiod")
         
         try:
+            # Log hex dump of the command
+            hex_dump = ' '.join(f'{b:02x}' for b in cmdbuffer)
+            logger.debug(f"Sending {len(cmdbuffer)} bytes to {self.dest_addr}: {hex_dump}")
+            
             sent = self.socket.sendto(bytes(cmdbuffer), self.dest_addr)
             logger.debug(f"Sent {sent} bytes to radiod")
             return sent
