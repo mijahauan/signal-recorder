@@ -9,9 +9,10 @@ import signal
 import time
 from pathlib import Path
 from typing import Dict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-from .discovery import StreamManager
+from .channel_manager import ChannelManager
+from .control_discovery import discover_channels_via_control, ChannelInfo
 from .recorder import RecorderManager, get_band_name_from_frequency
 from .storage import StorageManager
 from .processor import get_processor
@@ -37,9 +38,27 @@ class SignalRecorderApp:
         logger.info("Initializing Signal Recorder application")
         
         self.storage = StorageManager(config)
-        self.stream_manager = StreamManager({'streams': config['recorder']['streams']})
+        
+        # Initialize channel manager if auto-create is enabled
+        ka9q_config = config.get('ka9q', {})
+        self.status_address = ka9q_config.get('status_address')
+        self.auto_create_channels = ka9q_config.get('auto_create_channels', False)
+        
+        if self.auto_create_channels:
+            logger.info("Automatic channel creation enabled")
+            self.channel_manager = ChannelManager(self.status_address)
+        else:
+            self.channel_manager = None
+        
         self.recorder_manager = RecorderManager(config)
-        self.uploader = UploadManager(config['upload'], self.storage)
+        
+        # Initialize uploader if configured
+        upload_config = config.get('uploader', {})
+        if upload_config.get('enabled', False) or upload_config.get('upload_enabled', False):
+            self.uploader = UploadManager(upload_config, self.storage)
+        else:
+            self.uploader = None
+            logger.info("Uploader disabled")
         
         # Setup signal handlers
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -51,41 +70,92 @@ class SignalRecorderApp:
         self.running = False
     
     def initialize_recorders(self):
-        """Discover streams and start recorders"""
-        logger.info("Discovering streams and starting recorders")
+        """Create channels (if needed) and start recorders"""
+        logger.info("Initializing channels and recorders")
         
-        # Discover all configured streams
-        discovered_streams = self.stream_manager.discover_all()
+        # Get channel configurations
+        channels_config = self.config.get('recorder', {}).get('channels', [])
         
-        if not discovered_streams:
-            logger.error("No streams discovered!")
+        if not channels_config:
+            logger.error("No channels configured in [recorder.channels]")
             return False
         
-        # Start recorders for each discovered stream
-        for stream_config in self.config['recorder']['streams']:
-            processor_type = stream_config.get('processor', 'grape')
-            band_mapping = stream_config.get('band_mapping', {})
+        # Create channels if auto-create is enabled
+        if self.auto_create_channels and self.channel_manager:
+            logger.info(f"Creating {len(channels_config)} channels in radiod")
             
-            for freq in stream_config.get('frequencies', []):
-                metadata = self.stream_manager.get_metadata_for_frequency(freq)
-                
-                if metadata:
-                    band_name = get_band_name_from_frequency(freq, band_mapping)
+            # Convert to required format
+            required_channels = []
+            for ch in channels_config:
+                if not ch.get('enabled', True):
+                    continue
                     
-                    try:
-                        self.recorder_manager.start_recorder(metadata, band_name)
-                    except Exception as e:
-                        logger.error(f"Failed to start recorder for {band_name}: {e}")
-                else:
-                    logger.warning(f"No stream found for {freq/1e6:.3f} MHz")
+                required_channels.append({
+                    'ssrc': ch.get('ssrc'),
+                    'frequency_hz': ch.get('frequency_hz'),
+                    'preset': ch.get('preset', 'iq'),
+                    'sample_rate': ch.get('sample_rate'),
+                    'description': ch.get('description', '')
+                })
+            
+            # Ensure channels exist
+            if not self.channel_manager.ensure_channels_exist(required_channels):
+                logger.error("Failed to create all required channels")
+                return False
         
-        # Log recorder status
-        status = self.recorder_manager.get_status()
-        logger.info(f"Started {len(status)} recorders")
-        for ssrc, info in status.items():
-            logger.info(f"  {info['band_name']}: {info['frequency']/1e6:.3f} MHz → {info['output_dir']}")
+        # Discover channels from radiod
+        logger.info(f"Discovering channels from {self.status_address}")
+        discovered_channels = discover_channels_via_control(self.status_address)
         
-        return True
+        if not discovered_channels:
+            logger.error("No channels discovered from radiod!")
+            return False
+        
+        logger.info(f"Discovered {len(discovered_channels)} channels from radiod")
+        
+        # Start recorders for each configured channel
+        started_count = 0
+        for ch_config in channels_config:
+            if not ch_config.get('enabled', True):
+                logger.info(f"Skipping disabled channel {ch_config.get('ssrc')}")
+                continue
+            
+            ssrc = ch_config.get('ssrc')
+            
+            if ssrc not in discovered_channels:
+                logger.warning(f"Channel {ssrc} not found in radiod")
+                continue
+            
+            channel_info = discovered_channels[ssrc]
+            
+            # Determine band name
+            freq = ch_config.get('frequency_hz')
+            band_name = ch_config.get('description', f"{freq/1e6:.3f}_MHz")
+            
+            # Get processor type
+            processor_type = ch_config.get('processor', 'grape')
+            
+            try:
+                # Convert ChannelInfo to metadata format expected by recorder
+                metadata = {
+                    'ssrc': channel_info.ssrc,
+                    'frequency': channel_info.frequency,
+                    'sample_rate': channel_info.sample_rate,
+                    'channels': 2,  # IQ is always 2 channels
+                    'multicast_address': channel_info.multicast_address,
+                    'port': channel_info.port,
+                    'preset': channel_info.preset,
+                }
+                
+                self.recorder_manager.start_recorder(metadata, band_name, processor_type)
+                started_count += 1
+                logger.info(f"Started recorder for {band_name}: {freq/1e6:.3f} MHz @ {channel_info.multicast_address}:{channel_info.port}")
+            except Exception as e:
+                logger.error(f"Failed to start recorder for {band_name}: {e}", exc_info=True)
+        
+        logger.info(f"Started {started_count}/{len(channels_config)} recorders")
+        
+        return started_count > 0
     
     def run_daemon(self):
         """Run as background daemon"""
@@ -109,12 +179,14 @@ class SignalRecorderApp:
                 current_time = time.time()
                 
                 # Check for dates needing processing
-                if current_time - last_process_check >= process_interval:
-                    self._process_complete_days()
-                    last_process_check = current_time
+                processor_config = self.config.get('processor', {})
+                if processor_config.get('enabled', True):
+                    if current_time - last_process_check >= process_interval:
+                        self._process_complete_days()
+                        last_process_check = current_time
                 
                 # Process upload queue
-                if current_time - last_upload_check >= upload_interval:
+                if self.uploader and (current_time - last_upload_check >= upload_interval):
                     self.uploader.process_queue()
                     self.uploader.clear_completed()
                     last_upload_check = current_time
@@ -140,7 +212,8 @@ class SignalRecorderApp:
         self._process_date(date)
         
         # Process upload queue
-        self.uploader.process_queue()
+        if self.uploader:
+            self.uploader.process_queue()
     
     def _process_complete_days(self):
         """Check for complete days and process them"""
@@ -150,7 +223,7 @@ class SignalRecorderApp:
         dates = self.storage.get_dates_needing_processing(max_age_days=7)
         
         # Get yesterday's date (don't process today)
-        yesterday = datetime.now(timezone.utc).date() - datetime.timedelta(days=1)
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
         yesterday_str = yesterday.strftime("%Y%m%d")
         
         for date in dates:
@@ -201,7 +274,8 @@ class SignalRecorderApp:
         # Skip if already processed
         if state.drf_created and state.drf_path:
             logger.info(f"Already processed: {date}/{band}, enqueueing for upload")
-            self._enqueue_upload(date, band, Path(state.drf_path))
+            if self.uploader:
+                self._enqueue_upload(date, band, Path(state.drf_path))
             return
         
         # Update file counts
@@ -216,7 +290,7 @@ class SignalRecorderApp:
         processor_type = processor_config.get('processor', 'grape')
         processor = get_processor(
             processor_type,
-            self.config.get('processors', {}).get(processor_type, {})
+            self.config.get('processor', {}).get(processor_type, {})
         )
         
         # Get files
@@ -268,28 +342,27 @@ class SignalRecorderApp:
                 self.storage.mark_drf_created(date, band, result)
             
             # Enqueue for upload
-            self._enqueue_upload(date, band, result)
+            if self.uploader:
+                self._enqueue_upload(date, band, result)
         else:
             logger.error(f"Processing failed for {date}/{band}")
     
     def _get_processor_config_for_band(self, band: str) -> Dict:
         """Get processor configuration for a band"""
-        for stream_config in self.config['recorder']['streams']:
-            band_mapping = stream_config.get('band_mapping', {})
-            
-            # Check if this band is in the mapping
-            for freq, band_name in band_mapping.items():
-                if band_name == band:
-                    return stream_config
+        # Find the channel config for this band
+        for ch_config in self.config.get('recorder', {}).get('channels', []):
+            description = ch_config.get('description', '')
+            if description == band or f"{ch_config.get('frequency_hz', 0)/1e6:.3f}_MHz" == band:
+                return ch_config
         
-        # Default to first stream config
-        if self.config['recorder']['streams']:
-            return self.config['recorder']['streams'][0]
-        
+        # Return default config
         return {}
     
     def _enqueue_upload(self, date: str, band: str, dataset_path: Path):
         """Enqueue dataset for upload"""
+        if not self.uploader:
+            return
+            
         metadata = {
             'date': date,
             'band': band,
@@ -309,14 +382,24 @@ class SignalRecorderApp:
         self.recorder_manager.stop_all()
         
         # Save upload queue
-        self.uploader._save_queue()
+        if self.uploader:
+            self.uploader._save_queue()
+        
+        # Close channel manager
+        if self.channel_manager:
+            self.channel_manager.close()
         
         logger.info("Shutdown complete")
     
     def get_status(self) -> Dict:
         """Get application status"""
-        return {
+        status = {
             'recorders': self.recorder_manager.get_status(),
-            'uploads': self.uploader.get_status(),
         }
+        
+        if self.uploader:
+            status['uploads'] = self.uploader.get_status()
+        
+        return status
+
 
