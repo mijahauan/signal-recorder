@@ -147,7 +147,7 @@ class SignalRecorderApp:
                     'preset': channel_info.preset,
                 }
                 
-                self.recorder_manager.start_recorder(metadata, band_name, processor_type)
+                self.recorder_manager.start_recorder(metadata, band_name)
                 started_count += 1
                 logger.info(f"Started recorder for {band_name}: {freq/1e6:.3f} MHz @ {channel_info.multicast_address}:{channel_info.port}")
             except Exception as e:
