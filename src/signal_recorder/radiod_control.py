@@ -196,6 +196,20 @@ class RadiodControl:
             logger.debug(f"Setting IP_MULTICAST_IF with ip_mreqn: lo_index={lo_index}, mreqn={mreqn.hex()}")
             self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, mreqn)
             logger.debug(f"IP_MULTICAST_IF set successfully")
+            
+            # Join the multicast group (required for sending on some systems)
+            # This matches what ka9q-radio's control utility does
+            mreq = struct.pack('=4s4s', 
+                              socket.inet_aton(mcast_addr),  # multicast group address
+                              socket.inet_aton('127.0.0.1'))  # interface address (loopback)
+            try:
+                self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                logger.debug(f"Joined multicast group {mcast_addr} on 127.0.0.1")
+            except OSError as e:
+                # EADDRINUSE is not fatal - group already joined
+                if e.errno != 98:  # EADDRINUSE
+                    logger.warning(f"Failed to join multicast group: {e}")
+            
             # Enable multicast loopback so we can send to ourselves
             self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
             # Set TTL for multicast packets
