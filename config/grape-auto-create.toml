@@ -1,0 +1,176 @@
+# GRAPE Recording Configuration with Automatic Channel Creation
+# This configuration creates ka9q-radio channels automatically - no need to edit radiod@.conf!
+
+[station]
+callsign = "AC0G"
+grid_square = "EM38ww"
+description = "GRAPE station with RX888 and ka9q-radio"
+
+[ka9q]
+# ka9q-radio status address
+# The app will use this to discover existing channels and create new ones
+status_address = "bee1-hf-status.local"
+
+# Auto-create channels
+# If true, missing channels will be created automatically
+auto_create_channels = true
+
+# Data stream configuration (for dynamic channels)
+# All auto-created channels will use this multicast address
+data_address = "239.41.204.101"
+data_port = 5004
+
+[recorder]
+data_dir = "/mnt/grape-data"
+sample_format = "float32"
+channels = 2
+compress = true
+compression_format = "wavpack"
+organize_by_date = true
+organize_by_frequency = true
+continuous = true
+file_duration_minutes = 1
+
+# Channel definitions
+# If auto_create_channels is true, these channels will be created if they don't exist
+# SSRC can be set to match frequency (e.g., 2500000 for 2.5 MHz) or any unique number
+
+[[recorder.channels]]
+ssrc = 2500000
+frequency_hz = 2500000
+preset = "iq"  # IQ mode for complex sampling
+sample_rate = 16000
+description = "WWV 2.5 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+ssrc = 3330000
+frequency_hz = 3330000
+preset = "iq"
+sample_rate = 16000
+description = "CHU 3.33 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+ssrc = 5000000
+frequency_hz = 5000000
+preset = "iq"
+sample_rate = 16000
+description = "WWV 5 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+ssrc = 7850000
+frequency_hz = 7850000
+preset = "iq"
+sample_rate = 16000
+description = "CHU 7.85 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+ssrc = 10000000
+frequency_hz = 10000000
+preset = "iq"
+sample_rate = 16000
+description = "WWV 10 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+ssrc = 14670000
+frequency_hz = 14670000
+preset = "iq"
+sample_rate = 16000
+description = "CHU 14.67 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+ssrc = 15000000
+frequency_hz = 15000000
+preset = "iq"
+sample_rate = 16000
+description = "WWV 15 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+ssrc = 20000000
+frequency_hz = 20000000
+preset = "iq"
+sample_rate = 16000
+description = "WWV 20 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+ssrc = 25000000
+frequency_hz = 25000000
+preset = "iq"
+sample_rate = 16000
+description = "WWV 25 MHz"
+processor = "grape"
+enabled = true
+
+[processor.grape]
+process_time = "00:05"
+process_timezone = "UTC"
+expected_files_per_day = 1440
+max_gap_minutes = 5
+repair_gaps = true
+interpolate_max_minutes = 2
+output_sample_rate = 10
+output_format = "digital_rf"
+digital_rf_sample_rate_numerator = 10
+digital_rf_sample_rate_denominator = 1
+digital_rf_subdir_cadence_seconds = 3600
+digital_rf_file_cadence_seconds = 3600
+digital_rf_compression_level = 1
+keep_wavpack = true
+keep_24hour_wav = false
+keep_resampled_wav = false
+
+[uploader]
+upload_enabled = true
+upload_time = "00:30"
+upload_timezone = "UTC"
+protocol = "rsync"
+max_retries = 5
+retry_delay_seconds = 300
+exponential_backoff = true
+queue_dir = "/mnt/grape-data/upload_queue"
+max_queue_size_gb = 100
+
+[uploader.rsync]
+host = "pswsnetwork.eng.ua.edu"
+port = 22
+user = "your_username"
+ssh_key = "/home/wsprdaemon/.ssh/id_rsa_psws"
+remote_base_path = "/data/AC0G"
+rsync_options = ["--archive", "--compress", "--partial", "--progress", "--timeout=300"]
+bandwidth_limit = 0
+verify_after_upload = true
+delete_after_upload = false
+
+[logging]
+level = "INFO"
+log_dir = "/var/log/signal-recorder"
+log_file = "grape-recorder.log"
+rotate_size_mb = 100
+rotate_count = 10
+console_output = true
+console_level = "INFO"
+
+[monitoring]
+status_file = "/var/run/signal-recorder/status.json"
+update_interval_seconds = 60
+enable_metrics = true
+metrics_file = "/var/run/signal-recorder/metrics.json"
+alert_on_recording_failure = true
+alert_on_processing_failure = true
+alert_on_upload_failure = true
+
