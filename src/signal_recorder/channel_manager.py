@@ -1,236 +1,152 @@
 """
 Channel management for ka9q-radio
 
-This module creates and configures channels dynamically using ka9q-radio's
-command/status protocol. Channels are created on-demand based on configuration
-rather than requiring manual radiod@.conf editing.
+This module creates and configures channels in radiod using the TLV control protocol.
 """
 
-import socket
-import struct
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
-
+from typing import List, Dict, Optional
 from .control_discovery import discover_channels_via_control, ChannelInfo
+from .radiod_control import RadiodControl
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ChannelSpec:
-    """Specification for a channel to create/configure"""
-    ssrc: int
-    frequency_hz: float
-    preset: str = "iq"  # iq, usb, lsb, am, fm, etc.
-    sample_rate: int = 16000
-    description: str = ""
-
-
 class ChannelManager:
-    """Manages ka9q-radio channels via command/status protocol"""
+    """
+    Manages channel creation and configuration for ka9q-radio
+    
+    Uses the TLV control protocol to send commands directly to radiod.
+    """
     
     def __init__(self, status_address: str):
         """
         Initialize channel manager
         
         Args:
-            status_address: Status multicast address (e.g., "bee1-hf-status.local")
+            status_address: mDNS name or IP:port of radiod status stream
         """
         self.status_address = status_address
-        self.command_socket = None
-        
-    def ensure_channels(self, channel_specs: List[ChannelSpec]) -> Dict[int, ChannelInfo]:
+        self.control = RadiodControl(status_address)
+    
+    def discover_existing_channels(self) -> Dict[int, ChannelInfo]:
         """
-        Ensure all specified channels exist, creating them if necessary
+        Discover all existing channels from radiod
+        
+        Returns:
+            Dictionary mapping SSRC to ChannelInfo
+        """
+        logger.info(f"Discovering existing channels from {self.status_address}")
+        channels = discover_channels_via_control(self.status_address)
+        logger.info(f"Found {len(channels)} existing channels")
+        return channels
+    
+    def create_channel(self, ssrc: int, frequency_hz: float, preset: str = "iq", 
+                      sample_rate: Optional[int] = None, description: str = "") -> bool:
+        """
+        Create a new channel in radiod
         
         Args:
-            channel_specs: List of channel specifications
-            
+            ssrc: SSRC for the new channel
+            frequency_hz: Frequency in Hz
+            preset: Preset/mode (default: "iq")
+            sample_rate: Sample rate in Hz (optional)
+            description: Human-readable description
+        
         Returns:
-            Dictionary mapping SSRC to ChannelInfo for all channels
+            True if successful
         """
-        logger.info(f"Ensuring {len(channel_specs)} channels exist")
+        try:
+            logger.info(
+                f"Creating channel: SSRC={ssrc}, "
+                f"freq={frequency_hz/1e6:.3f} MHz, "
+                f"preset={preset}, "
+                f"description='{description}'"
+            )
+            
+            # Use radiod_control to create and configure
+            self.control.create_and_configure_channel(
+                ssrc=ssrc,
+                frequency_hz=frequency_hz,
+                preset=preset,
+                sample_rate=sample_rate
+            )
+            
+            # Wait for radiod to process
+            time.sleep(0.5)
+            
+            # Verify the channel was created
+            if self.control.verify_channel(ssrc, frequency_hz):
+                logger.info(f"✓ Channel {ssrc} created successfully")
+                return True
+            else:
+                logger.warning(f"✗ Channel {ssrc} verification failed")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to create channel {ssrc}: {e}")
+            return False
+    
+    def ensure_channels_exist(self, required_channels: List[Dict]) -> bool:
+        """
+        Ensure all required channels exist, creating missing ones
+        
+        Args:
+            required_channels: List of channel specifications, each with:
+                - ssrc: int
+                - frequency_hz: float
+                - preset: str (optional, default "iq")
+                - sample_rate: int (optional)
+                - description: str (optional)
+        
+        Returns:
+            True if all channels exist or were created successfully
+        """
+        logger.info(f"Ensuring {len(required_channels)} channels exist")
         
         # Discover existing channels
-        existing = discover_channels_via_control(self.status_address)
+        existing = self.discover_existing_channels()
         existing_ssrcs = set(existing.keys())
         
         # Check which channels need to be created
-        needed_ssrcs = {spec.ssrc for spec in channel_specs}
-        missing_ssrcs = needed_ssrcs - existing_ssrcs
+        required_ssrcs = {ch['ssrc'] for ch in required_channels}
+        missing_ssrcs = required_ssrcs - existing_ssrcs
         
         if not missing_ssrcs:
-            logger.info("All required channels already exist")
-            return {ssrc: existing[ssrc] for ssrc in needed_ssrcs}
+            logger.info("✓ All required channels already exist")
+            return True
         
-        logger.info(f"Need to create {len(missing_ssrcs)} channels: {sorted(missing_ssrcs)}")
+        logger.info(f"Need to create {len(missing_ssrcs)} missing channels: {sorted(missing_ssrcs)}")
         
         # Create missing channels
-        for spec in channel_specs:
-            if spec.ssrc in missing_ssrcs:
-                self._create_channel(spec)
-        
-        # Wait a moment for channels to be created
-        time.sleep(2)
-        
-        # Verify all channels now exist
-        updated = discover_channels_via_control(self.status_address)
-        result = {}
-        
-        for spec in channel_specs:
-            if spec.ssrc in updated:
-                result[spec.ssrc] = updated[spec.ssrc]
-                logger.info(
-                    f"Channel verified: SSRC={spec.ssrc}, "
-                    f"freq={updated[spec.ssrc].frequency/1e6:.3f} MHz"
-                )
-            else:
-                logger.error(f"Failed to create channel: SSRC={spec.ssrc}")
-        
-        return result
-    
-    def _create_channel(self, spec: ChannelSpec):
-        """
-        Create a new channel by sending commands to radiod
-        
-        This simulates what the 'control' utility does when you create a new SSRC.
-        
-        Args:
-            spec: Channel specification
-        """
-        logger.info(
-            f"Creating channel: SSRC={spec.ssrc}, "
-            f"freq={spec.frequency_hz/1e6:.3f} MHz, "
-            f"preset={spec.preset}"
-        )
-        
-        try:
-            # The control utility creates channels by:
-            # 1. Sending a COMMAND packet with the new SSRC
-            # 2. Setting frequency
-            # 3. Setting preset/mode
-            # 4. Setting sample rate (if needed)
+        success_count = 0
+        for channel_spec in required_channels:
+            ssrc = channel_spec['ssrc']
             
-            # For now, we'll use a simpler approach: invoke control utility
-            # with scripted input to create the channel
+            if ssrc not in missing_ssrcs:
+                continue  # Already exists
             
-            import subprocess
-            
-            # Script to create channel:
-            # 1. Type the SSRC number (creates new channel)
-            # 2. Set frequency (f command)
-            # 3. Set preset (m command)
-            # 4. Quit (q command)
-            
-            # Create command sequence with actual newlines
-            commands = f"{spec.ssrc}\nf{spec.frequency_hz}\nm{spec.preset}\nq\n"
-            
-            # Run control with scripted input
-            proc = subprocess.Popen(
-                ['control', self.status_address],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
+            if self.create_channel(
+                ssrc=ssrc,
+                frequency_hz=channel_spec['frequency_hz'],
+                preset=channel_spec.get('preset', 'iq'),
+                sample_rate=channel_spec.get('sample_rate'),
+                description=channel_spec.get('description', '')
+            ):
+                success_count += 1
+        
+        if success_count == len(missing_ssrcs):
+            logger.info(f"✓ All {success_count} missing channels created successfully")
+            return True
+        else:
+            logger.warning(
+                f"⚠ Only {success_count}/{len(missing_ssrcs)} channels created successfully"
             )
-            
-            stdout, stderr = proc.communicate(input=commands, timeout=10)
-            
-            if proc.returncode != 0:
-                logger.error(f"control utility failed: {stderr}")
-            else:
-                logger.debug(f"Channel creation output: {stdout}")
-                
-        except subprocess.TimeoutExpired:
-            logger.error("Timeout creating channel")
-            proc.kill()
-        except FileNotFoundError:
-            logger.error("control utility not found - is ka9q-radio installed?")
-        except Exception as e:
-            logger.error(f"Error creating channel: {e}")
+            return False
     
-    def delete_channel(self, ssrc: int):
-        """
-        Delete a channel
-        
-        Note: This may not be supported by all ka9q-radio versions.
-        Channels typically persist until radiod is restarted.
-        
-        Args:
-            ssrc: SSRC of channel to delete
-        """
-        logger.warning(f"Channel deletion not yet implemented for SSRC {ssrc}")
-        # TODO: Implement if ka9q-radio supports channel deletion
-    
-    def configure_channel(self, ssrc: int, **params):
-        """
-        Configure parameters of an existing channel
-        
-        Args:
-            ssrc: SSRC of channel to configure
-            **params: Parameters to set (frequency, preset, sample_rate, etc.)
-        """
-        logger.info(f"Configuring channel SSRC={ssrc}: {params}")
-        
-        try:
-            commands = [str(ssrc)]  # Select the channel
-            
-            if 'frequency' in params:
-                commands.append(f"f{params['frequency']}")
-            if 'preset' in params:
-                commands.append(f"m{params['preset']}")
-            if 'sample_rate' in params:
-                commands.append(f"S{params['sample_rate']}")
-            
-            commands.append('q')  # Quit
-            
-            command_str = '\n'.join(commands) + '\n'
-            
-            proc = subprocess.Popen(
-                ['control', self.status_address],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            stdout, stderr = proc.communicate(input=command_str, timeout=10)
-            
-            if proc.returncode != 0:
-                logger.error(f"Configuration failed: {stderr}")
-            else:
-                logger.debug(f"Configuration output: {stdout}")
-                
-        except Exception as e:
-            logger.error(f"Error configuring channel: {e}")
-
-
-def channels_from_config(config: dict) -> List[ChannelSpec]:
-    """
-    Extract channel specifications from configuration
-    
-    Args:
-        config: Configuration dictionary
-        
-    Returns:
-        List of ChannelSpec objects
-    """
-    specs = []
-    
-    for channel_config in config.get('recorder', {}).get('channels', []):
-        if not channel_config.get('enabled', True):
-            continue
-        
-        spec = ChannelSpec(
-            ssrc=channel_config['ssrc'],
-            frequency_hz=channel_config['frequency_hz'],
-            preset=channel_config.get('preset', 'iq'),
-            sample_rate=channel_config.get('sample_rate', 16000),
-            description=channel_config.get('description', '')
-        )
-        specs.append(spec)
-    
-    return specs
+    def close(self):
+        """Close the control connection"""
+        if self.control:
+            self.control.close()
 

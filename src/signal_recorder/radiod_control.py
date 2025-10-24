@@ -1,0 +1,319 @@
+"""
+Direct control of radiod via TLV command protocol
+
+This module sends commands directly to radiod's control socket using the
+TLV (Type-Length-Value) protocol, based on ka9q-radio's status.c encoding.
+"""
+
+import socket
+import struct
+import random
+import logging
+from typing import Optional
+from .control_discovery import discover_channels_via_control
+
+logger = logging.getLogger(__name__)
+
+
+# Status types from ka9q-radio/src/status.h
+class StatusType:
+    EOL = 0
+    COMMAND_TAG = 1
+    CMD_CNT = 2
+    GPS_TIME = 3
+    DESCRIPTION = 4
+    OUTPUT_SSRC = 14
+    OUTPUT_SAMPRATE = 16
+    RADIO_FREQUENCY = 25
+    PRESET = 29
+    LOW_EDGE = 42
+    HIGH_EDGE = 43
+
+
+# Command packet type
+CMD = 1
+
+
+def encode_int64(buf: bytearray, type_val: int, x: int) -> int:
+    """
+    Encode a 64-bit integer in TLV format
+    
+    Format: [type:1][length:1][value:variable]
+    Value is big-endian, with leading zeros compressed
+    """
+    buf.append(type_val)
+    
+    if x == 0:
+        # Compress zero to zero length
+        buf.append(0)
+        return 2
+    
+    # Convert to bytes and remove leading zeros
+    x_bytes = x.to_bytes(8, byteorder='big')
+    # Find first non-zero byte
+    start = 0
+    while start < len(x_bytes) and x_bytes[start] == 0:
+        start += 1
+    
+    value_bytes = x_bytes[start:]
+    length = len(value_bytes)
+    
+    buf.append(length)
+    buf.extend(value_bytes)
+    
+    return 2 + length
+
+
+def encode_int(buf: bytearray, type_val: int, x: int) -> int:
+    """Encode an integer"""
+    return encode_int64(buf, type_val, x)
+
+
+def encode_double(buf: bytearray, type_val: int, x: float) -> int:
+    """
+    Encode a double (float64) in TLV format
+    
+    The float is converted to its IEEE 754 representation and encoded as int64
+    """
+    # Pack as double, unpack as uint64
+    packed = struct.pack('>d', x)  # big-endian double
+    value = struct.unpack('>Q', packed)[0]  # big-endian uint64
+    return encode_int64(buf, type_val, value)
+
+
+def encode_float(buf: bytearray, type_val: int, x: float) -> int:
+    """
+    Encode a float (float32) in TLV format
+    """
+    # Pack as float, unpack as uint32
+    packed = struct.pack('>f', x)  # big-endian float
+    value = struct.unpack('>I', packed)[0]  # big-endian uint32
+    return encode_int64(buf, type_val, value)
+
+
+def encode_string(buf: bytearray, type_val: int, s: str) -> int:
+    """
+    Encode a string in TLV format
+    """
+    buf.append(type_val)
+    
+    s_bytes = s.encode('utf-8')
+    length = len(s_bytes)
+    
+    if length < 128:
+        buf.append(length)
+    elif length < 65536:
+        # Multi-byte length encoding
+        buf.append(0x80 | (length >> 8))
+        buf.append(length & 0xff)
+    else:
+        raise ValueError(f"String too long: {length} bytes")
+    
+    buf.extend(s_bytes)
+    return 2 + length
+
+
+def encode_eol(buf: bytearray) -> int:
+    """Encode end-of-list marker"""
+    buf.append(StatusType.EOL)
+    return 1
+
+
+class RadiodControl:
+    """
+    Control interface for radiod
+    
+    Sends TLV-encoded commands to radiod's control socket to create
+    and configure channels.
+    """
+    
+    def __init__(self, status_address: str):
+        """
+        Initialize radiod control
+        
+        Args:
+            status_address: mDNS name or IP:port of radiod status stream
+        """
+        self.status_address = status_address
+        self.socket = None
+        self._connect()
+    
+    def _connect(self):
+        """Connect to radiod control socket"""
+        # Resolve the status address
+        import subprocess
+        
+        try:
+            # Use avahi-resolve to get the multicast address
+            result = subprocess.run(
+                ['avahi-resolve', '-n', self.status_address],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0:
+                # Parse output: "hostname    ip_address"
+                parts = result.stdout.strip().split()
+                if len(parts) >= 2:
+                    mcast_addr = parts[1]
+                else:
+                    raise ValueError(f"Unexpected avahi-resolve output: {result.stdout}")
+            else:
+                # Try getaddrinfo as fallback
+                import socket as sock
+                addr_info = sock.getaddrinfo(self.status_address, None, sock.AF_INET, sock.SOCK_DGRAM)
+                mcast_addr = addr_info[0][4][0]
+            
+            # Create UDP socket
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.dest_addr = (mcast_addr, 5006)  # Standard radiod control port
+            
+            logger.info(f"Connected to radiod at {mcast_addr}:5006")
+            
+        except Exception as e:
+            logger.error(f"Failed to connect to radiod: {e}")
+            raise
+    
+    def send_command(self, cmdbuffer: bytearray):
+        """Send a command packet to radiod"""
+        if not self.socket:
+            raise RuntimeError("Not connected to radiod")
+        
+        try:
+            sent = self.socket.sendto(bytes(cmdbuffer), self.dest_addr)
+            logger.debug(f"Sent {sent} bytes to radiod")
+            return sent
+        except Exception as e:
+            logger.error(f"Failed to send command: {e}")
+            raise
+    
+    def set_frequency(self, ssrc: int, frequency_hz: float):
+        """
+        Set the frequency of a channel
+        
+        Args:
+            ssrc: SSRC of the channel
+            frequency_hz: Frequency in Hz
+        """
+        cmdbuffer = bytearray()
+        cmdbuffer.append(CMD)  # Command packet type
+        
+        encode_double(cmdbuffer, StatusType.RADIO_FREQUENCY, frequency_hz)
+        encode_int(cmdbuffer, StatusType.OUTPUT_SSRC, ssrc)
+        encode_int(cmdbuffer, StatusType.COMMAND_TAG, random.randint(1, 2**31))
+        encode_eol(cmdbuffer)
+        
+        logger.info(f"Setting frequency for SSRC {ssrc} to {frequency_hz/1e6:.3f} MHz")
+        self.send_command(cmdbuffer)
+    
+    def set_preset(self, ssrc: int, preset: str):
+        """
+        Set the preset (mode) of a channel
+        
+        Args:
+            ssrc: SSRC of the channel
+            preset: Preset name (e.g., "iq", "usb", "lsb")
+        """
+        cmdbuffer = bytearray()
+        cmdbuffer.append(CMD)
+        
+        encode_string(cmdbuffer, StatusType.PRESET, preset)
+        encode_int(cmdbuffer, StatusType.OUTPUT_SSRC, ssrc)
+        encode_int(cmdbuffer, StatusType.COMMAND_TAG, random.randint(1, 2**31))
+        encode_eol(cmdbuffer)
+        
+        logger.info(f"Setting preset for SSRC {ssrc} to {preset}")
+        self.send_command(cmdbuffer)
+    
+    def set_sample_rate(self, ssrc: int, sample_rate: int):
+        """
+        Set the sample rate of a channel
+        
+        Args:
+            ssrc: SSRC of the channel
+            sample_rate: Sample rate in Hz
+        """
+        cmdbuffer = bytearray()
+        cmdbuffer.append(CMD)
+        
+        encode_int(cmdbuffer, StatusType.OUTPUT_SAMPRATE, sample_rate)
+        encode_int(cmdbuffer, StatusType.OUTPUT_SSRC, ssrc)
+        encode_int(cmdbuffer, StatusType.COMMAND_TAG, random.randint(1, 2**31))
+        encode_eol(cmdbuffer)
+        
+        logger.info(f"Setting sample rate for SSRC {ssrc} to {sample_rate} Hz")
+        self.send_command(cmdbuffer)
+    
+    def create_and_configure_channel(self, ssrc: int, frequency_hz: float, 
+                                     preset: str = "iq", sample_rate: Optional[int] = None):
+        """
+        Create a new channel and configure it
+        
+        This sends commands to create the SSRC and set its parameters.
+        Note: radiod will create the channel when it receives the first command
+        for a new SSRC.
+        
+        Args:
+            ssrc: SSRC for the new channel
+            frequency_hz: Frequency in Hz
+            preset: Preset/mode (default: "iq")
+            sample_rate: Sample rate in Hz (optional)
+        """
+        logger.info(f"Creating channel: SSRC={ssrc}, freq={frequency_hz/1e6:.3f} MHz, preset={preset}")
+        
+        # Set frequency (this will create the channel if it doesn't exist)
+        self.set_frequency(ssrc, frequency_hz)
+        
+        # Wait a moment for radiod to process
+        import time
+        time.sleep(0.1)
+        
+        # Set preset
+        self.set_preset(ssrc, preset)
+        time.sleep(0.1)
+        
+        # Set sample rate if specified
+        if sample_rate:
+            self.set_sample_rate(ssrc, sample_rate)
+            time.sleep(0.1)
+        
+        logger.info(f"Channel {ssrc} created and configured")
+    
+    def verify_channel(self, ssrc: int, expected_freq: Optional[float] = None) -> bool:
+        """
+        Verify that a channel exists and is configured correctly
+        
+        Args:
+            ssrc: SSRC to verify
+            expected_freq: Expected frequency in Hz (optional)
+        
+        Returns:
+            True if channel exists and matches expectations
+        """
+        # Discover current channels
+        channels = discover_channels_via_control(self.status_address)
+        
+        if ssrc not in channels:
+            logger.warning(f"Channel {ssrc} not found")
+            return False
+        
+        channel = channels[ssrc]
+        
+        if expected_freq and abs(channel.frequency - expected_freq) > 1:  # 1 Hz tolerance
+            logger.warning(
+                f"Channel {ssrc} frequency mismatch: "
+                f"expected {expected_freq/1e6:.3f} MHz, "
+                f"got {channel.frequency/1e6:.3f} MHz"
+            )
+            return False
+        
+        logger.info(f"Channel {ssrc} verified: {channel.frequency/1e6:.3f} MHz, {channel.preset}")
+        return True
+    
+    def close(self):
+        """Close the control socket"""
+        if self.socket:
+            self.socket.close()
+            self.socket = None
+
