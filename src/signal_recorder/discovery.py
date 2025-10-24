@@ -264,10 +264,12 @@ class StreamDiscovery:
             
             # Listen for status packets
             packets_received = 0
+            logger.debug(f"Listening for status packets (timeout={timeout}s)...")
             while True:
                 try:
                     data, addr = sock.recvfrom(8192)
                     packets_received += 1
+                    logger.debug(f"Received packet {packets_received} from {addr}, length={len(data)}, type={data[0] if data else 'empty'}")
                     
                     if data[0] == 0:  # STATUS packet type
                         metadata_dict = decode_status_metadata(data)
@@ -302,9 +304,12 @@ class StreamDiscovery:
                                         setattr(self.streams[ssrc], key, value)
                 
                 except socket.timeout:
+                    logger.debug(f"Timeout after receiving {packets_received} packets")
                     break
                 except Exception as e:
                     logger.error(f"Error receiving status packet: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                     break
         
         finally:
