@@ -11,6 +11,7 @@ import toml
 from .app import SignalRecorderApp
 from .discovery import StreamDiscovery
 from .control_discovery import discover_channels_via_control
+from .channel_manager import ChannelManager, ChannelSpec, channels_from_config
 
 
 def setup_logging(verbose: bool = False):
@@ -123,6 +124,54 @@ def cmd_status(args):
     print(f"  Uploading: {uploads['uploading']}")
     print(f"  Completed: {uploads['completed']}")
     print(f"  Failed: {uploads['failed']}")
+
+
+def cmd_create_channels(args):
+    """Create channels from configuration"""
+    setup_logging(args.verbose)
+    
+    config = load_config(args.config)
+    
+    # Get ka9q configuration
+    ka9q_config = config.get('ka9q', {})
+    status_address = ka9q_config.get('status_address')
+    
+    if not status_address:
+        print("Error: status_address not found in [ka9q] section", file=sys.stderr)
+        sys.exit(1)
+    
+    # Get channel specifications from config
+    channel_specs = channels_from_config(config)
+    
+    if not channel_specs:
+        print("No channels defined in configuration", file=sys.stderr)
+        sys.exit(1)
+    
+    print(f"Creating {len(channel_specs)} channels...\n")
+    
+    # Create channel manager
+    manager = ChannelManager(status_address)
+    
+    # Ensure all channels exist
+    result = manager.ensure_channels(channel_specs)
+    
+    print(f"\n=== Channel Creation Summary ===")
+    print(f"Requested: {len(channel_specs)} channels")
+    print(f"Created/Verified: {len(result)} channels\n")
+    
+    if len(result) == len(channel_specs):
+        print("✓ All channels successfully created/verified")
+        
+        # Show created channels
+        print("\nChannels:")
+        for ssrc, info in sorted(result.items()):
+            print(f"  SSRC {ssrc:>10}: {info.frequency/1e6:>7.3f} MHz ({info.preset}) @ {info.address}")
+    else:
+        print("✗ Some channels failed to create")
+        missing = set(spec.ssrc for spec in channel_specs) - set(result.keys())
+        if missing:
+            print(f"\nMissing SSRCs: {sorted(missing)}")
+        sys.exit(1)
 
 
 def cmd_init(args):
@@ -256,6 +305,13 @@ Examples:
     discover_parser.add_argument('--timeout', type=float, default=5.0,
                                 help='Discovery timeout in seconds (default: 5.0)')
     discover_parser.set_defaults(func=cmd_discover)
+    
+    # Create channels command
+    create_parser = subparsers.add_parser('create-channels',
+                                         help='Create channels from configuration')
+    create_parser.add_argument('--config', required=True,
+                              help='Configuration file path')
+    create_parser.set_defaults(func=cmd_create_channels)
     
     # Init command
     init_parser = subparsers.add_parser('init',
