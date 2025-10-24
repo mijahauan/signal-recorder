@@ -13,6 +13,7 @@ from datetime import datetime, timezone, timedelta
 
 from .channel_manager import ChannelManager
 from .control_discovery import discover_channels_via_control, ChannelInfo
+from .discovery import StreamMetadata, Encoding
 from .recorder import RecorderManager, get_band_name_from_frequency
 from .storage import StorageManager
 from .processor import get_processor
@@ -136,16 +137,17 @@ class SignalRecorderApp:
             processor_type = ch_config.get('processor', 'grape')
             
             try:
-                # Convert ChannelInfo to metadata format expected by recorder
-                metadata = {
-                    'ssrc': channel_info.ssrc,
-                    'frequency': channel_info.frequency,
-                    'sample_rate': channel_info.sample_rate,
-                    'channels': 2,  # IQ is always 2 channels
-                    'multicast_address': channel_info.multicast_address,
-                    'port': channel_info.port,
-                    'preset': channel_info.preset,
-                }
+                # Convert ChannelInfo to StreamMetadata expected by recorder
+                metadata = StreamMetadata(
+                    ssrc=channel_info.ssrc,
+                    frequency=channel_info.frequency,
+                    sample_rate=channel_info.sample_rate,
+                    channels=2,  # IQ is always 2 channels
+                    encoding=Encoding.F32LE,  # Assume float32 for IQ
+                    description=channel_info.preset,
+                    multicast_address=channel_info.multicast_address,
+                    port=channel_info.port
+                )
                 
                 self.recorder_manager.start_recorder(metadata, band_name)
                 started_count += 1
