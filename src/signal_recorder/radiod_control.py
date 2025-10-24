@@ -142,28 +142,38 @@ class RadiodControl:
         """Connect to radiod control socket"""
         # Resolve the status address
         import subprocess
+        import re
         
         try:
-            # Use avahi-resolve to get the multicast address
-            result = subprocess.run(
-                ['avahi-resolve', '-n', self.status_address],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.returncode == 0:
-                # Parse output: "hostname    ip_address"
-                parts = result.stdout.strip().split()
-                if len(parts) >= 2:
-                    mcast_addr = parts[1]
-                else:
-                    raise ValueError(f"Unexpected avahi-resolve output: {result.stdout}")
+            # Check if it's already an IP address
+            if re.match(r'^\d+\.\d+\.\d+\.\d+$', self.status_address):
+                mcast_addr = self.status_address
+                logger.info(f"Using direct IP address: {mcast_addr}")
             else:
-                # Try getaddrinfo as fallback
-                import socket as sock
-                addr_info = sock.getaddrinfo(self.status_address, None, sock.AF_INET, sock.SOCK_DGRAM)
-                mcast_addr = addr_info[0][4][0]
+                # Try avahi-resolve first
+                try:
+                    result = subprocess.run(
+                        ['avahi-resolve', '-n', self.status_address],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    
+                    if result.returncode == 0:
+                        # Parse output: "hostname    ip_address"
+                        parts = result.stdout.strip().split()
+                        if len(parts) >= 2:
+                            mcast_addr = parts[1]
+                        else:
+                            raise ValueError(f"Unexpected avahi-resolve output: {result.stdout}")
+                    else:
+                        raise ValueError(f"avahi-resolve failed: {result.stderr}")
+                except (subprocess.TimeoutExpired, FileNotFoundError, ValueError) as e:
+                    # Try getaddrinfo as fallback
+                    logger.warning(f"avahi-resolve failed ({e}), trying getaddrinfo")
+                    import socket as sock
+                    addr_info = sock.getaddrinfo(self.status_address, None, sock.AF_INET, sock.SOCK_DGRAM)
+                    mcast_addr = addr_info[0][4][0]
             
             # Create UDP socket
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

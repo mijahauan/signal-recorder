@@ -6,7 +6,7 @@ callsign = "AC0G"
 grid_square = "EM38ww"
 
 [ka9q]
-status_address = "bee1-hf-status.local"
+status_address = "239.251.200.193"
 auto_create_channels = true
 
 [recorder]
