@@ -88,9 +88,9 @@ class ChannelManager:
             logger.error(f"Failed to create channel {ssrc}: {e}")
             return False
     
-    def ensure_channels_exist(self, required_channels: List[Dict]) -> bool:
+    def ensure_channels_exist(self, required_channels: List[Dict], update_existing: bool = False) -> bool:
         """
-        Ensure all required channels exist, creating missing ones
+        Ensure all required channels exist, creating missing ones and optionally updating existing ones
         
         Args:
             required_channels: List of channel specifications, each with:
@@ -99,6 +99,7 @@ class ChannelManager:
                 - preset: str (optional, default "iq")
                 - sample_rate: int (optional)
                 - description: str (optional)
+            update_existing: If True, update existing channels if parameters differ
         
         Returns:
             True if all channels exist or were created successfully
@@ -113,14 +114,35 @@ class ChannelManager:
         required_ssrcs = {ch['ssrc'] for ch in required_channels}
         missing_ssrcs = required_ssrcs - existing_ssrcs
         
-        if not missing_ssrcs:
-            logger.info("✓ All required channels already exist")
+        # Check which existing channels need updates
+        channels_to_update = []
+        if update_existing:
+            for channel_spec in required_channels:
+                ssrc = channel_spec['ssrc']
+                if ssrc in existing_ssrcs:
+                    existing_ch = existing[ssrc]
+                    req_freq = channel_spec['frequency_hz']
+                    req_preset = channel_spec.get('preset', 'iq')
+                    
+                    # Check if frequency or preset differs
+                    freq_diff = abs(existing_ch.frequency_hz - req_freq) > 1.0  # 1 Hz tolerance
+                    preset_diff = existing_ch.preset != req_preset
+                    
+                    if freq_diff or preset_diff:
+                        logger.info(f"Channel {ssrc} needs update: freq={existing_ch.frequency_hz/1e6:.3f}->{req_freq/1e6:.3f} MHz, preset={existing_ch.preset}->{req_preset}")
+                        channels_to_update.append(channel_spec)
+        
+        if not missing_ssrcs and not channels_to_update:
+            logger.info("✓ All required channels already exist with correct parameters")
             return True
         
-        logger.info(f"Need to create {len(missing_ssrcs)} missing channels: {sorted(missing_ssrcs)}")
+        if missing_ssrcs:
+            logger.info(f"Need to create {len(missing_ssrcs)} missing channels: {sorted(missing_ssrcs)}")
+        if channels_to_update:
+            logger.info(f"Need to update {len(channels_to_update)} existing channels")
         
         # Create missing channels
-        success_count = 0
+        create_success = 0
         for channel_spec in required_channels:
             ssrc = channel_spec['ssrc']
             
@@ -134,14 +156,42 @@ class ChannelManager:
                 sample_rate=channel_spec.get('sample_rate'),
                 description=channel_spec.get('description', '')
             ):
-                success_count += 1
+                create_success += 1
         
-        if success_count == len(missing_ssrcs):
-            logger.info(f"✓ All {success_count} missing channels created successfully")
+        # Update existing channels
+        update_success = 0
+        for channel_spec in channels_to_update:
+            ssrc = channel_spec['ssrc']
+            logger.info(f"Updating channel {ssrc}")
+            
+            # Send update commands (same as create, but channel already exists)
+            try:
+                self.control.create_and_configure_channel(
+                    ssrc=ssrc,
+                    frequency_hz=channel_spec['frequency_hz'],
+                    preset=channel_spec.get('preset', 'iq'),
+                    sample_rate=channel_spec.get('sample_rate')
+                )
+                time.sleep(0.5)
+                
+                if self.control.verify_channel(ssrc, channel_spec['frequency_hz']):
+                    logger.info(f"✓ Channel {ssrc} updated successfully")
+                    update_success += 1
+                else:
+                    logger.warning(f"✗ Channel {ssrc} update verification failed")
+            except Exception as e:
+                logger.error(f"Failed to update channel {ssrc}: {e}")
+        
+        # Report results
+        total_operations = len(missing_ssrcs) + len(channels_to_update)
+        total_success = create_success + update_success
+        
+        if total_success == total_operations:
+            logger.info(f"✓ All {total_operations} channel operations successful")
             return True
         else:
             logger.warning(
-                f"⚠ Only {success_count}/{len(missing_ssrcs)} channels created successfully"
+                f"⚠ Only {total_success}/{total_operations} channel operations successful"
             )
             return False
     

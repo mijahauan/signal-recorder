@@ -165,8 +165,9 @@ def cmd_create_channels(args):
     manager = ChannelManager(status_address)
     
     try:
-        # Ensure all channels exist
-        success = manager.ensure_channels_exist(required_channels)
+        # Ensure all channels exist (and optionally update existing ones)
+        update_existing = getattr(args, 'update', False)
+        success = manager.ensure_channels_exist(required_channels, update_existing=update_existing)
         
         print(f"\n=== Channel Creation Summary ===")
         print(f"Requested: {len(required_channels)} channels\n")
@@ -327,6 +328,8 @@ Examples:
                                          help='Create channels from configuration')
     create_parser.add_argument('--config', required=True,
                               help='Configuration file path')
+    create_parser.add_argument('--update', action='store_true',
+                              help='Update existing channels if parameters differ')
     create_parser.set_defaults(func=cmd_create_channels)
     
     # Init command
