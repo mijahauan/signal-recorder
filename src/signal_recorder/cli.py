@@ -10,6 +10,7 @@ import toml
 
 from .app import SignalRecorderApp
 from .discovery import StreamDiscovery
+from .control_discovery import discover_channels_via_control
 
 
 def setup_logging(verbose: bool = False):
@@ -44,36 +45,34 @@ def cmd_discover(args):
     """Discover available streams"""
     setup_logging(args.verbose)
     
-    print(f"Discovering streams from {args.radiod}...")
+    # Use control utility if available (much simpler and more reliable)
+    status_addr = args.status if hasattr(args, 'status') and args.status else args.radiod
     
-    # Resolve and discover
-    status_stream = args.status if hasattr(args, 'status') and args.status else None
-    status_port = args.status_port if hasattr(args, 'status_port') and args.status_port else None
-    discovery = StreamDiscovery(args.radiod, status_stream=status_stream, status_port=status_port)
+    print(f"Discovering channels from {status_addr} using control utility...\n")
     
     try:
-        address, port = discovery.resolve()
-        print(f"\nResolved: {args.radiod} → {address}:{port}")
+        channels = discover_channels_via_control(status_addr, timeout=args.timeout)
         
-        streams = discovery.discover_streams(timeout=args.timeout)
-        
-        if streams:
-            print(f"\nFound {len(streams)} streams:\n")
+        if channels:
+            print(f"Found {len(channels)} channels:\n")
+            print(f"{'SSRC':<12} {'Frequency':<15} {'Rate':<10} {'Preset':<8} {'SNR':<8} {'Address':<25}")
+            print("-" * 85)
             
-            for ssrc, metadata in sorted(streams.items(), key=lambda x: x[1].frequency):
-                print(f"  SSRC: 0x{ssrc:08x}")
-                print(f"    Frequency: {metadata.frequency/1e6:.3f} MHz")
-                print(f"    Sample Rate: {metadata.sample_rate} Hz")
-                print(f"    Channels: {metadata.channels}")
-                print(f"    Encoding: {metadata.encoding.name}")
-                if metadata.description:
-                    print(f"    Description: {metadata.description}")
-                print()
+            for ssrc, channel in sorted(channels.items(), key=lambda x: x[1].frequency):
+                freq_mhz = channel.frequency / 1e6
+                snr_str = f"{channel.snr:.1f}" if channel.snr != float('-inf') else "-inf"
+                addr_str = f"{channel.multicast_address}:{channel.port}"
+                
+                print(f"{ssrc:<12} {freq_mhz:>8.3f} MHz   {channel.sample_rate:<10} {channel.preset:<8} {snr_str:<8} {addr_str:<25}")
         else:
-            print("No streams found")
+            print("No channels found")
+            print("\nNote: Make sure 'control' utility from ka9q-radio is installed and in PATH")
     
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        if args.verbose:
+            traceback.print_exc()
         sys.exit(1)
 
 
