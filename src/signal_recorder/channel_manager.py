@@ -125,11 +125,11 @@ class ChannelManager:
                     req_preset = channel_spec.get('preset', 'iq')
                     
                     # Check if frequency or preset differs
-                    freq_diff = abs(existing_ch.frequency_hz - req_freq) > 1.0  # 1 Hz tolerance
+                    freq_diff = abs(existing_ch.frequency - req_freq) > 1.0  # 1 Hz tolerance
                     preset_diff = existing_ch.preset != req_preset
                     
                     if freq_diff or preset_diff:
-                        logger.info(f"Channel {ssrc} needs update: freq={existing_ch.frequency_hz/1e6:.3f}->{req_freq/1e6:.3f} MHz, preset={existing_ch.preset}->{req_preset}")
+                        logger.info(f"Channel {ssrc} needs update: freq={existing_ch.frequency/1e6:.3f}->{req_freq/1e6:.3f} MHz, preset={existing_ch.preset}->{req_preset}")
                         channels_to_update.append(channel_spec)
         
         if not missing_ssrcs and not channels_to_update:
