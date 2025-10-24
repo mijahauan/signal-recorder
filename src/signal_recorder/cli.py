@@ -165,7 +165,7 @@ def cmd_create_channels(args):
         # Show created channels
         print("\nChannels:")
         for ssrc, info in sorted(result.items()):
-            print(f"  SSRC {ssrc:>10}: {info.frequency/1e6:>7.3f} MHz ({info.preset}) @ {info.address}")
+            print(f"  SSRC {ssrc:>10}: {info.frequency/1e6:>7.3f} MHz ({info.preset}) @ {info.multicast_address}:{info.port}")
     else:
         print("✗ Some channels failed to create")
         missing = set(spec.ssrc for spec in channel_specs) - set(result.keys())
