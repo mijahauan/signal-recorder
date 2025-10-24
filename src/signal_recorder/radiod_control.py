@@ -342,9 +342,9 @@ class RadiodControl:
         """
         Create a new channel and configure it
         
-        This sends commands to create the SSRC and set its parameters.
-        Note: radiod will create the channel when it receives the first command
-        for a new SSRC.
+        This sends ALL parameters in a SINGLE packet to radiod.
+        This is critical because radiod creates the channel when it receives
+        the first command for a new SSRC, using the parameters in that packet.
         
         Args:
             ssrc: SSRC for the new channel
@@ -354,21 +354,32 @@ class RadiodControl:
         """
         logger.info(f"Creating channel: SSRC={ssrc}, freq={frequency_hz/1e6:.3f} MHz, preset={preset}")
         
-        # Set frequency (this will create the channel if it doesn't exist)
-        self.set_frequency(ssrc, frequency_hz)
+        # Build a single command packet with ALL parameters
+        # This ensures radiod creates the channel with the correct preset
+        cmdbuffer = bytearray()
+        cmdbuffer.append(CMD)
         
-        # Wait a moment for radiod to process
-        import time
-        time.sleep(0.1)
+        # CRITICAL: Send preset FIRST, before frequency
+        # This ensures the channel is created with the correct mode
+        encode_string(cmdbuffer, StatusType.PRESET, preset)
+        logger.info(f"Setting preset for SSRC {ssrc} to {preset}")
         
-        # Set preset
-        self.set_preset(ssrc, preset)
-        time.sleep(0.1)
+        # Then frequency
+        encode_double(cmdbuffer, StatusType.RADIO_FREQUENCY, frequency_hz)
+        logger.info(f"Setting frequency for SSRC {ssrc} to {frequency_hz/1e6:.3f} MHz")
         
-        # Set sample rate if specified
+        # Then sample rate if specified
         if sample_rate:
-            self.set_sample_rate(ssrc, sample_rate)
-            time.sleep(0.1)
+            encode_int(cmdbuffer, StatusType.OUTPUT_SAMPRATE, sample_rate)
+            logger.info(f"Setting sample rate for SSRC {ssrc} to {sample_rate} Hz")
+        
+        # SSRC and command tag
+        encode_int(cmdbuffer, StatusType.OUTPUT_SSRC, ssrc)
+        encode_int(cmdbuffer, StatusType.COMMAND_TAG, random.randint(1, 2**31))
+        encode_eol(cmdbuffer)
+        
+        # Send the single packet
+        self.send_command(cmdbuffer)
         
         logger.info(f"Channel {ssrc} created and configured")
     
