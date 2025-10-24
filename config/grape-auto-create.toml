@@ -15,10 +15,8 @@ status_address = "bee1-hf-status.local"
 # If true, missing channels will be created automatically
 auto_create_channels = true
 
-# Data stream configuration (for dynamic channels)
-# All auto-created channels will use this multicast address
-data_address = "239.41.204.101"
-data_port = 5004
+# Note: Multicast addresses and ports are managed by radiod and discovered
+# automatically via the control utility. No need to specify them here!
 
 [recorder]
 data_dir = "/mnt/grape-data"
