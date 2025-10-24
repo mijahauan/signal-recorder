@@ -124,7 +124,8 @@ class ChannelManager:
             # 3. Set preset (m command)
             # 4. Quit (q command)
             
-            commands = f"{spec.ssrc}\\nf{spec.frequency_hz}\\nm{spec.preset}\\nq\\n"
+            # Create command sequence with actual newlines
+            commands = f"{spec.ssrc}\nf{spec.frequency_hz}\nm{spec.preset}\nq\n"
             
             # Run control with scripted input
             proc = subprocess.Popen(
@@ -185,7 +186,7 @@ class ChannelManager:
             
             commands.append('q')  # Quit
             
-            command_str = '\\n'.join(commands) + '\\n'
+            command_str = '\n'.join(commands) + '\n'
             
             proc = subprocess.Popen(
                 ['control', self.status_address],
