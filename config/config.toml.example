@@ -1,0 +1,104 @@
+# Signal Recorder Configuration Example
+
+[station]
+# Unique identifier for your station (e.g., PSWS001)
+id = "PSWS001"
+
+# Instrument ID (usually 1)
+instrument_id = "1"
+
+# Your callsign
+callsign = "AI6VN"
+
+# Your Maidenhead grid square
+grid_square = "CM87"
+
+# Station coordinates
+latitude = 37.7749
+longitude = -122.4194
+
+[recorder]
+# Directory to store recorded and processed data
+archive_dir = "/var/lib/signal-recorder/archive"
+
+# Length of each recording file in seconds
+file_length = 60
+
+# Use wavpack to compress recordings (saves space)
+compress = true
+compression_format = "wavpack"
+
+# Path to pcmrecord executable (if not in PATH)
+pcmrecord_path = "pcmrecord"
+
+# List of streams to record
+[[recorder.streams]]
+# mDNS service name from your radiod configuration
+stream_name = "WWV-IQ"
+
+# List of frequencies to record from this stream (in Hz)
+frequencies = [
+    2500000,   # WWV 2.5 MHz
+    5000000,   # WWV 5 MHz
+    10000000,  # WWV 10 MHz
+    15000000,  # WWV 15 MHz
+    20000000,  # WWV 20 MHz
+    25000000,  # WWV 25 MHz
+    3330000,   # CHU 3.33 MHz
+    7850000,   # CHU 7.85 MHz
+    14670000   # CHU 14.67 MHz
+]
+
+# Processor to use for this stream
+processor = "grape"
+
+# Mapping of frequencies to band names (used for directory structure)
+band_mapping = {
+    2500000 = "WWV_2_5",
+    5000000 = "WWV_5",
+    10000000 = "WWV_10",
+    15000000 = "WWV_15",
+    20000000 = "WWV_20",
+    25000000 = "WWV_25",
+    3330000 = "CHU_3",
+    7850000 = "CHU_7",
+    14670000 = "CHU_14"
+}
+
+[processors]
+# Configuration for GRAPE processor
+[processors.grape]
+enabled = true
+target_sample_rate = 10  # Hz
+output_format = "digital_rf"
+
+[upload]
+# Upload protocol (ssh_rsync or none)
+protocol = "ssh_rsync"
+
+# Remote host for upload
+host = "pswsnetwork.eng.ua.edu"
+
+# Remote user
+user = "grape"
+
+# Base path on remote server
+base_path = "/data/uploads"
+
+# Maximum number of upload retries
+max_retries = 5
+
+# Base for exponential backoff (in minutes)
+retry_backoff_base = 2
+
+# Upload timeout in seconds
+timeout = 3600
+
+# Path to upload queue file
+queue_file = "/var/lib/signal-recorder/upload_queue.json"
+
+# SSH configuration
+[upload.ssh]
+# Path to SSH private key for passwordless login
+key_file = "/home/user/.ssh/id_rsa_grape"
+
