@@ -144,6 +144,8 @@ def decode_status_metadata(packet: bytes) -> Dict:
         length = packet[offset + 1]
         offset += 2
         
+        logger.debug(f"TLV: tag={tag}, length={length}")
+        
         if tag == StatusType.EOL:
             break
         
