@@ -1,0 +1,23 @@
+# Test Configuration for Creating a New Channel at 21.5 MHz
+# Alternative test frequency in the 21 MHz band (between 21.074 and 21.140)
+
+[station]
+callsign = "AC0G"
+grid_square = "EM38ww"
+
+[ka9q]
+status_address = "239.251.200.193"
+auto_create_channels = true
+
+[recorder]
+data_dir = "/tmp/test-recording"
+
+# Test channel - 21.5 MHz (new frequency not in current channel list)
+[[recorder.channels]]
+ssrc = 21500000
+frequency_hz = 21500000
+preset = "usb"
+sample_rate = 12000
+description = "Test channel 21.5 MHz"
+enabled = true
+
