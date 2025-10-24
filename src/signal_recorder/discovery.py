@@ -184,18 +184,22 @@ def decode_status_metadata(packet: bytes) -> Dict:
 class StreamDiscovery:
     """Discover and track streams from a ka9q-radio service"""
     
-    def __init__(self, stream_name: str, status_port: int = 5006):
+    def __init__(self, stream_name: str, status_stream: str = None, status_port: int = None):
         """
         Initialize stream discovery
         
         Args:
-            stream_name: mDNS service name (e.g., "wwv-iq.local")
-            status_port: Port for status metadata (default 5006)
+            stream_name: mDNS service name for data (e.g., "wwv-iq.local")
+            status_stream: Optional separate mDNS name for status (e.g., "hf-status.local")
+            status_port: Optional explicit port for status metadata (default: use resolved port)
         """
         self.stream_name = stream_name
-        self.status_port = status_port
+        self.status_stream = status_stream or stream_name
+        self.status_port_override = status_port
         self.data_address = None
         self.data_port = None
+        self.status_address = None
+        self.status_port = None
         self.streams: Dict[int, StreamMetadata] = {}  # ssrc -> metadata
         
     def resolve(self) -> Tuple[str, int]:
@@ -206,6 +210,17 @@ class StreamDiscovery:
             Tuple of (address, port)
         """
         self.data_address, self.data_port = resolve_mdns_name(self.stream_name)
+        
+        # Resolve status stream (may be same as data stream or separate)
+        if self.status_stream != self.stream_name:
+            self.status_address, status_port = resolve_mdns_name(self.status_stream)
+        else:
+            self.status_address = self.data_address
+            status_port = self.data_port
+        
+        # Use explicit port override if provided, otherwise use resolved port
+        self.status_port = self.status_port_override if self.status_port_override else status_port
+        
         return (self.data_address, self.data_port)
     
     def discover_streams(self, timeout: float = 5.0) -> Dict[int, StreamMetadata]:
@@ -221,7 +236,7 @@ class StreamDiscovery:
         if not self.data_address:
             self.resolve()
         
-        logger.info(f"Discovering streams from {self.stream_name} ({self.data_address}:{self.status_port})")
+        logger.info(f"Discovering streams from {self.stream_name} (status: {self.status_address}:{self.status_port})")
         
         # Create UDP socket for status stream
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -236,14 +251,14 @@ class StreamDiscovery:
             
             # Join multicast group - try loopback first (for local radiod), then any interface
             try:
-                mreq = struct.pack("4s4s", socket.inet_aton(self.data_address), socket.inet_aton('127.0.0.1'))
+                mreq = struct.pack("4s4s", socket.inet_aton(self.status_address), socket.inet_aton('127.0.0.1'))
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-                logger.debug("Joined multicast group on loopback interface")
+                logger.debug(f"Joined multicast group {self.status_address} on loopback interface")
             except OSError as e:
                 logger.debug(f"Could not join on loopback: {e}, trying INADDR_ANY")
-                mreq = struct.pack("4sl", socket.inet_aton(self.data_address), socket.INADDR_ANY)
+                mreq = struct.pack("4sl", socket.inet_aton(self.status_address), socket.INADDR_ANY)
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-                logger.debug("Joined multicast group on all interfaces")
+                logger.debug(f"Joined multicast group {self.status_address} on all interfaces")
             
             sock.settimeout(timeout)
             
