@@ -167,9 +167,17 @@ class RadiodControl:
             
             # Create UDP socket
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            # Set socket options for multicast
+            # Use loopback interface (127.0.0.1) for local radiod
+            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, 
+                                  socket.inet_aton('127.0.0.1'))
+            # Enable multicast loopback so we can send to ourselves
+            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+            
             self.dest_addr = (mcast_addr, 5006)  # Standard radiod control port
             
-            logger.info(f"Connected to radiod at {mcast_addr}:5006")
+            logger.info(f"Connected to radiod at {mcast_addr}:5006 via loopback")
             
         except Exception as e:
             logger.error(f"Failed to connect to radiod: {e}")
