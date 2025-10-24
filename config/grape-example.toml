@@ -1,0 +1,242 @@
+# GRAPE Recording Configuration for ka9q-radio
+# Records WWV and CHU time signal broadcasts for ionospheric research
+
+[station]
+# Station identification
+callsign = "AC0G"
+grid_square = "EM38ww"
+description = "GRAPE station with RX888 and ka9q-radio"
+
+[ka9q]
+# ka9q-radio status address for discovery
+status_address = "bee1-hf-status.local"
+
+# Data multicast address (all GRAPE channels are on this address)
+data_address = "239.41.204.101"
+data_port = 5004
+
+[recorder]
+# Base directory for recordings
+data_dir = "/mnt/grape-data"
+
+# Recording format
+# pcmrecord outputs 32-bit float stereo WAV files
+sample_format = "float32"
+channels = 2  # IQ (complex)
+
+# Compression (optional but recommended)
+compress = true
+compression_format = "wavpack"  # or "flac"
+
+# File organization
+# Files will be organized as: {data_dir}/{YYYYMMDD}/{frequency_hz}/
+organize_by_date = true
+organize_by_frequency = true
+
+# Recording schedule
+# For GRAPE, we want continuous 24/7 recording
+continuous = true
+
+# File duration (minutes per file)
+# pcmrecord creates new files periodically
+file_duration_minutes = 1
+
+[[recorder.channels]]
+# WWV 2.5 MHz
+ssrc = 2500000
+frequency_hz = 2500000
+description = "WWV 2.5 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+# CHU 3.33 MHz
+ssrc = 3330000
+frequency_hz = 3330000
+description = "CHU 3.33 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+# WWV 5 MHz
+ssrc = 5000000
+frequency_hz = 5000000
+description = "WWV 5 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+# CHU 7.85 MHz
+ssrc = 7850000
+frequency_hz = 7850000
+description = "CHU 7.85 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+# WWV 10 MHz
+ssrc = 10000000
+frequency_hz = 10000000
+description = "WWV 10 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+# CHU 14.67 MHz
+ssrc = 14670000
+frequency_hz = 14670000
+description = "CHU 14.67 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+# WWV 15 MHz
+ssrc = 15000000
+frequency_hz = 15000000
+description = "WWV 15 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+# WWV 20 MHz
+ssrc = 20000000
+frequency_hz = 20000000
+description = "WWV 20 MHz"
+processor = "grape"
+enabled = true
+
+[[recorder.channels]]
+# WWV 25 MHz
+ssrc = 25000000
+frequency_hz = 25000000
+description = "WWV 25 MHz"
+processor = "grape"
+enabled = true
+
+[processor.grape]
+# GRAPE processing configuration
+
+# Processing schedule
+# Process previous day's data at 00:05 UTC
+process_time = "00:05"
+process_timezone = "UTC"
+
+# Validation
+# Expect 1440 files per day (1 per minute for 24 hours)
+expected_files_per_day = 1440
+
+# Gap tolerance (minutes)
+# Allow up to 5 minutes of missing data before flagging
+max_gap_minutes = 5
+
+# Repair gaps
+# Interpolate short gaps, zero-fill longer gaps
+repair_gaps = true
+interpolate_max_minutes = 2
+
+# Resampling
+# GRAPE requires 10 Hz output sample rate
+output_sample_rate = 10
+
+# Output format
+output_format = "digital_rf"
+
+# Digital RF parameters
+digital_rf_sample_rate_numerator = 10
+digital_rf_sample_rate_denominator = 1
+digital_rf_subdir_cadence_seconds = 3600  # 1 hour subdirectories
+digital_rf_file_cadence_seconds = 3600     # 1 hour files
+digital_rf_compression_level = 1           # Light compression
+
+# Keep intermediate files
+keep_wavpack = true
+keep_24hour_wav = false
+keep_resampled_wav = false
+
+[uploader]
+# Upload configuration
+
+# Upload schedule
+# Upload after processing completes (around 00:30 UTC)
+upload_enabled = true
+upload_time = "00:30"
+upload_timezone = "UTC"
+
+# Upload protocol
+protocol = "rsync"
+
+# Retry configuration
+max_retries = 5
+retry_delay_seconds = 300  # 5 minutes
+exponential_backoff = true
+
+# Queue management
+queue_dir = "/mnt/grape-data/upload_queue"
+max_queue_size_gb = 100
+
+[uploader.rsync]
+# HamSCI PSWS server configuration
+
+# SSH connection
+host = "pswsnetwork.eng.ua.edu"
+port = 22
+user = "your_username"  # CHANGE THIS
+
+# SSH key (passwordless authentication required)
+ssh_key = "/home/wsprdaemon/.ssh/id_rsa_psws"
+
+# Remote path
+# Format: /data/{station_id}/{YYYY}/{MM}/{DD}/
+remote_base_path = "/data/AC0G"  # CHANGE THIS to your station ID
+
+# Rsync options
+rsync_options = [
+    "--archive",
+    "--compress",
+    "--partial",
+    "--progress",
+    "--timeout=300"
+]
+
+# Bandwidth limit (KB/s, 0 = unlimited)
+bandwidth_limit = 0
+
+# Verification
+verify_after_upload = true
+delete_after_upload = false  # Keep local copy
+
+[logging]
+# Logging configuration
+
+level = "INFO"  # DEBUG, INFO, WARNING, ERROR
+log_dir = "/var/log/signal-recorder"
+log_file = "grape-recorder.log"
+
+# Rotation
+rotate_size_mb = 100
+rotate_count = 10
+
+# Console output
+console_output = true
+console_level = "INFO"
+
+[monitoring]
+# Health monitoring
+
+# Status file
+status_file = "/var/run/signal-recorder/status.json"
+update_interval_seconds = 60
+
+# Metrics
+enable_metrics = true
+metrics_file = "/var/run/signal-recorder/metrics.json"
+
+# Alerts (optional)
+alert_on_recording_failure = true
+alert_on_processing_failure = true
+alert_on_upload_failure = true
+
+# Alert method (email, webhook, etc.)
+# alert_email = "admin@example.com"
+# alert_webhook = "https://example.com/webhook"
+
