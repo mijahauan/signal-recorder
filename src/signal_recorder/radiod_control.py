@@ -171,9 +171,6 @@ class RadiodControl:
             # Allow multiple sockets to bind to the same port
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             
-            # Bind to loopback interface to force all traffic via lo
-            self.socket.bind(('127.0.0.1', 0))  # Bind to loopback, any available port
-            
             # Set socket options for multicast
             # Use loopback interface with proper ip_mreqn structure
             # This is critical - we need to specify BOTH the IP and interface index
