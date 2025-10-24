@@ -11,7 +11,7 @@ import toml
 from .app import SignalRecorderApp
 from .discovery import StreamDiscovery
 from .control_discovery import discover_channels_via_control
-from .channel_manager import ChannelManager, ChannelSpec, channels_from_config
+from .channel_manager import ChannelManager
 
 
 def setup_logging(verbose: bool = False):
@@ -141,37 +141,53 @@ def cmd_create_channels(args):
         sys.exit(1)
     
     # Get channel specifications from config
-    channel_specs = channels_from_config(config)
+    recorder_config = config.get('recorder', {})
+    channels_config = recorder_config.get('channels', [])
     
-    if not channel_specs:
-        print("No channels defined in configuration", file=sys.stderr)
+    if not channels_config:
+        print("No channels defined in [recorder.channels] section", file=sys.stderr)
         sys.exit(1)
     
-    print(f"Creating {len(channel_specs)} channels...\n")
+    # Convert to required format
+    required_channels = []
+    for ch in channels_config:
+        required_channels.append({
+            'ssrc': ch.get('ssrc'),
+            'frequency_hz': ch.get('frequency_hz'),
+            'preset': ch.get('preset', 'iq'),
+            'sample_rate': ch.get('sample_rate'),
+            'description': ch.get('description', '')
+        })
+    
+    print(f"Creating {len(required_channels)} channels...\n")
     
     # Create channel manager
     manager = ChannelManager(status_address)
     
-    # Ensure all channels exist
-    result = manager.ensure_channels(channel_specs)
-    
-    print(f"\n=== Channel Creation Summary ===")
-    print(f"Requested: {len(channel_specs)} channels")
-    print(f"Created/Verified: {len(result)} channels\n")
-    
-    if len(result) == len(channel_specs):
-        print("✓ All channels successfully created/verified")
+    try:
+        # Ensure all channels exist
+        success = manager.ensure_channels_exist(required_channels)
         
-        # Show created channels
-        print("\nChannels:")
-        for ssrc, info in sorted(result.items()):
-            print(f"  SSRC {ssrc:>10}: {info.frequency/1e6:>7.3f} MHz ({info.preset}) @ {info.multicast_address}:{info.port}")
-    else:
-        print("✗ Some channels failed to create")
-        missing = set(spec.ssrc for spec in channel_specs) - set(result.keys())
-        if missing:
-            print(f"\nMissing SSRCs: {sorted(missing)}")
-        sys.exit(1)
+        print(f"\n=== Channel Creation Summary ===")
+        print(f"Requested: {len(required_channels)} channels\n")
+        
+        if success:
+            print("✓ All channels successfully created/verified")
+            
+            # Discover and show all channels
+            all_channels = manager.discover_existing_channels()
+            required_ssrcs = {ch['ssrc'] for ch in required_channels}
+            
+            print("\nChannels:")
+            for ssrc in sorted(required_ssrcs):
+                if ssrc in all_channels:
+                    info = all_channels[ssrc]
+                    print(f"  SSRC {ssrc:>10}: {info.frequency/1e6:>7.3f} MHz ({info.preset}) @ {info.multicast_address}")
+        else:
+            print("✗ Some channels failed to create")
+            sys.exit(1)
+    finally:
+        manager.close()
 
 
 def cmd_init(args):
