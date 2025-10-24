@@ -175,9 +175,18 @@ class RadiodControl:
             self.socket.bind(('127.0.0.1', 0))  # Bind to loopback, any available port
             
             # Set socket options for multicast
-            # Use loopback interface (127.0.0.1) for local radiod
-            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, 
-                                  socket.inet_aton('127.0.0.1'))
+            # Use loopback interface with proper ip_mreqn structure
+            # This is critical - we need to specify BOTH the IP and interface index
+            import struct
+            # Get loopback interface index
+            lo_index = socket.if_nametoindex('lo')
+            # Create ip_mreqn structure: imr_multiaddr (4 bytes), imr_address (4 bytes), imr_ifindex (4 bytes)
+            # We set imr_multiaddr to 0.0.0.0, imr_address to 127.0.0.1, imr_ifindex to lo interface
+            mreqn = struct.pack('=4s4si', 
+                               socket.inet_aton('0.0.0.0'),  # imr_multiaddr (not used for IF setting)
+                               socket.inet_aton('127.0.0.1'),  # imr_address (loopback)
+                               lo_index)  # imr_ifindex (loopback interface index)
+            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, mreqn)
             # Enable multicast loopback so we can send to ourselves
             self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
             # Set TTL for multicast packets
