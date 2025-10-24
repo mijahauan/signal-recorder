@@ -64,7 +64,7 @@ class StatusType:
     FILTER_FIR_LENGTH = 43
     FILTER2 = 44
     # ... (skipping many intermediate values)
-    PRESET = 87  # Was 29 - COMPLETELY WRONG!
+    PRESET = 85  # Was 29 - COMPLETELY WRONG! (Corrected from 87 to 85)
 
 
 # Command packet type
