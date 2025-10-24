@@ -186,7 +186,9 @@ class RadiodControl:
                                socket.inet_aton('0.0.0.0'),  # imr_multiaddr (not used for IF setting)
                                socket.inet_aton('127.0.0.1'),  # imr_address (loopback)
                                lo_index)  # imr_ifindex (loopback interface index)
+            logger.debug(f"Setting IP_MULTICAST_IF with ip_mreqn: lo_index={lo_index}, mreqn={mreqn.hex()}")
             self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, mreqn)
+            logger.debug(f"IP_MULTICAST_IF set successfully")
             # Enable multicast loopback so we can send to ourselves
             self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
             # Set TTL for multicast packets
