@@ -227,11 +227,24 @@ class StreamDiscovery:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
+        # Enable multicast loopback (needed when radiod is on same machine)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+        
         try:
-            # Join multicast group
-            mreq = struct.pack("4sl", socket.inet_aton(self.data_address), socket.INADDR_ANY)
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            # Bind first, then join multicast group
             sock.bind(('', self.status_port))
+            
+            # Join multicast group - try loopback first (for local radiod), then any interface
+            try:
+                mreq = struct.pack("4s4s", socket.inet_aton(self.data_address), socket.inet_aton('127.0.0.1'))
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                logger.debug("Joined multicast group on loopback interface")
+            except OSError as e:
+                logger.debug(f"Could not join on loopback: {e}, trying INADDR_ANY")
+                mreq = struct.pack("4sl", socket.inet_aton(self.data_address), socket.INADDR_ANY)
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                logger.debug("Joined multicast group on all interfaces")
+            
             sock.settimeout(timeout)
             
             # Listen for status packets
