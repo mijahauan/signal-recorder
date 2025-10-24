@@ -1,0 +1,23 @@
+# Test Configuration for Channel Creation
+# This creates a test channel that doesn't currently exist
+
+[station]
+callsign = "AC0G"
+grid_square = "EM38ww"
+
+[ka9q]
+status_address = "bee1-hf-status.local"
+auto_create_channels = true
+
+[recorder]
+data_dir = "/tmp/test-recording"
+
+# Test channel - 30 MHz (doesn't currently exist)
+[[recorder.channels]]
+ssrc = 30000000
+frequency_hz = 30000000
+preset = "iq"
+sample_rate = 16000
+description = "Test channel 30 MHz"
+enabled = true
+
