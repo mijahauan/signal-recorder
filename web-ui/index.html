@@ -312,23 +312,22 @@
                         </div>
 
                         <div class="form-group">
-                            <label>Channel Presets</label>
-                            <div class="presets">
-                                <div class="preset-btn" onclick="addWwvPreset()">WWV 2.5 MHz</div>
-                                <div class="preset-btn" onclick="addWwvPreset('5000000', 'wwv_5')">WWV 5 MHz</div>
-                                <div class="preset-btn" onclick="addWwvPreset('10000000', 'wwv_10')">WWV 10 MHz</div>
-                                <div class="preset-btn" onclick="addWwvPreset('15000000', 'wwv_15')">WWV 15 MHz</div>
-                                <div class="preset-btn" onclick="addWwvPreset('20000000', 'wwv_20')">WWV 20 MHz</div>
-                                <div class="preset-btn" onclick="addChuPreset('3330000', 'chu_3_33')">CHU 3.33 MHz</div>
-                                <div class="preset-btn" onclick="addChuPreset('7850000', 'chu_7_85')">CHU 7.85 MHz</div>
-                                <div class="preset-btn" onclick="addChuPreset('14670000', 'chu_14_67')">CHU 14.67 MHz</div>
-                            </div>
-                        </div>
-
-                        <div class="form-group">
                             <label>Channels</label>
                             <div id="channels-list" class="channels"></div>
-                            <button type="button" onclick="addChannel()">Add Custom Channel</button>
+                            <div style="margin-top: 10px;">
+                                <button type="button" onclick="addChannel()" class="btn-secondary">Add Custom Channel</button>
+                                <span style="margin-left: 20px;">Quick Add:</span>
+                                <button type="button" onclick="addWwvPreset('2500000')" style="margin-left: 5px;">WWV 2.5M</button>
+                                <button type="button" onclick="addWwvPreset('5000000')" style="margin-left: 5px;">WWV 5M</button>
+                                <button type="button" onclick="addWwvPreset('10000000')" style="margin-left: 5px;">WWV 10M</button>
+                                <button type="button" onclick="addWwvPreset('15000000')" style="margin-left: 5px;">WWV 15M</button>
+                                <button type="button" onclick="addWwvPreset('20000000')" style="margin-left: 5px;">WWV 20M</button>
+                                <button type="button" onclick="addWwvPreset('25000000')" style="margin-left: 5px;">WWV 25M</button>
+                                <br>
+                                <button type="button" onclick="addChuPreset('3330000')" style="margin-left: 70px;">CHU 3.3M</button>
+                                <button type="button" onclick="addChuPreset('7850000')" style="margin-left: 5px;">CHU 7.8M</button>
+                                <button type="button" onclick="addChuPreset('14670000')" style="margin-left: 5px;">CHU 14.6M</button>
+                            </div>
                         </div>
 
                         <div style="margin-top: 20px;">
@@ -449,7 +448,7 @@
             if (configId) {
                 loadConfigurationForEdit(configId);
             } else {
-                resetForm();
+                resetFormForNew();
             }
         }
 
@@ -458,6 +457,22 @@
             document.getElementById('config-form').reset();
             document.getElementById('channels-list').innerHTML = '';
             currentConfig = null;
+        }
+
+        async function resetFormForNew() {
+            // If we were editing a config, clear its channels from database
+            if (currentConfig) {
+                try {
+                    const channels = await apiRequest(`/configurations/${currentConfig.id}/channels`);
+                    for (const channel of channels) {
+                        await apiRequest(`/channels/${channel.id}`, { method: 'DELETE' });
+                    }
+                } catch (error) {
+                    console.error('Failed to clear channels:', error);
+                }
+            }
+
+            resetForm();
         }
 
         async function loadConfigurationForEdit(configId) {
@@ -501,10 +516,52 @@
                     <span>${channel.description} (${channel.frequencyHz} Hz)</span>
                     <div>
                         <button onclick="editChannel('${channel.id}')">Edit</button>
-                        <button onclick="deleteChannel('${channel.id}')" class="btn-danger">Delete</button>
+                        <button onclick="deleteChannelFromForm('${channel.id}')" class="btn-danger">Delete</button>
                     </div>
                 </div>
             `).join('');
+        }
+
+        async function deleteChannelFromForm(channelId) {
+            if (!confirm('Are you sure you want to delete this channel?')) return;
+
+            try {
+                // If we have a channelId, it's from the database
+                if (channelId) {
+                    await apiRequest(`/channels/${channelId}`, { method: 'DELETE' });
+                    // Reload channels to refresh the display
+                    if (currentConfig) {
+                        loadChannels(currentConfig.id);
+                    }
+                } else {
+                    // If no channelId, it's from the visual form
+                    const button = event.target;
+                    const channelDiv = button.parentElement.parentElement;
+                    const spanText = channelDiv.querySelector('span').textContent;
+                    const match = spanText.match(/^(.+?) \((\d+) Hz\)$/);
+
+                    if (match && currentConfig) {
+                        const description = match[1];
+                        const frequency = match[2];
+
+                        // Find and delete the corresponding channel from database
+                        const channels = await apiRequest(`/configurations/${currentConfig.id}/channels`);
+                        const channelToDelete = channels.find(ch =>
+                            ch.description === description && ch.frequencyHz === frequency
+                        );
+
+                        if (channelToDelete) {
+                            await apiRequest(`/channels/${channelToDelete.id}`, { method: 'DELETE' });
+                        }
+                    }
+
+                    // Remove from UI
+                    channelDiv.remove();
+                }
+            } catch (error) {
+                console.error('Failed to delete channel:', error);
+                alert('Failed to delete channel');
+            }
         }
 
         // Form submission
@@ -525,19 +582,57 @@
             };
 
             try {
+                let configId;
+
                 if (currentConfig) {
+                    // Update existing configuration
                     await apiRequest(`/configurations/${currentConfig.id}`, {
                         method: 'PUT',
                         body: JSON.stringify(formData)
                     });
+                    configId = currentConfig.id;
+
+                    // Delete existing channels for this config
+                    const existingChannels = await apiRequest(`/configurations/${configId}/channels`);
+                    for (const channel of existingChannels) {
+                        await apiRequest(`/channels/${channel.id}`, { method: 'DELETE' });
+                    }
                 } else {
-                    await apiRequest('/configurations', {
+                    // Create new configuration
+                    const newConfig = await apiRequest('/configurations', {
                         method: 'POST',
                         body: JSON.stringify(formData)
                     });
+                    configId = newConfig.id;
                 }
 
-                document.getElementById('form-message').textContent = 'Configuration saved successfully!';
+                // Save all channels currently in the form to the database
+                const channelElements = document.querySelectorAll('#channels-list .channel');
+                for (const channelEl of channelElements) {
+                    const spanText = channelEl.querySelector('span').textContent;
+                    const match = spanText.match(/^(.+?) \((\d+) Hz\)$/);
+                    if (match) {
+                        const description = match[1];
+                        const frequency = match[2];
+
+                        // Generate SSRC from frequency (common pattern)
+                        const ssrc = parseInt(frequency);
+
+                        await apiRequest(`/configurations/${configId}/channels`, {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                description: description,
+                                frequencyHz: frequency,
+                                ssrc: ssrc.toString(),
+                                enabled: 'yes',
+                                sampleRate: '12000',
+                                processor: 'grape'
+                            })
+                        });
+                    }
+                }
+
+                document.getElementById('form-message').textContent = 'Configuration and channels saved successfully!';
                 document.getElementById('form-message').className = 'success';
                 setTimeout(() => {
                     showConfigurations();
@@ -578,10 +673,85 @@
                 <span>${description} (${frequency} Hz)</span>
                 <div>
                     <button onclick="editChannelInForm(this)">Edit</button>
-                    <button onclick="this.parentElement.parentElement.remove()" class="btn-danger">Delete</button>
+                    <button onclick="deleteChannelFromForm()" class="btn-danger">Delete</button>
                 </div>
             `;
             container.appendChild(channelDiv);
+
+            // Save channel to database if we have a current config
+            if (currentConfig) {
+                saveChannelToDatabase(description, frequency, ssrc);
+            }
+        }
+
+        async function editChannel(channelId) {
+            // For now, just delete and re-add via prompt
+            // TODO: Implement proper edit dialog
+            try {
+                const channels = await apiRequest(`/configurations/${currentConfig.id}/channels`);
+                const channel = channels.find(ch => ch.id === channelId);
+
+                if (channel) {
+                    const newDescription = prompt('Edit description:', channel.description);
+                    if (newDescription && newDescription !== channel.description) {
+                        await apiRequest(`/channels/${channelId}`, {
+                            method: 'PUT',
+                            body: JSON.stringify({
+                                description: newDescription,
+                                frequencyHz: channel.frequencyHz,
+                                ssrc: channel.ssrc,
+                                enabled: channel.enabled,
+                                sampleRate: channel.sampleRate,
+                                processor: channel.processor
+                            })
+                        });
+
+                        // Reload channels
+                        loadChannels(currentConfig.id);
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to edit channel:', error);
+                alert('Failed to edit channel');
+            }
+        }
+
+        function editChannelInForm(button) {
+            // Edit channel in the visual form (not saved to database yet)
+            const channelDiv = button.parentElement.parentElement;
+            const span = channelDiv.querySelector('span');
+            const currentText = span.textContent;
+            const match = currentText.match(/^(.+?) \((\d+) Hz\)$/);
+
+            if (match) {
+                const currentDescription = match[1];
+                const frequency = match[2];
+
+                const newDescription = prompt('Edit description:', currentDescription);
+                if (newDescription && newDescription !== currentDescription) {
+                    span.textContent = `${newDescription} (${frequency} Hz)`;
+                }
+            }
+        }
+
+        async function saveChannelToDatabase(description, frequency, ssrc) {
+            if (!currentConfig) return;
+
+            try {
+                await apiRequest(`/configurations/${currentConfig.id}/channels`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        description: description,
+                        frequencyHz: frequency,
+                        ssrc: ssrc,
+                        enabled: 'yes',
+                        sampleRate: '12000',
+                        processor: 'grape'
+                    })
+                });
+            } catch (error) {
+                console.error('Failed to save channel to database:', error);
+            }
         }
 
         // Channel management
