@@ -63,14 +63,85 @@ else
 fi
 
 echo ""
-echo -e "${YELLOW}Step 5/10: Installing MySQL server...${NC}"
-if ! command -v mysql &> /dev/null; then
-  sudo apt install -y mysql-server
-  sudo systemctl start mysql
-  sudo systemctl enable mysql
+echo -e "${YELLOW}Step 5/10: Installing MySQL/MariaDB server...${NC}"
+
+# Detect which database system to use
+DB_SERVICE=""
+DB_INSTALLED=false
+
+# Check if mysql command exists
+if command -v mysql &> /dev/null; then
+  DB_INSTALLED=true
+  echo -e "${GREEN}MySQL client found${NC}"
+fi
+
+# Check for existing services
+if systemctl list-unit-files 2>/dev/null | grep -q "^mysql.service"; then
+  DB_SERVICE="mysql"
+  echo -e "${GREEN}MySQL service detected${NC}"
+elif systemctl list-unit-files 2>/dev/null | grep -q "^mariadb.service"; then
+  DB_SERVICE="mariadb"
+  echo -e "${GREEN}MariaDB service detected${NC}"
+fi
+
+# Install if not present
+if [ "$DB_INSTALLED" = false ]; then
+  echo "Installing MySQL server..."
+  sudo DEBIAN_FRONTEND=noninteractive apt install -y mysql-server
+  DB_SERVICE="mysql"
+elif [ -z "$DB_SERVICE" ]; then
+  # MySQL client exists but server not installed
+  echo "MySQL client found but server not running. Installing MySQL server..."
+  sudo DEBIAN_FRONTEND=noninteractive apt install -y mysql-server
+  DB_SERVICE="mysql"
+fi
+
+# Start the database service
+if [ -n "$DB_SERVICE" ]; then
+  echo "Starting $DB_SERVICE service..."
+  
+  # Try to start the service
+  if ! sudo systemctl start $DB_SERVICE 2>/dev/null; then
+    echo -e "${YELLOW}Service failed to start, attempting to initialize...${NC}"
+    
+    # For MySQL, try to initialize data directory
+    if [ "$DB_SERVICE" = "mysql" ]; then
+      if [ ! -d "/var/lib/mysql/mysql" ]; then
+        echo "Initializing MySQL data directory..."
+        sudo mkdir -p /var/lib/mysql
+        sudo chown mysql:mysql /var/lib/mysql
+        sudo mysqld --initialize-insecure --user=mysql 2>/dev/null || true
+      fi
+    fi
+    
+    # Try starting again
+    sudo systemctl start $DB_SERVICE || {
+      echo -e "${RED}Failed to start $DB_SERVICE${NC}"
+      echo "Please check: sudo journalctl -u $DB_SERVICE -n 50"
+      exit 1
+    }
+  fi
+  
+  sudo systemctl enable $DB_SERVICE
+  
+  # Wait for service to be ready
+  echo "Waiting for database to be ready..."
+  for i in {1..30}; do
+    if sudo mysqladmin ping -h localhost --silent 2>/dev/null; then
+      echo -e "${GREEN}Database is ready${NC}"
+      break
+    fi
+    if [ $i -eq 30 ]; then
+      echo -e "${RED}Database failed to become ready${NC}"
+      echo "Checking status:"
+      sudo systemctl status $DB_SERVICE --no-pager
+      exit 1
+    fi
+    sleep 1
+  done
 else
-  echo -e "${GREEN}MySQL already installed${NC}"
-  sudo systemctl start mysql || true
+  echo -e "${RED}Error: Could not determine database service name${NC}"
+  exit 1
 fi
 
 echo ""
@@ -87,7 +158,13 @@ if [ "$DB_PASSWORD" != "$DB_PASSWORD_CONFIRM" ]; then
   exit 1
 fi
 
+if [ -z "$DB_PASSWORD" ]; then
+  echo -e "${RED}Error: Password cannot be empty${NC}"
+  exit 1
+fi
+
 # Create database and user
+echo "Creating database and user..."
 sudo mysql -u root <<EOF
 CREATE DATABASE IF NOT EXISTS grape_config;
 CREATE USER IF NOT EXISTS 'grape_user'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
@@ -95,7 +172,12 @@ GRANT ALL PRIVILEGES ON grape_config.* TO 'grape_user'@'localhost';
 FLUSH PRIVILEGES;
 EOF
 
-echo -e "${GREEN}Database configured successfully${NC}"
+if [ $? -eq 0 ]; then
+  echo -e "${GREEN}Database configured successfully${NC}"
+else
+  echo -e "${RED}Failed to configure database${NC}"
+  exit 1
+fi
 
 echo ""
 echo -e "${YELLOW}Step 7/10: Installing application dependencies...${NC}"
