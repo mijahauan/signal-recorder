@@ -918,7 +918,7 @@ class GRAPERecorderManager:
             config: Configuration dictionary from TOML
         """
         self.config = config
-        self.receiver: Optional[RTPReceiver] = None
+        self.receivers: Dict[str, RTPReceiver] = {}  # addr -> receiver
         self.recorders: Dict[int, GRAPEChannelRecorder] = {}  # ssrc -> recorder
         self.running = False
     
@@ -928,51 +928,79 @@ class GRAPERecorderManager:
             logger.warning("GRAPE recorder manager already running")
             return
         
-        # Get multicast address from config
-        # For GRAPE, all channels share the same multicast group (239.251.200.0/24)
-        # We'll use the first channel's address or a default
-        multicast_addr = "239.251.200.1"  # Default, will be updated from actual streams
+        # Discover actual multicast addresses from radiod
+        logger.info("Discovering multicast addresses from radiod...")
+        try:
+            from .control_discovery import discover_channels_via_control
+            status_addr = self.config.get('ka9q', {}).get('status_address', '239.251.200.193')
+            discovered_channels = discover_channels_via_control(status_addr)
+            
+            # Group channels by multicast address
+            multicast_groups = {}
+            for ssrc, channel_info in discovered_channels.items():
+                addr = channel_info.address
+                if addr not in multicast_groups:
+                    multicast_groups[addr] = []
+                multicast_groups[addr].append((ssrc, channel_info))
+            
+            logger.info(f"Found {len(multicast_groups)} multicast groups: {list(multicast_groups.keys())}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to discover channels: {e}, using default multicast address")
+            multicast_groups = {"239.251.200.1:5004": []}
         
-        # Create RTP receiver
-        self.receiver = RTPReceiver(multicast_addr)
+        # Create RTP receivers for each multicast group
+        self.receivers = {}  # addr -> RTPReceiver
+        self.recorders = {}  # ssrc -> recorder
         
-        # Create recorders for each enabled GRAPE channel
-        output_dir = Path(self.config['recorder']['archive_dir'])
-        station_config = self.config['station']
-        
-        for channel_config in self.config['recorder']['channels']:
-            if not channel_config.get('enabled', True):
+        for addr, channels in multicast_groups.items():
+            if not channels:  # Skip empty groups
+                continue
+                
+            try:
+                host, port = addr.split(':')
+                port = int(port)
+            except ValueError:
+                logger.warning(f"Invalid address format: {addr}")
                 continue
             
-            if channel_config.get('processor') != 'grape':
-                continue
+            # Create RTP receiver for this multicast group
+            receiver = RTPReceiver(host, port)
+            self.receivers[addr] = receiver
             
-            ssrc = channel_config['ssrc']
-            freq_hz = channel_config['frequency_hz']
-            description = channel_config['description']
-            sample_rate = channel_config.get('sample_rate', 12000)
+            # Create recorders for GRAPE channels in this group
+            output_dir = Path(self.config['recorder']['archive_dir'])
+            station_config = self.config['station']
             
-            # Create recorder
-            recorder = GRAPEChannelRecorder(
-                ssrc=ssrc,
-                frequency_hz=freq_hz,
-                description=description,
-                output_dir=output_dir,
-                station_config=station_config,
-                sample_rate=sample_rate
-            )
+            for ssrc, channel_info in channels:
+                # Check if this SSRC is configured for GRAPE recording
+                channel_config = None
+                for ch in self.config['recorder']['channels']:
+                    if ch.get('ssrc') == ssrc and ch.get('processor') == 'grape' and ch.get('enabled', True):
+                        channel_config = ch
+                        break
+                
+                if channel_config:
+                    # Create recorder
+                    recorder = GRAPEChannelRecorder(
+                        ssrc=ssrc,
+                        frequency_hz=channel_info.frequency,
+                        description=channel_config['description'],
+                        output_dir=output_dir,
+                        station_config=station_config,
+                        sample_rate=channel_config.get('sample_rate', 12000)
+                    )
+                    
+                    # Register callback with receiver
+                    receiver.register_callback(ssrc, recorder.process_packet)
+                    self.recorders[ssrc] = recorder
+                    logger.info(f"Created GRAPE recorder for {channel_config['description']} on {addr}")
             
-            # Register callback with receiver
-            self.receiver.register_callback(ssrc, recorder.process_packet)
-            
-            self.recorders[ssrc] = recorder
-            logger.info(f"Created GRAPE recorder for {description}")
+            # Start receiver
+            receiver.start()
         
-        # Start receiver
-        self.receiver.start()
         self.running = True
-        
-        logger.info(f"Started GRAPE recorder manager with {len(self.recorders)} channels")
+        logger.info(f"Started GRAPE recorder manager with {len(self.recorders)} channels on {len(self.receivers)} multicast groups")
     
     def stop(self):
         """Stop all GRAPE recorders"""
@@ -981,10 +1009,13 @@ class GRAPERecorderManager:
         
         logger.info("Stopping GRAPE recorder manager")
         
-        # Stop receiver
-        if self.receiver:
-            self.receiver.stop()
+        # Stop all receivers
+        for addr, receiver in self.receivers.items():
+            logger.info(f"Stopping receiver for {addr}")
+            receiver.stop()
         
+        self.receivers.clear()
+        self.recorders.clear()
         self.running = False
         logger.info("GRAPE recorder manager stopped")
     
