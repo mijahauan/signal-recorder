@@ -826,12 +826,51 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
     console.log('Command used:', commandUsed);
 
     if (!stdout || stdout.trim() === '') {
+      console.log('CLI discovery failed, trying fallback from config file...');
+
+      // Fallback: Read channels from configuration file
+      try {
+        const fs = require('fs').promises;
+        const path = require('path');
+        const toml = require('toml');
+
+        const configPath = path.join(__dirname, '..', 'config', 'grape-S000171.toml');
+        const configContent = await fs.readFile(configPath, 'utf8');
+        const config = toml.parse(configContent);
+
+        if (config.recorder && config.recorder.channels) {
+          const channels = config.recorder.channels.map(channel => ({
+            ssrc: channel.ssrc.toString(),
+            frequency: `${(channel.frequency_hz / 1000000).toFixed(2)} MHz`,
+            rate: channel.sample_rate.toString(),
+            preset: channel.preset,
+            snr: 'N/A (config)',
+            address: config.ka9q?.status_address || '239.251.200.193'
+          }));
+
+          console.log('Using config fallback channels:', channels);
+
+          res.json({
+            channels,
+            timestamp: new Date().toISOString(),
+            total: channels.length,
+            rawOutput: 'Using configuration file fallback',
+            commandUsed: 'config-fallback',
+            note: 'CLI discovery failed, using configuration file'
+          });
+          return;
+        }
+      } catch (configError) {
+        console.error('Config fallback also failed:', configError);
+      }
+
       res.status(500).json({
         error: 'No channels discovered or command failed',
         commandUsed: commandUsed,
         stdout: stdout,
         stderr: stderr,
-        errorDetails: commandError ? commandError.message : 'Empty output'
+        errorDetails: commandError ? commandError.message : 'Empty output',
+        configFallbackError: 'Configuration file fallback also failed'
       });
       return;
     }

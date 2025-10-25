@@ -15,7 +15,8 @@
     "pnpm:dev": "pnpm run dev"
   },
   "dependencies": {
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "toml": "^3.0.0"
   },
   "devDependencies": {
     "prettier": "^3.6.2"
