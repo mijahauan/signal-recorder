@@ -938,7 +938,7 @@ class GRAPERecorderManager:
             # Group channels by multicast address
             multicast_groups = {}
             for ssrc, channel_info in discovered_channels.items():
-                addr = channel_info.address
+                addr = f"{channel_info.multicast_address}:{channel_info.port}"
                 if addr not in multicast_groups:
                     multicast_groups[addr] = []
                 multicast_groups[addr].append((ssrc, channel_info))
@@ -984,7 +984,7 @@ class GRAPERecorderManager:
                     # Create recorder
                     recorder = GRAPEChannelRecorder(
                         ssrc=ssrc,
-                        frequency_hz=channel_info.frequency,
+                        frequency_hz=channel_info.frequency,  # ChannelInfo uses 'frequency'
                         description=channel_config['description'],
                         output_dir=output_dir,
                         station_config=station_config,
