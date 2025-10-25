@@ -218,12 +218,20 @@
             updateDebugInfo(`API Request: ${endpoint}`);
 
             try {
-                const response = await fetch(`/api${endpoint}`, {
+                // Add cache-busting and prevent caching
+                const url = `/api${endpoint}`;
+                const cacheBustUrl = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
+
+                const response = await fetch(cacheBustUrl, {
                     headers: {
                         'Authorization': `Bearer ${token}`,
                         'Content-Type': 'application/json',
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0',
                         ...options.headers
                     },
+                    cache: 'no-store',
                     ...options
                 });
 
@@ -258,6 +266,7 @@
             updateDebugInfo('Checking daemon status...');
             try {
                 const data = await apiRequest('/monitoring/daemon-status');
+
                 const indicator = document.getElementById('daemon-indicator');
                 const statusText = document.getElementById('daemon-status-text');
                 const pidElement = document.getElementById('daemon-pid');
@@ -266,11 +275,11 @@
                 if (data.running) {
                     indicator.className = 'status-indicator running';
                     statusText.textContent = 'Running';
-                    updateDebugInfo(`Daemon is running (PID: ${data.pid})`);
+                    updateDebugInfo(`Daemon is running (PID: ${data.pid}) - Method: ${data.method || 'unknown'}`);
                 } else {
                     indicator.className = 'status-indicator stopped';
                     statusText.textContent = 'Stopped';
-                    updateDebugInfo('Daemon is not running');
+                    updateDebugInfo(`Daemon is not running - ${data.details || 'No details'}`);
                 }
 
                 pidElement.textContent = data.pid || '-';
@@ -278,7 +287,10 @@
 
                 // Update main status
                 document.getElementById('daemon-status').innerHTML =
-                    `Daemon is <strong>${data.running ? 'RUNNING' : 'STOPPED'}</strong>`;
+                    `Daemon is <strong>${data.running ? 'RUNNING' : 'STOPPED'}</strong>${data.pid ? ` (PID: ${data.pid})` : ''}`;
+
+                // Log detailed information for debugging
+                console.log('Daemon status response:', data);
 
             } catch (error) {
                 console.error('Failed to check daemon status:', error);
@@ -422,7 +434,11 @@
                 } else {
                     alert(`Daemon start: ${data.message || 'Command sent'}`);
                     updateDebugInfo(`Daemon start: ${data.message || 'Success'}`);
-                    setTimeout(checkDaemonStatus, 2000);
+                    // Force immediate refresh instead of waiting 2 seconds
+                    setTimeout(() => {
+                        checkDaemonStatus();
+                        updateDebugInfo('Forced daemon status refresh after start');
+                    }, 1000);
                 }
             } catch (error) {
                 alert('Failed to start daemon: ' + error.message);
@@ -444,7 +460,11 @@
                 } else {
                     alert(`Daemon stop: ${data.message || 'Command sent'}`);
                     updateDebugInfo(`Daemon stop: ${data.message || 'Success'}`);
-                    setTimeout(checkDaemonStatus, 2000);
+                    // Force immediate refresh instead of waiting 2 seconds
+                    setTimeout(() => {
+                        checkDaemonStatus();
+                        updateDebugInfo('Forced daemon status refresh after stop');
+                    }, 1000);
                 }
             } catch (error) {
                 alert('Failed to stop daemon: ' + error.message);

@@ -528,34 +528,59 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
 // Monitoring endpoints for signal-recorder daemon
 app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
   try {
-    // Check if daemon is running - more accurate approach
+    // Check if daemon is running - ultra-specific approach to avoid false positives
     const { exec } = await import('child_process');
 
     try {
-      // Try multiple methods to detect the daemon
+      // More specific detection patterns that avoid matching IDE processes
       const checkCommands = [
-        'pgrep -f "signal-recorder daemon"',
-        'ps aux | grep -i "[s]ignal-recorder daemon" | grep -v grep',
-        'pgrep -f "python.*signal-recorder.*daemon"',
-        'ps aux | grep -i "[p]ython.*signal-recorder.*daemon" | grep -v grep'
+        // Look for signal-recorder daemon process specifically
+        'pgrep -f "signal-recorder daemon" 2>/dev/null',
+        // Look for python processes running signal-recorder daemon
+        'pgrep -f "python.*signal-recorder.*daemon" 2>/dev/null',
+        // Check ps output with very specific patterns
+        'ps aux | grep -E "[s]ignal-recorder daemon|[p]ython.*[s]ignal-recorder.*daemon" | grep -v grep 2>/dev/null',
+        // Check if any process has signal-recorder daemon in command line
+        'ps -o pid,comm,args | grep -E "[s]ignal-recorder daemon|[p]ython.*[s]ignal-recorder.*daemon" | grep -v grep 2>/dev/null'
       ];
 
       for (const cmd of checkCommands) {
         const result = await new Promise((resolve) => {
           exec(cmd, (error, stdout, stderr) => {
             if (!error && stdout && stdout.trim()) {
-              const pids = stdout.trim().split('\n').filter(pid => pid.trim());
-              resolve({
-                running: true,
-                pid: pids[0],
-                pids: pids,
-                details: `Found via: ${cmd}`,
-                method: cmd
-              });
+              const lines = stdout.trim().split('\n');
+              const pids = [];
+
+              for (const line of lines) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length > 0) {
+                  const pid = parts[0];
+                  if (pid && /^\d+$/.test(pid)) {
+                    pids.push(pid);
+                  }
+                }
+              }
+
+              if (pids.length > 0) {
+                resolve({
+                  running: true,
+                  pid: pids[0],
+                  pids: pids,
+                  details: `Found via: ${cmd}`,
+                  method: cmd,
+                  stdout: stdout.trim()
+                });
+              } else {
+                resolve({
+                  running: false,
+                  details: `No valid PIDs found via: ${cmd}`,
+                  method: cmd
+                });
+              }
             } else {
               resolve({
                 running: false,
-                details: `Not found via: ${cmd}`,
+                details: `No matches via: ${cmd}`,
                 method: cmd
               });
             }
@@ -563,19 +588,22 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
         });
 
         if (result.running) {
+          console.log('Daemon detection found process:', result);
           res.json({
             running: true,
             timestamp: new Date().toISOString(),
             pid: result.pid,
             pids: result.pids,
             details: result.details,
-            method: result.method
+            method: result.method,
+            verification: result.stdout
           });
           return;
         }
       }
 
       // If no methods found the daemon
+      console.log('No daemon processes found via any detection method');
       res.json({
         running: false,
         timestamp: new Date().toISOString(),
@@ -656,27 +684,85 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       }
 
     } else if (action === 'stop') {
-      // Stop daemon using simple approach
+      // Stop daemon using multiple specific methods
       const { exec } = await import('child_process');
 
       try {
-        const stopResult = await new Promise((resolve) => {
-          exec('pkill -f "signal-recorder daemon"', (error, stdout, stderr) => {
-            resolve({
-              success: !error,
-              error: error,
-              stdout: stdout || '',
-              stderr: stderr || ''
-            });
+        // First verify there's actually a daemon running
+        const statusResult = await new Promise((resolve) => {
+          exec('pgrep -f "signal-recorder daemon" 2>/dev/null', (error, stdout, stderr) => {
+            resolve({ error, stdout: stdout ? stdout.trim() : '' });
           });
         });
 
-        res.json({
-          success: stopResult.success,
-          message: stopResult.success ? 'Daemon stop command sent' : 'Failed to stop daemon - may not be running',
-          stdout: stopResult.stdout,
-          stderr: stopResult.stderr
-        });
+        if (!statusResult.error && statusResult.stdout) {
+          const pids = statusResult.stdout.split('\n').filter(pid => pid.trim());
+
+          if (pids.length > 0) {
+            console.log(`Found daemon processes to stop: ${pids.join(', ')}`);
+
+            // Try specific stop methods
+            const stopMethods = [
+              `pkill -f "signal-recorder daemon" 2>/dev/null`,
+              `kill ${pids[0]} 2>/dev/null`,
+              `pkill -f "python.*signal-recorder.*daemon" 2>/dev/null`
+            ];
+
+            let stopped = false;
+            let methodUsed = '';
+
+            for (const cmd of stopMethods) {
+              try {
+                await new Promise((resolve) => {
+                  exec(cmd, (error, stdout, stderr) => {
+                    if (!error) {
+                      stopped = true;
+                      methodUsed = cmd;
+                      console.log(`Successfully stopped daemon via: ${cmd}`);
+                    }
+                    resolve();
+                  });
+                });
+
+                if (stopped) break;
+              } catch (e) {
+                // Continue to next method
+              }
+            }
+
+            // Wait a moment and verify it's actually stopped
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            const verifyResult = await new Promise((resolve) => {
+              exec('pgrep -f "signal-recorder daemon" 2>/dev/null', (error, stdout, stderr) => {
+                resolve({ error, stdout: stdout ? stdout.trim() : '' });
+              });
+            });
+
+            const actuallyStopped = !verifyResult.stdout || verifyResult.stdout.trim() === '';
+
+            res.json({
+              success: stopped,
+              message: actuallyStopped ? 'Daemon stopped successfully' : 'Stop command sent but daemon may still be running',
+              methodUsed: methodUsed || 'none',
+              pidsFound: pids,
+              verification: actuallyStopped ? 'confirmed stopped' : 'may still be running'
+            });
+          } else {
+            res.json({
+              success: true,
+              message: 'No daemon processes found to stop',
+              pidsFound: [],
+              verification: 'no processes running'
+            });
+          }
+        } else {
+          res.json({
+            success: true,
+            message: 'No daemon processes found to stop',
+            verification: 'already stopped'
+          });
+        }
 
       } catch (error) {
         console.error('Stop daemon failed:', error);
