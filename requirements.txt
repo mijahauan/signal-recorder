@@ -1,0 +1,21 @@
+# Signal Recorder - Core Dependencies
+# For GRAPE Digital RF recording from ka9q-radio RTP streams
+
+# Configuration parsing
+toml>=0.10.2
+
+# Numerical computing and array operations
+numpy>=1.24.0
+
+# Signal processing and resampling (12 kHz → 10 Hz)
+scipy>=1.10.0
+
+# Audio file I/O (for compatibility with existing code)
+soundfile>=0.12.0
+
+# Digital RF format I/O (HamSCI PSWS compatible)
+digital_rf>=2.6.0
+
+# mDNS/Avahi service discovery for ka9q-radio streams
+zeroconf>=0.132.0
+

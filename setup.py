@@ -17,7 +17,7 @@ setup(
     description="Automated recording and upload system for ka9q-radio streams",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/signal-recorder",
+    url="https://github.com/mijahauan/signal-recorder",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
     classifiers=[
@@ -34,6 +34,7 @@ setup(
     install_requires=[
         "toml>=0.10.2",
         "numpy>=1.24.0",
+        "scipy>=1.10.0",  # For signal processing and resampling
         "soundfile>=0.12.0",
         "digital_rf>=2.6.0",
         "zeroconf>=0.132.0",  # For mDNS discovery
