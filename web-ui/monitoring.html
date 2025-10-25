@@ -303,6 +303,7 @@
         }
 
         async function loadChannels() {
+            updateDebugInfo('Loading channels...');
             try {
                 const data = await apiRequest('/monitoring/channels');
                 const table = document.getElementById('channels-table');
@@ -321,6 +322,7 @@
                     // SNR styling
                     let snrClass = 'snr-poor';
                     if (channel.snr === '-inf') snrClass = 'snr-poor';
+                    else if (channel.snr.includes('N/A')) snrClass = 'snr-fair';
                     else if (parseFloat(channel.snr) > 10) snrClass = 'snr-good';
                     else if (parseFloat(channel.snr) > 0) snrClass = 'snr-fair';
 
@@ -343,6 +345,14 @@
                     indicator.className = 'status-indicator running';
                 } else {
                     indicator.className = 'status-indicator stopped';
+                }
+
+                // Show command used or fallback status
+                if (data.commandUsed) {
+                    updateDebugInfo(`Channels loaded via: ${data.commandUsed}`);
+                }
+                if (data.note) {
+                    updateDebugInfo(data.note);
                 }
 
             } catch (error) {
