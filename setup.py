@@ -18,8 +18,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/mijahauan/signal-recorder",
-    package_dir={"": "src"},
-    packages=find_packages(where="src"),
+    packages=find_packages(where="."),
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Science/Research",

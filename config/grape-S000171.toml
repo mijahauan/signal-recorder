@@ -10,12 +10,12 @@ instrument_id = "172"
 description = "beelink rx888 SAS"
 
 [ka9q]
-status_address = "239.251.200.193"
-auto_create_channels = true
+status_address = "127.0.0.1"
+auto_create_channels = false
 
 [recorder]
-data_dir = "/home/mjh/grape-data/raw"
-archive_dir = "/home/mjh/grape-data/archive"
+data_dir = "/Users/mjh/Sync/GitHub/signal-recorder/test-data/raw"
+archive_dir = "/Users/mjh/Sync/GitHub/signal-recorder/test-data/archive"
 recording_interval = 60
 continuous = true
 
