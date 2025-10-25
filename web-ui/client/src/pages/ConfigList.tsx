@@ -1,16 +1,12 @@
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
+import { APP_LOGO, APP_TITLE } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { Loader2, Plus, Settings, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function ConfigList() {
-  const { user, isAuthenticated, loading: authLoading } = useAuth();
-  const { data: configs, isLoading, refetch } = trpc.config.list.useQuery(undefined, {
-    enabled: isAuthenticated,
-  });
+  const { data: configs, isLoading, refetch } = trpc.config.list.useQuery();
   const deleteMutation = trpc.config.delete.useMutation({
     onSuccess: () => {
       toast.success("Configuration deleted");
@@ -21,18 +17,7 @@ export default function ConfigList() {
     },
   });
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
-      </div>
-    );
-  }
 
-  if (!isAuthenticated) {
-    window.location.href = getLoginUrl();
-    return null;
-  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -43,12 +28,9 @@ export default function ConfigList() {
             {APP_LOGO && <img src={APP_LOGO} alt="Logo" className="h-8 w-8" />}
             <h1 className="text-2xl font-bold text-gray-900">{APP_TITLE}</h1>
           </div>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-600">Welcome, {user?.name}</span>
-            <Button variant="outline" size="sm" onClick={() => window.location.href = "/"}>
-              Home
-            </Button>
-          </div>
+          <Button variant="outline" size="sm" onClick={() => window.location.href = "/"}>
+            Home
+          </Button>
         </div>
       </header>
 

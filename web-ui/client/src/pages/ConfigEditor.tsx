@@ -1,4 +1,4 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
+import { APP_LOGO, APP_TITLE } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { Download, HelpCircle, Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -18,7 +18,7 @@ export default function ConfigEditor() {
   const configId = params.id;
   const isNew = !configId;
 
-  const { isAuthenticated, loading: authLoading } = useAuth();
+
   const { data: configData, isLoading: loadingConfig } = trpc.config.get.useQuery(
     { id: configId! },
     { enabled: !isNew && !!configId }
@@ -122,17 +122,12 @@ export default function ConfigEditor() {
     applyPresetMutation.mutate({ configId, preset });
   };
 
-  if (authLoading || (loadingConfig && !isNew)) {
+  if (loadingConfig && !isNew) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
       </div>
     );
-  }
-
-  if (!isAuthenticated) {
-    window.location.href = getLoginUrl();
-    return null;
   }
 
   return (
