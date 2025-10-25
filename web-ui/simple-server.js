@@ -823,6 +823,7 @@ async function startServer() {
     console.log(`📊 Monitoring Dashboard available at http://localhost:${PORT}/monitoring`);
     console.log(`📁 Using JSON database in ./data/ directory`);
     console.log(`👤 Default login: admin / admin`);
+    console.log(`🔧 Enhanced monitoring with debugging and robust API handling`);
     console.log(`✅ JSON database implementation working!`);
   });
 }
