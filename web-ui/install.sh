@@ -30,16 +30,16 @@ if ! grep -q -E "Ubuntu|Debian" /etc/os-release; then
   exit 1
 fi
 
-echo -e "${YELLOW}Step 1/7: Updating system packages...${NC}"
+echo -e "${YELLOW}Step 1/8: Updating system packages...${NC}"
 sudo apt update
 sudo apt upgrade -y
 
 echo ""
-echo -e "${YELLOW}Step 2/7: Installing prerequisites...${NC}"
+echo -e "${YELLOW}Step 2/8: Installing prerequisites...${NC}"
 sudo apt install -y curl ca-certificates gnupg git build-essential python3
 
 echo ""
-echo -e "${YELLOW}Step 3/7: Installing Node.js 20.x...${NC}"
+echo -e "${YELLOW}Step 3/8: Installing Node.js 20.x...${NC}"
 if ! command -v node &> /dev/null; then
   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
   sudo apt install -y nodejs
@@ -55,7 +55,7 @@ else
 fi
 
 echo ""
-echo -e "${YELLOW}Step 4/7: Installing pnpm...${NC}"
+echo -e "${YELLOW}Step 4/8: Installing pnpm...${NC}"
 if ! command -v pnpm &> /dev/null; then
   sudo npm install -g pnpm
 else
@@ -63,17 +63,22 @@ else
 fi
 
 echo ""
-echo -e "${YELLOW}Step 5/7: Installing application dependencies...${NC}"
+echo -e "${YELLOW}Step 5/8: Installing application dependencies...${NC}"
 pnpm install
 
 echo ""
-echo -e "${YELLOW}Step 6/7: Creating configuration file...${NC}"
+echo -e "${YELLOW}Step 6/8: Rebuilding native modules (SQLite)...${NC}"
+pnpm rebuild better-sqlite3
+
+echo ""
+echo -e "${YELLOW}Step 7/8: Creating configuration file...${NC}"
 
 # Generate random JWT secret
 JWT_SECRET=$(openssl rand -base64 32)
 
-# Create .env file
-cat > .env <<EOF
+# Create .env file if it doesn't exist
+if [ ! -f .env ]; then
+  cat > .env <<EOF
 # Database Configuration (SQLite - no setup required!)
 DATABASE_URL=file:./data/grape-config.db
 
@@ -96,19 +101,30 @@ PORT=3000
 NODE_ENV=production
 EOF
 
-chmod 600 .env
-echo -e "${GREEN}Configuration file created${NC}"
+  chmod 600 .env
+  echo -e "${GREEN}Configuration file created${NC}"
+else
+  echo -e "${GREEN}Configuration file already exists, skipping${NC}"
+fi
 
 echo ""
-echo -e "${YELLOW}Step 7/7: Initializing database and building application...${NC}"
+echo -e "${YELLOW}Step 8/8: Initializing database and building application...${NC}"
 
 # Create data directory
 mkdir -p data
 
+# Clean old MySQL migration files if they exist
+if [ -d "drizzle/meta" ]; then
+  echo "Cleaning old migration files..."
+  rm -rf drizzle/0*.sql drizzle/meta/
+fi
+
 # Initialize database schema
+echo "Generating database schema..."
 pnpm db:push
 
 # Build application
+echo "Building application..."
 pnpm build
 
 echo ""
