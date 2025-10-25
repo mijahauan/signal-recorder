@@ -7,11 +7,13 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import ConfigList from "./pages/ConfigList";
 import ConfigEditor from "./pages/ConfigEditor";
+import Login from "./pages/Login";
 
 function Router() {
   return (
     <Switch>
       <Route path={"/"} component={Home} />
+      <Route path={"/login"} component={Login} />
       <Route path={"/configs"} component={ConfigList} />
       <Route path={"/config/new"} component={ConfigEditor} />
       <Route path={"/config/:id"} component={ConfigEditor} />
