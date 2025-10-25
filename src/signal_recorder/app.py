@@ -43,6 +43,14 @@ class SignalRecorderApp:
         # Keep legacy storage for backward compatibility (if needed)
         self.storage = StorageManager(config)
 
+        # Initialize uploader if configured
+        upload_config = config.get('uploader', {})
+        if upload_config.get('enabled', False) or upload_config.get('upload_enabled', False):
+            self.uploader = UploadManager(upload_config, self.storage)
+        else:
+            self.uploader = None
+            logger.info("Uploader disabled")
+
         # Setup signal handlers
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
