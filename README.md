@@ -75,11 +75,11 @@ npm start
 ```
 
 **Features:**
-- ✅ **Guided setup** with form validation
-- ✅ **Channel presets** for WWV/CHU frequencies
-- ✅ **Auto-generates** correct TOML format
-- ✅ **Real-time validation** prevents configuration errors
-- ✅ **Save to config directory** with one click
+- **Guided setup** with form validation
+- **Channel presets** for WWV/CHU frequencies
+- **Auto-generates** correct TOML format
+- **Real-time validation** prevents configuration errors
+- **Save to config directory** with one click
 
 **Access:** http://localhost:3000 (login: admin/admin)
 

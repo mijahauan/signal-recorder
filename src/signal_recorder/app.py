@@ -5,19 +5,9 @@ Orchestrates all modules and provides daemon interface.
 """
 
 import logging
-import signal
-import time
-from pathlib import Path
-from typing import Dict
-from datetime import datetime, timezone, timedelta
-
 from .channel_manager import ChannelManager
 from .control_discovery import discover_channels_via_control, ChannelInfo
-from .discovery import StreamMetadata, Encoding
-from .recorder import RecorderManager, get_band_name_from_frequency
-from .storage import StorageManager
-from .processor import get_processor
-from .uploader import UploadManager
+from .grape_recorder import GRAPERecorderManager
 
 logger = logging.getLogger(__name__)
 
@@ -38,20 +28,11 @@ class SignalRecorderApp:
         # Initialize modules
         logger.info("Initializing Signal Recorder application")
         
+        # Initialize GRAPE recorder manager for direct RTP recording
+        self.grape_recorder = GRAPERecorderManager(config)
+
+        # Keep legacy storage for backward compatibility (if needed)
         self.storage = StorageManager(config)
-        
-        # Initialize channel manager if auto-create is enabled
-        ka9q_config = config.get('ka9q', {})
-        self.status_address = ka9q_config.get('status_address')
-        self.auto_create_channels = ka9q_config.get('auto_create_channels', False)
-        
-        if self.auto_create_channels:
-            logger.info("Automatic channel creation enabled")
-            self.channel_manager = ChannelManager(self.status_address)
-        else:
-            self.channel_manager = None
-        
-        self.recorder_manager = RecorderManager(config)
         
         # Initialize uploader if configured
         upload_config = config.get('uploader', {})
@@ -71,93 +52,34 @@ class SignalRecorderApp:
         self.running = False
     
     def initialize_recorders(self):
-        """Create channels (if needed) and start recorders"""
-        logger.info("Initializing channels and recorders")
-        
-        # Get channel configurations
+        """Start GRAPE recorder (handles both channel creation and recording)"""
+        logger.info("Initializing GRAPE recorder")
+
+        # Check for required channels configuration
         channels_config = self.config.get('recorder', {}).get('channels', [])
-        
         if not channels_config:
             logger.error("No channels configured in [recorder.channels]")
             return False
-        
-        # Create channels if auto-create is enabled
-        if self.auto_create_channels and self.channel_manager:
-            logger.info(f"Creating {len(channels_config)} channels in radiod")
-            
-            # Convert to required format
-            required_channels = []
-            for ch in channels_config:
-                if not ch.get('enabled', True):
-                    continue
-                    
-                required_channels.append({
-                    'ssrc': ch.get('ssrc'),
-                    'frequency_hz': ch.get('frequency_hz'),
-                    'preset': ch.get('preset', 'iq'),
-                    'sample_rate': ch.get('sample_rate'),
-                    'description': ch.get('description', '')
-                })
-            
-            # Ensure channels exist
-            if not self.channel_manager.ensure_channels_exist(required_channels):
-                logger.error("Failed to create all required channels")
-                return False
-        
-        # Discover channels from radiod
-        logger.info(f"Discovering channels from {self.status_address}")
-        discovered_channels = discover_channels_via_control(self.status_address)
-        
-        if not discovered_channels:
-            logger.error("No channels discovered from radiod!")
+
+        logger.info(f"Found {len(channels_config)} channel configurations")
+
+        # Check if any channels are GRAPE-enabled
+        grape_channels = [ch for ch in channels_config if ch.get('processor') == 'grape' and ch.get('enabled', True)]
+        if not grape_channels:
+            logger.error("No GRAPE-enabled channels found. Set processor='grape' in channel configuration.")
             return False
-        
-        logger.info(f"Discovered {len(discovered_channels)} channels from radiod")
-        
-        # Start recorders for each configured channel
-        started_count = 0
-        for ch_config in channels_config:
-            if not ch_config.get('enabled', True):
-                logger.info(f"Skipping disabled channel {ch_config.get('ssrc')}")
-                continue
-            
-            ssrc = ch_config.get('ssrc')
-            
-            if ssrc not in discovered_channels:
-                logger.warning(f"Channel {ssrc} not found in radiod")
-                continue
-            
-            channel_info = discovered_channels[ssrc]
-            
-            # Determine band name
-            freq = ch_config.get('frequency_hz')
-            band_name = ch_config.get('description', f"{freq/1e6:.3f}_MHz")
-            
-            # Get processor type
-            processor_type = ch_config.get('processor', 'grape')
-            
-            try:
-                # Convert ChannelInfo to StreamMetadata expected by recorder
-                metadata = StreamMetadata(
-                    ssrc=channel_info.ssrc,
-                    frequency=channel_info.frequency,
-                    sample_rate=channel_info.sample_rate,
-                    channels=2,  # IQ is always 2 channels
-                    encoding=Encoding.F32LE,  # Assume float32 for IQ
-                    description=channel_info.preset,
-                    multicast_address=channel_info.multicast_address,
-                    port=channel_info.port
-                )
-                
-                self.recorder_manager.start_recorder(metadata, band_name)
-                started_count += 1
-                logger.info(f"Started recorder for {band_name}: {freq/1e6:.3f} MHz @ {channel_info.multicast_address}:{channel_info.port}")
-            except Exception as e:
-                logger.error(f"Failed to start recorder for {band_name}: {e}", exc_info=True)
-        
-        logger.info(f"Started {started_count}/{len(channels_config)} recorders")
-        
-        return started_count > 0
+
+        logger.info(f"Starting GRAPE recorder for {len(grape_channels)} channels")
+
+        try:
+            # Start GRAPE recorder (this handles channel creation and recording)
+            self.grape_recorder.start()
+            logger.info("GRAPE recorder started successfully")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to start GRAPE recorder: {e}", exc_info=True)
+            return False
     
     def run_daemon(self):
         """Run as background daemon"""
@@ -379,29 +301,26 @@ class SignalRecorderApp:
     def shutdown(self):
         """Shutdown application gracefully"""
         logger.info("Shutting down Signal Recorder")
-        
-        # Stop all recorders
-        self.recorder_manager.stop_all()
-        
+
+        # Stop GRAPE recorder
+        if hasattr(self, 'grape_recorder'):
+            self.grape_recorder.stop()
+
         # Save upload queue
         if self.uploader:
             self.uploader._save_queue()
-        
-        # Close channel manager
-        if self.channel_manager:
-            self.channel_manager.close()
-        
+
         logger.info("Shutdown complete")
     
     def get_status(self) -> Dict:
         """Get application status"""
         status = {
-            'recorders': self.recorder_manager.get_status(),
+            'recorders': self.grape_recorder.get_status() if hasattr(self, 'grape_recorder') else {},
         }
-        
+
         if self.uploader:
             status['uploads'] = self.uploader.get_status()
-        
+
         return status
 
 

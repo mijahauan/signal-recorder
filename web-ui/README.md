@@ -113,9 +113,26 @@ Configurations are stored as JSON with this structure:
 }
 ```
 
-## 🔄 **Updated TOML Format**
+## ✅ **Direct RTP + Scipy Implementation**
 
-The web-ui now generates TOML configurations that **exactly match** the signal-recorder application's requirements:
+The signal-recorder now uses **direct RTP reception with scipy-based resampling** instead of the external pcmrecord tool:
+
+**Previous (pcmrecord-based):**
+- External pcmrecord dependency
+- File-based processing pipeline
+- Multiple intermediate steps
+
+**Current (scipy-based):**
+- ✅ **Direct RTP packet reception** - No external tools
+- ✅ **Scipy resampling** - High-quality 12kHz → 10Hz decimation with anti-aliasing
+- ✅ **Real-time processing** - Immediate Digital RF output
+- ✅ **Integrated channel management** - Auto-creates radiod channels
+
+### **Technical Implementation:**
+- **RTP Reception**: Direct multicast socket with RTP header parsing
+- **Resampling**: scipy.signal with 8th-order Butterworth anti-aliasing filter
+- **Output**: Digital RF format with UTC-aligned timestamps
+- **Channel Management**: Automatic radiod channel creation via control utility
 
 ### **Generated TOML Structure**
 ```toml

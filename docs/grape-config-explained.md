@@ -497,7 +497,21 @@ alert_on_upload_failure = true
 
 ---
 
-## Quick Start Checklist
+## 🎯 **Current Implementation: Direct RTP + Scipy**
+
+The signal-recorder now uses **direct RTP reception with scipy-based resampling** instead of external tools:
+
+### **Recording Pipeline:**
+1. **Direct RTP Reception** - Receives IQ samples directly from ka9q-radio multicast
+2. **Scipy Resampling** - High-quality 12kHz → 10Hz decimation with anti-aliasing filter
+3. **Real-time Processing** - Immediate conversion to Digital RF format
+4. **Channel Management** - Automatic radiod channel creation
+
+### **Technical Details:**
+- **No pcmrecord dependency** - Direct socket-based RTP reception
+- **8th-order Butterworth filter** - Anti-aliasing before decimation
+- **UTC-aligned timestamps** - Precise RTP timestamp-based sample placement
+- **Digital RF output** - Compatible with HamSCI PSWS server requirements
 
 **Quick Start:**
 ```bash

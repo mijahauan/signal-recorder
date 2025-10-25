@@ -129,28 +129,23 @@ def cmd_status(args):
 def cmd_create_channels(args):
     """Create channels from configuration"""
     setup_logging(args.verbose)
-    
+
     config = load_config(args.config)
-    
-    # Get ka9q configuration
-    ka9q_config = config.get('ka9q', {})
-    status_address = ka9q_config.get('status_address')
-    
-    if not status_address:
-        print("Error: status_address not found in [ka9q] section", file=sys.stderr)
-        sys.exit(1)
-    
+
     # Get channel specifications from config
     recorder_config = config.get('recorder', {})
     channels_config = recorder_config.get('channels', [])
-    
+
     if not channels_config:
         print("No channels defined in [recorder.channels] section", file=sys.stderr)
         sys.exit(1)
-    
+
     # Convert to required format
     required_channels = []
     for ch in channels_config:
+        if not ch.get('enabled', True):
+            continue
+
         required_channels.append({
             'ssrc': ch.get('ssrc'),
             'frequency_hz': ch.get('frequency_hz'),
@@ -158,32 +153,46 @@ def cmd_create_channels(args):
             'sample_rate': ch.get('sample_rate'),
             'description': ch.get('description', '')
         })
-    
+
     print(f"Creating {len(required_channels)} channels...\n")
-    
+
+    # Get status address from config
+    ka9q_config = config.get('ka9q', {})
+    status_address = ka9q_config.get('status_address')
+
+    if not status_address:
+        print("Error: status_address not found in [ka9q] section", file=sys.stderr)
+        print("Add status_address to your [ka9q] configuration section", file=sys.stderr)
+        sys.exit(1)
+
     # Create channel manager
     manager = ChannelManager(status_address)
-    
+
     try:
         # Ensure all channels exist (and optionally update existing ones)
         update_existing = getattr(args, 'update', False)
         success = manager.ensure_channels_exist(required_channels, update_existing=update_existing)
-        
+
         print(f"\n=== Channel Creation Summary ===")
         print(f"Requested: {len(required_channels)} channels\n")
-        
+
         if success:
             print("✓ All channels successfully created/verified")
-            
+
             # Discover and show all channels
             all_channels = manager.discover_existing_channels()
             required_ssrcs = {ch['ssrc'] for ch in required_channels}
-            
-            print("\nChannels:")
+
+            print("\nCreated channels:")
             for ssrc in sorted(required_ssrcs):
                 if ssrc in all_channels:
                     info = all_channels[ssrc]
-                    print(f"  SSRC {ssrc:>10}: {info.frequency/1e6:>7.3f} MHz ({info.preset}) @ {info.multicast_address}")
+                    print(f"  SSRC 0x{ssrc:08x}: {info.frequency/1e6:>7.3f} MHz ({info.preset}) @ {info.multicast_address}")
+                else:
+                    print(f"  SSRC 0x{ssrc:08x}: FAILED TO CREATE")
+
+            print(f"\n🎯 Next step: Start recording with:")
+            print(f"   signal-recorder daemon --config {args.config}")
         else:
             print("✗ Some channels failed to create")
             sys.exit(1)
