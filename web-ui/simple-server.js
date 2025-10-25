@@ -530,6 +530,7 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
   try {
     // Check if daemon is running - ultra-specific approach to avoid false positives
     const { exec } = await import('child_process');
+    const venvPath = '/Users/mjh/Sync/GitHub/signal-recorder/venv/bin/signal-recorder';
 
     try {
       // Very specific detection patterns that ONLY match actual signal-recorder daemon processes
@@ -538,9 +539,11 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
         `pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`,
         // 2. Look for python processes running signal-recorder daemon (exclude our server)
         `pgrep -f "python.*signal-recorder.*daemon" 2>/dev/null | grep -v "^${process.pid}$"`,
-        // 3. Check ps output with very specific patterns (exclude node processes)
+        // 3. Check venv path specifically
+        `pgrep -f "${venvPath}.*daemon" 2>/dev/null | grep -v "^${process.pid}$"`,
+        // 4. Check ps output with very specific patterns (exclude node processes)
         'ps aux | grep -E "[s]ignal-recorder daemon|[p]ython.*[s]ignal-recorder.*daemon" | grep -v "node.*simple-server" | grep -v grep 2>/dev/null',
-        // 4. Check detailed process info (exclude our server PID)
+        // 5. Check detailed process info (exclude our server PID)
         'ps -o pid,comm,args | grep -E "[s]ignal-recorder daemon|[p]ython.*[s]ignal-recorder.*daemon" | grep -v "node.*simple-server" | grep -v grep 2>/dev/null'
       ];
 
@@ -664,12 +667,13 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
         // Continue with start attempt
       }
 
-      // Try to start daemon using basic command first
+      // Try to start daemon using full path to venv installation
+      const venvPath = '/Users/mjh/Sync/GitHub/signal-recorder/venv/bin/signal-recorder';
       const configPath = 'config/grape-S000171.toml';
 
       try {
         const startResult = await new Promise((resolve) => {
-          exec(`signal-recorder daemon --config ${configPath}`, { detached: true, timeout: 10000 }, (error, stdout, stderr) => {
+          exec(`${venvPath} daemon --config ${configPath}`, { detached: true, timeout: 10000 }, (error, stdout, stderr) => {
             resolve({
               success: !error,
               error: error,
@@ -684,13 +688,15 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             success: true,
             message: 'Daemon start command sent',
             stdout: startResult.stdout,
-            stderr: startResult.stderr
+            stderr: startResult.stderr,
+            commandUsed: `${venvPath} daemon --config ${configPath}`
           });
         } else {
           res.status(500).json({
             error: `Failed to start daemon: ${startResult.error ? startResult.error.message : 'Unknown error'}`,
             stdout: startResult.stdout,
-            stderr: startResult.stderr
+            stderr: startResult.stderr,
+            commandUsed: `${venvPath} daemon --config ${configPath}`
           });
         }
 
@@ -702,6 +708,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
     } else if (action === 'stop') {
       // Stop daemon using multiple specific methods
       const { exec } = await import('child_process');
+      const venvPath = '/Users/mjh/Sync/GitHub/signal-recorder/venv/bin/signal-recorder';
 
       try {
         // First verify there's actually a daemon running (excluding our server)
@@ -720,6 +727,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             // Try specific stop methods
             const stopMethods = [
               `pkill -f "signal-recorder daemon" 2>/dev/null`,
+              `pkill -f "${venvPath}.*daemon" 2>/dev/null`,
               `kill ${pids[0]} 2>/dev/null`,
               `pkill -f "python.*signal-recorder.*daemon" 2>/dev/null`
             ];
@@ -913,10 +921,11 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
 
     const { exec } = await import('child_process');
     const statusAddr = 'bee1-hf-status.local';
+    const venvPath = '/Users/mjh/Sync/GitHub/signal-recorder/venv/bin/signal-recorder';
 
     try {
       const result = await new Promise((resolve, reject) => {
-        exec(`signal-recorder discover --radiod ${statusAddr}`, { timeout: 10000 }, (error, stdout, stderr) => {
+        exec(`${venvPath} discover --radiod ${statusAddr}`, { timeout: 10000 }, (error, stdout, stderr) => {
           if (error) {
             reject(error);
           } else {
@@ -955,7 +964,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           timestamp: new Date().toISOString(),
           total: channels.length,
           rawOutput: result.stdout,
-          commandUsed: 'CLI discovery',
+          commandUsed: `${venvPath} discover --radiod ${statusAddr}`,
           note: 'Discovered via CLI command'
         });
         return;
