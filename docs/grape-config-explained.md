@@ -1,6 +1,34 @@
 # GRAPE Configuration File Explained
 
-This document provides a detailed explanation of the GRAPE configuration file (`grape-example.toml`), section by section.
+This document provides a detailed explanation of the GRAPE configuration file (`grape-production.toml`), section by section.
+
+## 💡 **Easier Alternative: Web-Based Configuration UI**
+
+**Recommended for most users:** Instead of manually editing this TOML file, consider using the **simplified web-based configuration interface**.
+
+**Quick Start:**
+```bash
+cd web-ui
+npm install
+npm start
+```
+
+**Access:** http://localhost:3000 (login: admin/admin)
+
+**Benefits:**
+- ✅ **Guided setup** with validation and helpful tooltips
+- ✅ **Channel presets** for WWV/CHU frequencies
+- ✅ **Auto-generates** correct TOML format
+- ✅ **Save directly** to signal-recorder config directory
+- ✅ **Real-time validation** prevents configuration errors
+
+**Workflow:**
+1. Enter your station details (callsign, grid square)
+2. Select channels to monitor (WWV/CHU presets available)
+3. Configure data directories and PSWS settings
+4. Click "Save to Config Directory" → Done!
+
+---
 
 ## Overview
 
@@ -8,6 +36,8 @@ The configuration file controls three main processes:
 1. **Recording** - Continuous capture of WWV/CHU signals from ka9q-radio
 2. **Processing** - Daily conversion to GRAPE format (10 Hz Digital RF)
 3. **Uploading** - Automated transfer to HamSCI PSWS server
+
+**For most users:** Use the web UI above instead of manual editing. Continue reading below only if you need to understand the configuration format or make advanced customizations.
 
 ---
 
@@ -469,18 +499,36 @@ alert_on_upload_failure = true
 
 ## Quick Start Checklist
 
+**Recommended approach:** Use the web-based configuration UI
+
+```bash
+# 1. Start the web UI
+cd web-ui
+npm install
+npm start
+
+# 2. Access http://localhost:3000 (admin/admin)
+# 3. Create station configuration through guided interface
+# 4. Add channels using presets or custom setup
+# 5. Configure PSWS settings if participating
+# 6. Click "Save to Config Directory"
+# 7. Configuration saved as config/grape-{station_id}.toml
+```
+
+**Manual editing approach** (for advanced users):
+
 Before running the recorder:
 
-- [ ] Update `[station]` with your callsign and grid square
-- [ ] Update `[ka9q]` status_address to match your radiod
-- [ ] Create data directory: `sudo mkdir -p /mnt/grape-data`
-- [ ] Set permissions: `sudo chown wsprdaemon:wsprdaemon /mnt/grape-data`
-- [ ] Verify disk space: `df -h /mnt/grape-data` (need 100+ GB)
-- [ ] Update `[uploader.rsync]` with PSWS credentials
-- [ ] Set up SSH key for PSWS server
-- [ ] Create log directory: `sudo mkdir -p /var/log/signal-recorder`
-- [ ] Set log permissions: `sudo chown wsprdaemon:wsprdaemon /var/log/signal-recorder`
-- [ ] Test configuration: `signal-recorder validate --config grape-example.toml`
+- [ ] **Use web UI** (recommended) or update `[station]` with your callsign and grid square
+- [ ] **Use web UI** (recommended) or update `[ka9q]` status_address to match your radiod
+- [ ] **Use web UI** (recommended) or create data directory: `sudo mkdir -p /mnt/grape-data`
+- [ ] **Use web UI** (recommended) or set permissions: `sudo chown wsprdaemon:wsprdaemon /mnt/grape-data`
+- [ ] **Use web UI** (recommended) or verify disk space: `df -h /mnt/grape-data` (need 100+ GB)
+- [ ] **Use web UI** (recommended) or update `[uploader.rsync]` with PSWS credentials
+- [ ] **Use web UI** (recommended) or set up SSH key for PSWS server
+- [ ] **Use web UI** (recommended) or create log directory: `sudo mkdir -p /var/log/signal-recorder`
+- [ ] **Use web UI** (recommended) or set log permissions: `sudo chown wsprdaemon:wsprdaemon /var/log/signal-recorder`
+- [ ] **Test configuration** (if manually edited): `python3.11 -c "import toml; toml.load('config/grape-your-config.toml')"`
 
 ---
 

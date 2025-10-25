@@ -43,7 +43,7 @@ def main():
     logger.info("=" * 70)
     
     # Load configuration
-    config_file = Path(__file__).parent / 'config' / 'grape-production.toml'
+    config_file = Path(__file__).parent / 'config' / 'grape-S000171.toml'
     
     if not config_file.exists():
         logger.error(f"Configuration file not found: {config_file}")

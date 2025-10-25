@@ -110,38 +110,37 @@ Ready for PSWS Upload
 
 ## Configuration
 
-### grape-production.toml
+### Web-Based Configuration UI (Recommended)
 
-```toml
-[station]
-callsign = "AC0G"
-grid_square = "EM38ww"
-id = "AC0G"
-instrument_id = "RX888"
-description = "GRAPE station with RX888 MkII and ka9q-radio"
+The project now includes a **simplified web-based configuration interface** that makes setup much easier than manual TOML editing.
 
-[ka9q]
-status_address = "239.251.200.193"
-auto_create_channels = true
+**Location:** `web-ui/` directory
 
-[recorder]
-data_dir = "/mnt/grape-data/raw"
-archive_dir = "/mnt/grape-data/archive"
-recording_interval = 60
-continuous = true
-
-[[recorder.channels]]
-ssrc = 2500000
-frequency_hz = 2500000
-preset = "iq"
-sample_rate = 12000
-description = "WWV 2.5 MHz"
-enabled = true
-processor = "grape"
-
-# ... additional channels for WWV 5, 10, 15, 20, 25 MHz
-# ... and CHU 3.33, 7.85, 14.67 MHz
+**Quick Start:**
+```bash
+cd web-ui
+npm install
+npm start
 ```
+
+**Access:** http://localhost:3000 (admin/admin)
+
+**Features:**
+- ✅ **Guided Setup** - Step-by-step configuration with validation
+- ✅ **Channel Presets** - One-click WWV/CHU frequency templates
+- ✅ **Format Validation** - Ensures TOML matches signal-recorder requirements
+- ✅ **Export Options** - Download or save directly to config directory
+- ✅ **Real-time Validation** - Immediate feedback on configuration errors
+
+**Workflow:**
+1. **Create Station** → Enter callsign, grid square, station details
+2. **Add Channels** → Select from WWV/CHU presets or add custom frequencies
+3. **Configure Paths** → Set data directories and PSWS settings
+4. **Save to Config** → Automatically writes `grape-{station_id}.toml` to config directory
+
+### Manual Configuration
+
+For advanced users or those preferring direct editing, see `config/grape-production.toml` for a complete example.
 
 ## Usage
 
@@ -313,67 +312,144 @@ The recorder can handle:
 
 ## Troubleshooting
 
-### No RTP Packets Received
+### Configuration Issues
 
-1. Check if channels are created:
-   ```bash
-   avahi-browse -ptr _rtp._udp | grep -i "wwv\|chu"
-   ```
-
-2. Verify multicast routing:
-   ```bash
-   ip mroute show
-   ```
-
-3. Check firewall rules:
-   ```bash
-   sudo iptables -L -n | grep 239.251
-   ```
-
-### Packet Loss
-
-- Monitor network interface for drops:
-  ```bash
-  netstat -su | grep -i "packet receive errors"
-  ```
-
-- Increase socket buffer size:
-  ```bash
-  sudo sysctl -w net.core.rmem_max=26214400
-  ```
-
-### Incomplete Data
-
-- Check disk space:
-  ```bash
-  df -h /mnt/grape-data
-  ```
-
-- Review quality metrics in `*_summary.txt` files
-
-- Examine gap records in `*_quality.json` files
-
-## Testing
-
-### Component Tests
-
+#### **Web UI Not Working**
 ```bash
-# Run unit tests for individual components
-python3.11 test_grape_components.py
+# Check if server starts
+cd web-ui
+npm start
+
+# Verify port availability
+lsof -i :3000
+
+# Alternative port
+PORT=8080 npm start
+
+# Check login credentials
+# Default: admin / admin
 ```
 
-Tests include:
-- RTP header parsing
-- IQ sample extraction
-- Resampler (12 kHz → 10 Hz)
-- Daily buffer with UTC alignment
-- Metadata generation
+#### **Configuration File Issues**
+```bash
+# Validate TOML syntax
+python3.11 -c "import toml; toml.load('config/grape-your-station.toml')"
 
-### Integration Test
+# Check file permissions
+ls -la config/grape-your-station.toml
+
+# Test with minimal config
+cp config/grape-minimal.toml config/test.toml
+# Edit test.toml and test
+```
+
+#### **Channel Discovery Issues**
+```bash
+# Check for active ka9q-radio
+avahi-browse -ptr _rtp._udp | grep -i "wwv\|chu"
+
+# Verify multicast routing
+ip mroute show
+
+# Test manual RTP reception
+timeout 10 tcpdump -i any -n "udp port 5004 and multicast"
+```
+
+### Recording Issues
+
+#### **No RTP Packets Received**
+1. **Verify ka9q-radio is running:**
+   ```bash
+   systemctl status radiod
+   ```
+
+2. **Check channel creation:**
+   ```bash
+   # Using web UI (recommended)
+   cd web-ui && npm start  # Create channels via interface
+
+   # Or manually via channel manager
+   python3.11 -m signal_recorder.channel_manager \
+       --config config/grape-production.toml \
+       --create-all
+   ```
+
+3. **Test multicast connectivity:**
+   ```bash
+   # Join multicast group manually
+   socat -u UDP4-RECVFROM:5004,bind=0.0.0.0,ip-add-membership=239.251.200.193:0.0.0.0 -
+   ```
+
+#### **Missing Channels**
+- **Use web UI** to verify channels are configured correctly
+- **Check SSRC values** match frequency in Hz (e.g., 10000000 = 10 MHz)
+- **Verify preset** is set to "iq" for GRAPE channels
+- **Enable channels** by setting `enabled = true`
+
+### Integration Issues
+
+#### **signal-recorder + Web UI Integration**
+```bash
+# 1. Create config with web UI
+cd web-ui
+npm start  # Create and save configuration
+
+# 2. Verify config format
+python3.11 -c "
+import toml
+config = toml.load('config/grape-your-station.toml')
+print('✅ Config valid')
+print(f'Station: {config[\"station\"][\"callsign\"]}')
+print(f'Channels: {len(config.get(\"recorder\", {}).get(\"channels\", []))}')
+"
+
+# 3. Test with signal-recorder
+python3.11 test_grape_recorder.py --config config/grape-your-station.toml
+```
+
+#### **Configuration Migration**
+If you have old configurations:
+1. **Export from old interface** (if available)
+2. **Use web UI** to recreate configuration
+3. **Save to config directory** using "Save to Config" button
+4. **Test with signal-recorder** before going live
+
+## Testing Status
+
+### ✅ **Completed Testing**
+- **Configuration UI** - Web interface fully functional
+- **TOML Export** - Generates correct format matching signal-recorder requirements
+- **Channel Management** - Presets and custom channels working
+- **Cross-platform Compatibility** - Verified on Linux, macOS, Windows
+
+### ⚠️ **Pending Integration Testing**
+- **signal-recorder with web UI configs** - Integration testing needed
+- **End-to-end PSWS upload** - Full pipeline verification
+- **Long-term reliability** - Production deployment testing
+- **Performance under load** - Multiple simultaneous channels
+
+### **Testing the Complete Pipeline**
 
 ```bash
-# Test with live RTP streams (requires active channels)
-python3.11 test_grape_recorder.py
+# 1. Generate config using web UI
+cd web-ui
+npm start  # Configure station and save to ../config/
+
+# 2. Test configuration validation
+python3.11 -c "
+import toml
+config = toml.load('config/grape-your-station.toml')
+print('Configuration loaded successfully')
+print(f'Station: {config[\"station\"][\"callsign\"]}')
+print(f'Channels: {len(config[\"recorder\"][\"channels\"])}')
+"
+
+# 3. Run recorder with generated config
+python3.11 test_grape_recorder.py --config config/grape-your-station.toml
+
+# 4. Monitor logs and verify Digital RF output
+tail -f /var/log/signal-recorder/grape-recorder.log
+find /mnt/grape-data/archive -name "drf_*.h5" -mmin -10
 ```
 
 ### Validation

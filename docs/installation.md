@@ -2,6 +2,29 @@
 
 This guide provides instructions for installing Signal Recorder and its dependencies.
 
+## 📋 **Quick Start (Recommended)**
+
+For most users, the **web-based configuration UI** is the easiest way to get started:
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/yourusername/signal-recorder.git
+cd signal-recorder
+
+# 2. Start the configuration UI
+cd web-ui
+npm install
+npm start
+
+# 3. Access http://localhost:3000 (admin/admin)
+# 4. Create your configuration through the guided interface
+# 5. Save directly to the config/ directory
+```
+
+**The web UI will generate the correct configuration file automatically!**
+
+---
+
 ## 1. Prerequisites
 
 ### 1.1 ka9q-radio
@@ -10,17 +33,23 @@ Signal Recorder requires a running instance of [ka9q-radio](https://github.com/k
 
 ### 1.2 System Dependencies
 
+#### **For Signal Recorder:**
 - **Python**: 3.10 or higher
 - **Avahi**: For mDNS service discovery
-- **pcmrecord**: From ka9q-radio (must be in system PATH)
-- **sox**: For audio processing (concatenation and resampling)
-- **wavpack**: For compressing and decompressing recordings
 
-#### Installation on Debian/Ubuntu:
+#### **For Configuration UI:**
+- **Node.js**: 18 or higher
+- **npm**: For package management
 
+#### **Installation on Debian/Ubuntu:**
 ```bash
+# For signal-recorder
 sudo apt-get update
-sudo apt-get install -y python3-pip python3-venv sox wavpack avahi-daemon avahi-utils
+sudo apt-get install -y python3-pip python3-venv avahi-daemon avahi-utils
+
+# For web UI (optional, but recommended)
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs npm
 ```
 
 ## 2. Installation
@@ -52,71 +81,122 @@ pip install signal-recorder
 
 ## 3. Configuration
 
-### 3.1 Initialize Configuration
+### 3.1 Web-Based Configuration UI (Recommended)
 
-Run the `init` command to create an example configuration file:
-
-```bash
-signal-recorder init --config /etc/signal-recorder/config.toml
-```
-
-This will create `/etc/signal-recorder/config.toml` with default settings.
-
-### 3.2 Edit Configuration
-
-Open the configuration file and edit it to match your setup:
+The project includes a **simplified web-based configuration interface** that eliminates the need for manual TOML editing.
 
 ```bash
-sudo nano /etc/signal-recorder/config.toml
+# Start the configuration UI
+cd web-ui
+npm install
+npm start
+
+# Access the interface
+# URL: http://localhost:3000
+# Login: admin / admin
+
+# Create configuration through guided interface
+# Save directly to config/ directory
 ```
 
-**Key sections to edit:**
+**Features:**
+- ✅ **Guided setup** with form validation
+- ✅ **Channel presets** for WWV/CHU frequencies
+- ✅ **Auto-generates** correct TOML format
+- ✅ **Real-time validation** prevents configuration errors
+- ✅ **Save to config directory** with one click
 
-- **`[station]`**: Set your station ID, callsign, grid square, and coordinates.
-- **`[recorder.streams]`**: 
-  - Set `stream_name` to match the mDNS service name from your radiod configuration (e.g., `WWV-IQ`).
-  - Update `frequencies` to the list of frequencies you want to record.
-  - Update `band_mapping` to match your desired directory structure.
-- **`[upload]`**: 
-  - Set `host`, `user`, and `base_path` for your upload server.
-  - Set `key_file` to the path of your SSH private key for passwordless login.
+### 3.2 Manual Configuration (Advanced Users)
+
+For advanced users or those preferring direct editing:
+
+1. **Copy example configuration:**
+   ```bash
+   cp config/grape-production.toml config/grape-your-station.toml
+   ```
+
+2. **Edit configuration:**
+   ```bash
+   nano config/grape-your-station.toml
+   ```
+
+3. **Key sections to update:**
+   - **`[station]`**: Your callsign, grid square, station ID
+   - **`[ka9q]`**: ka9q-radio status address
+   - **`[[recorder.channels]]`**: Channels to record (SSRC = frequency in Hz)
+   - **`[uploader]`**: PSWS server settings (if participating)
+
+4. **Validate configuration:**
+   ```bash
+   python3 -c "import toml; toml.load('config/grape-your-station.toml')"
+   ```
 
 ### 3.3 Create Directories
 
 Create the archive directory specified in the configuration:
 
 ```bash
+# Create data directory
+sudo mkdir -p /var/lib/signal-recorder/data
+
+# Create archive directory
 sudo mkdir -p /var/lib/signal-recorder/archive
-sudo chown -R youruser:yourgroup /var/lib/signal-recorder
+
+# Set appropriate permissions
+sudo chown -R $USER:$USER /var/lib/signal-recorder
 ```
 
 ## 4. Testing
 
-### 4.1 Discover Streams
+### 4.1 Verify Configuration
 
-Test if Signal Recorder can discover streams from your running radiod instance:
-
-```bash
-signal-recorder discover --radiod wwv-iq.local
-```
-
-This should list all available streams and their parameters.
-
-### 4.2 Run in Foreground
-
-Run the daemon in the foreground to test recording:
+Test if your configuration is valid:
 
 ```bash
-signal-recorder daemon --config /etc/signal-recorder/config.toml --verbose
+# Validate TOML syntax and format
+python3 -c "
+import toml
+config = toml.load('config/grape-your-station.toml')
+print('✅ Configuration valid')
+print(f'Station: {config[\"station\"][\"callsign\"]}')
+print(f'Channels: {len(config.get(\"recorder\", {}).get(\"channels\", []))}')
+"
 ```
 
-Check the output for any errors. You should see recorders being started and files being created in your archive directory.
+### 4.2 Discover RTP Streams
+
+Test if Signal Recorder can discover streams from your ka9q-radio:
+
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Discover available streams
+python3 -c "
+from signal_recorder.discovery import discover_streams
+streams = discover_streams('your-radiod-hostname.local')
+for stream in streams:
+    print(f'Stream: {stream.name}, Channels: {len(stream.channels)}')
+"
+```
+
+### 4.3 Run Test Recording
+
+Run a short test to verify everything works:
+
+```bash
+# Test with your configuration
+python3 test_grape_recorder.py --config config/grape-your-station.toml
+
+# Monitor the logs
+tail -f /tmp/grape_recorder_test.log
+```
 
 ## 5. Running as a Service
 
 ### 5.1 Create systemd Service File
 
-Create a systemd service file `/etc/systemd/system/signal-recorder.service`:
+Create `/etc/systemd/system/signal-recorder.service`:
 
 ```ini
 [Unit]
@@ -124,19 +204,16 @@ Description=Signal Recorder Daemon
 After=network-online.target
 
 [Service]
-User=youruser
-Group=yourgroup
-ExecStart=/path/to/your/venv/bin/signal-recorder daemon --config /etc/signal-recorder/config.toml
+User=$USER
+Group=$USER
+WorkingDirectory=/home/$USER/signal-recorder
+ExecStart=/home/$USER/signal-recorder/venv/bin/python3 test_grape_recorder.py --config config/grape-your-station.toml
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
-
-**Important:**
-- Replace `youruser` and `yourgroup` with the user you want to run the service as.
-- Replace `/path/to/your/venv/bin/` with the correct path to your virtual environment.
 
 ### 5.2 Enable and Start Service
 
@@ -152,11 +229,138 @@ sudo systemctl start signal-recorder.service
 
 # Check status
 sudo systemctl status signal-recorder.service
+
+# View logs
+sudo journalctl -u signal-recorder -f
 ```
 
-You can view logs using `journalctl`:
+## 6. Configuration UI Setup (Optional)
+
+The web UI can also be run as a service:
 
 ```bash
-journalctl -u signal-recorder -f
+# Create service file for web UI
+sudo tee /etc/systemd/system/grape-config-ui.service > /dev/null <<EOF
+[Unit]
+Description=GRAPE Configuration UI
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=/home/$USER/signal-recorder/web-ui
+Environment="NODE_ENV=production"
+ExecStart=/usr/bin/node simple-server.js
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable and start
+sudo systemctl daemon-reload
+sudo systemctl enable grape-config-ui
+sudo systemctl start grape-config-ui
 ```
+
+**Access:** http://your-server:3000 (admin/admin)
+
+## 7. Monitoring
+
+### 7.1 Log Files
+
+- **Signal Recorder logs:** `/tmp/grape_recorder_test.log`
+- **System logs:** `sudo journalctl -u signal-recorder -f`
+- **Web UI logs:** Check systemd journal or console output
+
+### 7.2 Status Monitoring
+
+```bash
+# Check service status
+sudo systemctl status signal-recorder
+
+# Check web UI status
+sudo systemctl status grape-config-ui
+
+# Monitor recording activity
+find /var/lib/signal-recorder/archive -name "drf_*.h5" -mmin -10
+```
+
+### 7.3 Quality Metrics
+
+After 24 hours of recording, check quality metrics:
+
+```bash
+# Find recent quality reports
+find /var/lib/signal-recorder/archive -name "*_summary.txt" -mtime -1
+
+# Check data completeness
+grep "Completeness:" /var/lib/signal-recorder/archive/*/*/*_summary.txt
+```
+
+## 8. Troubleshooting
+
+### Configuration Issues
+- **Use web UI** for guided configuration (recommended)
+- **Validate TOML** syntax before running recorder
+- **Check permissions** on config and data directories
+
+### Network Issues
+- **Verify ka9q-radio** is running and discoverable
+- **Check multicast** routing and firewall rules
+- **Test connectivity** using the discovery tools
+
+### Recording Issues
+- **Monitor logs** for error messages
+- **Check disk space** in data directories
+- **Verify channel** configuration matches ka9q-radio output
+
+### Web UI Issues
+```bash
+# Check if server starts
+cd web-ui
+npm start
+
+# Alternative port
+PORT=8080 npm start
+
+# Check login (admin/admin)
+# Verify config directory permissions
+```
+
+## 9. Updates
+
+### Update Signal Recorder
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Pull latest changes
+git pull
+
+# Reinstall package
+pip install -e .
+```
+
+### Update Web UI
+```bash
+# Pull latest changes
+git pull
+
+# Update dependencies
+cd web-ui
+npm install
+```
+
+## 10. Support
+
+For issues or questions:
+
+1. **Check logs** in `/tmp/grape_recorder_test.log` or systemd journal
+2. **Use web UI** for configuration (eliminates most setup issues)
+3. **Validate configuration** using the Python validation script
+4. **Test with minimal config** before full deployment
+
+**The web-based configuration UI eliminates most common setup issues by providing guided configuration with validation!**
 
