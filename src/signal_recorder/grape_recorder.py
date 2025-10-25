@@ -299,17 +299,39 @@ class DailyBuffer:
         # Calculate buffer index from timestamp
         seconds_since_midnight = (timestamp - self.current_date).total_seconds()
         start_index = int(seconds_since_midnight * self.output_rate)
-        
+
+        # Bounds checking to prevent overflow
+        if start_index < 0:
+            logger.warning(f"Negative start_index: {start_index}, timestamp issue")
+            return None, None
+
+        if start_index >= self.samples_per_day:
+            logger.warning(f"Start_index {start_index} exceeds buffer size {self.samples_per_day}")
+            return None, None
+
         # Add samples to buffer
         end_index = start_index + len(samples)
         if end_index <= self.samples_per_day:
-            self.buffer[start_index:end_index] = samples
-            self.sample_count += len(samples)
+            # Ensure samples are compatible with buffer dtype
+            try:
+                safe_samples = samples.astype(np.complex64, copy=False)
+                self.buffer[start_index:end_index] = safe_samples
+                self.sample_count += len(samples)
+            except (ValueError, OverflowError) as e:
+                logger.error(f"Error casting samples to complex64: {e}")
+                return None, None
         else:
             # Samples span midnight - split them
             samples_today = self.samples_per_day - start_index
-            self.buffer[start_index:] = samples[:samples_today]
-            self.sample_count += samples_today
+            if samples_today > 0:
+                try:
+                    safe_samples = samples[:samples_today].astype(np.complex64, copy=False)
+                    self.buffer[start_index:] = safe_samples
+                    self.sample_count += samples_today
+                except (ValueError, OverflowError) as e:
+                    logger.error(f"Error in midnight split: {e}")
+                    return None, None
+
             logger.warning(f"Samples span midnight: {len(samples)} samples, "
                          f"wrote {samples_today} to current day")
         
@@ -553,7 +575,13 @@ class GRAPEChannelRecorder:
             self.unix_time_base = packet.arrival_time
             logger.info(f"SSRC 0x{self.ssrc:08x}: RTP timestamp base = {self.rtp_timestamp_base}, "
                        f"Unix time base = {self.unix_time_base}")
+            return  # Don't process first packet to avoid timestamp issues
         
+        # Check if RTP timestamp base is initialized
+        if self.rtp_timestamp_base is None:
+            logger.warning(f"SSRC 0x{self.ssrc:08x}: RTP timestamp base not initialized, skipping packet")
+            return
+
         # Extract IQ samples
         try:
             iq_samples = packet.get_iq_samples()
@@ -566,17 +594,55 @@ class GRAPEChannelRecorder:
             if len(self.input_accumulator) >= self.min_input_samples:
                 # Resample to 10 Hz
                 resampled = self.resampler.resample(self.input_accumulator)
+
+                # Validate resampled data
+                if len(resampled) == 0:
+                    logger.warning("Empty resampled data, skipping")
+                    return
+
+                # Check for invalid values (NaN, inf)
+                if np.any(~np.isfinite(resampled)):
+                    logger.warning(f"Non-finite values in resampled data: {np.sum(~np.isfinite(resampled))} values")
+                    # Replace invalid values with zeros
+                    resampled = np.nan_to_num(resampled, nan=0.0, posinf=0.0, neginf=0.0)
                 
                 # Calculate timestamp for resampled data
                 # RTP timestamp is in units of input sample rate
                 rtp_elapsed = (packet.header.timestamp - self.rtp_timestamp_base) / self.input_sample_rate
                 unix_timestamp = self.unix_time_base + rtp_elapsed
-                sample_timestamp = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
-                
-                # Add to daily buffer
-                completed_buffer, completed_date = self.daily_buffer.add_samples(
-                    resampled, sample_timestamp
-                )
+
+                # Debug logging for first few packets
+                if self.stats.packets_received < 10:
+                    logger.info(f"SSRC 0x{self.ssrc:08x}: "
+                              f"timestamp_calc: packet_ts={packet.header.timestamp}, "
+                              f"rtp_base={self.rtp_timestamp_base}, "
+                              f"elapsed={rtp_elapsed:.6f}s, "
+                              f"unix_time={unix_timestamp}")
+
+                # Validate timestamp is reasonable (prevent overflow)
+                if unix_timestamp < 0 or unix_timestamp > time.time() + 3600:  # Allow 1 hour in future
+                    logger.warning(f"Invalid timestamp calculated: {unix_timestamp}, "
+                                 f"packet_timestamp={packet.header.timestamp}, "
+                                 f"rtp_base={self.rtp_timestamp_base}")
+                    return  # Skip this packet
+
+                try:
+                    sample_timestamp = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+
+                    # Validate timestamp is within reasonable bounds
+                    now = datetime.now(timezone.utc)
+                    if abs((sample_timestamp - now).total_seconds()) > 86400:  # 24 hours
+                        logger.warning(f"Timestamp too far from current time: {sample_timestamp}")
+                        return  # Skip this packet
+
+                    # Add to daily buffer
+                    completed_buffer, completed_date = self.daily_buffer.add_samples(
+                        resampled, sample_timestamp
+                    )
+
+                except (ValueError, OSError) as e:
+                    logger.error(f"Error creating timestamp: {e}")
+                    return  # Skip this packet
                 
                 # Write completed day to Digital RF
                 if completed_buffer is not None:
