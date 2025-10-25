@@ -146,6 +146,7 @@
         <button class="btn" onclick="startDaemon()">▶️ Start Daemon</button>
         <button class="btn stop" onclick="stopDaemon()">⏹️ Stop Daemon</button>
         <p id="daemon-status">Checking daemon status...</p>
+        <div id="debug-info" style="font-size: 12px; color: #666; margin-top: 10px;"></div>
     </div>
 
     <div class="status-grid">
@@ -223,14 +224,22 @@
             });
 
             if (response.status === 401) {
-                window.location.href = '/login.html';
+                // Redirect to main login page on authentication failure
+                window.location.href = '/';
                 return;
             }
 
             return response.json();
         }
 
+        function updateDebugInfo(message) {
+            const debugDiv = document.getElementById('debug-info');
+            const timestamp = new Date().toLocaleTimeString();
+            debugDiv.innerHTML = `<small>[${timestamp}] ${message}</small>`;
+        }
+
         async function checkDaemonStatus() {
+            updateDebugInfo('Checking daemon status...');
             try {
                 const data = await apiRequest('/monitoring/daemon-status');
                 const indicator = document.getElementById('daemon-indicator');
@@ -241,9 +250,11 @@
                 if (data.running) {
                     indicator.className = 'status-indicator running';
                     statusText.textContent = 'Running';
+                    updateDebugInfo(`Daemon is running (PID: ${data.pid})`);
                 } else {
                     indicator.className = 'status-indicator stopped';
                     statusText.textContent = 'Stopped';
+                    updateDebugInfo('Daemon is not running');
                 }
 
                 pidElement.textContent = data.pid || '-';
@@ -255,6 +266,7 @@
 
             } catch (error) {
                 console.error('Failed to check daemon status:', error);
+                updateDebugInfo(`Error checking daemon: ${error.message}`);
                 document.getElementById('daemon-status').innerHTML =
                     '<span style="color: red;">Error checking daemon status</span>';
             }
@@ -404,13 +416,21 @@
 
         // Initial load
         document.addEventListener('DOMContentLoaded', function() {
-            // Check authentication
+            console.log('Monitoring page loaded, checking authentication...');
+            // Check authentication - use same system as main UI
             const token = localStorage.getItem('authToken');
+            console.log('Auth token:', token ? 'present' : 'missing');
+            updateDebugInfo(`Auth token: ${token ? 'present' : 'missing'}`);
             if (!token) {
-                window.location.href = '/login.html';
+                // Redirect to main login page instead of non-existent login.html
+                console.log('No auth token, redirecting to main page');
+                updateDebugInfo('No auth token, redirecting to main page');
+                window.location.href = '/';
                 return;
             }
 
+            console.log('Starting monitoring refresh...');
+            updateDebugInfo('Starting monitoring refresh...');
             refreshAll();
         });
     </script>

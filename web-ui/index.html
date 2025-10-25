@@ -381,6 +381,8 @@
 
                 if (data.success) {
                     token = data.token;
+                    // Save token to localStorage for other pages
+                    localStorage.setItem('authToken', token);
                     document.getElementById('login-screen').classList.add('hidden');
                     document.getElementById('dashboard').classList.remove('hidden');
                     loadConfigurations();
@@ -396,6 +398,7 @@
 
         function logout() {
             token = null;
+            localStorage.removeItem('authToken');
             document.getElementById('dashboard').classList.add('hidden');
             document.getElementById('login-screen').classList.remove('hidden');
         }
