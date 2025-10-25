@@ -739,10 +739,11 @@ app.get('/api/monitoring/data-status', requireAuth, async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: 'Failed to get data status' });
     }
+  }
+});
 
 app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
   try {
-    // First try configuration file fallback since CLI might not be available
     console.log('Attempting channel discovery via configuration file...');
 
     try {
@@ -854,8 +855,6 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
 
 app.get('/api/monitoring/logs', requireAuth, async (req, res) => {
   try {
-    // Get recent log entries from multiple possible locations
-    const { exec } = await import('child_process');
 
     // Try multiple log locations and search patterns
     const logCommands = [
