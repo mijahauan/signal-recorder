@@ -314,9 +314,6 @@ Examples:
 """
     )
     
-    parser.add_argument('-v', '--verbose', action='store_true',
-                       help='Enable verbose logging')
-    
     subparsers = parser.add_subparsers(dest='command', help='Command to execute')
     
     # Discover command
@@ -330,6 +327,8 @@ Examples:
                                 help='Explicit status port (default: use resolved port or 5006)')
     discover_parser.add_argument('--timeout', type=float, default=5.0,
                                 help='Discovery timeout in seconds (default: 5.0)')
+    discover_parser.add_argument('-v', '--verbose', action='store_true',
+                                help='Enable verbose logging')
     discover_parser.set_defaults(func=cmd_discover)
     
     # Create channels command
@@ -339,6 +338,8 @@ Examples:
                               help='Configuration file path')
     create_parser.add_argument('--update', action='store_true',
                               help='Update existing channels if parameters differ')
+    create_parser.add_argument('-v', '--verbose', action='store_true',
+                              help='Enable verbose logging')
     create_parser.set_defaults(func=cmd_create_channels)
     
     # Init command
@@ -348,6 +349,8 @@ Examples:
                             help='Configuration file path')
     init_parser.add_argument('--force', action='store_true',
                             help='Overwrite existing configuration')
+    init_parser.add_argument('-v', '--verbose', action='store_true',
+                            help='Enable verbose logging')
     init_parser.set_defaults(func=cmd_init)
     
     # Daemon command
@@ -355,6 +358,8 @@ Examples:
                                          help='Run as background daemon')
     daemon_parser.add_argument('--config', required=True,
                               help='Configuration file path')
+    daemon_parser.add_argument('-v', '--verbose', action='store_true',
+                              help='Enable verbose logging')
     daemon_parser.set_defaults(func=cmd_daemon)
     
     # Process command
@@ -364,6 +369,8 @@ Examples:
                                help='Date to process (YYYYMMDD)')
     process_parser.add_argument('--config', required=True,
                                help='Configuration file path')
+    process_parser.add_argument('-v', '--verbose', action='store_true',
+                               help='Enable verbose logging')
     process_parser.set_defaults(func=cmd_process)
     
     # Status command
@@ -371,6 +378,8 @@ Examples:
                                          help='Show status')
     status_parser.add_argument('--config', required=True,
                               help='Configuration file path')
+    status_parser.add_argument('-v', '--verbose', action='store_true',
+                              help='Enable verbose logging')
     status_parser.set_defaults(func=cmd_status)
     
     # Parse arguments

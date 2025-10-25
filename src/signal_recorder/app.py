@@ -14,32 +14,33 @@ from datetime import datetime, timezone, timedelta
 from .channel_manager import ChannelManager
 from .control_discovery import discover_channels_via_control, ChannelInfo
 from .grape_recorder import GRAPERecorderManager
+from .processor import get_processor
 
 logger = logging.getLogger(__name__)
 
 
 class SignalRecorderApp:
     """Main application controller"""
-    
+
     def __init__(self, config: Dict):
         """
         Initialize application
-        
+
         Args:
             config: Configuration dictionary
         """
         self.config = config
         self.running = False
-        
+
         # Initialize modules
         logger.info("Initializing Signal Recorder application")
-        
+
         # Initialize GRAPE recorder manager for direct RTP recording
         self.grape_recorder = GRAPERecorderManager(config)
 
         # Keep legacy storage for backward compatibility (if needed)
         self.storage = StorageManager(config)
-        
+
         # Initialize uploader if configured
         upload_config = config.get('uploader', {})
         if upload_config.get('enabled', False) or upload_config.get('upload_enabled', False):
@@ -47,45 +48,10 @@ class SignalRecorderApp:
         else:
             self.uploader = None
             logger.info("Uploader disabled")
-        
+
         # Setup signal handlers
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
-    
-    def _signal_handler(self, signum, frame):
-        """Handle shutdown signals"""
-        logger.info(f"Received signal {signum}, shutting down")
-        self.running = False
-    
-    def initialize_recorders(self):
-        """Start GRAPE recorder (handles both channel creation and recording)"""
-        logger.info("Initializing GRAPE recorder")
-
-        # Check for required channels configuration
-        channels_config = self.config.get('recorder', {}).get('channels', [])
-        if not channels_config:
-            logger.error("No channels configured in [recorder.channels]")
-            return False
-
-        logger.info(f"Found {len(channels_config)} channel configurations")
-
-        # Check if any channels are GRAPE-enabled
-        grape_channels = [ch for ch in channels_config if ch.get('processor') == 'grape' and ch.get('enabled', True)]
-        if not grape_channels:
-            logger.error("No GRAPE-enabled channels found. Set processor='grape' in channel configuration.")
-            return False
-
-        logger.info(f"Starting GRAPE recorder for {len(grape_channels)} channels")
-
-        try:
-            # Start GRAPE recorder (this handles channel creation and recording)
-            self.grape_recorder.start()
-            logger.info("GRAPE recorder started successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to start GRAPE recorder: {e}", exc_info=True)
-            return False
     
     def run_daemon(self):
         """Run as background daemon"""
