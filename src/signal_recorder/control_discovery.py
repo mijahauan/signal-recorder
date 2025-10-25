@@ -26,7 +26,7 @@ class ChannelInfo:
     port: int
 
 
-def discover_channels_via_control(status_address: str, timeout: float = 5.0) -> Dict[int, ChannelInfo]:
+def discover_channels_via_control(status_address: str, timeout: float = 30.0) -> Dict[int, ChannelInfo]:
     """
     Discover channels using the 'control' utility
     
