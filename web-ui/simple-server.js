@@ -532,11 +532,14 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
     const { exec } = await import('child_process');
     exec('pgrep -f "signal-recorder daemon"', (error, stdout, stderr) => {
       const isRunning = !error && stdout.trim();
+      const pids = stdout.trim().split('\n').filter(pid => pid.trim());
 
       res.json({
         running: !!isRunning,
         timestamp: new Date().toISOString(),
-        pid: isRunning ? stdout.trim().split('\n')[0] : null
+        pid: pids.length > 0 ? pids[0] : null,
+        pids: pids,
+        error: error ? error.message : null
       });
     });
   } catch (error) {
@@ -550,23 +553,58 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
     const { action } = req.body; // 'start' or 'stop'
 
     if (action === 'start') {
-      // Start daemon in background
+      // Check if already running first
       const { exec } = await import('child_process');
-      exec('signal-recorder daemon --config config/grape-S000171.toml', { detached: true }, (error, stdout, stderr) => {
-        if (error) {
-          res.status(500).json({ error: `Failed to start daemon: ${error.message}` });
-        } else {
-          res.json({ success: true, message: 'Daemon started successfully' });
+      exec('pgrep -f "signal-recorder daemon"', (error, stdout, stderr) => {
+        if (!error && stdout.trim()) {
+          res.status(400).json({ error: 'Daemon is already running' });
+          return;
         }
+
+        // Start daemon in background using the correct config path
+        exec('signal-recorder daemon --config config/grape-S000171.toml', { detached: true }, (error, stdout, stderr) => {
+          if (error) {
+            console.error('Failed to start daemon:', error);
+            res.status(500).json({
+              error: `Failed to start daemon: ${error.message}`,
+              stdout: stdout,
+              stderr: stderr
+            });
+          } else {
+            res.json({
+              success: true,
+              message: 'Daemon start command sent',
+              stdout: stdout,
+              stderr: stderr
+            });
+          }
+        });
       });
     } else if (action === 'stop') {
-      // Stop daemon
+      // Stop daemon using multiple methods
       const { exec } = await import('child_process');
+      let stopped = false;
+
+      // Method 1: pkill by process name
       exec('pkill -f "signal-recorder daemon"', (error, stdout, stderr) => {
-        if (error) {
-          res.status(500).json({ error: `Failed to stop daemon: ${error.message}` });
-        } else {
-          res.json({ success: true, message: 'Daemon stopped successfully' });
+        if (!error) {
+          stopped = true;
+        }
+
+        // Method 2: Also try killing by port if first method didn't work
+        if (!stopped) {
+          exec('pkill -f "python.*signal-recorder.*daemon"', (error2, stdout2, stderr2) => {
+            if (!res.headersSent) {
+              res.json({
+                success: !error2,
+                message: error2 ? 'Failed to stop daemon' : 'Daemon stop command sent',
+                method: error2 ? 'python process' : 'signal-recorder daemon',
+                error: error2 ? error2.message : null
+              });
+            }
+          });
+        } else if (!res.headersSent) {
+          res.json({ success: true, message: 'Daemon stop command sent' });
         }
       });
     } else {
@@ -582,31 +620,46 @@ app.get('/api/monitoring/data-status', requireAuth, async (req, res) => {
   try {
     // Check data directory for recent files
     const { exec } = await import('child_process');
-    exec('find /home/mjh/grape-data -type f -newermt "1 hour ago" 2>/dev/null | wc -l', (error, stdout, stderr) => {
-      const recentFiles = parseInt(stdout.trim()) || 0;
+    const dataDir = '/home/mjh/grape-data';
 
-      // Check total data size
-      exec('du -sh /home/mjh/grape-data 2>/dev/null | cut -f1', (error2, stdout2, stderr2) => {
-        const totalSize = stdout2 ? stdout2.trim() : '0';
+    // Check if directory exists
+    exec(`ls -la ${dataDir} 2>/dev/null || echo "Directory does not exist"`, (error, stdout, stderr) => {
+      const dirExists = !error && !stdout.includes('Directory does not exist');
 
-        // Get channel status from daemon if possible
-        let channelStatus = {};
-        try {
-          // This would require the daemon to expose a status API
-          // For now, we'll show basic file system stats
-          channelStatus = {
-            note: 'Channel status requires daemon status API integration'
-          };
-        } catch (e) {
-          channelStatus = { error: 'Unable to get channel status' };
-        }
-
+      if (!dirExists) {
         res.json({
-          recentFiles,
-          totalSize,
-          dataDir: '/home/mjh/grape-data',
+          recentFiles: 0,
+          totalSize: '0',
+          dataDir: dataDir,
+          directoryExists: false,
           timestamp: new Date().toISOString(),
-          channels: channelStatus
+          error: 'Data directory does not exist'
+        });
+        return;
+      }
+
+      // Get recent files (last hour)
+      exec(`find ${dataDir} -type f -newermt "1 hour ago" 2>/dev/null | wc -l`, (error2, stdout2, stderr2) => {
+        const recentFiles = parseInt(stdout2.trim()) || 0;
+
+        // Check total data size
+        exec(`du -sh ${dataDir} 2>/dev/null | cut -f1 || echo "0"`, (error3, stdout3, stderr3) => {
+          const totalSize = stdout3 ? stdout3.trim() : '0';
+
+          // Get file counts by type
+          exec(`find ${dataDir} -name "*.drf" -o -name "*.h5" -o -name "*.log" 2>/dev/null | wc -l || echo "0"`, (error4, stdout4, stderr4) => {
+            const dataFiles = parseInt(stdout4.trim()) || 0;
+
+            res.json({
+              recentFiles,
+              totalSize,
+              dataFiles,
+              dataDir: dataDir,
+              directoryExists: true,
+              timestamp: new Date().toISOString(),
+              lastError: error2 ? error2.message : null
+            });
+          });
         });
       });
     });
@@ -620,9 +673,20 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
   try {
     // Discover current channel status from radiod
     const { exec } = await import('child_process');
-    exec('signal-recorder discover --radiod bee1-hf-status.local 2>/dev/null', (error, stdout, stderr) => {
+    // Use the correct status address from the configuration
+    const statusAddr = 'bee1-hf-status.local'; // From user's working CLI command
+    exec(`signal-recorder discover --radiod ${statusAddr}`, (error, stdout, stderr) => {
+      console.log('Channel discovery stdout:', stdout);
+      console.log('Channel discovery stderr:', stderr);
+      console.log('Channel discovery error:', error);
+
       if (error) {
-        res.status(500).json({ error: `Discovery failed: ${error.message}` });
+        console.error('Discovery command failed:', error);
+        res.status(500).json({
+          error: `Discovery failed: ${error.message}`,
+          stdout: stdout,
+          stderr: stderr
+        });
         return;
       }
 
@@ -648,34 +712,74 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
         }
       }
 
+      console.log('Parsed channels:', channels);
+
       res.json({
         channels,
         timestamp: new Date().toISOString(),
-        total: channels.length
+        total: channels.length,
+        rawOutput: stdout
       });
     });
   } catch (error) {
     console.error('Failed to get channel status:', error);
-    res.status(500).json({ error: 'Failed to get channel status' });
+    res.status(500).json({ error: 'Failed to get channel status', details: error.message });
   }
 });
 
 app.get('/api/monitoring/logs', requireAuth, async (req, res) => {
   try {
-    // Get recent log entries (last 50 lines)
+    // Get recent log entries from multiple possible locations
     const { exec } = await import('child_process');
-    exec('tail -50 /var/log/syslog | grep -i "signal.recorder\\|grape" || echo "No recent logs found"', (error, stdout, stderr) => {
-      const logs = stdout.trim().split('\n').filter(line => line.trim());
 
-      res.json({
-        logs,
-        timestamp: new Date().toISOString(),
-        count: logs.length
+    // Try multiple log locations and search patterns
+    const logCommands = [
+      'tail -50 /var/log/syslog | grep -i "signal\\|grape\\|recorder" 2>/dev/null || echo "No logs in syslog"',
+      'tail -50 ~/.cache/signal-recorder.log 2>/dev/null || echo "No cache logs"',
+      'journalctl -n 50 --no-pager -u signal-recorder 2>/dev/null || echo "No systemd logs"',
+      'tail -50 /tmp/signal-recorder*.log 2>/dev/null || echo "No temp logs"'
+    ];
+
+    let allLogs = [];
+
+    // Try each log source
+    for (const cmd of logCommands) {
+      exec(cmd, (error, stdout, stderr) => {
+        const logs = stdout.trim().split('\n').filter(line => line.trim() && !line.includes('No logs') && !line.includes('No cache') && !line.includes('No systemd') && !line.includes('No temp'));
+        allLogs = allLogs.concat(logs);
+
+        // If we have some logs or this is the last command, respond
+        if (allLogs.length > 0 || cmd === logCommands[logCommands.length - 1]) {
+          // Remove duplicates and limit to 50 most recent
+          const uniqueLogs = [...new Set(allLogs)].slice(-50);
+
+          res.json({
+            logs: uniqueLogs,
+            timestamp: new Date().toISOString(),
+            count: uniqueLogs.length,
+            sources: logCommands.length
+          });
+        }
       });
-    });
+
+      // Break after first successful attempt to avoid multiple responses
+      if (allLogs.length > 0) break;
+    }
+
+    // Fallback response if no logs found after timeout
+    setTimeout(() => {
+      if (!res.headersSent) {
+        res.json({
+          logs: ['No recent logs found in any location'],
+          timestamp: new Date().toISOString(),
+          count: 0
+        });
+      }
+    }, 2000);
+
   } catch (error) {
     console.error('Failed to get logs:', error);
-    res.status(500).json({ error: 'Failed to get logs' });
+    res.status(500).json({ error: 'Failed to get logs', details: error.message });
   }
 });
 

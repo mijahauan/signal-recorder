@@ -165,9 +165,10 @@
                 <span id="data-indicator" class="status-indicator stopped"></span>
                 Data Storage
             </h3>
+            <p><strong>Directory:</strong> <span id="data-dir-exists">Checking...</span></p>
             <p><strong>Recent Files:</strong> <span id="recent-files">0</span></p>
+            <p><strong>Data Files:</strong> <span id="data-files">0</span></p>
             <p><strong>Total Size:</strong> <span id="total-size">0</span></p>
-            <p><strong>Directory:</strong> <code>/home/mjh/grape-data</code></p>
         </div>
 
         <div class="status-card">
@@ -214,6 +215,7 @@
 
         async function apiRequest(endpoint, options = {}) {
             const token = localStorage.getItem('authToken');
+            updateDebugInfo(`API Request: ${endpoint}`);
             const response = await fetch(`/api${endpoint}`, {
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -229,7 +231,9 @@
                 return;
             }
 
-            return response.json();
+            const data = await response.json();
+            console.log(`API Response ${endpoint}:`, data);
+            return data;
         }
 
         function updateDebugInfo(message) {
@@ -277,16 +281,24 @@
                 const data = await apiRequest('/monitoring/data-status');
                 document.getElementById('recent-files').textContent = data.recentFiles;
                 document.getElementById('total-size').textContent = data.totalSize;
+                document.getElementById('data-files').textContent = data.dataFiles || 0;
+                document.getElementById('data-dir-exists').textContent = data.directoryExists ? '✅ Exists' : '❌ Missing';
 
                 const indicator = document.getElementById('data-indicator');
-                if (data.recentFiles > 0) {
+                if (data.directoryExists && data.recentFiles > 0) {
                     indicator.className = 'status-indicator running';
-                } else {
+                } else if (data.directoryExists) {
                     indicator.className = 'status-indicator warning';
+                } else {
+                    indicator.className = 'status-indicator stopped';
                 }
+
+                // Update debug info
+                updateDebugInfo(`Data: ${data.dataFiles} files, ${data.totalSize} total`);
 
             } catch (error) {
                 console.error('Failed to check data status:', error);
+                updateDebugInfo(`Data status error: ${error.message}`);
             }
         }
 
@@ -336,7 +348,8 @@
             } catch (error) {
                 console.error('Failed to load channels:', error);
                 document.getElementById('channels-loading').innerHTML =
-                    '<span style="color: red;">Error loading channels</span>';
+                    `<span style="color: red;">Error loading channels: ${error.message}</span>`;
+                updateDebugInfo(`Channel API Error: ${error.message}`);
             }
         }
 
@@ -368,33 +381,40 @@
             } catch (error) {
                 console.error('Failed to load logs:', error);
                 document.getElementById('logs-loading').innerHTML =
-                    '<span style="color: red;">Error loading logs</span>';
+                    `<span style="color: red;">Error loading logs: ${error.message}</span>`;
+                updateDebugInfo(`Logs API Error: ${error.message}`);
             }
         }
 
         async function startDaemon() {
+            updateDebugInfo('Starting daemon...');
             try {
-                await apiRequest('/monitoring/daemon-control', {
+                const data = await apiRequest('/monitoring/daemon-control', {
                     method: 'POST',
                     body: JSON.stringify({ action: 'start' })
                 });
-                alert('Daemon start command sent');
+                alert(`Daemon start: ${data.message || 'Command sent'}`);
+                updateDebugInfo(`Daemon start: ${data.message || 'Success'}`);
                 setTimeout(checkDaemonStatus, 2000);
             } catch (error) {
                 alert('Failed to start daemon: ' + error.message);
+                updateDebugInfo(`Daemon start failed: ${error.message}`);
             }
         }
 
         async function stopDaemon() {
+            updateDebugInfo('Stopping daemon...');
             try {
-                await apiRequest('/monitoring/daemon-control', {
+                const data = await apiRequest('/monitoring/daemon-control', {
                     method: 'POST',
                     body: JSON.stringify({ action: 'stop' })
                 });
-                alert('Daemon stop command sent');
+                alert(`Daemon stop: ${data.message || 'Command sent'}`);
+                updateDebugInfo(`Daemon stop: ${data.message || 'Success'}`);
                 setTimeout(checkDaemonStatus, 2000);
             } catch (error) {
                 alert('Failed to stop daemon: ' + error.message);
+                updateDebugInfo(`Daemon stop failed: ${error.message}`);
             }
         }
 
