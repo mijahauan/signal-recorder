@@ -1,6 +1,8 @@
-# Ignore all files in data directory (SQLite database)
-*
+# Ignore database files
+*.db
+*.sqlite
+*.sqlite3
 
-# But keep this .gitignore file
-!.gitignore
+# But allow JSON files (our database)
+*.json
 

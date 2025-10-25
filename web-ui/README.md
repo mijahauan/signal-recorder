@@ -1,191 +1,151 @@
 # GRAPE Configuration UI
 
-Web-based configuration interface for the GRAPE signal recorder.
+**Lightweight JSON-based configuration interface for the GRAPE signal recorder.**
 
-## Features
+## ✨ Features
 
-- **User-friendly forms** - Configure your GRAPE station without editing TOML files
-- **Real-time validation** - Ensures grid squares, PSWS IDs, and other fields are correct
-- **Channel presets** - One-click setup for WWV and CHU frequencies
-- **TOML export** - Generate configuration files compatible with signal-recorder
-- **Multi-configuration support** - Manage multiple station configurations
-- **PSWS integration** - Configure HamSCI PSWS upload settings
+- **No Database Required** - Uses simple JSON files for storage
+- **Zero Configuration** - Works out of the box with default admin/admin login
+- **TOML Export** - Generate configuration files compatible with signal-recorder
+- **Channel Presets** - One-click setup for WWV and CHU frequencies
+- **Simple Installation** - Single command to start
 
-## Quick Start
-
-### Prerequisites
-
-- Ubuntu 20.04+ or Debian 11+
-- 2 GB free disk space
-- Internet connection (for installation only)
+## 🚀 Quick Start
 
 ### Installation
 
-**Option 1: Automated Installation (Recommended)**
+1. **Install Node.js 18+** (if not already installed):
+   ```bash
+   # On Ubuntu/Debian
+   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+   sudo apt install -y nodejs
 
-```bash
-cd web-ui
-bash install.sh
-```
+   # On macOS with Homebrew
+   brew install node@20
 
-Follow the prompts to set up the database and configure the application.
+   # On Windows
+   # Download from https://nodejs.org/
+   ```
 
-**Option 2: Manual Installation**
+2. **Clone and start**:
+   ```bash
+   cd web-ui
+   npm install
+   npm start
+   ```
 
-See [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md) for detailed step-by-step instructions.
+3. **Access the interface**:
+   - Open http://localhost:3000
+   - Login with: `admin` / `admin`
 
-### Starting the Application
+## 🔧 Usage
 
-```bash
-# Development mode
-pnpm dev
+1. **Login** with default credentials (admin/admin)
+2. **Create Configuration** - Fill in station details
+3. **Add Channels** - Use presets or add custom frequencies
+4. **Export TOML** - Download configuration file
+5. **Copy to signal-recorder** config directory
 
-# Production mode
-pnpm build
-pnpm start
-```
-
-Access the web interface at: `http://localhost:3000`
-
-### Running as a Service
-
-To configure auto-start on boot:
-
-```bash
-sudo bash setup-service.sh
-```
-
-## Documentation
-
-- **[INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)** - Complete installation instructions for beginners
-- **[DEPENDENCIES.md](DEPENDENCIES.md)** - Full list of system and application dependencies
-
-## Usage
-
-1. **Create a configuration**
-   - Click "New Configuration"
-   - Fill in station details (callsign, grid square, PSWS credentials)
-   - Save the configuration
-
-2. **Add channels**
-   - Use preset buttons to add WWV or CHU channels
-   - Or manually add custom channels
-
-3. **Export TOML**
-   - Click "Export TOML" to download configuration file
-   - Copy to signal-recorder config directory
-   - Use with: `python -m signal_recorder.recorder --config your-config.toml`
-
-## Architecture
-
-- **Frontend**: React 19 + TypeScript + Tailwind CSS
-- **Backend**: Express + tRPC (type-safe API)
-- **Database**: MySQL 8.0
-- **Build Tool**: Vite
-
-## Configuration
-
-Environment variables are stored in `.env` file:
-
-```env
-DATABASE_URL=mysql://user:password@localhost:3306/grape_config
-JWT_SECRET=your-random-secret
-VITE_APP_TITLE=GRAPE Configuration UI
-```
-
-See `.env.example` for all available options.
-
-## Accessing from Other Computers
-
-### Local Network
-
-Find your server's IP address:
-```bash
-hostname -I
-```
-
-Access from another computer: `http://192.168.1.100:3000`
-
-### Remote Access (SSH Tunnel)
-
-```bash
-ssh -L 3000:localhost:3000 user@server-ip
-```
-
-Then access: `http://localhost:3000`
-
-## Troubleshooting
-
-### Cannot connect to database
-
-```bash
-# Check MySQL is running
-sudo systemctl status mysql
-
-# Test database connection
-mysql -u grape_user -p grape_config
-```
-
-### Port 3000 already in use
-
-```bash
-# Find what's using the port
-sudo lsof -i :3000
-
-# Change port in .env
-PORT=8080
-```
-
-### Permission denied
-
-```bash
-# Fix file ownership
-sudo chown -R $USER:$USER ~/signal-recorder/web-ui
-```
-
-See [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md) for more troubleshooting tips.
-
-## Development
-
-### Project Structure
+## 🗂️ Project Structure
 
 ```
 web-ui/
-├── client/              # React frontend
-│   ├── src/
-│   │   ├── pages/      # Page components
-│   │   ├── components/ # Reusable UI components
-│   │   └── lib/        # tRPC client
-├── server/              # Express backend
-│   ├── routers/        # tRPC routers
-│   ├── db.ts           # Database queries
-│   └── _core/          # Framework code
-├── drizzle/            # Database schema
-├── shared/             # Shared types
-└── docs/               # Documentation
+├── index.html          # Main web interface
+├── simple-server.js    # Express server with JSON API
+├── data/              # JSON database files (created automatically)
+│   ├── users.json
+│   ├── configurations.json
+│   └── channels.json
+└── package.json
+```
+
+## 🔒 Security
+
+- **Default Credentials**: admin/admin (change in production)
+- **Local Access**: Designed for local network use
+- **No External Dependencies**: All data stored locally
+
+## 🛠️ Development
+
+### Available Commands
+
+```bash
+npm start    # Start the server
+npm run dev  # Same as start (development mode)
+npm run format # Format code with Prettier
 ```
 
 ### Adding Features
 
-1. Update database schema in `drizzle/schema.ts`
-2. Run `pnpm db:push` to apply changes
-3. Add database queries in `server/db.ts`
-4. Create tRPC procedures in `server/routers/`
-5. Build UI in `client/src/pages/`
-6. Use `trpc.*.useQuery/useMutation` hooks
+The server provides a REST API:
 
-## License
+- `GET /api/configurations` - List all configurations
+- `POST /api/configurations` - Create new configuration
+- `GET /api/configurations/:id/export` - Export TOML file
+- `GET /api/presets/wwv` - WWV frequency presets
+- `GET /api/presets/chu` - CHU frequency presets
+
+## 📊 Database Schema
+
+Configurations are stored as JSON with this structure:
+
+```json
+{
+  "id": "unique-id",
+  "name": "My Station",
+  "callsign": "W1AW",
+  "gridSquare": "EM10",
+  "stationId": "station_001",
+  "instrumentId": "instrument_001",
+  "description": "Primary monitoring station",
+  "dataDir": "/data/grape",
+  "archiveDir": "/archive/grape",
+  "pswsEnabled": "yes",
+  "pswsServer": "pswsnetwork.eng.ua.edu",
+  "createdAt": "2025-01-20T10:30:00.000Z",
+  "updatedAt": "2025-01-20T10:30:00.000Z"
+}
+```
+
+## 🚨 Troubleshooting
+
+### Server Won't Start
+```bash
+# Check if port 3000 is available
+lsof -i :3000
+
+# Or use a different port
+PORT=8080 npm start
+```
+
+### Cannot Login
+- Username: `admin`
+- Password: `admin`
+- Check browser console for errors
+
+### Data Not Saving
+- Ensure write permissions in the web-ui directory
+- Check server logs for errors
+
+## 🔄 Migration from Complex Version
+
+If you have the old version with MySQL/SQLite:
+
+1. Export your configurations as TOML files
+2. Delete the old installation
+3. Use this simplified version
+4. Import TOML files if needed (or recreate configurations)
+
+## 📝 License
 
 Same as parent project (signal-recorder)
 
-## Support
+## 🆘 Support
 
 - **Issues**: https://github.com/mijahauan/signal-recorder/issues
 - **Documentation**: See parent repository README
 
-## Related Projects
+---
 
-- **signal-recorder** - Python-based GRAPE signal recorder (parent project)
-- **ka9q-radio** - Software-defined radio receiver
-- **wsprdaemon** - WSPR daemon with GRAPE support
+**This simplified version prioritizes ease of use and reliability over complex features.**
 
