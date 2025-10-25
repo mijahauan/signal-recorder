@@ -216,24 +216,36 @@
         async function apiRequest(endpoint, options = {}) {
             const token = localStorage.getItem('authToken');
             updateDebugInfo(`API Request: ${endpoint}`);
-            const response = await fetch(`/api${endpoint}`, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                    ...options.headers
-                },
-                ...options
-            });
 
-            if (response.status === 401) {
-                // Redirect to main login page on authentication failure
-                window.location.href = '/';
-                return;
+            try {
+                const response = await fetch(`/api${endpoint}`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                        ...options.headers
+                    },
+                    ...options
+                });
+
+                if (response.status === 401) {
+                    // Redirect to main login page on authentication failure
+                    updateDebugInfo('Authentication failed, redirecting...');
+                    window.location.href = '/';
+                    return;
+                }
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                console.log(`API Response ${endpoint}:`, data);
+                return data;
+            } catch (error) {
+                console.error(`API Error ${endpoint}:`, error);
+                updateDebugInfo(`API Error ${endpoint}: ${error.message}`);
+                throw error;
             }
-
-            const data = await response.json();
-            console.log(`API Response ${endpoint}:`, data);
-            return data;
         }
 
         function updateDebugInfo(message) {
@@ -403,12 +415,18 @@
                     method: 'POST',
                     body: JSON.stringify({ action: 'start' })
                 });
-                alert(`Daemon start: ${data.message || 'Command sent'}`);
-                updateDebugInfo(`Daemon start: ${data.message || 'Success'}`);
-                setTimeout(checkDaemonStatus, 2000);
+
+                if (data.error) {
+                    alert(`Failed to start daemon: ${data.error}`);
+                    updateDebugInfo(`Daemon start failed: ${data.error}`);
+                } else {
+                    alert(`Daemon start: ${data.message || 'Command sent'}`);
+                    updateDebugInfo(`Daemon start: ${data.message || 'Success'}`);
+                    setTimeout(checkDaemonStatus, 2000);
+                }
             } catch (error) {
                 alert('Failed to start daemon: ' + error.message);
-                updateDebugInfo(`Daemon start failed: ${error.message}`);
+                updateDebugInfo(`Daemon start error: ${error.message}`);
             }
         }
 
@@ -419,12 +437,18 @@
                     method: 'POST',
                     body: JSON.stringify({ action: 'stop' })
                 });
-                alert(`Daemon stop: ${data.message || 'Command sent'}`);
-                updateDebugInfo(`Daemon stop: ${data.message || 'Success'}`);
-                setTimeout(checkDaemonStatus, 2000);
+
+                if (data.error) {
+                    alert(`Failed to stop daemon: ${data.error}`);
+                    updateDebugInfo(`Daemon stop failed: ${data.error}`);
+                } else {
+                    alert(`Daemon stop: ${data.message || 'Command sent'}`);
+                    updateDebugInfo(`Daemon stop: ${data.message || 'Success'}`);
+                    setTimeout(checkDaemonStatus, 2000);
+                }
             } catch (error) {
                 alert('Failed to stop daemon: ' + error.message);
-                updateDebugInfo(`Daemon stop failed: ${error.message}`);
+                updateDebugInfo(`Daemon stop error: ${error.message}`);
             }
         }
 
