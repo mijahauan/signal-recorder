@@ -532,16 +532,16 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
     const { exec } = await import('child_process');
 
     try {
-      // More specific detection patterns that avoid matching IDE processes
+      // Very specific detection patterns that ONLY match actual signal-recorder daemon processes
       const checkCommands = [
-        // Look for signal-recorder daemon process specifically
-        'pgrep -f "signal-recorder daemon" 2>/dev/null',
-        // Look for python processes running signal-recorder daemon
-        'pgrep -f "python.*signal-recorder.*daemon" 2>/dev/null',
-        // Check ps output with very specific patterns
-        'ps aux | grep -E "[s]ignal-recorder daemon|[p]ython.*[s]ignal-recorder.*daemon" | grep -v grep 2>/dev/null',
-        // Check if any process has signal-recorder daemon in command line
-        'ps -o pid,comm,args | grep -E "[s]ignal-recorder daemon|[p]ython.*[s]ignal-recorder.*daemon" | grep -v grep 2>/dev/null'
+        // 1. Look for signal-recorder daemon process (exclude our own server)
+        `pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`,
+        // 2. Look for python processes running signal-recorder daemon (exclude our server)
+        `pgrep -f "python.*signal-recorder.*daemon" 2>/dev/null | grep -v "^${process.pid}$"`,
+        // 3. Check ps output with very specific patterns (exclude node processes)
+        'ps aux | grep -E "[s]ignal-recorder daemon|[p]ython.*[s]ignal-recorder.*daemon" | grep -v "node.*simple-server" | grep -v grep 2>/dev/null',
+        // 4. Check detailed process info (exclude our server PID)
+        'ps -o pid,comm,args | grep -E "[s]ignal-recorder daemon|[p]ython.*[s]ignal-recorder.*daemon" | grep -v "node.*simple-server" | grep -v grep 2>/dev/null'
       ];
 
       for (const cmd of checkCommands) {
@@ -549,23 +549,37 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
           exec(cmd, (error, stdout, stderr) => {
             if (!error && stdout && stdout.trim()) {
               const lines = stdout.trim().split('\n');
-              const pids = [];
+              const validPids = [];
 
               for (const line of lines) {
                 const parts = line.trim().split(/\s+/);
                 if (parts.length > 0) {
                   const pid = parts[0];
-                  if (pid && /^\d+$/.test(pid)) {
-                    pids.push(pid);
+                  if (pid && /^\d+$/.test(pid) && pid !== process.pid.toString()) {
+                    // Additional verification: check if this PID is actually a signal-recorder process
+                    try {
+                      const verifyCmd = `ps -p ${pid} -o comm=`;
+                      exec(verifyCmd, (err, verifyStdout) => {
+                        if (!err && verifyStdout) {
+                          const comm = verifyStdout.trim();
+                          // Only accept if it's actually a signal-recorder related process
+                          if (comm.includes('signal-recorder') || comm.includes('python') || comm.includes('signal_recorder')) {
+                            validPids.push(pid);
+                          }
+                        }
+                      });
+                    } catch (e) {
+                      // Continue checking
+                    }
                   }
                 }
               }
 
-              if (pids.length > 0) {
+              if (validPids.length > 0) {
                 resolve({
                   running: true,
-                  pid: pids[0],
-                  pids: pids,
+                  pid: validPids[0],
+                  pids: validPids,
                   details: `Found via: ${cmd}`,
                   method: cmd,
                   stdout: stdout.trim()
@@ -573,7 +587,7 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
               } else {
                 resolve({
                   running: false,
-                  details: `No valid PIDs found via: ${cmd}`,
+                  details: `No valid signal-recorder processes found via: ${cmd}`,
                   method: cmd
                 });
               }
@@ -588,7 +602,7 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
         });
 
         if (result.running) {
-          console.log('Daemon detection found process:', result);
+          console.log('Daemon detection found VALID process:', result);
           res.json({
             running: true,
             timestamp: new Date().toISOString(),
@@ -596,20 +610,22 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
             pids: result.pids,
             details: result.details,
             method: result.method,
-            verification: result.stdout
+            verification: result.stdout,
+            note: 'Verified signal-recorder daemon process'
           });
           return;
         }
       }
 
       // If no methods found the daemon
-      console.log('No daemon processes found via any detection method');
+      console.log('No VALID daemon processes found via any detection method');
       res.json({
         running: false,
         timestamp: new Date().toISOString(),
         pid: null,
         pids: [],
-        details: 'Daemon not found via any detection method'
+        details: 'No valid signal-recorder daemon processes found',
+        note: 'Excluded web server and IDE processes'
       });
 
     } catch (error) {
@@ -688,9 +704,9 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       const { exec } = await import('child_process');
 
       try {
-        // First verify there's actually a daemon running
+        // First verify there's actually a daemon running (excluding our server)
         const statusResult = await new Promise((resolve) => {
-          exec('pgrep -f "signal-recorder daemon" 2>/dev/null', (error, stdout, stderr) => {
+          exec(`pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`, (error, stdout, stderr) => {
             resolve({ error, stdout: stdout ? stdout.trim() : '' });
           });
         });
@@ -734,7 +750,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             const verifyResult = await new Promise((resolve) => {
-              exec('pgrep -f "signal-recorder daemon" 2>/dev/null', (error, stdout, stderr) => {
+              exec(`pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`, (error, stdout, stderr) => {
                 resolve({ error, stdout: stdout ? stdout.trim() : '' });
               });
             });
