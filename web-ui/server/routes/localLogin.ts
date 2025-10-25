@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { validateCredentials } from "../localAuth";
-import { sign } from "jsonwebtoken";
+import jwt from "jsonwebtoken";
 import { ENV } from "../_core/env";
 import { COOKIE_NAME } from "../../shared/const";
 import { getSessionCookieOptions } from "../_core/cookies";
@@ -21,7 +21,7 @@ router.post("/api/local-login", async (req, res) => {
   }
 
   // Create JWT session token
-  const token = sign(
+  const token = jwt.sign(
     {
       id: user.id,
       name: user.name,
