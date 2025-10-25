@@ -530,21 +530,57 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
   try {
     // Check if daemon is running by looking for process
     const { exec } = await import('child_process');
-    exec('pgrep -f "signal-recorder daemon"', (error, stdout, stderr) => {
-      const isRunning = !error && stdout.trim();
-      const pids = stdout.trim().split('\n').filter(pid => pid.trim());
 
-      res.json({
-        running: !!isRunning,
-        timestamp: new Date().toISOString(),
-        pid: pids.length > 0 ? pids[0] : null,
-        pids: pids,
-        error: error ? error.message : null
-      });
+    // Try multiple ways to find the daemon process
+    const checkCommands = [
+      'pgrep -f "signal-recorder daemon"',
+      'pgrep -f "python.*signal-recorder.*daemon"',
+      'ps aux | grep -i "signal-recorder daemon" | grep -v grep',
+      'ps aux | grep -i "python.*signal-recorder.*daemon" | grep -v grep'
+    ];
+
+    let runningInfo = { running: false, pid: null, pids: [], details: '' };
+
+    for (const cmd of checkCommands) {
+      try {
+        const result = await new Promise((resolve) => {
+          exec(cmd, (error, stdout, stderr) => {
+            if (!error && stdout.trim()) {
+              const pids = stdout.trim().split('\n').filter(pid => pid.trim());
+              resolve({ running: true, pids: pids, details: `Found via: ${cmd}` });
+            } else {
+              resolve({ running: false, details: `Not found via: ${cmd}` });
+            }
+          });
+        });
+
+        if (result.running) {
+          runningInfo = {
+            running: true,
+            pid: result.pids[0],
+            pids: result.pids,
+            details: result.details
+          };
+          break;
+        }
+      } catch (e) {
+        // Continue to next check method
+      }
+    }
+
+    res.json({
+      running: runningInfo.running,
+      timestamp: new Date().toISOString(),
+      pid: runningInfo.pid,
+      pids: runningInfo.pids,
+      details: runningInfo.details
     });
+
   } catch (error) {
     console.error('Failed to check daemon status:', error);
-    res.status(500).json({ error: 'Failed to check daemon status' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to check daemon status' });
+    }
   }
 });
 
@@ -555,64 +591,120 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
     if (action === 'start') {
       // Check if already running first
       const { exec } = await import('child_process');
-      exec('pgrep -f "signal-recorder daemon"', (error, stdout, stderr) => {
-        if (!error && stdout.trim()) {
-          res.status(400).json({ error: 'Daemon is already running' });
+
+      try {
+        const statusResult = await new Promise((resolve) => {
+          exec('pgrep -f "signal-recorder daemon"', (error, stdout, stderr) => {
+            resolve({ error, stdout: stdout ? stdout.trim() : '' });
+          });
+        });
+
+        if (!statusResult.error && statusResult.stdout) {
+          res.status(400).json({ error: 'Daemon is already running', pid: statusResult.stdout.split('\n')[0] });
           return;
         }
+      } catch (e) {
+        // Continue with start attempt
+      }
 
-        // Start daemon in background using the correct config path
-        exec('signal-recorder daemon --config config/grape-S000171.toml', { detached: true }, (error, stdout, stderr) => {
-          if (error) {
-            console.error('Failed to start daemon:', error);
-            res.status(500).json({
-              error: `Failed to start daemon: ${error.message}`,
-              stdout: stdout,
-              stderr: stderr
+      // Try to start daemon using possible command paths
+      const configPath = 'config/grape-S000171.toml';
+      const possibleCommands = [
+        'signal-recorder daemon --config ' + configPath,
+        '/usr/local/bin/signal-recorder daemon --config ' + configPath,
+        process.env.HOME + '/.local/bin/signal-recorder daemon --config ' + configPath,
+        process.env.HOME + '/.cargo/bin/signal-recorder daemon --config ' + configPath,
+        process.env.HOME + '/git/signal-recorder/target/debug/signal-recorder daemon --config ' + configPath,
+        process.env.HOME + '/git/signal-recorder/target/release/signal-recorder daemon --config ' + configPath
+      ];
+
+      let startResult = { success: false, error: null, commandUsed: '', stdout: '', stderr: '' };
+
+      for (const cmd of possibleCommands) {
+        try {
+          startResult = await new Promise((resolve) => {
+            exec(cmd, { detached: true, timeout: 10000 }, (error, stdout, stderr) => {
+              resolve({
+                success: !error,
+                error: error,
+                commandUsed: cmd,
+                stdout: stdout || '',
+                stderr: stderr || ''
+              });
             });
-          } else {
-            res.json({
-              success: true,
-              message: 'Daemon start command sent',
-              stdout: stdout,
-              stderr: stderr
-            });
+          });
+
+          if (startResult.success) {
+            break;
           }
+        } catch (e) {
+          startResult = { success: false, error: e, commandUsed: cmd, stdout: '', stderr: '' };
+        }
+      }
+
+      if (startResult.success) {
+        res.json({
+          success: true,
+          message: 'Daemon start command sent',
+          commandUsed: startResult.commandUsed,
+          stdout: startResult.stdout,
+          stderr: startResult.stderr
         });
-      });
+      } else {
+        res.status(500).json({
+          error: `Failed to start daemon: ${startResult.error ? startResult.error.message : 'Unknown error'}`,
+          commandUsed: startResult.commandUsed,
+          stdout: startResult.stdout,
+          stderr: startResult.stderr
+        });
+      }
+
     } else if (action === 'stop') {
       // Stop daemon using multiple methods
       const { exec } = await import('child_process');
+
+      const stopMethods = [
+        'pkill -f "signal-recorder daemon"',
+        'pkill -f "python.*signal-recorder.*daemon"',
+        'killall signal-recorder',
+        'killall -9 signal-recorder'
+      ];
+
       let stopped = false;
+      let methodUsed = '';
 
-      // Method 1: pkill by process name
-      exec('pkill -f "signal-recorder daemon"', (error, stdout, stderr) => {
-        if (!error) {
-          stopped = true;
-        }
-
-        // Method 2: Also try killing by port if first method didn't work
-        if (!stopped) {
-          exec('pkill -f "python.*signal-recorder.*daemon"', (error2, stdout2, stderr2) => {
-            if (!res.headersSent) {
-              res.json({
-                success: !error2,
-                message: error2 ? 'Failed to stop daemon' : 'Daemon stop command sent',
-                method: error2 ? 'python process' : 'signal-recorder daemon',
-                error: error2 ? error2.message : null
-              });
-            }
+      for (const cmd of stopMethods) {
+        try {
+          await new Promise((resolve) => {
+            exec(cmd, (error, stdout, stderr) => {
+              if (!error) {
+                stopped = true;
+                methodUsed = cmd;
+              }
+              resolve();
+            });
           });
-        } else if (!res.headersSent) {
-          res.json({ success: true, message: 'Daemon stop command sent' });
+
+          if (stopped) break;
+        } catch (e) {
+          // Continue to next method
         }
+      }
+
+      res.json({
+        success: stopped,
+        message: stopped ? 'Daemon stop command sent' : 'Failed to stop daemon - may not be running',
+        methodUsed: methodUsed || 'none'
       });
+
     } else {
       res.status(400).json({ error: 'Invalid action. Use "start" or "stop"' });
     }
   } catch (error) {
     console.error('Failed to control daemon:', error);
-    res.status(500).json({ error: 'Failed to control daemon' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to control daemon' });
+    }
   }
 });
 
@@ -622,50 +714,66 @@ app.get('/api/monitoring/data-status', requireAuth, async (req, res) => {
     const { exec } = await import('child_process');
     const dataDir = '/home/mjh/grape-data';
 
-    // Check if directory exists
-    exec(`ls -la ${dataDir} 2>/dev/null || echo "Directory does not exist"`, (error, stdout, stderr) => {
-      const dirExists = !error && !stdout.includes('Directory does not exist');
-
-      if (!dirExists) {
-        res.json({
-          recentFiles: 0,
-          totalSize: '0',
-          dataDir: dataDir,
-          directoryExists: false,
-          timestamp: new Date().toISOString(),
-          error: 'Data directory does not exist'
+    // Run all checks in parallel using Promise.allSettled to avoid race conditions
+    const [dirCheck, recentFilesCheck, sizeCheck, dataFilesCheck] = await Promise.allSettled([
+      // Check if directory exists
+      new Promise((resolve) => {
+        exec(`ls -la ${dataDir} 2>/dev/null || echo "Directory does not exist"`, (error, stdout, stderr) => {
+          const dirExists = !error && !stdout.includes('Directory does not exist');
+          resolve({ dirExists, error: error ? error.message : null });
         });
-        return;
-      }
+      }),
 
       // Get recent files (last hour)
-      exec(`find ${dataDir} -type f -newermt "1 hour ago" 2>/dev/null | wc -l`, (error2, stdout2, stderr2) => {
-        const recentFiles = parseInt(stdout2.trim()) || 0;
-
-        // Check total data size
-        exec(`du -sh ${dataDir} 2>/dev/null | cut -f1 || echo "0"`, (error3, stdout3, stderr3) => {
-          const totalSize = stdout3 ? stdout3.trim() : '0';
-
-          // Get file counts by type
-          exec(`find ${dataDir} -name "*.drf" -o -name "*.h5" -o -name "*.log" 2>/dev/null | wc -l || echo "0"`, (error4, stdout4, stderr4) => {
-            const dataFiles = parseInt(stdout4.trim()) || 0;
-
-            res.json({
-              recentFiles,
-              totalSize,
-              dataFiles,
-              dataDir: dataDir,
-              directoryExists: true,
-              timestamp: new Date().toISOString(),
-              lastError: error2 ? error2.message : null
-            });
-          });
+      new Promise((resolve) => {
+        exec(`find ${dataDir} -type f -newermt "1 hour ago" 2>/dev/null | wc -l`, (error, stdout, stderr) => {
+          const recentFiles = parseInt(stdout ? stdout.trim() : '0') || 0;
+          resolve({ recentFiles, error: error ? error.message : null });
         });
-      });
+      }),
+
+      // Check total data size
+      new Promise((resolve) => {
+        exec(`du -sh ${dataDir} 2>/dev/null | cut -f1 || echo "0"`, (error, stdout, stderr) => {
+          const totalSize = stdout ? stdout.trim() : '0';
+          resolve({ totalSize, error: error ? error.message : null });
+        });
+      }),
+
+      // Get file counts by type
+      new Promise((resolve) => {
+        exec(`find ${dataDir} -name "*.drf" -o -name "*.h5" -o -name "*.log" 2>/dev/null | wc -l || echo "0"`, (error, stdout, stderr) => {
+          const dataFiles = parseInt(stdout ? stdout.trim() : '0') || 0;
+          resolve({ dataFiles, error: error ? error.message : null });
+        });
+      })
+    ]);
+
+    const dirInfo = dirCheck.status === 'fulfilled' ? dirCheck.value : { dirExists: false, error: 'Check failed' };
+    const recentInfo = recentFilesCheck.status === 'fulfilled' ? recentFilesCheck.value : { recentFiles: 0, error: 'Check failed' };
+    const sizeInfo = sizeCheck.status === 'fulfilled' ? sizeCheck.value : { totalSize: '0', error: 'Check failed' };
+    const filesInfo = dataFilesCheck.status === 'fulfilled' ? dataFilesCheck.value : { dataFiles: 0, error: 'Check failed' };
+
+    res.json({
+      recentFiles: recentInfo.recentFiles,
+      totalSize: sizeInfo.totalSize,
+      dataFiles: filesInfo.dataFiles,
+      dataDir: dataDir,
+      directoryExists: dirInfo.dirExists,
+      timestamp: new Date().toISOString(),
+      errors: [
+        dirInfo.error,
+        recentInfo.error,
+        sizeInfo.error,
+        filesInfo.error
+      ].filter(e => e && e !== 'Check failed')
     });
+
   } catch (error) {
     console.error('Failed to get data status:', error);
-    res.status(500).json({ error: 'Failed to get data status' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to get data status' });
+    }
   }
 });
 
@@ -673,57 +781,98 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
   try {
     // Discover current channel status from radiod
     const { exec } = await import('child_process');
-    // Use the correct status address from the configuration
-    const statusAddr = 'bee1-hf-status.local'; // From user's working CLI command
-    exec(`signal-recorder discover --radiod ${statusAddr}`, (error, stdout, stderr) => {
-      console.log('Channel discovery stdout:', stdout);
-      console.log('Channel discovery stderr:', stderr);
-      console.log('Channel discovery error:', error);
 
-      if (error) {
-        console.error('Discovery command failed:', error);
-        res.status(500).json({
-          error: `Discovery failed: ${error.message}`,
-          stdout: stdout,
-          stderr: stderr
-        });
-        return;
-      }
+    // Try to find signal-recorder in PATH first, then fallback to common locations
+    const statusAddr = 'bee1-hf-status.local';
+    const possibleCommands = [
+      'signal-recorder discover --radiod ' + statusAddr,
+      '/usr/local/bin/signal-recorder discover --radiod ' + statusAddr,
+      '/home/mjh/.local/bin/signal-recorder discover --radiod ' + statusAddr,
+      process.env.HOME + '/.cargo/bin/signal-recorder discover --radiod ' + statusAddr,
+      process.env.HOME + '/git/signal-recorder/target/debug/signal-recorder discover --radiod ' + statusAddr,
+      process.env.HOME + '/git/signal-recorder/target/release/signal-recorder discover --radiod ' + statusAddr
+    ];
 
-      // Parse the discovery output
-      const lines = stdout.trim().split('\n');
-      const channels = [];
+    let commandUsed = '';
+    let stdout = '';
+    let stderr = '';
+    let commandError = null;
 
-      // Skip header lines and parse data lines
-      for (let i = 2; i < lines.length; i++) {
-        const line = lines[i];
-        if (!line.trim()) continue;
-
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 6) {
-          channels.push({
-            ssrc: parts[0],
-            frequency: parts[1] + ' ' + parts[2],
-            rate: parts[3],
-            preset: parts[4],
-            snr: parts[5],
-            address: parts.slice(6).join(' ')
+    // Try each command until one works
+    for (const cmd of possibleCommands) {
+      try {
+        const result = await new Promise((resolve, reject) => {
+          exec(cmd, { timeout: 10000 }, (error, stdout, stderr) => {
+            if (error) {
+              reject(error);
+            } else {
+              resolve({ stdout, stderr });
+            }
           });
-        }
+        });
+        stdout = result.stdout;
+        stderr = result.stderr;
+        commandUsed = cmd;
+        break;
+      } catch (e) {
+        commandError = e;
+        continue;
       }
+    }
 
-      console.log('Parsed channels:', channels);
+    console.log('Channel discovery stdout:', stdout);
+    console.log('Channel discovery stderr:', stderr);
+    console.log('Channel discovery error:', commandError);
+    console.log('Command used:', commandUsed);
 
-      res.json({
-        channels,
-        timestamp: new Date().toISOString(),
-        total: channels.length,
-        rawOutput: stdout
+    if (!stdout || stdout.trim() === '') {
+      res.status(500).json({
+        error: 'No channels discovered or command failed',
+        commandUsed: commandUsed,
+        stdout: stdout,
+        stderr: stderr,
+        errorDetails: commandError ? commandError.message : 'Empty output'
       });
+      return;
+    }
+
+    // Parse the discovery output
+    const lines = stdout.trim().split('\n');
+    const channels = [];
+
+    // Skip header lines and parse data lines
+    for (let i = 2; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 6) {
+        channels.push({
+          ssrc: parts[0],
+          frequency: parts[1] + ' ' + parts[2],
+          rate: parts[3],
+          preset: parts[4],
+          snr: parts[5],
+          address: parts.slice(6).join(' ')
+        });
+      }
+    }
+
+    console.log('Parsed channels:', channels);
+
+    res.json({
+      channels,
+      timestamp: new Date().toISOString(),
+      total: channels.length,
+      rawOutput: stdout,
+      commandUsed: commandUsed
     });
+
   } catch (error) {
     console.error('Failed to get channel status:', error);
-    res.status(500).json({ error: 'Failed to get channel status', details: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to get channel status', details: error.message });
+    }
   }
 });
 
@@ -741,45 +890,48 @@ app.get('/api/monitoring/logs', requireAuth, async (req, res) => {
     ];
 
     let allLogs = [];
+    let completedCommands = 0;
 
-    // Try each log source
+    // Try each log source sequentially to avoid race conditions
     for (const cmd of logCommands) {
-      exec(cmd, (error, stdout, stderr) => {
-        const logs = stdout.trim().split('\n').filter(line => line.trim() && !line.includes('No logs') && !line.includes('No cache') && !line.includes('No systemd') && !line.includes('No temp'));
-        allLogs = allLogs.concat(logs);
-
-        // If we have some logs or this is the last command, respond
-        if (allLogs.length > 0 || cmd === logCommands[logCommands.length - 1]) {
-          // Remove duplicates and limit to 50 most recent
-          const uniqueLogs = [...new Set(allLogs)].slice(-50);
-
-          res.json({
-            logs: uniqueLogs,
-            timestamp: new Date().toISOString(),
-            count: uniqueLogs.length,
-            sources: logCommands.length
+      try {
+        const result = await new Promise((resolve, reject) => {
+          exec(cmd, { timeout: 5000 }, (error, stdout, stderr) => {
+            const logs = stdout.trim().split('\n').filter(line => line.trim() && !line.includes('No logs') && !line.includes('No cache') && !line.includes('No systemd') && !line.includes('No temp'));
+            resolve(logs);
           });
-        }
-      });
+        });
 
-      // Break after first successful attempt to avoid multiple responses
-      if (allLogs.length > 0) break;
+        allLogs = allLogs.concat(result);
+        completedCommands++;
+
+        // If we have logs, we can stop here
+        if (allLogs.length > 0) {
+          break;
+        }
+      } catch (e) {
+        completedCommands++;
+      }
     }
 
-    // Fallback response if no logs found after timeout
-    setTimeout(() => {
-      if (!res.headersSent) {
-        res.json({
-          logs: ['No recent logs found in any location'],
-          timestamp: new Date().toISOString(),
-          count: 0
-        });
-      }
-    }, 2000);
+    // Wait a bit for all commands to complete, then respond
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Remove duplicates and limit to 50 most recent
+    const uniqueLogs = [...new Set(allLogs)].slice(-50);
+
+    res.json({
+      logs: uniqueLogs.length > 0 ? uniqueLogs : ['No recent logs found in any location'],
+      timestamp: new Date().toISOString(),
+      count: uniqueLogs.length,
+      sources: logCommands.length
+    });
 
   } catch (error) {
     console.error('Failed to get logs:', error);
-    res.status(500).json({ error: 'Failed to get logs', details: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to get logs', details: error.message });
+    }
   }
 });
 
