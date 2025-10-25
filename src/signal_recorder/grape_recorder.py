@@ -116,21 +116,31 @@ class RTPPacket:
     def get_iq_samples(self) -> np.ndarray:
         """
         Extract IQ samples from payload
-        
+
         Returns:
             Complex numpy array of IQ samples (float32)
         """
         # ka9q-radio sends IQ as interleaved float32 (I, Q, I, Q, ...)
         # Parse as float32 little-endian
         samples = np.frombuffer(self.payload, dtype=np.float32)
-        
+
         # Ensure even number of samples (I and Q pairs)
         if len(samples) % 2 != 0:
             samples = samples[:-1]
-        
+
+        # Validate samples before conversion
+        if len(samples) == 0:
+            return np.array([], dtype=np.complex64)
+
+        # Check for invalid float32 values (NaN, inf)
+        if np.any(~np.isfinite(samples)):
+            logger.warning(f"RTP packet contains non-finite float32 values: {np.sum(~np.isfinite(samples))}")
+            # Replace invalid values with zeros
+            samples = np.nan_to_num(samples, nan=0.0, posinf=0.0, neginf=0.0)
+
         # Convert to complex (I + jQ)
         iq = samples[::2] + 1j * samples[1::2]
-        
+
         return iq
 
 
@@ -448,7 +458,14 @@ class RTPReceiver:
                 try:
                     header, header_len = RTPHeader.parse(data)
                     payload = data[header_len:]
-                    
+
+                    # Validate header
+                    if header.payload_type not in [96, 97, 98, 99]:  # Common RTP payload types for audio
+                        logger.debug(f"Unexpected RTP payload type: {header.payload_type}")
+                    if len(payload) == 0:
+                        logger.debug("Empty RTP payload, skipping")
+                        continue
+
                     # Create packet object
                     packet = RTPPacket(
                         header=header,
@@ -533,6 +550,9 @@ class GRAPEChannelRecorder:
         self.rtp_timestamp_base: Optional[int] = None
         self.unix_time_base: Optional[float] = None
         
+        # Track warnings to avoid spam
+        self.warned_non_finite = False
+
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -586,9 +606,35 @@ class GRAPEChannelRecorder:
         try:
             iq_samples = packet.get_iq_samples()
             self.stats.samples_recorded += len(iq_samples)
+
+            # Validate IQ samples before processing
+            if len(iq_samples) == 0:
+                logger.debug(f"SSRC 0x{self.ssrc:08x}: Empty IQ samples, skipping")
+                return
+
+            # Check for invalid IQ values
+            if np.any(~np.isfinite(iq_samples)):
+                logger.warning(f"SSRC 0x{self.ssrc:08x}: Non-finite IQ samples: {np.sum(~np.isfinite(iq_samples))} values")
+                # Replace invalid values with zeros
+                iq_samples = np.nan_to_num(iq_samples, nan=0.0, posinf=0.0, neginf=0.0)
+
+            # Check for unreasonably large values (likely corrupted data)
+            max_reasonable_amplitude = 1e6  # Much larger than typical signal levels
+            if np.any(np.abs(iq_samples) > max_reasonable_amplitude):
+                large_count = np.sum(np.abs(iq_samples) > max_reasonable_amplitude)
+                logger.warning(f"SSRC 0x{self.ssrc:08x}: Unreasonably large IQ values: {large_count} samples")
+                # Clamp large values
+                iq_samples = np.clip(iq_samples, -max_reasonable_amplitude, max_reasonable_amplitude)
             
             # Add to input accumulator
             self.input_accumulator = np.concatenate([self.input_accumulator, iq_samples])
+
+            # Prevent accumulator from growing too large (max 10x minimum samples)
+            max_accumulator_size = self.min_input_samples * 10
+            if len(self.input_accumulator) > max_accumulator_size:
+                logger.warning(f"SSRC 0x{self.ssrc:08x}: Input accumulator grew too large ({len(self.input_accumulator)} samples), truncating")
+                # Keep only the most recent samples
+                self.input_accumulator = self.input_accumulator[-self.min_input_samples:]
             
             # Process when we have enough samples
             if len(self.input_accumulator) >= self.min_input_samples:
@@ -602,7 +648,9 @@ class GRAPEChannelRecorder:
 
                 # Check for invalid values (NaN, inf)
                 if np.any(~np.isfinite(resampled)):
-                    logger.warning(f"Non-finite values in resampled data: {np.sum(~np.isfinite(resampled))} values")
+                    if not self.warned_non_finite:
+                        logger.warning(f"SSRC 0x{self.ssrc:08x}: Non-finite values in resampled data: {np.sum(~np.isfinite(resampled))} values (will suppress further warnings)")
+                        self.warned_non_finite = True
                     # Replace invalid values with zeros
                     resampled = np.nan_to_num(resampled, nan=0.0, posinf=0.0, neginf=0.0)
                 
