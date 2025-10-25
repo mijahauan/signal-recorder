@@ -38,8 +38,8 @@ Signal Recorder requires a running instance of [ka9q-radio](https://github.com/k
 - **Avahi**: For mDNS service discovery
 
 #### **For Configuration UI:**
-- **Node.js**: 18 or higher
-- **npm**: For package management
+- **pnpm**: 10.0 or higher (recommended, faster than npm)
+- **npm**: Alternative if pnpm is not available
 
 #### **Installation on Debian/Ubuntu:**
 ```bash
@@ -47,7 +47,10 @@ Signal Recorder requires a running instance of [ka9q-radio](https://github.com/k
 sudo apt-get update
 sudo apt-get install -y python3-pip python3-venv avahi-daemon avahi-utils
 
-# For web UI (optional, but recommended)
+# For web UI (recommended: pnpm)
+curl -fsSL https://get.pnpm.io/install.js | sh -
+
+# Alternative: npm
 curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
 sudo apt-get install -y nodejs npm
 ```
@@ -86,10 +89,18 @@ pip install signal-recorder
 The project includes a **simplified web-based configuration interface** that eliminates the need for manual TOML editing.
 
 ```bash
-# Start the configuration UI
+# Install dependencies with pnpm (recommended)
 cd web-ui
-npm install
-npm start
+pnpm install
+
+# Alternative: npm
+# npm install
+
+# Start the configuration UI
+pnpm start
+
+# Alternative: npm
+# npm start
 
 # Access the interface
 # URL: http://localhost:3000
@@ -250,13 +261,16 @@ Type=simple
 User=$USER
 WorkingDirectory=/home/$USER/signal-recorder/web-ui
 Environment="NODE_ENV=production"
-ExecStart=/usr/bin/node simple-server.js
+ExecStart=/usr/local/bin/pnpm start
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Alternative: if using npm
+# ExecStart=/usr/bin/node simple-server.js
 
 # Enable and start
 sudo systemctl daemon-reload

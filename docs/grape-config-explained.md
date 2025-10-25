@@ -499,13 +499,12 @@ alert_on_upload_failure = true
 
 ## Quick Start Checklist
 
-**Recommended approach:** Use the web-based configuration UI
-
+**Quick Start:**
 ```bash
-# 1. Start the web UI
+# 1. Start the web UI with pnpm (recommended)
 cd web-ui
-npm install
-npm start
+pnpm install  # Faster than npm
+pnpm start
 
 # 2. Access http://localhost:3000 (admin/admin)
 # 3. Create station configuration through guided interface

@@ -31,10 +31,10 @@ For the easiest setup experience:
 git clone https://github.com/yourusername/signal-recorder.git
 cd signal-recorder
 
-# Start the configuration UI
+# Start the configuration UI with pnpm (recommended, faster)
 cd web-ui
-npm install
-npm start
+pnpm install
+pnpm start
 
 # Access http://localhost:3000 (admin/admin)
 # Create your configuration through the guided interface
@@ -210,8 +210,8 @@ The project includes a **simplified web-based configuration interface** that eli
 
 ```bash
 cd web-ui
-npm install
-npm start
+pnpm install  # Recommended (faster than npm)
+pnpm start
 ```
 
 **Features:**

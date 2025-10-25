@@ -91,7 +91,14 @@ enable_metrics = false
 
 ## Installation & Usage
 
-### **Quick Start**
+### **Quick Start with pnpm (Recommended):**
+```bash
+cd web-ui
+pnpm install  # Faster than npm
+pnpm start
+```
+
+**Alternative with npm:**
 ```bash
 cd web-ui
 npm install

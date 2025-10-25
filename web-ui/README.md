@@ -14,24 +14,25 @@
 
 ### Installation
 
-1. **Install Node.js 18+** (if not already installed):
+1. **Install pnpm** (recommended, faster than npm):
    ```bash
-   # On Ubuntu/Debian
+   # On Ubuntu/Debian/macOS
+   curl -fsSL https://get.pnpm.io/install.js | sh -
+
+   # Alternative: npm (if pnpm not available)
    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-   sudo apt install -y nodejs
-
-   # On macOS with Homebrew
-   brew install node@20
-
-   # On Windows
-   # Download from https://nodejs.org/
+   sudo apt install -y nodejs npm
    ```
 
 2. **Clone and start**:
    ```bash
    cd web-ui
-   npm install
-   npm start
+   pnpm install
+   pnpm start
+
+   # Alternative with npm:
+   # npm install
+   # npm start
    ```
 
 3. **Access the interface**:
@@ -70,9 +71,14 @@ web-ui/
 ### Available Commands
 
 ```bash
-npm start    # Start the server
-npm run dev  # Same as start (development mode)
-npm run format # Format code with Prettier
+pnpm start    # Start the server
+pnpm run dev  # Same as start (development mode)
+pnpm run format # Format code with Prettier
+
+# Alternative with npm:
+# npm start
+# npm run dev
+# npm run format
 ```
 
 ### Adding Features
@@ -187,7 +193,10 @@ The web-ui can now **automatically save** TOML configurations directly to the si
 lsof -i :3000
 
 # Or use a different port
-PORT=8080 npm start
+PORT=8080 pnpm start
+
+# Alternative with npm:
+# PORT=8080 npm start
 ```
 
 ### Cannot Login

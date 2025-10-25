@@ -5,11 +5,14 @@
   "license": "MIT",
   "scripts": {
     "dev": "node simple-server.js",
-    "build": "echo 'Frontend build not needed with simplified server'",
     "start": "node simple-server.js",
+    "build": "echo 'Frontend build not needed with simplified server'",
     "check": "echo 'TypeScript check not needed with simplified server'",
     "format": "prettier --write .",
-    "test": "echo 'Tests not implemented yet'"
+    "test": "echo 'Tests not implemented yet'",
+    "pnpm:install": "pnpm install",
+    "pnpm:start": "pnpm start",
+    "pnpm:dev": "pnpm run dev"
   },
   "dependencies": {
     "express": "^4.21.2"
