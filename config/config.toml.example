@@ -1,4 +1,5 @@
 # Signal Recorder Configuration Example
+# Updated to use direct scipy-based recording (no pcmrecord dependency)
 
 [station]
 # Unique identifier for your station (e.g., PSWS001)
@@ -17,57 +18,102 @@ grid_square = "CM87"
 latitude = 37.7749
 longitude = -122.4194
 
+[ka9q]
+# ka9q-radio status address for channel management
+status_address = "239.251.200.193"
+
+# Enable automatic channel creation
+auto_create_channels = true
+
 [recorder]
 # Directory to store recorded and processed data
 archive_dir = "/var/lib/signal-recorder/archive"
 
-# Length of each recording file in seconds
-file_length = 60
-
-# Use wavpack to compress recordings (saves space)
-compress = true
-compression_format = "wavpack"
-
-# Path to pcmrecord executable (if not in PATH)
-pcmrecord_path = "pcmrecord"
-
-# List of streams to record
-[[recorder.streams]]
-# mDNS service name from your radiod configuration
-stream_name = "WWV-IQ"
-
-# List of frequencies to record from this stream (in Hz)
-frequencies = [
-    2500000,   # WWV 2.5 MHz
-    5000000,   # WWV 5 MHz
-    10000000,  # WWV 10 MHz
-    15000000,  # WWV 15 MHz
-    20000000,  # WWV 20 MHz
-    25000000,  # WWV 25 MHz
-    3330000,   # CHU 3.33 MHz
-    7850000,   # CHU 7.85 MHz
-    14670000   # CHU 14.67 MHz
-]
-
-# Processor to use for this stream
+# List of channels to record (new format - replaces streams)
+[[recorder.channels]]
+ssrc = 2500000
+frequency_hz = 2500000
+preset = "iq"
+sample_rate = 12000
+description = "WWV 2.5 MHz"
+enabled = true
 processor = "grape"
 
-# Mapping of frequencies to band names (used for directory structure)
-band_mapping = {
-    2500000 = "WWV_2_5",
-    5000000 = "WWV_5",
-    10000000 = "WWV_10",
-    15000000 = "WWV_15",
-    20000000 = "WWV_20",
-    25000000 = "WWV_25",
-    3330000 = "CHU_3",
-    7850000 = "CHU_7",
-    14670000 = "CHU_14"
-}
+[[recorder.channels]]
+ssrc = 5000000
+frequency_hz = 5000000
+preset = "iq"
+sample_rate = 12000
+description = "WWV 5 MHz"
+enabled = true
+processor = "grape"
 
-[processors]
-# Configuration for GRAPE processor
-[processors.grape]
+[[recorder.channels]]
+ssrc = 10000000
+frequency_hz = 10000000
+preset = "iq"
+sample_rate = 12000
+description = "WWV 10 MHz"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 15000000
+frequency_hz = 15000000
+preset = "iq"
+sample_rate = 12000
+description = "WWV 15 MHz"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 20000000
+frequency_hz = 20000000
+preset = "iq"
+sample_rate = 12000
+description = "WWV 20 MHz"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 25000000
+frequency_hz = 25000000
+preset = "iq"
+sample_rate = 12000
+description = "WWV 25 MHz"
+enabled = true
+processor = "grape"
+
+# CHU channels
+[[recorder.channels]]
+ssrc = 3330000
+frequency_hz = 3330000
+preset = "iq"
+sample_rate = 12000
+description = "CHU 3.33 MHz"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 7850000
+frequency_hz = 7850000
+preset = "iq"
+sample_rate = 12000
+description = "CHU 7.85 MHz"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 14670000
+frequency_hz = 14670000
+preset = "iq"
+sample_rate = 12000
+description = "CHU 14.67 MHz"
+enabled = true
+processor = "grape"
+
+[processor.grape]
+# GRAPE processing configuration
 enabled = true
 target_sample_rate = 10  # Hz
 output_format = "digital_rf"

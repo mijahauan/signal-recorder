@@ -82,6 +82,8 @@ data_port = 5004
 - All WWV/CHU channels are on the same multicast address (239.41.204.101)
 - Different frequencies are distinguished by SSRC (Synchronization Source Identifier)
 
+**No longer needed**: The signal-recorder now uses **direct RTP reception** instead of pcmrecord. The recording happens in real-time with scipy-based resampling.
+
 **Action Required:** Update `status_address` to match your radiod configuration.
 
 ---
