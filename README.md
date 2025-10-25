@@ -18,6 +18,7 @@ Signal Recorder is designed to work with [ka9q-radio](https://github.com/ka9q/ka
 - **Plugin Architecture**: Easy to add new signal types without modifying core code
 - **Reliable Upload**: Queue-based upload with retry logic and verification
 - **Minimal Configuration**: Users specify stream names, not low-level networking parameters
+- **Web Configuration UI**: User-friendly web interface for managing configurations (see `web-ui/`)
 
 ## Quick Start
 
@@ -86,12 +87,40 @@ Upload Manager
 Remote Repository (HamSCI PSWS, etc.)
 ```
 
+## Web Configuration UI
+
+For users who prefer a graphical interface, we provide a web-based configuration tool:
+
+```bash
+cd web-ui
+bash install.sh
+```
+
+The web UI provides:
+- Visual form-based configuration (no TOML editing required)
+- Real-time validation of grid squares, PSWS IDs, and frequencies
+- One-click WWV/CHU channel presets
+- TOML export for use with the signal recorder
+- Multi-configuration management
+
+See [web-ui/README.md](web-ui/README.md) for detailed installation and usage instructions.
+
 ## Documentation
 
+### Signal Recorder (Python)
 - [Installation Guide](docs/installation.md)
 - [Configuration Reference](docs/configuration.md)
 - [Plugin Development](docs/plugin_development.md)
 - [API Documentation](docs/api.md)
+
+### Web Configuration UI (Node.js)
+- [Web UI README](web-ui/README.md)
+- [Installation Guide](web-ui/INSTALLATION_GUIDE.md)
+- [Dependencies](web-ui/DEPENDENCIES.md)
+
+### GRAPE-Specific
+- [GRAPE Digital RF Recorder](docs/GRAPE_DIGITAL_RF_RECORDER.md)
+- [PSWS Setup Guide](docs/PSWS_SETUP_GUIDE.md)
 
 ## License
 
