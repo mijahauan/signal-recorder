@@ -525,6 +525,160 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
   }
 });
 
+// Monitoring endpoints for signal-recorder daemon
+app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
+  try {
+    // Check if daemon is running by looking for process
+    const { exec } = await import('child_process');
+    exec('pgrep -f "signal-recorder daemon"', (error, stdout, stderr) => {
+      const isRunning = !error && stdout.trim();
+
+      res.json({
+        running: !!isRunning,
+        timestamp: new Date().toISOString(),
+        pid: isRunning ? stdout.trim().split('\n')[0] : null
+      });
+    });
+  } catch (error) {
+    console.error('Failed to check daemon status:', error);
+    res.status(500).json({ error: 'Failed to check daemon status' });
+  }
+});
+
+app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
+  try {
+    const { action } = req.body; // 'start' or 'stop'
+
+    if (action === 'start') {
+      // Start daemon in background
+      const { exec } = await import('child_process');
+      exec('signal-recorder daemon --config config/grape-S000171.toml', { detached: true }, (error, stdout, stderr) => {
+        if (error) {
+          res.status(500).json({ error: `Failed to start daemon: ${error.message}` });
+        } else {
+          res.json({ success: true, message: 'Daemon started successfully' });
+        }
+      });
+    } else if (action === 'stop') {
+      // Stop daemon
+      const { exec } = await import('child_process');
+      exec('pkill -f "signal-recorder daemon"', (error, stdout, stderr) => {
+        if (error) {
+          res.status(500).json({ error: `Failed to stop daemon: ${error.message}` });
+        } else {
+          res.json({ success: true, message: 'Daemon stopped successfully' });
+        }
+      });
+    } else {
+      res.status(400).json({ error: 'Invalid action. Use "start" or "stop"' });
+    }
+  } catch (error) {
+    console.error('Failed to control daemon:', error);
+    res.status(500).json({ error: 'Failed to control daemon' });
+  }
+});
+
+app.get('/api/monitoring/data-status', requireAuth, async (req, res) => {
+  try {
+    // Check data directory for recent files
+    const { exec } = await import('child_process');
+    exec('find /home/mjh/grape-data -type f -newermt "1 hour ago" 2>/dev/null | wc -l', (error, stdout, stderr) => {
+      const recentFiles = parseInt(stdout.trim()) || 0;
+
+      // Check total data size
+      exec('du -sh /home/mjh/grape-data 2>/dev/null | cut -f1', (error2, stdout2, stderr2) => {
+        const totalSize = stdout2 ? stdout2.trim() : '0';
+
+        // Get channel status from daemon if possible
+        let channelStatus = {};
+        try {
+          // This would require the daemon to expose a status API
+          // For now, we'll show basic file system stats
+          channelStatus = {
+            note: 'Channel status requires daemon status API integration'
+          };
+        } catch (e) {
+          channelStatus = { error: 'Unable to get channel status' };
+        }
+
+        res.json({
+          recentFiles,
+          totalSize,
+          dataDir: '/home/mjh/grape-data',
+          timestamp: new Date().toISOString(),
+          channels: channelStatus
+        });
+      });
+    });
+  } catch (error) {
+    console.error('Failed to get data status:', error);
+    res.status(500).json({ error: 'Failed to get data status' });
+  }
+});
+
+app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
+  try {
+    // Discover current channel status from radiod
+    const { exec } = await import('child_process');
+    exec('signal-recorder discover --radiod bee1-hf-status.local 2>/dev/null', (error, stdout, stderr) => {
+      if (error) {
+        res.status(500).json({ error: `Discovery failed: ${error.message}` });
+        return;
+      }
+
+      // Parse the discovery output
+      const lines = stdout.trim().split('\n');
+      const channels = [];
+
+      // Skip header lines and parse data lines
+      for (let i = 2; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.trim()) continue;
+
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 6) {
+          channels.push({
+            ssrc: parts[0],
+            frequency: parts[1] + ' ' + parts[2],
+            rate: parts[3],
+            preset: parts[4],
+            snr: parts[5],
+            address: parts.slice(6).join(' ')
+          });
+        }
+      }
+
+      res.json({
+        channels,
+        timestamp: new Date().toISOString(),
+        total: channels.length
+      });
+    });
+  } catch (error) {
+    console.error('Failed to get channel status:', error);
+    res.status(500).json({ error: 'Failed to get channel status' });
+  }
+});
+
+app.get('/api/monitoring/logs', requireAuth, async (req, res) => {
+  try {
+    // Get recent log entries (last 50 lines)
+    const { exec } = await import('child_process');
+    exec('tail -50 /var/log/syslog | grep -i "signal.recorder\\|grape" || echo "No recent logs found"', (error, stdout, stderr) => {
+      const logs = stdout.trim().split('\n').filter(line => line.trim());
+
+      res.json({
+        logs,
+        timestamp: new Date().toISOString(),
+        count: logs.length
+      });
+    });
+  } catch (error) {
+    console.error('Failed to get logs:', error);
+    res.status(500).json({ error: 'Failed to get logs' });
+  }
+});
+
 // Preset endpoints
 app.get('/api/presets/wwv', requireAuth, (req, res) => {
   const presets = [
@@ -546,7 +700,12 @@ app.get('/api/presets/chu', requireAuth, (req, res) => {
   res.json(presets);
 });
 
-// Serve the HTML file for all routes
+// Serve the monitoring dashboard
+app.get('/monitoring', (req, res) => {
+  res.sendFile(join(__dirname, 'monitoring.html'));
+});
+
+// Serve the HTML file for all other routes (fallback)
 app.get('*', (req, res) => {
   res.sendFile(join(__dirname, 'index.html'));
 });
@@ -557,6 +716,7 @@ async function startServer() {
 
   app.listen(PORT, () => {
     console.log(`🚀 GRAPE Configuration UI Server running on http://localhost:${PORT}/`);
+    console.log(`📊 Monitoring Dashboard available at http://localhost:${PORT}/monitoring`);
     console.log(`📁 Using JSON database in ./data/ directory`);
     console.log(`👤 Default login: admin / admin`);
     console.log(`✅ JSON database implementation working!`);
