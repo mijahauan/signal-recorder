@@ -334,6 +334,7 @@
                         <div style="margin-top: 20px;">
                             <button type="submit">Save Configuration</button>
                             <button type="button" class="btn-secondary" onclick="exportToml()" style="margin-left: 10px;">Export TOML</button>
+                            <button type="button" onclick="saveToConfigDir()" style="margin-left: 10px;">Save to Config Directory</button>
                             <div id="form-message"></div>
                         </div>
                     </form>
@@ -424,6 +425,7 @@
                         <div>
                             <button onclick="editConfiguration('${config.id}')">Edit</button>
                             <button onclick="exportToml('${config.id}')" class="btn-secondary">Export</button>
+                            <button onclick="saveToConfigDir('${config.id}')" class="btn-secondary">Save to Config</button>
                             <button onclick="deleteConfiguration('${config.id}')" class="btn-danger">Delete</button>
                         </div>
                     </div>
@@ -594,6 +596,38 @@
             if (!ssrc) return;
 
             addChannelToForm(description, frequency, ssrc);
+        }
+
+        // Save to config directory function
+        async function saveToConfigDir(configId = null) {
+            const id = configId || currentConfig?.id;
+            if (!id) {
+                alert('Please select a configuration to save');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/configurations/${id}/save-to-config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                    }
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    document.getElementById('form-message').textContent = `✅ ${data.message}`;
+                    document.getElementById('form-message').className = 'success';
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                console.error('Failed to save to config directory:', error);
+                document.getElementById('form-message').textContent = `❌ Failed to save to config directory: ${error.message}`;
+                document.getElementById('form-message').className = 'error';
+            }
         }
 
         // Export functions
