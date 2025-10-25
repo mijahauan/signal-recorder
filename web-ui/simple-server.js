@@ -528,35 +528,60 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
 // Monitoring endpoints for signal-recorder daemon
 app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
   try {
-    // Check if daemon is running - simplified approach
+    // Check if daemon is running - more accurate approach
     const { exec } = await import('child_process');
 
     try {
-      const result = await new Promise((resolve) => {
-        exec('pgrep -f "signal-recorder daemon"', (error, stdout, stderr) => {
-          if (!error && stdout && stdout.trim()) {
-            const pids = stdout.trim().split('\n').filter(pid => pid.trim());
-            resolve({
-              running: true,
-              pid: pids[0],
-              pids: pids,
-              details: 'Found via pgrep'
-            });
-          } else {
-            resolve({
-              running: false,
-              details: 'Not found via pgrep'
-            });
-          }
-        });
-      });
+      // Try multiple methods to detect the daemon
+      const checkCommands = [
+        'pgrep -f "signal-recorder daemon"',
+        'ps aux | grep -i "[s]ignal-recorder daemon" | grep -v grep',
+        'pgrep -f "python.*signal-recorder.*daemon"',
+        'ps aux | grep -i "[p]ython.*signal-recorder.*daemon" | grep -v grep'
+      ];
 
+      for (const cmd of checkCommands) {
+        const result = await new Promise((resolve) => {
+          exec(cmd, (error, stdout, stderr) => {
+            if (!error && stdout && stdout.trim()) {
+              const pids = stdout.trim().split('\n').filter(pid => pid.trim());
+              resolve({
+                running: true,
+                pid: pids[0],
+                pids: pids,
+                details: `Found via: ${cmd}`,
+                method: cmd
+              });
+            } else {
+              resolve({
+                running: false,
+                details: `Not found via: ${cmd}`,
+                method: cmd
+              });
+            }
+          });
+        });
+
+        if (result.running) {
+          res.json({
+            running: true,
+            timestamp: new Date().toISOString(),
+            pid: result.pid,
+            pids: result.pids,
+            details: result.details,
+            method: result.method
+          });
+          return;
+        }
+      }
+
+      // If no methods found the daemon
       res.json({
-        running: result.running,
+        running: false,
         timestamp: new Date().toISOString(),
-        pid: result.pid || null,
-        pids: result.pids || [],
-        details: result.details
+        pid: null,
+        pids: [],
+        details: 'Daemon not found via any detection method'
       });
 
     } catch (error) {
@@ -747,13 +772,13 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
     console.log('Attempting channel discovery via configuration file...');
 
     try {
-      const fs = require('fs').promises;
-      const path = require('path');
-      const toml = require('toml');
+      const fs = await import('fs');
+      const path = await import('path');
+      const { parse: parseToml } = await import('toml');
 
-      const configPath = path.join(__dirname, '..', 'config', 'grape-S000171.toml');
-      const configContent = await fs.readFile(configPath, 'utf8');
-      const config = toml.parse(configContent);
+      const configPath = path.default.join(__dirname, '..', 'config', 'grape-S000171.toml');
+      const configContent = await fs.default.promises.readFile(configPath, 'utf8');
+      const config = parseToml(configContent);
 
       if (config.recorder && config.recorder.channels) {
         const channels = config.recorder.channels.map(channel => ({
