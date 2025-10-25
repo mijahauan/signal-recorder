@@ -1,0 +1,6 @@
+# Ignore all files in data directory (SQLite database)
+*
+
+# But keep this .gitignore file
+!.gitignore
+

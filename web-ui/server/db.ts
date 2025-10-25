@@ -1,15 +1,28 @@
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import Database from "better-sqlite3";
 import { InsertUser, users, configurations, InsertConfiguration, channels, InsertChannel } from "../drizzle/schema";
 import { ENV } from './_core/env';
+import { mkdirSync } from "fs";
+import { dirname } from "path";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
+  if (!_db) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      // Default to ./data/grape-config.db if DATABASE_URL not set
+      const dbPath = process.env.DATABASE_URL?.replace('file:', '') || './data/grape-config.db';
+      
+      // Ensure directory exists
+      mkdirSync(dirname(dbPath), { recursive: true });
+      
+      // Create SQLite connection
+      const sqlite = new Database(dbPath);
+      _db = drizzle(sqlite);
+      
+      console.log(`[Database] Connected to SQLite: ${dbPath}`);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
@@ -30,43 +43,42 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   }
 
   try {
-    const values: InsertUser = {
-      id: user.id,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role === undefined) {
+    // Check if user exists
+    const existing = await db.select().from(users).where(eq(users.id, user.id)).limit(1);
+    
+    if (existing.length > 0) {
+      // Update existing user
+      const updateData: Partial<InsertUser> = {};
+      
+      if (user.name !== undefined) updateData.name = user.name;
+      if (user.email !== undefined) updateData.email = user.email;
+      if (user.loginMethod !== undefined) updateData.loginMethod = user.loginMethod;
+      if (user.lastSignedIn !== undefined) updateData.lastSignedIn = user.lastSignedIn;
+      
+      // Set role to admin if user is owner
       if (user.id === ENV.ownerId) {
-        user.role = 'admin';
-        values.role = 'admin';
-        updateSet.role = 'admin';
+        updateData.role = 'admin';
+      } else if (user.role !== undefined) {
+        updateData.role = user.role;
       }
+      
+      if (Object.keys(updateData).length > 0) {
+        await db.update(users).set(updateData).where(eq(users.id, user.id));
+      }
+    } else {
+      // Insert new user
+      const insertData: InsertUser = {
+        id: user.id,
+        name: user.name ?? null,
+        email: user.email ?? null,
+        loginMethod: user.loginMethod ?? null,
+        role: user.id === ENV.ownerId ? 'admin' : (user.role ?? 'user'),
+        createdAt: new Date(),
+        lastSignedIn: user.lastSignedIn ?? new Date(),
+      };
+      
+      await db.insert(users).values(insertData);
     }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
   } catch (error) {
     console.error("[Database] Failed to upsert user:", error);
     throw error;
@@ -143,3 +155,4 @@ export async function deleteChannel(id: string) {
   if (!db) throw new Error("Database not available");
   await db.delete(channels).where(eq(channels.id, id));
 }
+

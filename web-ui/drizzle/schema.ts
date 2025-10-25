@@ -1,54 +1,55 @@
-import { mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 
 /**
  * Core user table backing auth flow.
  * Extend this file with additional tables as your product grows.
  * Columns use camelCase to match both database fields and generated types.
  */
-export const users = mysqlTable("users", {
-  id: varchar("id", { length: 64 }).primaryKey(),
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
   name: text("name"),
-  email: varchar("email", { length: 320 }),
-  loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
-  createdAt: timestamp("createdAt").defaultNow(),
-  lastSignedIn: timestamp("lastSignedIn").defaultNow(),
+  email: text("email"),
+  loginMethod: text("loginMethod"),
+  role: text("role", { enum: ["user", "admin"] }).default("user").notNull(),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+  lastSignedIn: integer("lastSignedIn", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
 // GRAPE Configuration Tables
-export const configurations = mysqlTable("configurations", {
-  id: varchar("id", { length: 64 }).primaryKey(),
-  userId: varchar("userId", { length: 64 }).notNull(),
-  name: varchar("name", { length: 255 }).notNull(),
-  callsign: varchar("callsign", { length: 20 }).notNull(),
-  gridSquare: varchar("gridSquare", { length: 10 }).notNull(),
-  stationId: varchar("stationId", { length: 20 }).notNull(), // PSWS SITE_ID
-  instrumentId: varchar("instrumentId", { length: 10 }).notNull(),
+export const configurations = sqliteTable("configurations", {
+  id: text("id").primaryKey(),
+  userId: text("userId").notNull(),
+  name: text("name").notNull(),
+  callsign: text("callsign").notNull(),
+  gridSquare: text("gridSquare").notNull(),
+  stationId: text("stationId").notNull(), // PSWS SITE_ID
+  instrumentId: text("instrumentId").notNull(),
   description: text("description"),
-  dataDir: varchar("dataDir", { length: 500 }),
-  archiveDir: varchar("archiveDir", { length: 500 }),
-  pswsEnabled: mysqlEnum("pswsEnabled", ["yes", "no"]).default("no").notNull(),
-  pswsServer: varchar("pswsServer", { length: 255 }).default("pswsnetwork.eng.ua.edu"),
-  createdAt: timestamp("createdAt").defaultNow(),
-  updatedAt: timestamp("updatedAt").defaultNow(),
+  dataDir: text("dataDir"),
+  archiveDir: text("archiveDir"),
+  pswsEnabled: text("pswsEnabled", { enum: ["yes", "no"] }).default("no").notNull(),
+  pswsServer: text("pswsServer").default("pswsnetwork.eng.ua.edu"),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
-export const channels = mysqlTable("channels", {
-  id: varchar("id", { length: 64 }).primaryKey(),
-  configId: varchar("configId", { length: 64 }).notNull(),
-  enabled: mysqlEnum("enabled", ["yes", "no"]).default("yes").notNull(),
-  description: varchar("description", { length: 255 }).notNull(),
-  frequencyHz: varchar("frequencyHz", { length: 20 }).notNull(), // Store as string to avoid precision issues
-  ssrc: varchar("ssrc", { length: 20 }).notNull(),
-  sampleRate: varchar("sampleRate", { length: 10 }).default("12000"),
-  processor: varchar("processor", { length: 50 }).default("grape"),
-  createdAt: timestamp("createdAt").defaultNow(),
+export const channels = sqliteTable("channels", {
+  id: text("id").primaryKey(),
+  configId: text("configId").notNull(),
+  enabled: text("enabled", { enum: ["yes", "no"] }).default("yes").notNull(),
+  description: text("description").notNull(),
+  frequencyHz: text("frequencyHz").notNull(), // Store as string to avoid precision issues
+  ssrc: text("ssrc").notNull(),
+  sampleRate: text("sampleRate").default("12000"),
+  processor: text("processor").default("grape"),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
 export type Configuration = typeof configurations.$inferSelect;
 export type InsertConfiguration = typeof configurations.$inferInsert;
 export type Channel = typeof channels.$inferSelect;
 export type InsertChannel = typeof channels.$inferInsert;
+
