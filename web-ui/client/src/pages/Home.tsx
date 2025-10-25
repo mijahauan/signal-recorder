@@ -1,13 +1,11 @@
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
+import { APP_LOGO, APP_TITLE } from "@/const";
 
 /**
  * All content in this page are only for example, delete if unneeded
  * When building pages, remember your instructions in Frontend Workflow, Frontend Best Practices, Design Guide and Common Pitfalls
  */
 export default function Home() {
-  const { user, isAuthenticated, logout } = useAuth();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -18,14 +16,7 @@ export default function Home() {
             {APP_LOGO && <img src={APP_LOGO} alt="Logo" className="h-8 w-8" />}
             <h1 className="text-2xl font-bold text-gray-900">{APP_TITLE}</h1>
           </div>
-          {isAuthenticated && (
-            <div className="flex items-center gap-4">
-              <span className="text-sm text-gray-600">Welcome, {user?.name}</span>
-              <Button variant="outline" size="sm" onClick={() => logout()}>
-                Logout
-              </Button>
-            </div>
-          )}
+
         </div>
       </header>
 
@@ -67,23 +58,13 @@ export default function Home() {
             </div>
 
             <div className="pt-6 border-t">
-              {isAuthenticated ? (
-                <Button
-                  size="lg"
-                  className="w-full md:w-auto"
-                  onClick={() => window.location.href = "/configs"}
-                >
-                  Manage Configurations →
-                </Button>
-              ) : (
-                <Button
-                  size="lg"
-                  className="w-full md:w-auto"
-                  onClick={() => window.location.href = getLoginUrl()}
-                >
-                  Sign In to Get Started
-                </Button>
-              )}
+              <Button
+                size="lg"
+                className="w-full md:w-auto"
+                onClick={() => window.location.href = "/configs"}
+              >
+                Manage Configurations →
+              </Button>
             </div>
           </div>
 
