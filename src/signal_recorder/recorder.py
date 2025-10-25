@@ -134,24 +134,24 @@ class StreamRecorder:
     
     def _build_command(self) -> list:
         """Build pcmrecord command line"""
-        multicast_target = f"{self.metadata.multicast_address}:{self.metadata.port}"
-        
         cmd = [
             self.config.pcmrecord_path,
-            "--directory", str(self.output_dir),
-            "--ssrc", str(self.metadata.ssrc),
-            "--length", str(self.config.file_length),
+            "-d", str(self.output_dir),
         ]
         
         # Add K1JT naming format flag
         if self.config.use_jt_naming:
-            cmd.append("--jt")
+            cmd.append("-j")
         
-        # Add padding flag to align to minute boundaries
-        cmd.append("--pad")
+        # Add verbose flag for debugging
+        cmd.append("-v")
         
-        # Add multicast address
-        cmd.append(multicast_target)
+        # Add max file length if specified (in seconds)
+        if self.config.file_length:
+            cmd.extend(["-L", str(self.config.file_length)])
+        
+        # Add multicast address (just the IP, pcmrecord auto-detects all SSRCs)
+        cmd.append(self.metadata.multicast_address)
         
         return cmd
 
