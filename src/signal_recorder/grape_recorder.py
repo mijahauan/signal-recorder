@@ -134,7 +134,12 @@ class RTPPacket:
 
         # Check for invalid float32 values (NaN, inf)
         if np.any(~np.isfinite(samples)):
-            logger.warning(f"RTP packet contains non-finite float32 values: {np.sum(~np.isfinite(samples))}")
+            # Only warn once globally to avoid spam (static variable approach)
+            if not hasattr(RTPPacket, '_warned_corruption'):
+                RTPPacket._warned_corruption = 0
+            RTPPacket._warned_corruption += 1
+            if RTPPacket._warned_corruption <= 3 or RTPPacket._warned_corruption % 100 == 0:
+                logger.warning(f"RTP packet contains non-finite float32 values: {np.sum(~np.isfinite(samples))} (total: {RTPPacket._warned_corruption})")
             # Replace invalid values with zeros
             samples = np.nan_to_num(samples, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -279,7 +284,12 @@ class DailyBuffer:
         self.current_date: Optional[datetime] = None
         self.buffer: Optional[np.ndarray] = None
         self.sample_count = 0
-        
+
+        # Track warnings to avoid spam
+        self.warned_negative_index = 0
+        self.warned_large_index = 0
+        self.warned_midnight_split = 0
+
         logger.info(f"Initialized daily buffer: {self.samples_per_day} samples/day @ {output_rate} Hz")
     
     def add_samples(self, samples: np.ndarray, timestamp: datetime):
@@ -312,11 +322,15 @@ class DailyBuffer:
 
         # Bounds checking to prevent overflow
         if start_index < 0:
-            logger.warning(f"Negative start_index: {start_index}, timestamp issue")
+            self.warned_negative_index += 1
+            if self.warned_negative_index <= 3 or self.warned_negative_index % 100 == 0:
+                logger.warning(f"Negative start_index: {start_index}, timestamp issue (total: {self.warned_negative_index})")
             return None, None
 
         if start_index >= self.samples_per_day:
-            logger.warning(f"Start_index {start_index} exceeds buffer size {self.samples_per_day}")
+            self.warned_large_index += 1
+            if self.warned_large_index <= 3 or self.warned_large_index % 100 == 0:
+                logger.warning(f"Start_index {start_index} exceeds buffer size {self.samples_per_day} (total: {self.warned_large_index})")
             return None, None
 
         # Add samples to buffer
@@ -338,13 +352,14 @@ class DailyBuffer:
                     safe_samples = samples[:samples_today].astype(np.complex64, copy=False)
                     self.buffer[start_index:] = safe_samples
                     self.sample_count += samples_today
+                    self.warned_midnight_split += 1
+                    if self.warned_midnight_split <= 3 or self.warned_midnight_split % 100 == 0:
+                        logger.warning(f"Samples span midnight: {len(samples)} samples, "
+                                     f"wrote {samples_today} to current day (total: {self.warned_midnight_split})")
                 except (ValueError, OverflowError) as e:
                     logger.error(f"Error in midnight split: {e}")
                     return None, None
 
-            logger.warning(f"Samples span midnight: {len(samples)} samples, "
-                         f"wrote {samples_today} to current day")
-        
         return None, None
     
     def finalize_day(self) -> Tuple[Optional[np.ndarray], Optional[datetime]]:
@@ -386,6 +401,9 @@ class RTPReceiver:
         self.running = False
         self.receive_thread: Optional[threading.Thread] = None
         self.callbacks: Dict[int, callable] = {}  # ssrc -> callback function
+        
+        # Track warnings to avoid spam
+        self.warned_bad_payload_type = 0
         
     def register_callback(self, ssrc: int, callback: callable):
         """
@@ -461,7 +479,9 @@ class RTPReceiver:
 
                     # Validate header
                     if header.payload_type not in [96, 97, 98, 99]:  # Common RTP payload types for audio
-                        logger.debug(f"Unexpected RTP payload type: {header.payload_type}")
+                        self.warned_bad_payload_type += 1
+                        if self.warned_bad_payload_type <= 3 or self.warned_bad_payload_type % 100 == 0:
+                            logger.warning(f"Unexpected RTP payload type: {header.payload_type} (total: {self.warned_bad_payload_type})")
                     if len(payload) == 0:
                         logger.debug("Empty RTP payload, skipping")
                         continue
@@ -550,8 +570,10 @@ class GRAPEChannelRecorder:
         self.rtp_timestamp_base: Optional[int] = None
         self.unix_time_base: Optional[float] = None
         
-        # Track warnings to avoid spam
-        self.warned_non_finite = False
+        # Track warnings to avoid spam but maintain visibility
+        self.warned_non_finite = 0  # Counter instead of boolean
+        self.warned_large_values = 0
+        self.warned_rtp_corruption = 0
 
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -614,7 +636,9 @@ class GRAPEChannelRecorder:
 
             # Check for invalid IQ values
             if np.any(~np.isfinite(iq_samples)):
-                logger.warning(f"SSRC 0x{self.ssrc:08x}: Non-finite IQ samples: {np.sum(~np.isfinite(iq_samples))} values")
+                self.warned_rtp_corruption += 1
+                if self.warned_rtp_corruption <= 3 or self.warned_rtp_corruption % 100 == 0:  # Show first 3, then every 100th
+                    logger.warning(f"SSRC 0x{self.ssrc:08x}: Non-finite IQ samples: {np.sum(~np.isfinite(iq_samples))} values ({self.warned_rtp_corruption} total)")
                 # Replace invalid values with zeros
                 iq_samples = np.nan_to_num(iq_samples, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -622,7 +646,9 @@ class GRAPEChannelRecorder:
             max_reasonable_amplitude = 1e6  # Much larger than typical signal levels
             if np.any(np.abs(iq_samples) > max_reasonable_amplitude):
                 large_count = np.sum(np.abs(iq_samples) > max_reasonable_amplitude)
-                logger.warning(f"SSRC 0x{self.ssrc:08x}: Unreasonably large IQ values: {large_count} samples")
+                self.warned_large_values += 1
+                if self.warned_large_values <= 3 or self.warned_large_values % 100 == 0:  # Show first 3, then every 100th
+                    logger.warning(f"SSRC 0x{self.ssrc:08x}: Unreasonably large IQ values: {large_count} samples ({self.warned_large_values} total)")
                 # Clamp large values
                 iq_samples = np.clip(iq_samples, -max_reasonable_amplitude, max_reasonable_amplitude)
             
@@ -648,9 +674,9 @@ class GRAPEChannelRecorder:
 
                 # Check for invalid values (NaN, inf)
                 if np.any(~np.isfinite(resampled)):
-                    if not self.warned_non_finite:
-                        logger.warning(f"SSRC 0x{self.ssrc:08x}: Non-finite values in resampled data: {np.sum(~np.isfinite(resampled))} values (will suppress further warnings)")
-                        self.warned_non_finite = True
+                    self.warned_non_finite += 1
+                    if self.warned_non_finite <= 3 or self.warned_non_finite % 100 == 0:  # Show first 3, then every 100th
+                        logger.warning(f"SSRC 0x{self.ssrc:08x}: Non-finite values in resampled data: {np.sum(~np.isfinite(resampled))} values ({self.warned_non_finite} total)")
                     # Replace invalid values with zeros
                     resampled = np.nan_to_num(resampled, nan=0.0, posinf=0.0, neginf=0.0)
                 
