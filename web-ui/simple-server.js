@@ -656,6 +656,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
     if (action === 'start') {
       // Check if already running using comprehensive detection (same as status API)
       const { exec } = await import('child_process');
+      const venvPath = path.default.join(__dirname, '..', 'venv', 'bin', 'signal-recorder');
 
       try {
         // Very specific detection patterns that ONLY match actual signal-recorder daemon processes
