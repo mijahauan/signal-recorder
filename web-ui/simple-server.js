@@ -531,7 +531,8 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
     // Check daemon status file written by watchdog
     const fs = await import('fs');
     const path = await import('path');
-    const statusFile = path.default.join(__dirname, '..', 'test-data', 'daemon-status.json');
+    const cwd = process.cwd();
+    const statusFile = path.default.join(cwd, '..', 'test-data', 'daemon-status.json');
 
     try {
       if (fs.default.existsSync(statusFile)) {
@@ -612,7 +613,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       // Check daemon status file written by watchdog
       const fs = await import('fs');
       const path = await import('path');
-      const statusFile = path.default.join(__dirname, '..', 'test-data', 'daemon-status.json');
+      const statusFile = path.default.join(cwd, '..', 'test-data', 'daemon-status.json');
 
       try {
         if (fs.default.existsSync(statusFile)) {
@@ -664,20 +665,24 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       // Try to start daemon using dynamic path resolution
       const { exec } = await import('child_process');
       const { join } = await import('path');
-      const venvPython = join(__dirname, '..', 'venv', 'bin', 'python');
-      const daemonScript = join(__dirname, '..', 'test-daemon.py');
-      const configPath = join(__dirname, '..', 'config', 'grape-S000171.toml');
+      const cwd = process.cwd();
+      const daemonScript = join(cwd, '..', 'test-daemon.py');
+      const configPath = join(cwd, '..', 'config', 'grape-S000171.toml');
 
       try {
         console.log('Attempting to start daemon...');
-        console.log('Command:', `${venvPython} ${daemonScript} --config ${configPath}`);
+
+        // Use system python3 since venv is not available in Linux environment
+        const systemPython3 = 'python3';
+
+        console.log('Command:', `${systemPython3} ${daemonScript} --config ${configPath}`);
 
         const startResult = await new Promise((resolve) => {
-          exec(`${venvPython} ${daemonScript} --config ${configPath}`, {
+          exec(`${systemPython3} ${daemonScript} --config ${configPath}`, {
             timeout: 10000,
             env: {
               ...process.env,
-              PYTHONPATH: join(__dirname, '..', 'src')
+              PYTHONPATH: join(cwd, '..', 'src')
             }
           }, (error, stdout, stderr) => {
             console.log('Daemon exec result:', {
@@ -690,9 +695,18 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
               success: !error,
               error: error,
               stdout: stdout || '',
-              stderr: stderr || ''
+              stderr: stderr || '',
+              python: 'system'
             });
           });
+        });
+
+        console.log('Daemon exec result:', {
+          error: startResult.error ? startResult.error.message : null,
+          stdout: startResult.stdout,
+          stderr: startResult.stderr,
+          success: startResult.success,
+          python: startResult.python
         });
 
         if (startResult.success) {
@@ -701,15 +715,28 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             message: 'Daemon start command sent',
             stdout: startResult.stdout,
             stderr: startResult.stderr,
-            commandUsed: `${venvPython} ${daemonScript} --config ${configPath}`
+            commandUsed: `${systemPython3} ${daemonScript} --config ${configPath}`,
+            pythonUsed: startResult.python,
+            note: `Used ${startResult.python} python interpreter`
           });
         } else {
+          // Provide detailed error information for troubleshooting
+          const errorMsg = startResult.error ? startResult.error.message : 'Unknown error';
+          let troubleshooting = '';
+
+          if (errorMsg.includes('ENOENT') || errorMsg.includes('Command failed')) {
+            troubleshooting = 'This usually means the daemon script, config file, or python interpreter is not found at the expected paths. ';
+            troubleshooting += 'Please ensure the signal-recorder files are available in your environment.';
+          }
+
           res.status(500).json({
-            error: `Failed to start daemon: ${startResult.error ? startResult.error.message : 'Unknown error'}`,
+            error: `Failed to start daemon: ${errorMsg}`,
             stdout: startResult.stdout,
             stderr: startResult.stderr,
-            commandUsed: `${venvPython} ${daemonScript} --config ${configPath}`,
-            note: 'Using simple test daemon for web UI testing'
+            commandUsed: `${systemPython3} ${daemonScript} --config ${configPath}`,
+            pythonUsed: startResult.python,
+            troubleshooting: troubleshooting,
+            note: `Tried ${startResult.python} python interpreter - check file paths and permissions`
           });
         }
 
@@ -722,7 +749,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       // Check daemon status file written by watchdog
       const fs = await import('fs');
       const path = await import('path');
-      const statusFile = path.default.join(__dirname, '..', 'test-data', 'daemon-status.json');
+      const statusFile = path.default.join(cwd, '..', 'test-data', 'daemon-status.json');
 
       try {
         let pids = [];
@@ -837,7 +864,9 @@ app.get('/api/monitoring/data-status', requireAuth, async (req, res) => {
   try {
     // Check data directory for recent files - simplified to avoid race conditions
     const { exec } = await import('child_process');
-    const dataDir = join(__dirname, '..', 'test-data', 'raw');
+    const { join } = await import('path');
+    const cwd = process.cwd();
+    const dataDir = join(cwd, '..', 'test-data', 'raw');
 
     // Simple sequential approach to avoid any race conditions
     let dirExists = false;
@@ -914,8 +943,9 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
       const fs = await import('fs');
       const path = await import('path');
       const { parse: parseToml } = await import('toml');
+      const cwd = process.cwd();
 
-      const configPath = path.default.join(__dirname, '..', 'config', 'grape-S000171.toml');
+      const configPath = path.default.join(cwd, '..', 'config', 'grape-S000171.toml');
       const configContent = await fs.default.promises.readFile(configPath, 'utf8');
       const config = parseToml(configContent);
 
@@ -950,8 +980,8 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
 
     const { exec } = await import('child_process');
     const statusAddr = 'bee1-hf-status.local';
-    const venvPython = join(__dirname, '..', 'venv', 'bin', 'python');
-    const discoverScript = join(__dirname, '..', 'test-discover.py');
+    const venvPython = join(cwd, '..', 'venv', 'bin', 'python');
+    const discoverScript = join(cwd, '..', 'test-discover.py');
 
     try {
       const result = await new Promise((resolve, reject) => {
@@ -959,7 +989,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           timeout: 10000,
           env: {
             ...process.env,
-            PYTHONPATH: join(__dirname, '..', 'src')
+            PYTHONPATH: join(cwd, '..', 'src')
           }
         }, (error, stdout, stderr) => {
           if (error) {
