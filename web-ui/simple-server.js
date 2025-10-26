@@ -677,15 +677,21 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       const configPath = '../config/grape-S000171.toml';
 
       try {
+        console.log('Attempting to start daemon...');
         const startResult = await new Promise((resolve) => {
           exec(`${venvPython} ${daemonScript} --config ${configPath}`, {
-            detached: true,
             timeout: 10000,
             env: {
               ...process.env,
               PYTHONPATH: '/Users/mjh/Sync/GitHub/signal-recorder/src'
             }
           }, (error, stdout, stderr) => {
+            console.log('Daemon exec result:', {
+              error: error ? error.message : null,
+              stdout: stdout || '',
+              stderr: stderr || '',
+              success: !error
+            });
             resolve({
               success: !error,
               error: error,
