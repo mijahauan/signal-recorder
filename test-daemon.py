@@ -15,9 +15,14 @@ def main():
     print(f"Starting test daemon with config: {config_file}")
     print("Test daemon running (Ctrl+C to stop)...")
     
-    # Create test data directory
-    test_data_dir = "/Users/mjh/Sync/GitHub/signal-recorder/test-data/raw"
-    os.makedirs(test_data_dir, exist_ok=True)
+    # Create test data directory (relative to script location)
+    script_dir = Path(__file__).parent
+    test_data_dir = script_dir / "test-data" / "raw"
+    test_data_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Load config file (relative to script location)
+    config_path = script_dir / config_file
+    print(f"Loading config from: {config_path}")
     
     try:
         while True:

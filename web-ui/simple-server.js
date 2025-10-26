@@ -746,7 +746,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       const path = await import('path');
       const venvPython = path.default.join(__dirname, '..', 'venv', 'bin', 'python');
       const daemonScript = path.default.join(__dirname, '..', 'test-daemon.py');
-      const configPath = path.default.join(__dirname, '..', 'config', 'grape-S000171.toml');
+      const configPath = 'config/grape-S000171.toml'; // Relative path for daemon script
 
       try {
         console.log('Attempting to start daemon...');
