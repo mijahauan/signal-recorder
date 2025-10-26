@@ -653,22 +653,92 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
     const { action } = req.body; // 'start' or 'stop'
 
     if (action === 'start') {
-      // Check if already running first
+      // Check if already running using comprehensive detection (same as status API)
       const { exec } = await import('child_process');
 
       try {
-        const statusResult = await new Promise((resolve) => {
-          exec(`pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`, (error, stdout, stderr) => {
-            resolve({ error, stdout: stdout ? stdout.trim() : '' });
-          });
-        });
+        // Very specific detection patterns that ONLY match actual signal-recorder daemon processes
+        const checkCommands = [
+          // 1. Look for signal-recorder daemon process (exclude our own server)
+          `pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`,
+          // 2. Look for python processes running signal-recorder daemon (exclude our server)
+          `pgrep -f "python.*signal-recorder.*daemon" 2>/dev/null | grep -v "^${process.pid}$"`,
+          // 3. Check venv path specifically
+          `pgrep -f "${venvPath}.*daemon" 2>/dev/null | grep -v "^${process.pid}$"`,
+          // 4. Check module execution
+          `pgrep -f "python.*-m signal_recorder.cli.*daemon" 2>/dev/null | grep -v "^${process.pid}$"`,
+          // 5. Check test daemon script
+          `pgrep -f "python.*test-daemon.py" 2>/dev/null | grep -v "^${process.pid}$"`,
+          // 6. Check ps output with very specific patterns (exclude node processes)
+          'ps aux | grep -E "[s]ignal-recorder daemon|[p]ython.*[s]ignal-recorder.*daemon" | grep -v "node.*simple-server" | grep -v grep 2>/dev/null',
+          // 7. Check detailed process info (exclude our server PID)
+          'ps -o pid,comm,args | grep -E "[s]ignal-recorder daemon|[p]ython.*[s]ignal-recorder.*daemon" | grep -v "node.*simple-server" | grep -v grep 2>/dev/null'
+        ];
 
-        if (!statusResult.error && statusResult.stdout) {
-          res.status(400).json({ error: 'Daemon is already running', pid: statusResult.stdout.split('\n')[0] });
-          return;
+        for (const cmd of checkCommands) {
+          const result = await new Promise((resolve) => {
+            exec(cmd, (error, stdout, stderr) => {
+              if (!error && stdout && stdout.trim()) {
+                const lines = stdout.trim().split('\n');
+                const validPids = [];
+
+                for (const line of lines) {
+                  const parts = line.trim().split(/\s+/);
+                  if (parts.length > 0) {
+                    const pid = parts[0];
+                    if (pid && /^\d+$/.test(pid) && pid !== process.pid.toString()) {
+                      validPids.push(pid);
+                    }
+                  }
+                }
+
+                if (validPids.length > 0) {
+                  resolve({
+                    running: true,
+                    pid: validPids[0],
+                    pids: validPids,
+                    details: `Found via: ${cmd}`,
+                    method: cmd,
+                    stdout: stdout.trim()
+                  });
+                } else {
+                  resolve({
+                    running: false,
+                    details: `No matches via: ${cmd}`,
+                    method: cmd
+                  });
+                }
+              } else {
+                resolve({
+                  running: false,
+                  details: `No matches via: ${cmd}`,
+                  method: cmd
+                });
+              }
+            });
+          });
+
+          if (result.running) {
+            console.log('Start validation found existing daemon:', result);
+            res.status(400).json({
+              error: 'Daemon is already running',
+              pid: result.pid,
+              pids: result.pids,
+              details: result.details,
+              method: result.method,
+              verification: result.stdout,
+              note: 'Validation found existing daemon process'
+            });
+            return;
+          }
         }
+
+        // If no methods found the daemon, proceed with start
+        console.log('No existing daemon found via any detection method');
+
       } catch (e) {
-        // Continue with start attempt
+        // Continue with start attempt if validation fails
+        console.log('Daemon validation failed, proceeding with start attempt:', e.message);
       }
 
       // Try to start daemon using simple test script
