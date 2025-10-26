@@ -675,66 +675,77 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
         console.log('Daemon validation failed, proceeding with start attempt:', e.message);
       }
 
-      // Start daemon using system python3
-      const { exec } = await import('child_process');
+      // Start daemon using system python3 in background
+      const { spawn } = await import('child_process');
 
       try {
         console.log('Attempting to start daemon...');
         console.log('Command: python3', daemonScript, '--config', configPath);
 
-        const startResult = await new Promise((resolve) => {
-          exec(`python3 ${daemonScript} --config ${configPath}`, {
-            timeout: 10000,
-            cwd: installDir,
-            env: {
-              ...process.env,
-              PYTHONPATH: srcPath
-            }
-          }, (error, stdout, stderr) => {
-            console.log('Daemon exec result:', {
-              error: error ? error.message : null,
-              stdout: stdout || '',
-              stderr: stderr || '',
-              success: !error
-            });
+        // Start daemon in background using spawn
+        const daemonProcess = spawn('python3', [daemonScript, '--config', configPath], {
+          cwd: installDir,
+          env: {
+            ...process.env,
+            PYTHONPATH: srcPath
+          },
+          detached: true,
+          stdio: 'ignore'
+        });
+
+        // Detach the process so it runs independently
+        daemonProcess.unref();
+
+        // Give it a moment to start
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Check if process is still running
+        const checkResult = await new Promise((resolve) => {
+          exec(`ps -p ${daemonProcess.pid} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
+            const isRunning = !error && stdout && stdout.trim().includes('python');
             resolve({
-              success: !error,
+              success: isRunning,
               error: error,
               stdout: stdout || '',
               stderr: stderr || '',
-              python: 'system'
+              pid: daemonProcess.pid
             });
           });
         });
 
-        if (startResult.success) {
+        if (checkResult.success) {
+          // Also start the watchdog to monitor the daemon
+          const watchdogProcess = spawn('python3', [join(installDir, 'test-watchdog.py')], {
+            cwd: installDir,
+            env: {
+              ...process.env,
+              PYTHONPATH: srcPath
+            },
+            detached: true,
+            stdio: 'ignore'
+          });
+          watchdogProcess.unref();
+
           res.json({
             success: true,
-            message: 'Daemon start command sent',
-            stdout: startResult.stdout,
-            stderr: startResult.stderr,
+            message: 'Daemon started successfully in background',
+            stdout: checkResult.stdout,
+            stderr: checkResult.stderr,
+            daemonPid: daemonProcess.pid,
+            watchdogPid: watchdogProcess.pid,
             commandUsed: `python3 ${daemonScript} --config ${configPath}`,
-            pythonUsed: startResult.python,
-            note: `Used ${startResult.python} python interpreter`
+            pythonUsed: 'system',
+            note: `Started daemon (PID: ${daemonProcess.pid}) and watchdog (PID: ${watchdogProcess.pid})`
           });
         } else {
-          // Provide detailed error information for troubleshooting
-          const errorMsg = startResult.error ? startResult.error.message : 'Unknown error';
-          let troubleshooting = '';
-
-          if (errorMsg.includes('ENOENT') || errorMsg.includes('Command failed')) {
-            troubleshooting = 'This usually means the daemon script, config file, or python interpreter is not found at the expected paths. ';
-            troubleshooting += 'Please ensure the signal-recorder files are available in your environment.';
-          }
-
           res.status(500).json({
-            error: `Failed to start daemon: ${errorMsg}`,
-            stdout: startResult.stdout,
-            stderr: startResult.stderr,
+            error: 'Daemon failed to start or exited immediately',
+            stdout: checkResult.stdout,
+            stderr: checkResult.stderr,
             commandUsed: `python3 ${daemonScript} --config ${configPath}`,
-            pythonUsed: startResult.python,
-            troubleshooting: troubleshooting,
-            note: `Tried ${startResult.python} python interpreter - check file paths and permissions`
+            pythonUsed: 'system',
+            troubleshooting: 'Daemon process exited immediately. Check daemon script and config file.',
+            note: 'Process started but exited - check daemon script logs'
           });
         }
 
@@ -787,10 +798,11 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
         }
 
         if (pids.length > 0) {
-          // Try specific stop methods
+          // Try specific stop methods - updated for both daemon and watchdog
           const stopMethods = [
             `pkill -f "python.*test-daemon.py" 2>/dev/null`,
-            `kill ${pids[0]} 2>/dev/null`
+            `pkill -f "python.*test-watchdog.py" 2>/dev/null`,
+            `kill ${pids[0]} 2>/dev/null`  // Kill main daemon process
           ];
 
           let stopped = false;
@@ -816,7 +828,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
           }
 
           // Wait a moment and verify it's actually stopped
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise(resolve => setTimeout(resolve, 2000));
 
           // Clean up status file
           try {
