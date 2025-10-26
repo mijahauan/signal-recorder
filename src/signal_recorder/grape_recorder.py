@@ -40,9 +40,33 @@ class GRAPERecorderManager:
 
         print(f"Discovering channels from {radiod_address}")
 
-        # Check if radiod is available (test mode)
+        # Try to discover channels using control utility
         try:
-            # In test mode, just use channels from config
+            from .control_discovery import discover_channels_via_control
+            
+            channels = discover_channels_via_control(radiod_address, timeout=5.0)
+            
+            if channels:
+                print("SSRC      Frequency  Rate   Preset  SNR    Address")
+                print("--------- ---------- ------ ------- ------ ------------------")
+                
+                for ssrc, info in sorted(channels.items()):
+                    freq_mhz = info.frequency / 1000000
+                    snr_str = f"{info.snr:>4.1f}" if info.snr != float('-inf') else "-inf"
+                    address = f"{info.multicast_address}:{info.port}"
+                    
+                    print(f"{ssrc:>8} {freq_mhz:>8.2f}MHz {info.sample_rate:>5} {info.preset:>6} {snr_str:>5} {address}")
+                
+                return True
+            else:
+                # No channels discovered, fall back to config
+                print("No channels discovered via control utility, using config")
+                
+        except Exception as e:
+            print(f"Control utility discovery failed: {e}, using config fallback")
+        
+        # Fallback: use channels from config
+        try:
             if self.config and 'recorder' in self.config and 'channels' in self.config['recorder']:
                 print("SSRC      Frequency  Rate   Preset  SNR    Address")
                 print("--------- ---------- ------ ------- ------ ------------------")

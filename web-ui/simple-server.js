@@ -303,7 +303,7 @@ app.get('/api/configurations/:id/export', requireAuth, async (req, res) => {
     // [ka9q] section - radio configuration
     toml += `\n[ka9q]\n`;
     toml += `# ka9q-radio status address\n`;
-    toml += `status_address = "239.251.200.193"\n`;
+    toml += `status_address = "239.192.152.141"\n`;
     toml += `auto_create_channels = true\n`;
 
     // [recorder] section
@@ -437,7 +437,7 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
 
     // [ka9q] section
     toml += `\n[ka9q]\n`;
-    toml += `status_address = "239.251.200.193"\n`;
+    toml += `status_address = "239.192.152.141"\n`;
     toml += `auto_create_channels = true\n`;
 
     // [recorder] section
@@ -1084,7 +1084,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
     console.log('Attempting channel discovery via CLI command...');
 
     // Try CLI discovery first (real radio addresses)
-    const statusAddr = '239.251.200.193';  // Real radio status address from config
+    const statusAddr = '239.192.152.141';  // Real radio status address from config
 
     try {
       const result = await new Promise((resolve, reject) => {
@@ -1170,7 +1170,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           rate: channel.sample_rate.toString(),
           preset: channel.preset,
           snr: 'N/A (config)',
-          address: '239.251.200.193:5004'  // Use real radio multicast address
+          address: '239.192.152.141:5004'  // Use real radio multicast address
         }));
 
         console.log('Successfully loaded channels from config:', channels.length);
