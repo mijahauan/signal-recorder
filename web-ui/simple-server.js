@@ -11,15 +11,15 @@ const installDir = isProduction ? '/usr/local/lib/signal-recorder' : join(__dirn
 
 // Use install directory (repository root or system installation) as base for all operations
 const venvPython = join(installDir, 'venv', 'bin', 'python');
-const daemonScript = join(installDir, 'test-daemon.py');
+const daemonScript = join(installDir, 'src', 'signal_recorder', 'cli.py');
 const configPath = isProduction ?
   '/etc/signal-recorder/config.toml' :
   join(installDir, 'config', 'grape-S000171.toml');
 const srcPath = join(installDir, 'src');
 const dataDir = isProduction ?
-  '/var/lib/signal-recorder/test-data/raw' :
-  join(installDir, 'test-data', 'raw');
-const statusFile = join(installDir, 'test-data', 'daemon-status.json');
+  '/var/lib/signal-recorder/data' :
+  join(installDir, 'data');
+const statusFile = join(installDir, 'data', 'daemon-status.json');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -600,16 +600,16 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
 
       const { exec } = await import('child_process');
       const findResult = await new Promise((resolve) => {
-        exec(`pgrep -f "test-daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+        exec(`pgrep -f "cli.py daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
           const pids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
           resolve({ pids, error: error ? error.message : null });
         });
       });
 
-      // If pgrep didn't work, try ps aux approach
+      // If pgrep didn't work, try broader search
       if (findResult.pids.length === 0) {
         await new Promise((resolve) => {
-          exec(`ps aux | grep "test-daemon" | grep -v grep | awk '{print $2}' 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+          exec(`ps aux | grep "cli.py" | grep -v grep | awk '{print $2}' 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
             const morePids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
             findResult.pids = morePids;
             resolve();
@@ -728,10 +728,10 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
       try {
         console.log('Attempting to start daemon...');
-        console.log('Command: python3', daemonScript, '--config', configPath);
+        console.log('Command: python3', daemonScript, 'daemon --config', configPath);
 
         // Start daemon in background using spawn
-        const daemonProcess = spawn('python3', [daemonScript, '--config', configPath], {
+        const daemonProcess = spawn('python3', [daemonScript, 'daemon', '--config', configPath], {
           cwd: installDir,
           env: {
             ...process.env,
@@ -782,7 +782,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             stderr: checkResult.stderr,
             daemonPid: daemonProcess.pid,
             watchdogPid: watchdogProcess.pid,
-            commandUsed: `python3 ${daemonScript} --config ${configPath}`,
+            commandUsed: `python3 ${daemonScript} daemon --config ${configPath}`,
             pythonUsed: 'system',
             note: `Started daemon (PID: ${daemonProcess.pid}) and watchdog (PID: ${watchdogProcess.pid})`
           });
@@ -791,7 +791,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             error: 'Daemon failed to start or exited immediately',
             stdout: checkResult.stdout,
             stderr: checkResult.stderr,
-            commandUsed: `python3 ${daemonScript} --config ${configPath}`,
+            commandUsed: `python3 ${daemonScript} daemon --config ${configPath}`,
             pythonUsed: 'system',
             troubleshooting: 'Daemon process exited immediately. Check daemon script and config file.',
             note: 'Process started but exited - check daemon script logs'
@@ -925,7 +925,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
           try {
             // Find daemon processes directly using multiple methods
             const findResult = await new Promise((resolve) => {
-              exec(`pgrep -f "test-daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+              exec(`pgrep -f "cli.py daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
                 const pids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
                 resolve({ pids, error: error ? error.message : null });
               });
@@ -934,7 +934,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             // If that didn't work, try broader search
             if (findResult.pids.length === 0) {
               await new Promise((resolve) => {
-                exec(`ps aux | grep "test-daemon" | grep -v grep | awk '{print $2}' 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+                exec(`ps aux | grep "cli.py" | grep -v grep | awk '{print $2}' 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
                   const morePids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
                   findResult.pids = morePids;
                   resolve();
@@ -1097,12 +1097,12 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
 
     // Try CLI discovery first (real radio addresses)
     const { exec } = await import('child_process');
-    const statusAddr = 'bee1-hf-status.local';
-    const discoverScript = join(installDir, 'test-discover.py');
+    const statusAddr = '239.251.200.193';  // Real radio status address from config
+    const discoverScript = join(installDir, 'src', 'signal_recorder', 'cli.py');
 
     try {
       const result = await new Promise((resolve, reject) => {
-        exec(`python3 ${discoverScript} --radiod ${statusAddr}`, {
+        exec(`python3 ${discoverScript} discover --radiod ${statusAddr}`, {
           timeout: 10000,
           env: {
             ...process.env,
@@ -1148,7 +1148,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           timestamp: new Date().toISOString(),
           total: channels.length,
           rawOutput: result.stdout,
-          commandUsed: `python3 ${discoverScript} --radiod ${statusAddr}`,
+          commandUsed: `python3 ${discoverScript} discover --radiod ${statusAddr}`,
           note: 'Discovered via CLI command - real radio addresses'
         });
         return;
@@ -1176,7 +1176,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           rate: channel.sample_rate.toString(),
           preset: channel.preset,
           snr: 'N/A (config)',
-          address: '239.192.152.141:5004'  // Use real radio multicast address
+          address: '239.251.200.193:5004'  // Use real radio multicast address
         }));
 
         console.log('Successfully loaded channels from config:', channels.length);
