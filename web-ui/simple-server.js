@@ -656,7 +656,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
     if (action === 'start') {
       // Check if already running using comprehensive detection (same as status API)
       const { exec } = await import('child_process');
-      const venvPath = path.default.join(__dirname, '..', 'venv', 'bin', 'signal-recorder');
+      const venvPath = join(__dirname, '..', 'venv', 'bin', 'signal-recorder');
 
       try {
         // Very specific detection patterns that ONLY match actual signal-recorder daemon processes
@@ -744,9 +744,8 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       }
 
       // Try to start daemon using dynamic path resolution
-      const path = await import('path');
-      const venvPython = path.default.join(__dirname, '..', 'venv', 'bin', 'python');
-      const daemonScript = path.default.join(__dirname, '..', 'test-daemon.py');
+      const venvPython = join(__dirname, '..', 'venv', 'bin', 'python');
+      const daemonScript = join(__dirname, '..', 'test-daemon.py');
       const configPath = 'config/grape-S000171.toml'; // Relative path for daemon script
 
       try {
@@ -756,7 +755,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             timeout: 10000,
             env: {
               ...process.env,
-              PYTHONPATH: path.default.join(__dirname, '..', 'src')
+              PYTHONPATH: join(__dirname, '..', 'src')
             }
           }, (error, stdout, stderr) => {
             console.log('Daemon exec result:', {
@@ -800,8 +799,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
     } else if (action === 'stop') {
       // Stop daemon using multiple specific methods
       const { exec } = await import('child_process');
-      const path = await import('path');
-      const venvPath = path.default.join(__dirname, '..', 'venv', 'bin', 'signal-recorder');
+      const venvPath = join(__dirname, '..', 'venv', 'bin', 'signal-recorder');
 
       try {
         // First verify there's actually a daemon running (excluding our server)
@@ -903,8 +901,7 @@ app.get('/api/monitoring/data-status', requireAuth, async (req, res) => {
   try {
     // Check data directory for recent files - simplified to avoid race conditions
     const { exec } = await import('child_process');
-    const path = await import('path');
-    const dataDir = path.default.join(__dirname, '..', 'test-data', 'raw');
+    const dataDir = join(__dirname, '..', 'test-data', 'raw');
 
     // Simple sequential approach to avoid any race conditions
     let dirExists = false;
@@ -1017,8 +1014,8 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
 
     const { exec } = await import('child_process');
     const statusAddr = 'bee1-hf-status.local';
-    const venvPython = path.default.join(__dirname, '..', 'venv', 'bin', 'python');
-    const discoverScript = path.default.join(__dirname, '..', 'test-discover.py');
+    const venvPython = join(__dirname, '..', 'venv', 'bin', 'python');
+    const discoverScript = join(__dirname, '..', 'test-discover.py');
 
     try {
       const result = await new Promise((resolve, reject) => {
@@ -1026,7 +1023,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           timeout: 10000,
           env: {
             ...process.env,
-            PYTHONPATH: path.default.join(__dirname, '..', 'src')
+            PYTHONPATH: join(__dirname, '..', 'src')
           }
         }, (error, stdout, stderr) => {
           if (error) {
