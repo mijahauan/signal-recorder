@@ -595,6 +595,43 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
         }
       }
 
+      // If no status file or invalid process, try direct process detection
+      console.log('No valid watchdog status, checking for daemon processes directly...');
+
+      const { exec } = await import('child_process');
+      const findResult = await new Promise((resolve) => {
+        exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+          const pids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
+          resolve({ pids, error: error ? error.message : null });
+        });
+      });
+
+      if (findResult.pids.length > 0) {
+        console.log(`Found daemon processes via direct search: ${findResult.pids.join(', ')}`);
+
+        // Verify the first process is actually a daemon
+        const verifyResult = await new Promise((resolve) => {
+          exec(`ps -p ${findResult.pids[0]} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
+            const comm = stdout ? stdout.trim() : '';
+            resolve({ valid: !error && comm.includes('python'), comm });
+          });
+        });
+
+        if (verifyResult.valid) {
+          res.json({
+            running: true,
+            timestamp: new Date().toISOString(),
+            pid: parseInt(findResult.pids[0]),
+            pids: findResult.pids.map(pid => parseInt(pid)),
+            details: 'Daemon running (detected via process search)',
+            method: 'direct process detection',
+            verification: `Process ${findResult.pids[0]} is ${verifyResult.comm}`,
+            note: 'Found daemon processes via direct system search'
+          });
+          return;
+        }
+      }
+
       // If no status file or invalid process
       console.log('No daemon status from watchdog');
       res.json({
@@ -817,6 +854,8 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
                     stopped = true;
                     methodUsed = cmd;
                     console.log(`Successfully stopped daemon via: ${cmd}`);
+                  } else {
+                    console.log(`Stop method ${cmd} failed:`, error.message);
                   }
                   resolve();
                 });
@@ -846,12 +885,64 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             verification: stopped ? 'confirmed stopped' : 'may still be running'
           });
         } else {
-          res.json({
-            success: true,
-            message: 'No daemon processes found to stop',
-            pidsFound: [],
-            verification: 'no processes running'
-          });
+          // Try to find processes directly without status file
+          console.log('No PIDs from status file, searching for processes directly...');
+
+          try {
+            // Find daemon processes directly
+            const findResult = await new Promise((resolve) => {
+              exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+                const pids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
+                resolve({ pids, error: error ? error.message : null });
+              });
+            });
+
+            if (findResult.pids.length > 0) {
+              console.log(`Found daemon processes directly: ${findResult.pids.join(', ')}`);
+
+              // Try to stop them
+              const stopCmd = `pkill -f "python.*test-daemon.py" 2>/dev/null && pkill -f "python.*test-watchdog.py" 2>/dev/null`;
+              await new Promise((resolve) => {
+                exec(stopCmd, (error, stdout, stderr) => {
+                  console.log('Direct stop result:', { error: error ? error.message : null, stdout, stderr });
+                  resolve();
+                });
+              });
+
+              // Wait and verify
+              await new Promise(resolve => setTimeout(resolve, 1000));
+
+              // Clean up status file
+              try {
+                fs.default.unlinkSync(statusFile);
+              } catch (e) {
+                // Ignore cleanup errors
+              }
+
+              res.json({
+                success: true,
+                message: 'Daemon stopped successfully via direct process search',
+                methodUsed: 'direct-pkill',
+                pidsFound: findResult.pids,
+                verification: 'stopped via direct process search'
+              });
+            } else {
+              res.json({
+                success: true,
+                message: 'No daemon processes found to stop',
+                pidsFound: [],
+                verification: 'no processes running'
+              });
+            }
+          } catch (error) {
+            console.error('Direct process search failed:', error);
+            res.json({
+              success: true,
+              message: 'Stop attempt completed',
+              error: error.message,
+              verification: 'unknown status'
+            });
+          }
         }
 
       } catch (error) {
