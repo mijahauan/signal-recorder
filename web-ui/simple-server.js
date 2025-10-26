@@ -658,7 +658,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
       try {
         const statusResult = await new Promise((resolve) => {
-          exec('pgrep -f "signal-recorder daemon"', (error, stdout, stderr) => {
+          exec(`pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`, (error, stdout, stderr) => {
             resolve({ error, stdout: stdout ? stdout.trim() : '' });
           });
         });
