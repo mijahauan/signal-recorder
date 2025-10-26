@@ -700,6 +700,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
         await new Promise(resolve => setTimeout(resolve, 2000));
 
         // Check if process is still running
+        const { exec } = await import('child_process');
         const checkResult = await new Promise((resolve) => {
           exec(`ps -p ${daemonProcess.pid} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
             const isRunning = !error && stdout && stdout.trim().includes('python');
@@ -1062,6 +1063,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
 
 app.get('/api/monitoring/logs', requireAuth, async (req, res) => {
   try {
+    const { exec } = await import('child_process');
 
     // Try multiple log locations and search patterns
     const logCommands = [
