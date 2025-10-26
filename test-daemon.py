@@ -40,9 +40,13 @@ def main():
     test_data_dir = script_dir / "test-data" / "raw"
     test_data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load config file (relative to script location)
+    # Try to load config file (relative to script location)
     config_path = script_dir / config_file
-    print(f"Loading config from: {config_path}")
+    if config_path.exists():
+        print(f"Loading config from: {config_path}")
+    else:
+        print(f"Config file not found at {config_path}, using default settings")
+        print("Creating minimal test data without config...")
 
     try:
         while True:
@@ -53,6 +57,10 @@ def main():
             # Write a simple test file
             with open(test_file, 'w') as f:
                 f.write(f"Test data file created at {time.strftime('%H:%M:%S')}\n")
+                f.write(f"Timestamp: {timestamp}\n")
+                f.write("Sample rate: 1000000\n")
+                f.write("Center frequency: 10000000\n")
+                f.write("Source: Test daemon\n")
 
             print(f"Created test file: {test_file}")
             time.sleep(10)

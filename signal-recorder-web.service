@@ -1,0 +1,22 @@
+[Unit]
+Description=Signal Recorder Web UI
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=signal-recorder
+Group=signal-recorder
+ExecStart=/usr/local/bin/signal-recorder-web --port 3000
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=signal-recorder-web
+
+# Environment
+Environment=NODE_ENV=production
+WorkingDirectory=/usr/local/lib/signal-recorder/web-ui
+
+[Install]
+WantedBy=multi-user.target

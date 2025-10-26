@@ -1,0 +1,22 @@
+[Unit]
+Description=Signal Recorder Daemon
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=signal-recorder
+Group=signal-recorder
+ExecStart=/usr/local/bin/signal-recorder-daemon --config /etc/signal-recorder/config.toml
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=signal-recorder-daemon
+
+# Environment
+Environment=PYTHONPATH=/usr/local/lib/signal-recorder/src
+WorkingDirectory=/var/lib/signal-recorder
+
+[Install]
+WantedBy=multi-user.target
