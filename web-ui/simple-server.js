@@ -945,46 +945,9 @@ app.get('/api/monitoring/data-status', requireAuth, async (req, res) => {
 
 app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
   try {
-    console.log('Attempting channel discovery via configuration file...');
+    console.log('Attempting channel discovery via CLI command...');
 
-    try {
-      const fs = await import('fs');
-      const path = await import('path');
-      const { parse: parseToml } = await import('toml');
-
-      const configPath = join(installDir, 'config', 'grape-S000171.toml');
-      const configContent = await fs.default.promises.readFile(configPath, 'utf8');
-      const config = parseToml(configContent);
-
-      if (config.recorder && config.recorder.channels) {
-        const channels = config.recorder.channels.map(channel => ({
-          ssrc: channel.ssrc.toString(),
-          frequency: `${(channel.frequency_hz / 1000000).toFixed(2)} MHz`,
-          rate: channel.sample_rate.toString(),
-          preset: channel.preset,
-          snr: 'N/A (config)',
-          address: config.ka9q?.status_address || '239.251.200.193'
-        }));
-
-        console.log('Successfully loaded channels from config:', channels.length);
-
-        res.json({
-          channels,
-          timestamp: new Date().toISOString(),
-          total: channels.length,
-          rawOutput: 'Using configuration file fallback',
-          commandUsed: 'config-fallback',
-          note: 'Loaded from configuration file - CLI discovery not available'
-        });
-        return;
-      }
-    } catch (configError) {
-      console.error('Config fallback failed:', configError);
-    }
-
-    // If config fallback fails, try CLI discovery as last resort
-    console.log('Config fallback failed, trying CLI discovery...');
-
+    // Try CLI discovery first (real radio addresses)
     const { exec } = await import('child_process');
     const statusAddr = 'bee1-hf-status.local';
     const discoverScript = join(installDir, 'test-discover.py');
@@ -1037,20 +1000,58 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           total: channels.length,
           rawOutput: result.stdout,
           commandUsed: `python3 ${discoverScript} --radiod ${statusAddr}`,
-          note: 'Discovered via CLI command'
+          note: 'Discovered via CLI command - real radio addresses'
         });
         return;
       }
     } catch (cliError) {
-      console.error('CLI discovery also failed:', cliError);
+      console.error('CLI discovery failed:', cliError);
+    }
+
+    // If CLI discovery fails, try configuration file fallback
+    console.log('CLI discovery failed, trying configuration file fallback...');
+
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      const { parse: parseToml } = await import('toml');
+
+      const configPath = join(installDir, 'config', 'grape-S000171.toml');
+      const configContent = await fs.default.promises.readFile(configPath, 'utf8');
+      const config = parseToml(configContent);
+
+      if (config.recorder && config.recorder.channels) {
+        const channels = config.recorder.channels.map(channel => ({
+          ssrc: channel.ssrc.toString(),
+          frequency: `${(channel.frequency_hz / 1000000).toFixed(2)} MHz`,
+          rate: channel.sample_rate.toString(),
+          preset: channel.preset,
+          snr: 'N/A (config)',
+          address: '239.192.152.141:5004'  // Use real radio multicast address
+        }));
+
+        console.log('Successfully loaded channels from config:', channels.length);
+
+        res.json({
+          channels,
+          timestamp: new Date().toISOString(),
+          total: channels.length,
+          rawOutput: 'Using configuration file fallback',
+          commandUsed: 'config-fallback',
+          note: 'Loaded from configuration file - CLI discovery not available'
+        });
+        return;
+      }
+    } catch (configError) {
+      console.error('Config fallback also failed:', configError);
     }
 
     // If both methods fail, return error
     res.status(500).json({
       error: 'No channels discovered',
       note: 'Both CLI discovery and configuration fallback failed',
-      configError: 'Configuration file fallback failed',
-      cliError: 'CLI discovery failed - signal-recorder command not found'
+      cliError: 'CLI discovery failed',
+      configError: 'Configuration file fallback failed'
     });
 
   } catch (error) {
