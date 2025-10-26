@@ -600,7 +600,7 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
 
       const { exec } = await import('child_process');
       const findResult = await new Promise((resolve) => {
-        exec(`pgrep -f "signal-recorder daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+        exec(`pgrep -f "signal_recorder.cli daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
           const pids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
           resolve({ pids, error: error ? error.message : null });
         });
@@ -609,7 +609,7 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
       // If pgrep didn't work, try broader search
       if (findResult.pids.length === 0) {
         await new Promise((resolve) => {
-          exec(`ps aux | grep "signal-recorder" | grep -v grep | awk '{print $2}' 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+          exec(`ps aux | grep "signal_recorder.cli" | grep -v grep | awk '{print $2}' 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
             const morePids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
             findResult.pids = morePids;
             resolve();
@@ -728,10 +728,10 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
       try {
         console.log('Attempting to start daemon...');
-        console.log('Command: signal-recorder daemon --config', configPath);
+        console.log('Command: python3 -m signal_recorder.cli daemon --config', configPath);
 
         // Start daemon in background using spawn
-        const daemonProcess = spawn('signal-recorder', ['daemon', '--config', configPath], {
+        const daemonProcess = spawn('python3', ['-m', 'signal_recorder.cli', 'daemon', '--config', configPath], {
           cwd: installDir,
           env: {
             ...process.env,
@@ -782,7 +782,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             stderr: checkResult.stderr,
             daemonPid: daemonProcess.pid,
             watchdogPid: watchdogProcess.pid,
-            commandUsed: `signal-recorder daemon --config ${configPath}`,
+            commandUsed: `python3 -m signal_recorder.cli daemon --config ${configPath}`,
             pythonUsed: 'system',
             note: `Started daemon (PID: ${daemonProcess.pid}) and watchdog (PID: ${watchdogProcess.pid})`
           });
@@ -791,7 +791,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             error: 'Daemon failed to start or exited immediately',
             stdout: checkResult.stdout,
             stderr: checkResult.stderr,
-            commandUsed: `signal-recorder daemon --config ${configPath}`,
+            commandUsed: `python3 -m signal_recorder.cli daemon --config ${configPath}`,
             pythonUsed: 'system',
             troubleshooting: 'Daemon process exited immediately. Check daemon script and config file.',
             note: 'Process started but exited - check daemon script logs'
@@ -851,10 +851,10 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
           // We know the exact PIDs, so kill them directly
           console.log(`Stopping daemon processes with known PIDs: ${pids.join(', ')}`);
 
-          // Try specific stop methods - updated for signal-recorder daemon
+          // Try specific stop methods - updated for Python module execution
           const stopMethods = [
-            `pkill -f "signal-recorder daemon" 2>/dev/null`,
-            `pkill -f "signal-recorder" 2>/dev/null`,
+            `pkill -f "signal_recorder.cli daemon" 2>/dev/null`,
+            `pkill -f "signal_recorder.cli" 2>/dev/null`,
             `pkill -f "grape_recorder" 2>/dev/null`,
             `kill ${pids[0]} 2>/dev/null`  // Kill main daemon process
           ];
@@ -930,7 +930,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
           try {
             // Find daemon processes directly using multiple methods
             const findResult = await new Promise((resolve) => {
-              exec(`pgrep -f "signal-recorder daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+              exec(`pgrep -f "signal_recorder.cli daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
                 const pids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
                 resolve({ pids, error: error ? error.message : null });
               });
@@ -939,7 +939,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             // If that didn't work, try broader search
             if (findResult.pids.length === 0) {
               await new Promise((resolve) => {
-                exec(`ps aux | grep "signal-recorder" | grep -v grep | awk '{print $2}' 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+                exec(`ps aux | grep "signal_recorder.cli" | grep -v grep | awk '{print $2}' 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
                   const morePids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
                   findResult.pids = morePids;
                   resolve();
@@ -1106,7 +1106,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
 
     try {
       const result = await new Promise((resolve, reject) => {
-        exec(`signal-recorder discover --radiod ${statusAddr}`, {
+        exec(`python3 -m signal_recorder.cli discover --radiod ${statusAddr}`, {
           timeout: 10000,
           env: {
             ...process.env,
@@ -1152,7 +1152,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           timestamp: new Date().toISOString(),
           total: channels.length,
           rawOutput: result.stdout,
-          commandUsed: `signal-recorder discover --radiod ${statusAddr}`,
+          commandUsed: `python3 -m signal_recorder.cli discover --radiod ${statusAddr}`,
           note: 'Discovered via CLI command - real radio addresses'
         });
         return;
