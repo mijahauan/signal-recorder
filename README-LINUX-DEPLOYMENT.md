@@ -1,24 +1,253 @@
-# Signal Recorder - Linux System Service Setup
+# Signal Recorder - Linux Deployment Guide
 
-This guide explains how to deploy the Signal Recorder application as a systemd service on Linux systems.
+This guide explains how to deploy the Signal Recorder application on Linux systems.
 
-## 🚀 Quick Installation
+## 🚀 Quick Start
+
+### Option 1: Development Setup (Recommended for Testing)
 
 ```bash
-# 1. Copy files to your Linux system
-# 2. Make the install script executable
+# 1. Navigate to web-ui directory
+cd web-ui
+
+# 2. Run the setup script to copy files to Linux environment
+../setup-linux-dev.sh
+
+# 3. Start the web server
+pnpm start
+
+# 4. Access the web interface
+# Open http://localhost:3000/monitoring in your browser
+```
+
+### Option 2: Production Systemd Service
+
+```bash
+# 1. Make the install script executable
 chmod +x install-linux.sh
 
-# 3. Run the installation script as root
+# 2. Run the installation script as root
 sudo ./install-linux.sh
 
-# 4. Start the services
+# 3. Start the services
 sudo systemctl start signal-recorder-daemon
 sudo systemctl start signal-recorder-web
 
-# 5. Access the web interface
+# 4. Access the web interface
 # Open http://localhost:3000/monitoring in your browser
 ```
+
+## 📋 What Gets Set Up
+
+### Development Setup
+- Copies signal-recorder files to Linux environment paths
+- Creates necessary directories (`config/`, `test-data/`)
+- Makes scripts executable
+- Preserves development workflow
+
+### Production Setup
+- **System Services**: `signal-recorder-daemon.service`, `signal-recorder-web.service`
+- **Files**: `/usr/local/bin/signal-recorder-*`, `/usr/local/lib/signal-recorder/`
+- **Config**: `/etc/signal-recorder/config.toml`
+- **Data**: `/var/lib/signal-recorder/test-data/`
+- **Logs**: `/var/log/signal-recorder/` (via systemd journal)
+
+## 🔧 Management Commands
+
+### Development Mode
+```bash
+# Start web server
+pnpm start
+
+# Test daemon directly
+python3 ../test-daemon.py --config ../config/grape-S000171.toml
+
+# Check daemon status
+curl -H "Authorization: Bearer admin-token" http://localhost:3000/api/monitoring/daemon-status
+
+# Start daemon via API
+curl -H "Authorization: Bearer admin-token" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"action":"start"}' \
+  http://localhost:3000/api/monitoring/daemon-control
+```
+
+### Production Mode
+```bash
+# Start services
+sudo systemctl start signal-recorder-daemon
+sudo systemctl start signal-recorder-web
+
+# Check status
+sudo systemctl status signal-recorder-daemon
+sudo systemctl status signal-recorder-web
+
+# View logs
+sudo journalctl -f -u signal-recorder-daemon
+sudo journalctl -f -u signal-recorder-web
+
+# Enable auto-start
+sudo systemctl enable signal-recorder-daemon
+sudo systemctl enable signal-recorder-web
+```
+
+## 🌐 Web Interface
+
+- **URL**: http://localhost:3000/monitoring
+- **Login**: admin / admin
+- **Features**:
+  - Monitor daemon status
+  - Start/stop the recording daemon
+  - View data collection statistics
+  - Configure recording channels
+  - Export configurations
+
+## ⚙️ Configuration
+
+### Development Mode
+Configuration files are read from the repository structure:
+- `config/grape-S000171.toml` - main configuration
+- `test-daemon.py` - daemon script
+- `test-watchdog.py` - monitoring script
+
+### Production Mode
+Files are installed in system locations:
+- `/etc/signal-recorder/config.toml` - main configuration
+- `/usr/local/bin/signal-recorder-daemon` - daemon script
+- `/usr/local/lib/signal-recorder/` - source code and web UI
+
+## 🔍 Troubleshooting
+
+### Check Path Resolution
+```bash
+# Test if paths are correct
+cd web-ui
+node -e "
+import { join } from 'path';
+import { fileURLToPath } from 'url';
+const __dirname = join(fileURLToPath(import.meta.url), '..');
+const installDir = join(__dirname, '..');
+console.log('Web UI directory:', __dirname);
+console.log('Install directory:', installDir);
+console.log('Config path:', join(installDir, 'config', 'grape-S000171.toml'));
+console.log('Daemon path:', join(installDir, 'test-daemon.py'));
+"
+```
+
+### Common Issues
+
+1. **Path Errors**: Files not found in expected locations
+   - **Development**: Run `../setup-linux-dev.sh` to copy files
+   - **Production**: Run `sudo ./install-linux.sh` to install properly
+
+2. **Permission Errors**: Cannot access files or directories
+   - **Development**: Ensure files are readable in Linux environment
+   - **Production**: Check that systemd services have proper permissions
+
+3. **Port Conflicts**: Port 3000 already in use
+   - **Development**: Stop other processes using port 3000
+   - **Production**: Configure different port in service files
+
+4. **Missing Dependencies**: Python3 or Node.js not available
+   - Install required packages: `sudo apt install python3 nodejs npm`
+
+### API Testing
+```bash
+# Check daemon status
+curl -H "Authorization: Bearer admin-token" http://localhost:3000/api/monitoring/daemon-status
+
+# Start daemon
+curl -H "Authorization: Bearer admin-token" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"action":"start"}' \
+  http://localhost:3000/api/monitoring/daemon-control
+
+# Stop daemon
+curl -H "Authorization: Bearer admin-token" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"action":"stop"}' \
+  http://localhost:3000/api/monitoring/daemon-control
+```
+
+## 📁 File Structure
+
+### Development Mode
+```
+/home/mjh/git/signal-recorder/
+├── config/
+│   └── grape-S000171.toml
+├── test-daemon.py
+├── test-watchdog.py
+├── test-discover.py
+├── src/
+├── web-ui/
+│   └── simple-server.js
+└── test-data/
+```
+
+### Production Mode
+```
+/usr/local/bin/
+├── signal-recorder-daemon
+├── signal-recorder-web
+└── signal-recorder-watchdog
+
+/usr/local/lib/signal-recorder/
+├── src/
+├── web-ui/
+└── test-data/
+
+/etc/signal-recorder/
+└── config.toml
+
+/var/lib/signal-recorder/
+└── test-data/raw/
+```
+
+## 🔄 Updates
+
+### Development Mode
+```bash
+# Pull latest changes
+git pull
+
+# Restart web server
+# The server will automatically pick up file changes
+```
+
+### Production Mode
+```bash
+# Stop services
+sudo systemctl stop signal-recorder-daemon
+sudo systemctl stop signal-recorder-web
+
+# Update files
+sudo cp -r /path/to/updated/signal-recorder/* /usr/local/lib/signal-recorder/
+
+# Restart services
+sudo systemctl restart signal-recorder-daemon
+sudo systemctl restart signal-recorder-web
+```
+
+## 🛡️ Security
+
+- **Development**: Runs as current user, requires manual authentication
+- **Production**: Runs as `signal-recorder` system user with restricted permissions
+- **Authentication**: Web interface requires Bearer token authentication
+- **Logs**: All operations logged via systemd journal in production
+
+## 📊 Monitoring
+
+Access the monitoring dashboard at: http://localhost:3000/monitoring
+
+The dashboard provides real-time information about:
+- Daemon process status and verification
+- Data collection statistics
+- Active channel configurations
+- System logs and error messages
+- Recording activity and file generation
+
+This setup provides both development flexibility and production-ready deployment options for Linux systems.
 
 ## 📋 What Gets Installed
 

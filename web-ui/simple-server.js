@@ -7,7 +7,7 @@ const __dirname = join(fileURLToPath(import.meta.url), '..');
 
 // Determine base paths based on environment
 const isProduction = process.env.NODE_ENV === 'production';
-const installDir = isProduction ? '/usr/local/lib/signal-recorder' : __dirname;
+const installDir = isProduction ? '/usr/local/lib/signal-recorder' : join(__dirname, '..');
 
 // Use install directory (repository root or system installation) as base for all operations
 const venvPython = join(installDir, 'venv', 'bin', 'python');
@@ -518,7 +518,7 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
     toml += `enable_metrics = false\n`;
 
     // Save to signal-recorder config directory
-    const configDir = join(__dirname, '..', 'config');
+    const configDir = join(installDir, 'config');
     const filename = `grape-${config.stationId || config.callsign}.toml`;
     const configPath = join(configDir, filename);
 
@@ -939,7 +939,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
       const path = await import('path');
       const { parse: parseToml } = await import('toml');
 
-      const configPath = path.default.join(installDir, 'config', 'grape-S000171.toml');
+      const configPath = join(installDir, 'config', 'grape-S000171.toml');
       const configContent = await fs.default.promises.readFile(configPath, 'utf8');
       const config = parseToml(configContent);
 
