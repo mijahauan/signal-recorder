@@ -807,16 +807,17 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       // Check daemon status file written by watchdog
       const fs = await import('fs');
       const path = await import('path');
+      const { exec } = await import('child_process');
 
       try {
         let pids = [];
+        let statusData = null;
 
         if (fs.default.existsSync(statusFile)) {
-          const statusData = JSON.parse(fs.default.readFileSync(statusFile, 'utf8'));
+          statusData = JSON.parse(fs.default.readFileSync(statusFile, 'utf8'));
 
           // Verify the daemon process is still running (if it was reported as running)
           if (statusData.running && statusData.pid) {
-            const { exec } = await import('child_process');
             const verifyResult = await new Promise((resolve) => {
               exec(`ps -p ${statusData.pid} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
                 if (!error && stdout && stdout.trim()) {
@@ -885,7 +886,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
           }
 
           // Also try to stop watchdog if it exists
-          if (statusData.watchdog_pid) {
+          if (statusData && statusData.watchdog_pid) {
             try {
               await new Promise((resolve) => {
                 exec(`kill -9 ${statusData.watchdog_pid} 2>/dev/null`, (error, stdout, stderr) => {
