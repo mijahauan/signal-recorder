@@ -14,7 +14,7 @@ from pathlib import Path
 def write_status(status, details="", pid=None):
     """Write daemon status to a file that the web server can check"""
     script_dir = Path(__file__).parent
-    status_file = script_dir / "test-data" / "daemon-status.json"
+    status_file = script_dir / "data" / "daemon-status.json"  # Changed from test-data to data
 
     status_data = {
         "running": status,
@@ -35,9 +35,9 @@ def write_status(status, details="", pid=None):
 def find_daemon_process():
     """Find the actual daemon process"""
     try:
-        # Look for python processes running test-daemon.py
+        # Look for python processes running signal_recorder.cli daemon
         import subprocess
-        result = subprocess.run(['pgrep', '-f', 'test-daemon.py'],
+        result = subprocess.run(['pgrep', '-f', 'signal_recorder.cli daemon'],
                               capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
             pids = result.stdout.strip().split('\n')
@@ -57,12 +57,12 @@ def main():
             daemon_pid = find_daemon_process()
 
             if daemon_pid:
-                # Verify the process is still running
+                # Verify the process is actually a daemon
                 try:
                     import subprocess
-                    result = subprocess.run(['ps', '-p', daemon_pid, '-o', 'comm='],
+                    result = subprocess.run(['ps', '-p', daemon_pid, '-o', 'args='],
                                           capture_output=True, text=True)
-                    if result.returncode == 0 and 'python' in result.stdout:
+                    if result.returncode == 0 and 'signal_recorder.cli daemon' in result.stdout:
                         write_status(True, f"Daemon running (PID: {daemon_pid})", daemon_pid)
                     else:
                         write_status(False, "Daemon process not found", daemon_pid)

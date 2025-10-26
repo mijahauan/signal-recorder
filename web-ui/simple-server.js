@@ -1,5 +1,6 @@
 import express from 'express';
-import { promises as fs } from 'fs';
+import fs from 'fs';
+import { spawn, exec } from 'child_process';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -29,21 +30,21 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // JSON database functions
-async function readJsonFile(filename) {
+function readJsonFile(filename) {
   try {
     const filePath = join(__dirname, 'data', filename);
-    const data = await fs.readFile(filePath, 'utf8');
+    const data = fs.readFileSync(filePath, 'utf8');
     return JSON.parse(data);
   } catch (error) {
     return [];
   }
 }
 
-async function writeJsonFile(filename, data) {
+function writeJsonFile(filename, data) {
   try {
     const filePath = join(__dirname, 'data', filename);
-    await fs.mkdir(join(__dirname, 'data'), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+    fs.mkdirSync(join(__dirname, 'data'), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
   } catch (error) {
     console.error(`Failed to write ${filename}:`, error);
     throw error;
@@ -51,11 +52,11 @@ async function writeJsonFile(filename, data) {
 }
 
 // Initialize default user
-async function initializeDefaultUser() {
+function initializeDefaultUser() {
   try {
-    const users = await readJsonFile('users.json');
+    const users = readJsonFile('users.json');
     if (users.length === 0) {
-      await writeJsonFile('users.json', [{
+      writeJsonFile('users.json', [{
         id: 'local-admin',
         name: 'Administrator',
         email: 'admin',
@@ -120,7 +121,7 @@ app.get('/api/user', requireAuth, (req, res) => {
 // Configuration routes
 app.get('/api/configurations', requireAuth, async (req, res) => {
   try {
-    const configs = await readJsonFile('configurations.json');
+    const configs = readJsonFile('configurations.json');
     res.json(configs);
   } catch (error) {
     console.error('Failed to read configurations:', error);
@@ -130,7 +131,7 @@ app.get('/api/configurations', requireAuth, async (req, res) => {
 
 app.get('/api/configurations/:id', requireAuth, async (req, res) => {
   try {
-    const configs = await readJsonFile('configurations.json');
+    const configs = readJsonFile('configurations.json');
     const config = configs.find(c => c.id === req.params.id);
     if (!config) {
       return res.status(404).json({ error: 'Configuration not found' });
@@ -144,7 +145,7 @@ app.get('/api/configurations/:id', requireAuth, async (req, res) => {
 
 app.post('/api/configurations', requireAuth, async (req, res) => {
   try {
-    const configs = await readJsonFile('configurations.json');
+    const configs = readJsonFile('configurations.json');
     const newConfig = {
       id: Date.now().toString(),
       userId: req.user.id,
@@ -153,7 +154,7 @@ app.post('/api/configurations', requireAuth, async (req, res) => {
       updatedAt: new Date().toISOString(),
     };
     configs.push(newConfig);
-    await writeJsonFile('configurations.json', configs);
+    writeJsonFile('configurations.json', configs);
     res.json(newConfig);
   } catch (error) {
     console.error('Failed to create configuration:', error);
@@ -163,7 +164,7 @@ app.post('/api/configurations', requireAuth, async (req, res) => {
 
 app.put('/api/configurations/:id', requireAuth, async (req, res) => {
   try {
-    const configs = await readJsonFile('configurations.json');
+    const configs = readJsonFile('configurations.json');
     const index = configs.findIndex(c => c.id === req.params.id);
 
     if (index === -1) {
@@ -176,7 +177,7 @@ app.put('/api/configurations/:id', requireAuth, async (req, res) => {
       updatedAt: new Date().toISOString()
     };
 
-    await writeJsonFile('configurations.json', configs);
+    writeJsonFile('configurations.json', configs);
     res.json(configs[index]);
   } catch (error) {
     console.error('Failed to update configuration:', error);
@@ -186,8 +187,8 @@ app.put('/api/configurations/:id', requireAuth, async (req, res) => {
 
 app.delete('/api/configurations/:id', requireAuth, async (req, res) => {
   try {
-    let configs = await readJsonFile('configurations.json');
-    let channels = await readJsonFile('channels.json');
+    let configs = readJsonFile('configurations.json');
+    let channels = readJsonFile('channels.json');
 
     // Remove configuration
     configs = configs.filter(c => c.id !== req.params.id);
@@ -195,8 +196,8 @@ app.delete('/api/configurations/:id', requireAuth, async (req, res) => {
     // Remove associated channels
     channels = channels.filter(c => c.configId !== req.params.id);
 
-    await writeJsonFile('configurations.json', configs);
-    await writeJsonFile('channels.json', channels);
+    writeJsonFile('configurations.json', configs);
+    writeJsonFile('channels.json', channels);
 
     res.json({ success: true });
   } catch (error) {
@@ -208,7 +209,7 @@ app.delete('/api/configurations/:id', requireAuth, async (req, res) => {
 // Channel routes
 app.get('/api/configurations/:configId/channels', requireAuth, async (req, res) => {
   try {
-    const channels = await readJsonFile('channels.json');
+    const channels = readJsonFile('channels.json');
     const configChannels = channels.filter(c => c.configId === req.params.configId);
     res.json(configChannels);
   } catch (error) {
@@ -219,7 +220,7 @@ app.get('/api/configurations/:configId/channels', requireAuth, async (req, res) 
 
 app.post('/api/configurations/:configId/channels', requireAuth, async (req, res) => {
   try {
-    const channels = await readJsonFile('channels.json');
+    const channels = readJsonFile('channels.json');
     const newChannel = {
       id: Date.now().toString(),
       configId: req.params.configId,
@@ -232,7 +233,7 @@ app.post('/api/configurations/:configId/channels', requireAuth, async (req, res)
       createdAt: new Date().toISOString(),
     };
     channels.push(newChannel);
-    await writeJsonFile('channels.json', channels);
+    writeJsonFile('channels.json', channels);
     res.json(newChannel);
   } catch (error) {
     console.error('Failed to create channel:', error);
@@ -242,7 +243,7 @@ app.post('/api/configurations/:configId/channels', requireAuth, async (req, res)
 
 app.put('/api/channels/:id', requireAuth, async (req, res) => {
   try {
-    const channels = await readJsonFile('channels.json');
+    const channels = readJsonFile('channels.json');
     const index = channels.findIndex(c => c.id === req.params.id);
 
     if (index === -1) {
@@ -250,7 +251,7 @@ app.put('/api/channels/:id', requireAuth, async (req, res) => {
     }
 
     channels[index] = { ...channels[index], ...req.body };
-    await writeJsonFile('channels.json', channels);
+    writeJsonFile('channels.json', channels);
     res.json(channels[index]);
   } catch (error) {
     console.error('Failed to update channel:', error);
@@ -260,9 +261,9 @@ app.put('/api/channels/:id', requireAuth, async (req, res) => {
 
 app.delete('/api/channels/:id', requireAuth, async (req, res) => {
   try {
-    let channels = await readJsonFile('channels.json');
+    let channels = readJsonFile('channels.json');
     channels = channels.filter(c => c.id !== req.params.id);
-    await writeJsonFile('channels.json', channels);
+    writeJsonFile('channels.json', channels);
     res.json({ success: true });
   } catch (error) {
     console.error('Failed to delete channel:', error);
@@ -273,14 +274,14 @@ app.delete('/api/channels/:id', requireAuth, async (req, res) => {
 // TOML export and save endpoint
 app.get('/api/configurations/:id/export', requireAuth, async (req, res) => {
   try {
-    const configs = await readJsonFile('configurations.json');
+    const configs = readJsonFile('configurations.json');
     const config = configs.find(c => c.id === req.params.id);
 
     if (!config) {
       return res.status(404).json({ error: 'Configuration not found' });
     }
 
-    const channels = await readJsonFile('channels.json');
+    const channels = readJsonFile('channels.json');
     const configChannels = channels.filter(c => c.configId === req.params.id);
 
     // Generate TOML content in the correct signal-recorder format
@@ -408,14 +409,14 @@ app.get('/api/configurations/:id/export', requireAuth, async (req, res) => {
 // Save TOML directly to signal-recorder config directory
 app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res) => {
   try {
-    const configs = await readJsonFile('configurations.json');
+    const configs = readJsonFile('configurations.json');
     const config = configs.find(c => c.id === req.params.id);
 
     if (!config) {
       return res.status(404).json({ error: 'Configuration not found' });
     }
 
-    const channels = await readJsonFile('channels.json');
+    const channels = readJsonFile('channels.json');
     const configChannels = channels.filter(c => c.configId === req.params.id);
 
     // Generate TOML content (same as export)
@@ -523,7 +524,7 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
     const configPath = join(configDir, filename);
 
     // Write the file
-    await fs.writeFile(configPath, toml);
+    fs.writeFileSync(configPath, toml);
 
     res.json({
       success: true,
@@ -545,60 +546,61 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
 app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
   try {
     // Check daemon status file written by watchdog
-    const fs = await import('fs');
-    const path = await import('path');
+    console.log('Checking daemon status...');
+    console.log('statusFile path:', statusFile);
 
     try {
-      if (fs.default.existsSync(statusFile)) {
-        const statusData = JSON.parse(fs.default.readFileSync(statusFile, 'utf8'));
+      const statusData = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
+      console.log('Successfully read status file:', statusData);
 
-        // Verify the daemon process is still running (if it was reported as running)
-        if (statusData.running && statusData.pid) {
-          const { exec } = await import('child_process');
-          const verifyResult = await new Promise((resolve) => {
-            exec(`ps -p ${statusData.pid} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
-              if (!error && stdout && stdout.trim()) {
-                const comm = stdout.trim();
-                if (comm.includes('python')) {
-                  resolve({ valid: true, comm: comm });
-                } else {
-                  resolve({ valid: false, comm: comm });
-                }
+      // Verify the daemon process is still running (if it was reported as running)
+      if (statusData.running && statusData.pid) {
+        const verifyResult = await new Promise((resolve) => {
+          exec(`ps -p ${statusData.pid} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
+            if (!error && stdout && stdout.trim()) {
+              const comm = stdout.trim();
+              if (comm.includes('python')) {
+                resolve({ valid: true, comm: comm });
               } else {
-                resolve({ valid: false, comm: '' });
+                resolve({ valid: false, comm: comm });
               }
-            });
-          });
-
-          if (verifyResult.valid) {
-            console.log('Watchdog confirmed daemon running:', statusData.pid);
-            res.json({
-              running: true,
-              timestamp: new Date().toISOString(),
-              pid: statusData.pid,
-              pids: [statusData.pid],
-              watchdog_pid: statusData.watchdog_pid,
-              details: statusData.details || 'Daemon running',
-              method: 'watchdog + process verification',
-              verification: `Process ${statusData.pid} is ${verifyResult.comm}`,
-              note: 'Verified daemon process via watchdog'
-            });
-            return;
-          } else {
-            // Process is not running, clean up status file
-            try {
-              fs.default.unlinkSync(statusFile);
-            } catch (e) {
-              // Ignore cleanup errors
+            } else {
+              resolve({ valid: false, comm: '' });
             }
+          });
+        });
+
+        if (verifyResult.valid) {
+          console.log('Watchdog confirmed daemon running:', statusData.pid);
+          res.json({
+            running: true,
+            timestamp: new Date().toISOString(),
+            pid: statusData.pid,
+            pids: [statusData.pid],
+            watchdog_pid: statusData.watchdog_pid,
+            details: statusData.details || 'Daemon running',
+            method: 'watchdog + process verification',
+            verification: `Process ${statusData.pid} is ${verifyResult.comm}`,
+            note: 'Verified daemon process via watchdog'
+          });
+          return;
+        } else {
+          // Process is not running, clean up status file
+          try {
+            fs.unlinkSync(statusFile);
+          } catch (e) {
+            // Ignore cleanup errors
           }
         }
       }
+    } catch (error) {
+      // Status file doesn't exist or is invalid
+      console.log('Status file error:', error.message);
+    }
 
       // If no status file or invalid process, try direct process detection
       console.log('No valid watchdog status, checking for daemon processes directly...');
 
-      const { exec } = await import('child_process');
       const findResult = await new Promise((resolve) => {
         exec(`pgrep -f "signal_recorder.cli daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
           const pids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
@@ -653,12 +655,6 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
         details: 'No daemon status file found',
         note: 'No daemon running'
       });
-
-    } catch (error) {
-      console.error('Daemon status check failed:', error);
-      res.status(500).json({ error: 'Failed to check daemon status', details: error.message });
-    }
-
   } catch (error) {
     console.error('Failed to check daemon status:', error);
     if (!res.headersSent) {
@@ -673,16 +669,12 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
     if (action === 'start') {
       // Check daemon status file written by watchdog
-      const fs = await import('fs');
-      const path = await import('path');
-
       try {
-        if (fs.default.existsSync(statusFile)) {
-          const statusData = JSON.parse(fs.default.readFileSync(statusFile, 'utf8'));
+        if (fs.existsSync(statusFile)) {
+          const statusData = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
 
           // Verify the daemon process is still running (if it was reported as running)
           if (statusData.running && statusData.pid) {
-            const { exec } = await import('child_process');
             const verifyResult = await new Promise((resolve) => {
               exec(`ps -p ${statusData.pid} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
                 if (!error && stdout && stdout.trim()) {
@@ -710,7 +702,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             } else {
               // Clean up stale status file
               try {
-                fs.default.unlinkSync(statusFile);
+                fs.unlinkSync(statusFile);
               } catch (e) {
                 // Ignore cleanup errors
               }
@@ -723,15 +715,13 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
         console.log('Daemon validation failed, proceeding with start attempt:', e.message);
       }
 
-      // Start daemon using system python3 in background
-      const { spawn } = await import('child_process');
-
+      // Start daemon using venv python3 in background
       try {
         console.log('Attempting to start daemon...');
         console.log('Command: python3 -m signal_recorder.cli daemon --config', configPath);
 
         // Start daemon in background using spawn
-        const daemonProcess = spawn('python3', ['-m', 'signal_recorder.cli', 'daemon', '--config', configPath], {
+        const daemonProcess = spawn(venvPython, ['-m', 'signal_recorder.cli', 'daemon', '--config', configPath], {
           cwd: installDir,
           env: {
             ...process.env,
@@ -748,7 +738,6 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
         await new Promise(resolve => setTimeout(resolve, 2000));
 
         // Check if process is still running
-        const { exec } = await import('child_process');
         const checkResult = await new Promise((resolve) => {
           exec(`ps -p ${daemonProcess.pid} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
             const isRunning = !error && stdout && stdout.trim().includes('python');
@@ -764,7 +753,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
         if (checkResult.success) {
           // Also start the watchdog to monitor the daemon
-          const watchdogProcess = spawn('python3', [join(installDir, 'test-watchdog.py')], {
+          const watchdogProcess = spawn(venvPython, [join(installDir, 'test-watchdog.py')], {
             cwd: installDir,
             env: {
               ...process.env,
@@ -782,8 +771,8 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             stderr: checkResult.stderr,
             daemonPid: daemonProcess.pid,
             watchdogPid: watchdogProcess.pid,
-            commandUsed: `python3 -m signal_recorder.cli daemon --config ${configPath}`,
-            pythonUsed: 'system',
+            commandUsed: `"${venvPython}" -m signal_recorder.cli daemon --config ${configPath}`,
+            pythonUsed: 'venv',
             note: `Started daemon (PID: ${daemonProcess.pid}) and watchdog (PID: ${watchdogProcess.pid})`
           });
         } else {
@@ -791,8 +780,8 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             error: 'Daemon failed to start or exited immediately',
             stdout: checkResult.stdout,
             stderr: checkResult.stderr,
-            commandUsed: `python3 -m signal_recorder.cli daemon --config ${configPath}`,
-            pythonUsed: 'system',
+            commandUsed: `"${venvPython}" -m signal_recorder.cli daemon --config ${configPath}`,
+            pythonUsed: 'venv',
             troubleshooting: 'Daemon process exited immediately. Check daemon script and config file.',
             note: 'Process started but exited - check daemon script logs'
           });
@@ -805,16 +794,12 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
     } else if (action === 'stop') {
       // Check daemon status file written by watchdog
-      const fs = await import('fs');
-      const path = await import('path');
-      const { exec } = await import('child_process');
-
       try {
         let pids = [];
         let statusData = null;
 
-        if (fs.default.existsSync(statusFile)) {
-          statusData = JSON.parse(fs.default.readFileSync(statusFile, 'utf8'));
+        if (fs.existsSync(statusFile)) {
+          statusData = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
 
           // Verify the daemon process is still running (if it was reported as running)
           if (statusData.running && statusData.pid) {
@@ -839,7 +824,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             } else {
               // Clean up stale status file
               try {
-                fs.default.unlinkSync(statusFile);
+                fs.unlinkSync(statusFile);
               } catch (e) {
                 // Ignore cleanup errors
               }
@@ -870,12 +855,12 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
                     stopped = true;
                   } else {
                     console.log(`Failed to kill daemon process using ${stopMethod}:`, error.message);
-                    exec(`kill -9 ${pid} 2>/dev/null`, (forceError, forceStdout, forceStderr) => {
+                    exec(`kill -9 ${pids[0]} 2>/dev/null`, (forceError, forceStdout, forceStderr) => {
                       if (!forceError) {
-                        console.log(`Successfully force-killed daemon process ${pid}`);
+                        console.log(`Successfully force-killed daemon process ${pids[0]}`);
                         stopped = true;
                       } else {
-                        console.log(`Failed to force-kill ${pid}:`, forceError.message);
+                        console.log(`Failed to force-kill ${pids[0]}:`, forceError.message);
                       }
                       resolve();
                     });
@@ -886,7 +871,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
               if (stopped) break;
             } catch (e) {
-              console.log(`Error killing PID ${pid}:`, e.message);
+              console.log(`Error killing PID ${pids[0]}:`, e.message);
             }
           }
 
@@ -911,7 +896,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
           // Clean up status file
           try {
-            fs.default.unlinkSync(statusFile);
+            fs.unlinkSync(statusFile);
           } catch (e) {
             // Ignore cleanup errors
           }
@@ -976,7 +961,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
               // Clean up status file
               try {
-                fs.default.unlinkSync(statusFile);
+                fs.unlinkSync(statusFile);
               } catch (e) {
                 // Ignore cleanup errors
               }
@@ -1026,8 +1011,6 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 app.get('/api/monitoring/data-status', requireAuth, async (req, res) => {
   try {
     // Check data directory for recent files - simplified to avoid race conditions
-    const { exec } = await import('child_process');
-    const { join } = await import('path');
 
     // Simple sequential approach to avoid any race conditions
     let dirExists = false;
@@ -1101,13 +1084,12 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
     console.log('Attempting channel discovery via CLI command...');
 
     // Try CLI discovery first (real radio addresses)
-    const { exec } = await import('child_process');
     const statusAddr = '239.251.200.193';  // Real radio status address from config
 
     try {
       const result = await new Promise((resolve, reject) => {
-        exec(`python3 -m signal_recorder.cli discover --radiod ${statusAddr}`, {
-          timeout: 10000,
+        exec(`"${venvPython}" -m signal_recorder.cli discover --radiod ${statusAddr} --config "${configPath}"`, {
+          timeout: 5000,  // 5 second timeout
           env: {
             ...process.env,
             PYTHONPATH: srcPath
@@ -1126,21 +1108,31 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
         const lines = result.stdout.trim().split('\n');
         const channels = [];
 
-        // Skip header lines and parse data lines
-        for (let i = 2; i < lines.length; i++) {
+        // Skip header lines and separator, start from data lines (index 4)
+        for (let i = 4; i < lines.length; i++) {
           const line = lines[i];
           if (!line.trim()) continue;
 
+          // Split by multiple spaces and handle variable number of parts
           const parts = line.trim().split(/\s+/);
           if (parts.length >= 6) {
-            // Real radio format: SSRC preset rate frequency SNR address
+            // Format: SSRC, Frequency, Rate, Preset, SNR, Address
+            const ssrc = parts[0];
+            const frequency = parts[1];
+            const rate = parts[2];
+            const preset = parts[3];
+
+            // SNR and Address might have spaces, so join the rest
+            const snr = parts[4];
+            const address = parts.slice(5).join(' ');
+
             channels.push({
-              ssrc: parts[0],                    // SSRC
-              frequency: parts[3] + ' MHz',      // frequency with unit
-              rate: parts[2],                    // rate
-              preset: parts[1],                  // preset (iq)
-              snr: parts[4],                     // SNR
-              address: parts[5]                  // address
+              ssrc: ssrc,
+              frequency: frequency,
+              rate: rate,
+              preset: preset,
+              snr: snr,
+              address: address
             });
           }
         }
@@ -1152,7 +1144,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           timestamp: new Date().toISOString(),
           total: channels.length,
           rawOutput: result.stdout,
-          commandUsed: `python3 -m signal_recorder.cli discover --radiod ${statusAddr}`,
+          commandUsed: `"${venvPython}" -m signal_recorder.cli discover --radiod ${statusAddr} --config "${configPath}"`,
           note: 'Discovered via CLI command - real radio addresses'
         });
         return;
@@ -1165,12 +1157,10 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
     console.log('CLI discovery failed, trying configuration file fallback...');
 
     try {
-      const fs = await import('fs');
-      const path = await import('path');
       const { parse: parseToml } = await import('toml');
 
       const configPath = join(installDir, 'config', 'grape-S000171.toml');
-      const configContent = await fs.default.promises.readFile(configPath, 'utf8');
+      const configContent = fs.readFileSync(configPath, 'utf8');
       const config = parseToml(configContent);
 
       if (config.recorder && config.recorder.channels) {
@@ -1217,8 +1207,6 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
 
 app.get('/api/monitoring/logs', requireAuth, async (req, res) => {
   try {
-    const { exec } = await import('child_process');
-
     // Try multiple log locations and search patterns
     const logCommands = [
       'tail -50 /var/log/syslog | grep -i "signal\\|grape\\|recorder" 2>/dev/null || echo "No logs in syslog"',
@@ -1305,8 +1293,8 @@ app.get('*', (req, res) => {
 });
 
 // Start server
-async function startServer() {
-  await initializeDefaultUser();
+function startServer() {
+  initializeDefaultUser();
 
   app.listen(PORT, () => {
     console.log(`🚀 GRAPE Configuration UI Server running on http://localhost:${PORT}/`);
@@ -1318,4 +1306,4 @@ async function startServer() {
   });
 }
 
-startServer().catch(console.error);
+startServer();
