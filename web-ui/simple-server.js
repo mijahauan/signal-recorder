@@ -666,10 +666,12 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       const { join } = await import('path');
       const venvPython = join(__dirname, '..', 'venv', 'bin', 'python');
       const daemonScript = join(__dirname, '..', 'test-daemon.py');
-      const configPath = 'config/grape-S000171.toml'; // Relative path for daemon script
+      const configPath = join(__dirname, '..', 'config', 'grape-S000171.toml');
 
       try {
         console.log('Attempting to start daemon...');
+        console.log('Command:', `${venvPython} ${daemonScript} --config ${configPath}`);
+
         const startResult = await new Promise((resolve) => {
           exec(`${venvPython} ${daemonScript} --config ${configPath}`, {
             timeout: 10000,
