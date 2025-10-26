@@ -662,6 +662,8 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       }
 
       // Try to start daemon using dynamic path resolution
+      const { exec } = await import('child_process');
+      const { join } = await import('path');
       const venvPython = join(__dirname, '..', 'venv', 'bin', 'python');
       const daemonScript = join(__dirname, '..', 'test-daemon.py');
       const configPath = 'config/grape-S000171.toml'; // Relative path for daemon script
