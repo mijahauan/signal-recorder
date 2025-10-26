@@ -600,11 +600,22 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
 
       const { exec } = await import('child_process');
       const findResult = await new Promise((resolve) => {
-        exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+        exec(`pgrep -f "test-daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
           const pids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
           resolve({ pids, error: error ? error.message : null });
         });
       });
+
+      // If pgrep didn't work, try ps aux approach
+      if (findResult.pids.length === 0) {
+        await new Promise((resolve) => {
+          exec(`ps aux | grep "test-daemon" | grep -v grep | awk '{print $2}' 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+            const morePids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
+            findResult.pids = morePids;
+            resolve();
+          });
+        });
+      }
 
       if (findResult.pids.length > 0) {
         console.log(`Found daemon processes via direct search: ${findResult.pids.join(', ')}`);
@@ -836,26 +847,32 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
         }
 
         if (pids.length > 0) {
-          // Try specific stop methods - updated for both daemon and watchdog
-          const stopMethods = [
-            `pkill -f "python.*test-daemon.py" 2>/dev/null`,
-            `pkill -f "python.*test-watchdog.py" 2>/dev/null`,
-            `kill ${pids[0]} 2>/dev/null`  // Kill main daemon process
-          ];
+          // We know the exact PIDs, so kill them directly
+          console.log(`Stopping daemon processes with known PIDs: ${pids.join(', ')}`);
 
+          // Try to stop each known PID directly
           let stopped = false;
-          let methodUsed = '';
 
-          for (const cmd of stopMethods) {
+          for (const pid of pids) {
             try {
               await new Promise((resolve) => {
-                exec(cmd, (error, stdout, stderr) => {
+                // Try graceful kill first
+                exec(`kill ${pid} 2>/dev/null`, (error, stdout, stderr) => {
                   if (!error) {
+                    console.log(`Successfully killed daemon process ${pid}`);
                     stopped = true;
-                    methodUsed = cmd;
-                    console.log(`Successfully stopped daemon via: ${cmd}`);
                   } else {
-                    console.log(`Stop method ${cmd} failed:`, error.message);
+                    console.log(`Failed to kill ${pid} gracefully, trying force kill...`);
+                    // Try force kill if graceful fails
+                    exec(`kill -9 ${pid} 2>/dev/null`, (forceError, forceStdout, forceStderr) => {
+                      if (!forceError) {
+                        console.log(`Successfully force-killed daemon process ${pid}`);
+                        stopped = true;
+                      } else {
+                        console.log(`Failed to force-kill ${pid}:`, forceError.message);
+                      }
+                      resolve();
+                    });
                   }
                   resolve();
                 });
@@ -863,7 +880,23 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
               if (stopped) break;
             } catch (e) {
-              // Continue to next method
+              console.log(`Error killing PID ${pid}:`, e.message);
+            }
+          }
+
+          // Also try to stop watchdog if it exists
+          if (statusData.watchdog_pid) {
+            try {
+              await new Promise((resolve) => {
+                exec(`kill -9 ${statusData.watchdog_pid} 2>/dev/null`, (error, stdout, stderr) => {
+                  if (!error) {
+                    console.log(`Successfully killed watchdog process ${statusData.watchdog_pid}`);
+                  }
+                  resolve();
+                });
+              });
+            } catch (e) {
+              // Ignore watchdog kill errors
             }
           }
 
@@ -879,8 +912,8 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
           res.json({
             success: stopped,
-            message: stopped ? 'Daemon stopped successfully' : 'Stop command sent but daemon may still be running',
-            methodUsed: methodUsed || 'none',
+            message: stopped ? 'Daemon stopped successfully' : 'Failed to stop daemon process',
+            methodUsed: stopped ? 'direct-pid-kill' : 'failed',
             pidsFound: pids,
             verification: stopped ? 'confirmed stopped' : 'may still be running'
           });
@@ -889,25 +922,48 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
           console.log('No PIDs from status file, searching for processes directly...');
 
           try {
-            // Find daemon processes directly
+            // Find daemon processes directly using multiple methods
             const findResult = await new Promise((resolve) => {
-              exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+              exec(`pgrep -f "test-daemon" 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
                 const pids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
                 resolve({ pids, error: error ? error.message : null });
               });
             });
 
-            if (findResult.pids.length > 0) {
-              console.log(`Found daemon processes directly: ${findResult.pids.join(', ')}`);
-
-              // Try to stop them
-              const stopCmd = `pkill -f "python.*test-daemon.py" 2>/dev/null && pkill -f "python.*test-watchdog.py" 2>/dev/null`;
+            // If that didn't work, try broader search
+            if (findResult.pids.length === 0) {
               await new Promise((resolve) => {
-                exec(stopCmd, (error, stdout, stderr) => {
-                  console.log('Direct stop result:', { error: error ? error.message : null, stdout, stderr });
+                exec(`ps aux | grep "test-daemon" | grep -v grep | awk '{print $2}' 2>/dev/null || echo "none"`, (error, stdout, stderr) => {
+                  const morePids = stdout.trim().split('\n').filter(pid => pid && pid !== 'none');
+                  findResult.pids = morePids;
                   resolve();
                 });
               });
+            }
+
+            if (findResult.pids.length > 0) {
+              console.log(`Found daemon processes directly: ${findResult.pids.join(', ')}`);
+
+              // Try to stop them using direct PID kills
+              let directStopped = false;
+
+              for (const pid of findResult.pids) {
+                try {
+                  await new Promise((resolve) => {
+                    exec(`kill -9 ${pid} 2>/dev/null`, (error, stdout, stderr) => {
+                      if (!error) {
+                        console.log(`Successfully killed daemon process ${pid} via direct PID`);
+                        directStopped = true;
+                      } else {
+                        console.log(`Failed to kill PID ${pid}:`, error.message);
+                      }
+                      resolve();
+                    });
+                  });
+                } catch (e) {
+                  console.log(`Error in direct PID kill for ${pid}:`, e.message);
+                }
+              }
 
               // Wait and verify
               await new Promise(resolve => setTimeout(resolve, 1000));
@@ -920,11 +976,11 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
               }
 
               res.json({
-                success: true,
-                message: 'Daemon stopped successfully via direct process search',
-                methodUsed: 'direct-pkill',
+                success: directStopped,
+                message: directStopped ? 'Daemon stopped successfully via direct PID kill' : 'Failed to stop daemon processes',
+                methodUsed: 'direct-pid-kill',
                 pidsFound: findResult.pids,
-                verification: 'stopped via direct process search'
+                verification: directStopped ? 'confirmed stopped' : 'may still be running'
               });
             } else {
               res.json({
