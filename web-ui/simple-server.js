@@ -534,9 +534,9 @@ app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
     const venvPath = path.default.join(__dirname, '..', 'venv', 'bin', 'signal-recorder');
 
     try {
-      // Simple check using same pattern as start/stop validation
+      // More specific detection that excludes web server processes
       const statusResult = await new Promise((resolve) => {
-        exec(`pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`, (error, stdout, stderr) => {
+        exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null | grep -v "^${process.pid}$" | head -1`, (error, stdout, stderr) => {
           resolve({ error, stdout: stdout ? stdout.trim() : '' });
         });
       });
@@ -596,7 +596,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       try {
         // Simple validation using same pattern as stop API
         const statusResult = await new Promise((resolve) => {
-          exec(`pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`, (error, stdout, stderr) => {
+          exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null | grep -v "^${process.pid}$" | head -1`, (error, stdout, stderr) => {
             resolve({ error, stdout: stdout ? stdout.trim() : '' });
           });
         });
@@ -672,7 +672,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       try {
         // First verify there's actually a daemon running (excluding our server)
         const statusResult = await new Promise((resolve) => {
-          exec(`pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`, (error, stdout, stderr) => {
+          exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null | grep -v "^${process.pid}$" | head -1`, (error, stdout, stderr) => {
             resolve({ error, stdout: stdout ? stdout.trim() : '' });
           });
         });
@@ -685,9 +685,6 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
 
             // Try specific stop methods
             const stopMethods = [
-              `pkill -f "signal-recorder daemon" 2>/dev/null`,
-              `pkill -f "${venvPath}.*daemon" 2>/dev/null`,
-              `pkill -f "python.*-m signal_recorder.cli.*daemon" 2>/dev/null`,
               `pkill -f "python.*test-daemon.py" 2>/dev/null`,
               `kill ${pids[0]} 2>/dev/null`,
               `pkill -f "python.*signal-recorder.*daemon" 2>/dev/null`
@@ -719,7 +716,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             const verifyResult = await new Promise((resolve) => {
-              exec(`pgrep -f "signal-recorder daemon" 2>/dev/null | grep -v "^${process.pid}$"`, (error, stdout, stderr) => {
+              exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null | grep -v "^${process.pid}$" | head -1`, (error, stdout, stderr) => {
                 resolve({ error, stdout: stdout ? stdout.trim() : '' });
               });
             });
