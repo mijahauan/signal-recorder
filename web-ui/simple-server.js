@@ -981,13 +981,14 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
 
           const parts = line.trim().split(/\s+/);
           if (parts.length >= 6) {
+            // Real radio format: SSRC preset rate frequency SNR address
             channels.push({
-              ssrc: parts[0],
-              frequency: parts[1] + ' ' + parts[2],
-              rate: parts[3],
-              preset: parts[4],
-              snr: parts[5],
-              address: parts.slice(6).join(' ')
+              ssrc: parts[0],                    // SSRC
+              frequency: parts[3] + ' MHz',      // frequency with unit
+              rate: parts[2],                    // rate
+              preset: parts[1],                  // preset (iq)
+              snr: parts[4],                     // SNR
+              address: parts[5]                  // address
             });
           }
         }

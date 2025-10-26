@@ -2,15 +2,16 @@
 
 ✅ **Web Interface**: http://localhost:3000/monitoring  
 ✅ **Daemon Control**: Start/stop via web interface or API  
-✅ **Channel Addresses**: Using correct multicast address (239.251.200.193)  
+✅ **Channel Addresses**: Using correct multicast address (239.192.152.141:5004)  
 ✅ **Background Processes**: Daemon and watchdog running properly  
 ✅ **Status Monitoring**: Real-time status updates via JSON file  
 
 ### **Channel Configuration Details:**
-- **Multicast Address**: 239.251.200.193 (standard for ka9q-radio status)
+- **Multicast Address**: 239.192.152.141:5004 (your radio system addresses)
 - **Channel Count**: 9 channels (6 WWV + 3 CHU time/frequency stations)
 - **Sample Rate**: 12kHz per channel for high-quality signal capture
 - **Format**: IQ mode for full bandwidth signal processing
+- **Discovery Method**: CLI discovery prioritizes real radio addresses
 
 ## 🚀 Quick Start
 
