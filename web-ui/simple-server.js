@@ -528,45 +528,66 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
 // Monitoring endpoints for signal-recorder daemon
 app.get('/api/monitoring/daemon-status', requireAuth, async (req, res) => {
   try {
-    // Check if daemon is running - ultra-specific approach to avoid false positives
-    const { exec } = await import('child_process');
+    // Check daemon status file written by watchdog
+    const fs = await import('fs');
     const path = await import('path');
-    const venvPath = path.default.join(__dirname, '..', 'venv', 'bin', 'signal-recorder');
+    const statusFile = path.default.join(__dirname, '..', 'test-data', 'daemon-status.json');
 
     try {
-      // More specific detection that excludes web server processes
-      const statusResult = await new Promise((resolve) => {
-        exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null | grep -v "^${process.pid}$" | head -1`, (error, stdout, stderr) => {
-          resolve({ error, stdout: stdout ? stdout.trim() : '' });
-        });
-      });
+      if (fs.default.existsSync(statusFile)) {
+        const statusData = JSON.parse(fs.default.readFileSync(statusFile, 'utf8'));
 
-      if (!statusResult.error && statusResult.stdout) {
-        const pids = statusResult.stdout.split('\n').filter(pid => pid.trim());
-        if (pids.length > 0) {
-          console.log('Daemon status found VALID process:', pids);
-          res.json({
-            running: true,
-            timestamp: new Date().toISOString(),
-            pid: pids[0],
-            pids: pids,
-            details: 'Found via: pgrep -f "signal-recorder daemon"',
-            method: 'pgrep -f "signal-recorder daemon"',
-            verification: statusResult.stdout,
-            note: 'Verified signal-recorder daemon process'
+        // Verify the daemon process is still running (if it was reported as running)
+        if (statusData.running && statusData.pid) {
+          const { exec } = await import('child_process');
+          const verifyResult = await new Promise((resolve) => {
+            exec(`ps -p ${statusData.pid} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
+              if (!error && stdout && stdout.trim()) {
+                const comm = stdout.trim();
+                if (comm.includes('python')) {
+                  resolve({ valid: true, comm: comm });
+                } else {
+                  resolve({ valid: false, comm: comm });
+                }
+              } else {
+                resolve({ valid: false, comm: '' });
+              }
+            });
           });
-          return;
+
+          if (verifyResult.valid) {
+            console.log('Watchdog confirmed daemon running:', statusData.pid);
+            res.json({
+              running: true,
+              timestamp: new Date().toISOString(),
+              pid: statusData.pid,
+              pids: [statusData.pid],
+              watchdog_pid: statusData.watchdog_pid,
+              details: statusData.details || 'Daemon running',
+              method: 'watchdog + process verification',
+              verification: `Process ${statusData.pid} is ${verifyResult.comm}`,
+              note: 'Verified daemon process via watchdog'
+            });
+            return;
+          } else {
+            // Process is not running, clean up status file
+            try {
+              fs.default.unlinkSync(statusFile);
+            } catch (e) {
+              // Ignore cleanup errors
+            }
+          }
         }
       }
 
-      // If no daemon found
-      console.log('No daemon processes found');
+      // If no status file or invalid process
+      console.log('No daemon status from watchdog');
       res.json({
         running: false,
         timestamp: new Date().toISOString(),
         pid: null,
         pids: [],
-        details: 'No signal-recorder daemon processes found',
+        details: 'No daemon status file found',
         note: 'No daemon running'
       });
 
@@ -588,22 +609,51 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
     const { action } = req.body; // 'start' or 'stop'
 
     if (action === 'start') {
-      // Check if already running using comprehensive detection (same as status API)
-      const { exec } = await import('child_process');
+      // Check daemon status file written by watchdog
+      const fs = await import('fs');
       const path = await import('path');
-      const venvPath = path.default.join(__dirname, '..', 'venv', 'bin', 'signal-recorder');
+      const statusFile = path.default.join(__dirname, '..', 'test-data', 'daemon-status.json');
 
       try {
-        // Simple validation using same pattern as stop API
-        const statusResult = await new Promise((resolve) => {
-          exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null | grep -v "^${process.pid}$" | head -1`, (error, stdout, stderr) => {
-            resolve({ error, stdout: stdout ? stdout.trim() : '' });
-          });
-        });
+        if (fs.default.existsSync(statusFile)) {
+          const statusData = JSON.parse(fs.default.readFileSync(statusFile, 'utf8'));
 
-        if (!statusResult.error && statusResult.stdout) {
-          res.status(400).json({ error: 'Daemon is already running', pid: statusResult.stdout.split('\n')[0] });
-          return;
+          // Verify the daemon process is still running (if it was reported as running)
+          if (statusData.running && statusData.pid) {
+            const { exec } = await import('child_process');
+            const verifyResult = await new Promise((resolve) => {
+              exec(`ps -p ${statusData.pid} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
+                if (!error && stdout && stdout.trim()) {
+                  const comm = stdout.trim();
+                  if (comm.includes('python')) {
+                    resolve({ valid: true, comm: comm });
+                  } else {
+                    resolve({ valid: false, comm: comm });
+                  }
+                } else {
+                  resolve({ valid: false, comm: '' });
+                }
+              });
+            });
+
+            if (verifyResult.valid) {
+              res.status(400).json({
+                error: 'Daemon is already running',
+                pid: statusData.pid,
+                watchdog_pid: statusData.watchdog_pid,
+                details: statusData.details || 'Daemon already running',
+                note: 'Validation found existing daemon process'
+              });
+              return;
+            } else {
+              // Clean up stale status file
+              try {
+                fs.default.unlinkSync(statusFile);
+              } catch (e) {
+                // Ignore cleanup errors
+              }
+            }
+          }
         }
 
       } catch (e) {
@@ -665,84 +715,101 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
       }
 
     } else if (action === 'stop') {
-      // Stop daemon using multiple specific methods
-      const { exec } = await import('child_process');
-      const venvPath = join(__dirname, '..', 'venv', 'bin', 'signal-recorder');
+      // Check daemon status file written by watchdog
+      const fs = await import('fs');
+      const path = await import('path');
+      const statusFile = path.default.join(__dirname, '..', 'test-data', 'daemon-status.json');
 
       try {
-        // First verify there's actually a daemon running (excluding our server)
-        const statusResult = await new Promise((resolve) => {
-          exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null | grep -v "^${process.pid}$" | head -1`, (error, stdout, stderr) => {
-            resolve({ error, stdout: stdout ? stdout.trim() : '' });
-          });
-        });
+        let pids = [];
 
-        if (!statusResult.error && statusResult.stdout) {
-          const pids = statusResult.stdout.split('\n').filter(pid => pid.trim());
+        if (fs.default.existsSync(statusFile)) {
+          const statusData = JSON.parse(fs.default.readFileSync(statusFile, 'utf8'));
 
-          if (pids.length > 0) {
-            console.log(`Found daemon processes to stop: ${pids.join(', ')}`);
-
-            // Try specific stop methods
-            const stopMethods = [
-              `pkill -f "python.*test-daemon.py" 2>/dev/null`,
-              `kill ${pids[0]} 2>/dev/null`,
-              `pkill -f "python.*signal-recorder.*daemon" 2>/dev/null`
-            ];
-
-            let stopped = false;
-            let methodUsed = '';
-
-            for (const cmd of stopMethods) {
-              try {
-                await new Promise((resolve) => {
-                  exec(cmd, (error, stdout, stderr) => {
-                    if (!error) {
-                      stopped = true;
-                      methodUsed = cmd;
-                      console.log(`Successfully stopped daemon via: ${cmd}`);
-                    }
-                    resolve();
-                  });
-                });
-
-                if (stopped) break;
-              } catch (e) {
-                // Continue to next method
-              }
-            }
-
-            // Wait a moment and verify it's actually stopped
-            await new Promise(resolve => setTimeout(resolve, 1000));
-
+          // Verify the daemon process is still running (if it was reported as running)
+          if (statusData.running && statusData.pid) {
+            const { exec } = await import('child_process');
             const verifyResult = await new Promise((resolve) => {
-              exec(`pgrep -f "python.*test-daemon.py" 2>/dev/null | grep -v "^${process.pid}$" | head -1`, (error, stdout, stderr) => {
-                resolve({ error, stdout: stdout ? stdout.trim() : '' });
+              exec(`ps -p ${statusData.pid} -o comm= 2>/dev/null`, (error, stdout, stderr) => {
+                if (!error && stdout && stdout.trim()) {
+                  const comm = stdout.trim();
+                  if (comm.includes('python')) {
+                    resolve({ valid: true, comm: comm, pid: statusData.pid });
+                  } else {
+                    resolve({ valid: false, comm: comm, pid: null });
+                  }
+                } else {
+                  resolve({ valid: false, comm: '', pid: null });
+                }
               });
             });
 
-            const actuallyStopped = !verifyResult.stdout || verifyResult.stdout.trim() === '';
-
-            res.json({
-              success: stopped,
-              message: actuallyStopped ? 'Daemon stopped successfully' : 'Stop command sent but daemon may still be running',
-              methodUsed: methodUsed || 'none',
-              pidsFound: pids,
-              verification: actuallyStopped ? 'confirmed stopped' : 'may still be running'
-            });
-          } else {
-            res.json({
-              success: true,
-              message: 'No daemon processes found to stop',
-              pidsFound: [],
-              verification: 'no processes running'
-            });
+            if (verifyResult.valid && verifyResult.pid) {
+              pids = [verifyResult.pid];
+              console.log(`Found daemon process to stop: ${pids.join(', ')}`);
+            } else {
+              // Clean up stale status file
+              try {
+                fs.default.unlinkSync(statusFile);
+              } catch (e) {
+                // Ignore cleanup errors
+              }
+            }
           }
+        }
+
+        if (pids.length > 0) {
+          // Try specific stop methods
+          const stopMethods = [
+            `pkill -f "python.*test-daemon.py" 2>/dev/null`,
+            `kill ${pids[0]} 2>/dev/null`
+          ];
+
+          let stopped = false;
+          let methodUsed = '';
+
+          for (const cmd of stopMethods) {
+            try {
+              await new Promise((resolve) => {
+                exec(cmd, (error, stdout, stderr) => {
+                  if (!error) {
+                    stopped = true;
+                    methodUsed = cmd;
+                    console.log(`Successfully stopped daemon via: ${cmd}`);
+                  }
+                  resolve();
+                });
+              });
+
+              if (stopped) break;
+            } catch (e) {
+              // Continue to next method
+            }
+          }
+
+          // Wait a moment and verify it's actually stopped
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // Clean up status file
+          try {
+            fs.default.unlinkSync(statusFile);
+          } catch (e) {
+            // Ignore cleanup errors
+          }
+
+          res.json({
+            success: stopped,
+            message: stopped ? 'Daemon stopped successfully' : 'Stop command sent but daemon may still be running',
+            methodUsed: methodUsed || 'none',
+            pidsFound: pids,
+            verification: stopped ? 'confirmed stopped' : 'may still be running'
+          });
         } else {
           res.json({
             success: true,
             message: 'No daemon processes found to stop',
-            verification: 'already stopped'
+            pidsFound: [],
+            verification: 'no processes running'
           });
         }
 
