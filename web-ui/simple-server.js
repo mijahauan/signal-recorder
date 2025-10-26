@@ -721,7 +721,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
           });
 
           if (result.running) {
-            console.log('Start validation found existing daemon:', result);
+            console.log('Start validation found daemon process:', result);
             res.status(400).json({
               error: 'Daemon is already running',
               pid: result.pid,
