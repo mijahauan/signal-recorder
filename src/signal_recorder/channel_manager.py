@@ -117,15 +117,19 @@ class ChannelManager:
         Returns:
             True if all channels exist or were created successfully
         """
-        logger.info(f"Ensuring {len(required_channels)} channels exist")
+        logger.info(f"📋 ensure_channels_exist() called with {len(required_channels)} channels")
+        logger.info(f"Required SSRCs: {[ch['ssrc'] for ch in required_channels]}")
         
         # Discover existing channels
+        logger.info("Discovering existing channels...")
         existing = self.discover_existing_channels()
         existing_ssrcs = set(existing.keys())
+        logger.info(f"Found {len(existing_ssrcs)} existing: {sorted(existing_ssrcs)}")
         
         # Check which channels need to be created
         required_ssrcs = {ch['ssrc'] for ch in required_channels}
         missing_ssrcs = required_ssrcs - existing_ssrcs
+        logger.info(f"Missing SSRCs: {sorted(missing_ssrcs)}")
         
         # Check which existing channels need updates
         channels_to_update = []
@@ -150,18 +154,22 @@ class ChannelManager:
             return True
         
         if missing_ssrcs:
-            logger.info(f"Need to create {len(missing_ssrcs)} missing channels: {sorted(missing_ssrcs)}")
+            logger.info(f"⚙️  Need to create {len(missing_ssrcs)} missing channels: {sorted(missing_ssrcs)}")
         if channels_to_update:
             logger.info(f"Need to update {len(channels_to_update)} existing channels")
         
         # Create missing channels
+        logger.info(f"🔄 Starting channel creation loop for {len(required_channels)} required channels")
         create_success = 0
         for channel_spec in required_channels:
             ssrc = channel_spec['ssrc']
+            logger.info(f"  Loop iteration: SSRC {ssrc}")
             
             if ssrc not in missing_ssrcs:
+                logger.info(f"    ↪️ SSRC {ssrc} already exists, skipping")
                 continue  # Already exists
             
+            logger.info(f"    ▶️  Calling create_channel() for SSRC {ssrc}")
             if self.create_channel(
                 ssrc=ssrc,
                 frequency_hz=channel_spec['frequency_hz'],
