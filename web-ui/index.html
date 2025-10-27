@@ -145,6 +145,38 @@
         .hidden {
             display: none;
         }
+        .tabs {
+            display: flex;
+            background: #f8f9fa;
+            border-bottom: 2px solid #ddd;
+            padding: 0;
+            margin: 0;
+            list-style: none;
+        }
+        .tab {
+            padding: 15px 30px;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+            font-weight: 500;
+            color: #666;
+        }
+        .tab:hover {
+            background: #e9ecef;
+            color: #333;
+        }
+        .tab.active {
+            color: #2563eb;
+            border-bottom-color: #2563eb;
+            background: white;
+        }
+        .tab-content {
+            display: none;
+            padding: 20px;
+        }
+        .tab-content.active {
+            display: block;
+        }
         .navbar {
             background: #f8f9fa;
             border-bottom: 1px solid #ddd;
@@ -235,16 +267,18 @@
 
         <!-- Main Dashboard -->
         <div id="dashboard" class="hidden">
-            <div class="navbar">
-                <div class="nav-links">
-                    <a href="#" onclick="showConfigurations()">Configurations</a>
-                    <a href="#" onclick="showCreateForm()">New Configuration</a>
-                    <a href="/monitoring.html">📊 Monitoring</a>
-                </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ddd;">
+                <h2 style="margin: 0;">🚀 GRAPE Signal Recorder</h2>
                 <button class="logout-btn" onclick="logout()">Logout</button>
             </div>
 
-            <div class="content">
+            <ul class="tabs">
+                <li class="tab active" onclick="switchTab('config-tab')">⚙️ Configuration & Control</li>
+                <li class="tab" onclick="switchTab('monitoring-tab')">📊 Live Monitoring</li>
+            </ul>
+
+            <!-- Configuration Tab -->
+            <div id="config-tab" class="tab-content active">
                 <!-- Daemon Control Section -->
                 <div class="card" style="margin-bottom: 20px; background: #f8f9fa;">
                     <div class="card-header">
@@ -360,9 +394,18 @@
                         </div>
                     </form>
                 </div>
-            </div>
-        </div>
-    </div>
+            </div> <!-- end config-tab -->
+
+            <!-- Monitoring Tab -->
+            <div id="monitoring-tab" class="tab-content">
+                <div id="monitoring-content">
+                    <p style="text-align: center; color: #666; padding: 40px;">
+                        Loading monitoring dashboard...
+                    </p>
+                </div>
+            </div> <!-- end monitoring-tab -->
+        </div> <!-- end dashboard -->
+    </div> <!-- end container -->
 
     <script>
         let currentConfig = null;
@@ -934,6 +977,253 @@
                 }
             } catch (error) {
                 alert('Failed to stop daemon: ' + error.message);
+            }
+        }
+
+        // Tab switching
+        let monitoringLoaded = false;
+        let monitoringRefreshInterval = null;
+
+        function switchTab(tabId) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabId).classList.add('active');
+            event.target.classList.add('active');
+
+            // Load monitoring content if switching to monitoring tab
+            if (tabId === 'monitoring-tab') {
+                if (!monitoringLoaded) {
+                    loadMonitoringContent();
+                    monitoringLoaded = true;
+                }
+                // Start auto-refresh for monitoring
+                if (!monitoringRefreshInterval) {
+                    monitoringRefreshInterval = setInterval(refreshMonitoring, 30000);
+                }
+            } else {
+                // Stop auto-refresh when leaving monitoring tab
+                if (monitoringRefreshInterval) {
+                    clearInterval(monitoringRefreshInterval);
+                    monitoringRefreshInterval = null;
+                }
+            }
+        }
+
+        async function loadMonitoringContent() {
+            const container = document.getElementById('monitoring-content');
+            container.innerHTML = '<p style="text-align: center; padding: 40px;">Loading monitoring data...</p>';
+
+            try {
+                // Load the monitoring HTML structure
+                container.innerHTML = `
+                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px 30px; border-radius: 10px; margin-bottom: 20px;">
+                        <h2 style="margin: 0 0 5px 0;">📊 Live Monitoring Dashboard</h2>
+                        <p style="margin: 0; opacity: 0.9;">Real-time recording status and metrics • Auto-refreshes every 30s</p>
+                    </div>
+
+                    <div style="background: white; padding: 15px 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <span style="color: #666; font-size: 14px;">Daemon Status:</span>
+                            <span id="mon-daemon-status" style="font-weight: 600;">Checking...</span>
+                        </div>
+                        <button onclick="refreshMonitoring()" style="background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer;">🔄 Refresh Now</button>
+                    </div>
+
+                    <div id="mon-health-summary" style="display: none; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px;"></div>
+                    <div id="mon-system-summary" style="display: none; margin-bottom: 20px;"></div>
+                    <div id="mon-channels-container" style="margin-bottom: 20px;"></div>
+                    <div id="mon-error-container"></div>
+                    <div id="mon-loading-container" style="text-align: center; padding: 40px; color: #999; font-style: italic;">Loading recording statistics...</div>
+
+                    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h3 style="margin: 0;">📋 Daemon Logs</h3>
+                            <button onclick="loadMonitoringLogs()" style="background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer;">🔄 Refresh Logs</button>
+                        </div>
+                        <div id="mon-logs-content" style="background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 6px; max-height: 300px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.5;">
+                            <div style="color: #999; font-style: italic;">Loading logs...</div>
+                        </div>
+                    </div>
+                `;
+
+                // Load initial data
+                refreshMonitoring();
+            } catch (error) {
+                container.innerHTML = `<p style="color: red; text-align: center; padding: 40px;">Failed to load monitoring: ${error.message}</p>`;
+            }
+        }
+
+        async function refreshMonitoring() {
+            await Promise.all([
+                loadMonitoringStats(),
+                checkMonitoringDaemonStatus(),
+                loadMonitoringLogs()
+            ]);
+        }
+
+        async function checkMonitoringDaemonStatus() {
+            try {
+                const data = await apiRequest('/monitoring/daemon-status');
+                const statusEl = document.getElementById('mon-daemon-status');
+                if (statusEl) {
+                    if (data.running) {
+                        statusEl.innerHTML = '<span style="color: #10b981;">● Running</span> (PID: ' + data.pid + ')';
+                    } else {
+                        statusEl.innerHTML = '<span style="color: #f44336;">● Stopped</span>';
+                    }
+                }
+            } catch (error) {
+                const statusEl = document.getElementById('mon-daemon-status');
+                if (statusEl) {
+                    statusEl.innerHTML = '<span style="color: #ff9800;">● Unknown</span>';
+                }
+            }
+        }
+
+        async function loadMonitoringStats() {
+            try {
+                const stats = await apiRequest('/monitoring/recording-stats');
+                const container = document.getElementById('mon-channels-container');
+                
+                if (!stats.available) {
+                    document.getElementById('mon-loading-container').innerHTML = 
+                        '<div style="text-align: center; padding: 40px; color: #666;">⚠️ No recording statistics available - daemon may not be running</div>';
+                    return;
+                }
+
+                // Hide loading
+                document.getElementById('mon-loading-container').style.display = 'none';
+
+                // Show health summary
+                const healthDiv = document.getElementById('mon-health-summary');
+                healthDiv.style.display = 'flex';
+                healthDiv.style.justifyContent = 'space-between';
+                healthDiv.style.alignItems = 'center';
+                healthDiv.innerHTML = `
+                    <div style="display: flex; gap: 30px; align-items: center;">
+                        <div style="display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 600;">
+                            🟢 <span style="font-size: 24px;">${stats.healthy_channels}</span> Healthy
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 600;">
+                            🟡 <span style="font-size: 24px;">${stats.warning_channels}</span> Warning
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 600;">
+                            🔴 <span style="font-size: 24px;">${stats.error_channels}</span> Error
+                        </div>
+                    </div>
+                    <div style="text-align: right; color: #666; font-size: 14px;">
+                        <div><strong>${stats.aggregate_packet_loss_pct.toFixed(2)}%</strong> Packet Loss</div>
+                    </div>
+                `;
+
+                // Show system summary
+                const systemDiv = document.getElementById('mon-system-summary');
+                systemDiv.style.display = 'grid';
+                systemDiv.style.gridTemplateColumns = 'repeat(auto-fit, minmax(200px, 1fr))';
+                systemDiv.style.gap = '15px';
+                
+                const durationMin = Math.floor(stats.recording_duration_sec / 60);
+                const durationHrs = Math.floor(durationMin / 60);
+                const durationMinRem = durationMin % 60;
+                const durationStr = durationHrs > 0 ? `${durationHrs}h ${durationMinRem}m` : `${durationMin}m`;
+
+                systemDiv.innerHTML = `
+                    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                        <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #666; text-transform: uppercase;">Recording Time</h3>
+                        <div style="font-size: 28px; font-weight: bold; color: #333;">${durationStr}</div>
+                        <div style="font-size: 12px; color: #999; margin-top: 5px;">Active recording session</div>
+                    </div>
+                    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                        <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #666; text-transform: uppercase;">Total Data</h3>
+                        <div style="font-size: 28px; font-weight: bold; color: #333;">${stats.total_data_mb.toFixed(1)} MB</div>
+                        <div style="font-size: 12px; color: #999; margin-top: 5px;">Across all channels</div>
+                    </div>
+                    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                        <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #666; text-transform: uppercase;">Packets</h3>
+                        <div style="font-size: 28px; font-weight: bold; color: #333;">${stats.total_packets_received.toLocaleString()}</div>
+                        <div style="font-size: 12px; color: #999; margin-top: 5px;">${(stats.total_packets_received / stats.recording_duration_sec).toFixed(1)}/sec</div>
+                    </div>
+                    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                        <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #666; text-transform: uppercase;">Channels</h3>
+                        <div style="font-size: 28px; font-weight: bold; color: #333;">${stats.channels}</div>
+                        <div style="font-size: 12px; color: #999; margin-top: 5px;">Recording streams</div>
+                    </div>
+                `;
+
+                // Render channels
+                container.innerHTML = '';
+                container.style.display = 'grid';
+                container.style.gridTemplateColumns = 'repeat(auto-fit, minmax(350px, 1fr))';
+                container.style.gap = '15px';
+
+                for (const [ssrc, rec] of Object.entries(stats.recorders)) {
+                    const indicator = rec.health_status === 'healthy' ? '🟢' :
+                                    rec.health_status === 'warning' ? '🟡' : '🔴';
+                    const borderColor = rec.health_status === 'healthy' ? '#4CAF50' :
+                                      rec.health_status === 'warning' ? '#ff9800' : '#f44336';
+
+                    const card = document.createElement('div');
+                    card.style.cssText = `background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); border-left: 4px solid ${borderColor};`;
+                    
+                    card.innerHTML = `
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <div>
+                                <div style="font-size: 18px; font-weight: bold; color: #333;">${rec.channel_name}</div>
+                                <div style="font-size: 14px; color: #666;">${rec.frequency_mhz.toFixed(2)} MHz</div>
+                            </div>
+                            <div style="font-size: 24px;">${indicator}</div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 14px; color: #666;">
+                            ${rec.is_stale ? '⚠️ No data for ' + rec.data_freshness_sec + 's' : rec.health_message}
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
+                            <div><div style="color: #666; font-size: 11px;">COMPLETENESS</div><div style="font-weight: bold; font-size: 15px; color: ${rec.completeness_pct >= 99 ? '#4CAF50' : rec.completeness_pct >= 95 ? '#ff9800' : '#f44336'};">${rec.completeness_pct.toFixed(1)}%</div></div>
+                            <div><div style="color: #666; font-size: 11px;">PACKET LOSS</div><div style="font-weight: bold; font-size: 15px; color: ${rec.packet_loss_pct <= 1 ? '#4CAF50' : rec.packet_loss_pct <= 5 ? '#ff9800' : '#f44336'};">${rec.packet_loss_pct.toFixed(2)}%</div></div>
+                            <div><div style="color: #666; font-size: 11px;">SAMPLES</div><div style="font-weight: bold; font-size: 15px;">${rec.samples_received.toLocaleString()}</div></div>
+                            <div><div style="color: #666; font-size: 11px;">SAMPLE RATE</div><div style="font-weight: bold; font-size: 15px;">${rec.samples_per_sec.toFixed(1)}/s</div></div>
+                            <div><div style="color: #666; font-size: 11px;">FILES</div><div style="font-weight: bold; font-size: 15px;">${rec.file_count}</div></div>
+                            <div><div style="color: #666; font-size: 11px;">DATA</div><div style="font-weight: bold; font-size: 15px;">${rec.total_size_mb.toFixed(1)} MB</div></div>
+                        </div>
+                    `;
+                    
+                    container.appendChild(card);
+                }
+
+            } catch (error) {
+                console.error('Failed to load monitoring stats:', error);
+                document.getElementById('mon-error-container').innerHTML =
+                    `<div style="background: #ffebee; color: #c62828; padding: 15px; border-radius: 6px; margin: 20px 0;">❌ Failed to load recording statistics: ${error.message}</div>`;
+                document.getElementById('mon-loading-container').style.display = 'none';
+            }
+        }
+
+        async function loadMonitoringLogs() {
+            try {
+                const data = await apiRequest('/monitoring/logs');
+                const container = document.getElementById('mon-logs-content');
+                
+                if (container && data.logs && data.logs.length > 0) {
+                    container.innerHTML = data.logs.map(log => {
+                        let color = '#d4d4d4';
+                        if (log.match(/error|failed|exception/i)) color = '#f48771';
+                        else if (log.match(/warning|warn/i)) color = '#dcdcaa';
+                        return `<div style="padding: 2px 0; color: ${color};">${log}</div>`;
+                    }).join('');
+                } else if (container) {
+                    container.innerHTML = '<div style="color: #999; font-style: italic;">No logs available</div>';
+                }
+            } catch (error) {
+                const container = document.getElementById('mon-logs-content');
+                if (container) {
+                    container.innerHTML = '<div style="color: #f48771;">Failed to load logs: ' + error.message + '</div>';
+                }
             }
         }
 
