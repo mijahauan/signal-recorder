@@ -226,7 +226,10 @@ class Resampler:
         
         if num_output_samples == 0:
             # Not enough samples yet, return empty array
+            logger.debug(f"Resampler: Buffer has {len(self.sample_buffer)} samples, need {self.decimation_factor} for 1 output")
             return np.array([], dtype=np.complex64)
+        
+        logger.debug(f"Resampler: Buffer {len(self.sample_buffer)} samples → {num_output_samples} outputs (phase={self.decimation_phase})")
         
         # Process enough samples to produce num_output_samples outputs
         num_input_samples = num_output_samples * self.decimation_factor
@@ -241,13 +244,15 @@ class Resampler:
         i_filtered, self.zi_i = scipy_signal.sosfilt(self.sos, i_samples, zi=self.zi_i)
         q_filtered, self.zi_q = scipy_signal.sosfilt(self.sos, q_samples, zi=self.zi_q)
         
-        # Decimate by taking every Nth sample (aligned with decimation phase)
+        # Decimate by taking every Nth sample starting from decimation_phase offset
+        # decimation_phase maintains alignment across buffer boundaries
         i_decimated = i_filtered[self.decimation_phase::self.decimation_factor]
         q_decimated = q_filtered[self.decimation_phase::self.decimation_factor]
         
-        # Update phase for next call (continuity across buffers)
-        samples_used = len(i_decimated) * self.decimation_factor
-        self.decimation_phase = (self.decimation_phase + samples_used) % self.decimation_factor
+        # Update phase for next buffer
+        # Track how many input samples we've used modulo decimation_factor
+        consumed_samples = num_input_samples
+        self.decimation_phase = (self.decimation_phase + consumed_samples) % self.decimation_factor
         
         # Recombine into complex
         return i_decimated + 1j * q_decimated
