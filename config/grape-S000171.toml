@@ -114,9 +114,9 @@ output_sample_rate = 10
 output_format = "digital_rf"
 
 [uploader]
-enabled = false
+enabled = false  # Set to true to enable automatic uploads
 upload_enabled = false
-protocol = "rsync"
+protocol = "sftp"  # Changed from rsync to sftp for PSWS compatibility
 upload_time = "00:30"
 upload_timezone = "UTC"
 max_retries = 5
@@ -125,11 +125,22 @@ exponential_backoff = true
 queue_dir = "/home/mjh/git/signal-recorder/test-data/raw/upload_queue"
 max_queue_size_gb = 100
 
-[uploader.rsync]
+[uploader.sftp]
+# PSWS Upload Configuration (wsprdaemon-compatible)
 host = "pswsnetwork.eng.ua.edu"
 port = 22
-user = "your_username"
-ssh_key = "/home/wsprdaemon/.ssh/id_rsa_psws"
+user = "S000171"  # Your PSWS station ID
+ssh_key = "/home/mjh/.ssh/id_rsa"  # Your SSH key (already set up with ssh-copy-id)
+bandwidth_limit_kbps = 100  # KB/s upload limit
+verify_after_upload = true
+delete_after_upload = false
+
+[uploader.rsync]
+# Legacy rsync config (not used with SFTP)
+host = "pswsnetwork.eng.ua.edu"
+port = 22
+user = "S000171"
+ssh_key = "/home/mjh/.ssh/id_rsa"
 remote_base_path = "/data/S000171"
 bandwidth_limit = 0
 verify_after_upload = true

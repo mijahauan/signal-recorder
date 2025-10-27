@@ -25,6 +25,46 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def load_upload_config_from_toml(toml_config: Dict) -> Dict:
+    """
+    Convert TOML configuration to UploadManager format.
+    
+    Args:
+        toml_config: Parsed TOML configuration dict
+        
+    Returns:
+        Dict suitable for UploadManager initialization
+    """
+    uploader = toml_config.get('uploader', {})
+    station = toml_config.get('station', {})
+    
+    # Determine protocol
+    protocol = uploader.get('protocol', 'sftp')
+    
+    # Get protocol-specific config
+    if protocol == 'sftp':
+        proto_config = uploader.get('sftp', {})
+    else:
+        proto_config = uploader.get('rsync', {})
+    
+    # Build unified config
+    config = {
+        'protocol': protocol,
+        'host': proto_config.get('host', 'pswsnetwork.eng.ua.edu'),
+        'user': proto_config.get('user', station.get('id', '')),
+        'ssh': {
+            'key_file': proto_config.get('ssh_key', '')
+        },
+        'bandwidth_limit_kbps': proto_config.get('bandwidth_limit_kbps', 
+                                                 proto_config.get('bandwidth_limit', 100)),
+        'max_retries': uploader.get('max_retries', 5),
+        'retry_backoff_base': 2 if uploader.get('exponential_backoff', True) else 1,
+        'queue_file': Path(uploader.get('queue_dir', '/tmp')).parent / 'upload_queue.json'
+    }
+    
+    return config
+
+
 @dataclass
 class UploadTask:
     """Represents an upload task in the queue"""
