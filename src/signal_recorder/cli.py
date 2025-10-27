@@ -29,7 +29,7 @@ def main():
     logging.info("✓ Logging configured at INFO level")
     
     parser = argparse.ArgumentParser(description='Signal Recorder for GRAPE')
-    parser.add_argument('command', choices=['daemon', 'discover'], help='Command to run')
+    parser.add_argument('command', choices=['daemon', 'discover', 'create-channels'], help='Command to run')
     parser.add_argument('--config', '-c', help='Configuration file path')
     parser.add_argument('--radiod', '-r', help='RadioD address for discovery')
     
@@ -43,6 +43,10 @@ def main():
         # Discovery mode
         manager = GRAPERecorderManager(config_file=args.config)
         manager.discover_channels(radiod_address=args.radiod)
+    elif args.command == 'create-channels':
+        # Create channels mode
+        manager = GRAPERecorderManager(config_file=args.config)
+        manager.create_channels()
 
 if __name__ == '__main__':
     main()

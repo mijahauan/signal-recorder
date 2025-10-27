@@ -89,6 +89,60 @@ class GRAPERecorderManager:
         except Exception as e:
             print(f"Error discovering channels: {e}")
             return False
+    
+    def create_channels(self):
+        """Create all channels defined in the configuration"""
+        print("Creating channels from configuration...")
+        
+        # Get configuration
+        ka9q_config = self.config.get('ka9q', {})
+        recorder_config = self.config.get('recorder', {})
+        channels = recorder_config.get('channels', [])
+        
+        if not channels:
+            print("No channels configured")
+            return False
+        
+        # Get multicast address
+        multicast_address = ka9q_config.get('status_address', '239.192.152.141')
+        if ':' in multicast_address:
+            multicast_address = multicast_address.split(':')[0]
+        
+        print(f"Using radiod at: {multicast_address}")
+        print(f"Found {len(channels)} channels in configuration\n")
+        
+        # Import ChannelManager
+        from .channel_manager import ChannelManager
+        channel_manager = ChannelManager(multicast_address)
+        
+        # Build channel specifications
+        required_channels = []
+        for channel in channels:
+            if not channel.get('enabled', True):
+                continue
+            
+            required_channels.append({
+                'ssrc': channel['ssrc'],
+                'frequency_hz': channel['frequency_hz'],
+                'preset': channel.get('preset', 'iq'),
+                'sample_rate': channel.get('sample_rate', 16000),
+                'agc': channel.get('agc', 0),
+                'gain': channel.get('gain', 0),
+                'description': channel.get('description', '')
+            })
+        
+        print(f"Creating {len(required_channels)} enabled channels...")
+        
+        # Create the channels
+        success = channel_manager.ensure_channels_exist(required_channels, update_existing=True)
+        
+        if success:
+            print("\n✅ All channels created successfully!")
+            print("\nVerify with: control -v", multicast_address)
+            return True
+        else:
+            print("\n⚠️  Some channels failed to create. Check logs above.")
+            return False
         
     def run(self):
         """Run the recorder daemon"""
