@@ -60,6 +60,7 @@ class ChannelManager:
         Returns:
             True if successful
         """
+        logger.info(f"🔧 create_channel() called for SSRC {ssrc}")
         try:
             logger.info(
                 f"Creating channel: SSRC={ssrc}, "
@@ -68,6 +69,8 @@ class ChannelManager:
                 f"agc={agc}, gain={gain}dB, "
                 f"description='{description}'"
             )
+            
+            logger.info(f"About to call self.control.create_and_configure_channel()...")
             
             # Use radiod_control to create and configure
             self.control.create_and_configure_channel(
@@ -79,8 +82,12 @@ class ChannelManager:
                 gain=gain
             )
             
+            logger.info(f"create_and_configure_channel() returned, waiting 0.5s...")
+            
             # Wait for radiod to process
             time.sleep(0.5)
+            
+            logger.info(f"Verifying channel {ssrc}...")
             
             # Verify the channel was created
             if self.control.verify_channel(ssrc, frequency_hz):
@@ -91,7 +98,7 @@ class ChannelManager:
                 return False
                 
         except Exception as e:
-            logger.error(f"Failed to create channel {ssrc}: {e}")
+            logger.error(f"❌ EXCEPTION in create_channel({ssrc}): {e}", exc_info=True)
             return False
     
     def ensure_channels_exist(self, required_channels: List[Dict], update_existing: bool = False) -> bool:
