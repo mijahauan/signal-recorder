@@ -183,8 +183,8 @@ class Resampler:
         Initialize resampler
         
         Args:
-            input_rate: Input sample rate (Hz)
-            output_rate: Output sample rate (Hz)
+            input_rate: Input sample rate in Hz
+            output_rate: Output sample rate in Hz
         """
         self.input_rate = input_rate
         self.output_rate = output_rate
@@ -192,14 +192,17 @@ class Resampler:
         
         # Design anti-aliasing filter (8th order Butterworth)
         # Cutoff at Nyquist frequency of output rate
-        nyquist = output_rate / 2.0
-        cutoff = nyquist / (input_rate / 2.0)  # Normalized frequency
+        nyquist_out = output_rate / 2
+        normalized_cutoff = nyquist_out / (input_rate / 2)
+        self.sos = scipy_signal.butter(8, normalized_cutoff, output='sos')
         
-        self.sos = scipy_signal.butter(8, cutoff, btype='low', output='sos')
-        
-        # Filter state (for continuous filtering across packets)
+        # Initialize filter state
         self.zi_i = scipy_signal.sosfilt_zi(self.sos)
         self.zi_q = scipy_signal.sosfilt_zi(self.sos)
+        
+        # Buffer for accumulating samples across packets
+        self.sample_buffer = np.array([], dtype=np.complex64)
+        self.decimation_phase = 0  # Tracks position within decimation cycle
         
         logger.info(f"Resampler initialized: {input_rate} Hz → {output_rate} Hz "
                    f"(decimation factor {self.decimation_factor})")
@@ -212,19 +215,39 @@ class Resampler:
             iq_samples: Complex IQ samples at input rate
             
         Returns:
-            Resampled complex IQ samples at output rate
+            Decimated IQ samples at output rate
         """
+        # Add new samples to buffer
+        self.sample_buffer = np.concatenate([self.sample_buffer, iq_samples])
+        
+        # Calculate how many output samples we can produce
+        # We need decimation_factor input samples for each output sample
+        num_output_samples = len(self.sample_buffer) // self.decimation_factor
+        
+        if num_output_samples == 0:
+            # Not enough samples yet, return empty array
+            return np.array([], dtype=np.complex64)
+        
+        # Process enough samples to produce num_output_samples outputs
+        num_input_samples = num_output_samples * self.decimation_factor
+        samples_to_process = self.sample_buffer[:num_input_samples]
+        self.sample_buffer = self.sample_buffer[num_input_samples:]  # Keep remainder
+        
         # Split into I and Q
-        i_samples = np.real(iq_samples).astype(np.float32)
-        q_samples = np.imag(iq_samples).astype(np.float32)
+        i_samples = samples_to_process.real
+        q_samples = samples_to_process.imag
         
         # Apply anti-aliasing filter
         i_filtered, self.zi_i = scipy_signal.sosfilt(self.sos, i_samples, zi=self.zi_i)
         q_filtered, self.zi_q = scipy_signal.sosfilt(self.sos, q_samples, zi=self.zi_q)
         
-        # Decimate
-        i_decimated = i_filtered[::self.decimation_factor]
-        q_decimated = q_filtered[::self.decimation_factor]
+        # Decimate by taking every Nth sample (aligned with decimation phase)
+        i_decimated = i_filtered[self.decimation_phase::self.decimation_factor]
+        q_decimated = q_filtered[self.decimation_phase::self.decimation_factor]
+        
+        # Update phase for next call (continuity across buffers)
+        samples_used = len(i_decimated) * self.decimation_factor
+        self.decimation_phase = (self.decimation_phase + samples_used) % self.decimation_factor
         
         # Recombine into complex
         return i_decimated + 1j * q_decimated
@@ -326,7 +349,6 @@ class GRAPEChannelRecorder:
         # Initialize components
         self.resampler = Resampler(input_rate=12000, output_rate=10)
         self.daily_buffer = DailyBuffer(sample_rate=10)
-        self.metadata_gen = GRAPEMetadataGenerator(channel_name, frequency_hz, ssrc)
         
         # Sample accumulator (for efficient resampling)
         self.sample_accumulator = []
@@ -357,12 +379,6 @@ class GRAPEChannelRecorder:
             if header.sequence != expected_seq:
                 dropped = (header.sequence - expected_seq) & 0xFFFF
                 self.packets_dropped = getattr(self, 'packets_dropped', 0) + dropped
-                self.metadata_gen.add_packet_event(
-                    timestamp=header.timestamp / self.rtp_sample_rate,
-                    sequence=header.sequence,
-                    sample_count=0,
-                    is_dropped=True
-                )
                 logger.warning(f"{self.channel_name}: Dropped {dropped} packets "
                              f"(seq {expected_seq} → {header.sequence})")
         else:
@@ -406,14 +422,8 @@ class GRAPEChannelRecorder:
                 day_date, day_data = completed_day
                 self._write_digital_rf(day_date, day_data)
                 
-            # Track in metadata
+            # Track received samples
             self.samples_received += len(resampled)
-            self.metadata_gen.add_packet_event(
-                timestamp=unix_time,
-                sequence=header.sequence,
-                sample_count=len(iq_samples),
-                is_dropped=False
-            )
             
     def _write_digital_rf(self, day_date, data: np.ndarray):
         """
