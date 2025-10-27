@@ -403,9 +403,9 @@ class GRAPEChannelRecorder:
         self.sample_accumulator.append(iq_samples)
         accumulated_samples = sum(len(s) for s in self.sample_accumulator)
         
-        # Log every 50th packet to track input sample rate
-        if self.packets_received % 50 == 0:
-            logger.info(f"{self.channel_name}: RTP packet #{self.packets_received}: received {len(iq_samples)} samples, accumulated={accumulated_samples}, total_samples_received={getattr(self, 'samples_received', 0)}")
+        # Log every 100th packet to track input sample rate
+        if self.packets_received % 100 == 0:
+            logger.warning(f"{self.channel_name}: RTP packet #{self.packets_received}: received {len(iq_samples)} samples, accumulated={accumulated_samples}, total_samples_received={getattr(self, 'samples_received', 0)}")
         
         # Resample when we have enough samples
         if accumulated_samples >= self.samples_per_packet:
@@ -413,15 +413,15 @@ class GRAPEChannelRecorder:
             all_samples = np.concatenate(self.sample_accumulator)
             self.sample_accumulator = []
             
-            logger.info(f"{self.channel_name}: Accumulated {len(all_samples)} samples, sending to resampler")
+            logger.warning(f"{self.channel_name}: Accumulated {len(all_samples)} samples, sending to resampler")
             
             # Resample
             resampled = self.resampler.resample(all_samples)
             
-            logger.info(f"{self.channel_name}: Resampler returned {len(resampled)} samples (adding to daily buffer)")
+            logger.warning(f"{self.channel_name}: Resampler returned {len(resampled)} samples (adding to daily buffer)")
             
             if len(resampled) == 0:
-                logger.warning(f"{self.channel_name}: Resampler returned 0 samples from {len(all_samples)} inputs!")
+                logger.warning(f"{self.channel_name}: ⚠️  Resampler returned 0 samples from {len(all_samples)} inputs!")
             
             # Convert RTP timestamp to Unix time
             # RTP timestamp is in samples at 12 kHz
@@ -438,7 +438,7 @@ class GRAPEChannelRecorder:
             # Track received samples
             old_count = self.samples_received
             self.samples_received += len(resampled)
-            logger.info(f"{self.channel_name}: Added {len(resampled)} samples: {old_count} → {self.samples_received}")
+            logger.warning(f"{self.channel_name}: Added {len(resampled)} samples: {old_count} → {self.samples_received}")
             
     def _write_digital_rf(self, day_date, data: np.ndarray):
         """
