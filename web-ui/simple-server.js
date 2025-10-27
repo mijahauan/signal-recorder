@@ -1106,7 +1106,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
     try {
       const result = await new Promise((resolve, reject) => {
         exec(`"${venvPython}" -m signal_recorder.cli discover --radiod ${statusAddr} --config "${configPath}"`, {
-          timeout: 5000,  // 5 second timeout
+          timeout: 9000,  // 9 second timeout - allows 7s for radiod + 2s buffer
           env: {
             ...process.env,
             PYTHONPATH: srcPath

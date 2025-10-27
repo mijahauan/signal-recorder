@@ -44,7 +44,8 @@ class GRAPERecorderManager:
         try:
             from .control_discovery import discover_channels_via_control
             
-            channels = discover_channels_via_control(radiod_address, timeout=5.0)
+            # Increased timeout to allow radiod to fully respond with all channel status messages
+            channels = discover_channels_via_control(radiod_address, timeout=7.0)
             
             if channels:
                 print("SSRC      Frequency  Rate   Preset  SNR    Address")
