@@ -282,6 +282,11 @@
     </nav>
 
     <div class="content">
+        <div id="auth-error" style="display: none; background: #fee; color: #c00; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #fcc;">
+            <strong>⚠️ Authentication Error:</strong> <span id="auth-error-message"></span>
+            <br><small>Please ensure you're logged in via the <a href="/" style="color: #c00; text-decoration: underline;">Configuration page</a> first.</small>
+        </div>
+        
         <div class="header">
             <h1>📊 Live Monitoring Dashboard</h1>
             <p>Real-time recording status and metrics • Auto-refreshes every 30s</p>
@@ -355,7 +360,15 @@
         let refreshInterval;
 
         async function apiRequest(endpoint, options = {}) {
-            const token = localStorage.getItem('authToken') || 'admin-token';
+            const token = localStorage.getItem('authToken');
+            
+            // If no token, set default and don't make request yet
+            if (!token) {
+                console.log('No auth token found, setting default');
+                localStorage.setItem('authToken', 'admin-token');
+                throw new Error('Authentication token not found - please refresh the page');
+            }
+            
             const url = `/api${endpoint}`;
             const cacheBustUrl = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
 
@@ -371,8 +384,8 @@
             });
 
             if (response.status === 401) {
-                window.location.href = '/';
-                return;
+                // Show error instead of auto-redirecting
+                throw new Error('Authentication failed - please log in via the main configuration page');
             }
 
             if (!response.ok) {
@@ -390,6 +403,12 @@
 
         function formatNumber(num) {
             return num.toLocaleString();
+        }
+
+        function showAuthError(message) {
+            document.getElementById('auth-error-message').textContent = message;
+            document.getElementById('auth-error').style.display = 'block';
+            document.getElementById('loading-container').style.display = 'none';
         }
 
         async function loadRecordingStats() {
@@ -501,9 +520,15 @@
 
             } catch (error) {
                 console.error('Failed to load recording stats:', error);
-                document.getElementById('error-container').innerHTML =
-                    `<div class="error-message">❌ Failed to load recording statistics: ${error.message}</div>`;
-                document.getElementById('loading-container').style.display = 'none';
+                
+                // Check if it's an auth error
+                if (error.message.includes('Authentication')) {
+                    showAuthError(error.message);
+                } else {
+                    document.getElementById('error-container').innerHTML =
+                        `<div class="error-message">❌ Failed to load recording statistics: ${error.message}</div>`;
+                    document.getElementById('loading-container').style.display = 'none';
+                }
             }
         }
 
@@ -561,11 +586,20 @@
 
         // Initial load
         document.addEventListener('DOMContentLoaded', function() {
-            const token = localStorage.getItem('authToken');
+            // Ensure auth token is set before making any requests
+            let token = localStorage.getItem('authToken');
             if (!token) {
+                console.log('Setting default auth token');
                 localStorage.setItem('authToken', 'admin-token');
+                token = 'admin-token';
             }
-            refreshAll();
+            
+            console.log('Monitoring page loaded, auth token:', token ? 'present' : 'missing');
+            
+            // Small delay to ensure token is committed to localStorage
+            setTimeout(() => {
+                refreshAll();
+            }, 100);
         });
     </script>
 </body>
