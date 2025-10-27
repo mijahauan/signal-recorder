@@ -349,12 +349,15 @@ class GRAPEChannelRecorder:
         self.channel_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize components
-        self.resampler = Resampler(input_rate=12000, output_rate=10)
+        # Note: Radiod reports 12 kHz sample rate, but that's for REAL samples (I+Q combined)
+        # For complex I/Q: 12 kHz real = 6 kHz complex = 6000 I/Q pairs/sec
+        # Verified: 50 packets/sec × 120 complex samples/packet = 6000 complex samples/sec
+        self.resampler = Resampler(input_rate=6000, output_rate=10)
         self.daily_buffer = DailyBuffer(sample_rate=10)
         
         # Sample accumulator (for efficient resampling)
         self.sample_accumulator = []
-        self.samples_per_packet = 1200  # Accumulate ~100ms before resampling
+        self.samples_per_packet = 600  # Accumulate ~100ms at 6 kHz before resampling
         
         # RTP timestamp tracking
         self.last_sequence = None
