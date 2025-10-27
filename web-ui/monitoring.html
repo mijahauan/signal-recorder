@@ -656,6 +656,15 @@
                 container.innerHTML = '';
 
                 for (const [ssrc, rec] of Object.entries(stats.recorders)) {
+                    // Debug: Log timing data for first channel
+                    if (ssrc === Object.keys(stats.recorders)[0]) {
+                        console.log('Timing data for', rec.channel_name, ':', {
+                            timing_drift_mean_ms: rec.timing_drift_mean_ms,
+                            timing_drift_std_ms: rec.timing_drift_std_ms,
+                            timing_samples_count: rec.timing_samples_count
+                        });
+                    }
+                    
                     const card = document.createElement('div');
                     card.className = `channel-card ${rec.health_status}`;
                     

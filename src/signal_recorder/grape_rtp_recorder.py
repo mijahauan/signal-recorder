@@ -472,17 +472,20 @@ class GRAPEChannelRecorder:
         # Report timing quality every 5 minutes
         if self.last_timing_report is None or (system_time - self.last_timing_report) >= 300:
             if len(self.timing_drift_samples) > 10:
-                drift_array = np.array(self.timing_drift_samples)
-                mean_drift = np.mean(drift_array)
-                std_drift = np.std(drift_array)
-                min_drift = np.min(drift_array)
-                max_drift = np.max(drift_array)
-                
-                logger.info(f"{self.channel_name}: Timing Quality Report:")
-                logger.info(f"  Mean drift: {mean_drift:+.1f} ms (RTP vs system time)")
-                logger.info(f"  Std dev: {std_drift:.1f} ms")
-                logger.info(f"  Range: {min_drift:+.1f} to {max_drift:+.1f} ms")
-                logger.info(f"  Samples in buffer: {len(self.timing_drift_samples)}")
+                try:
+                    drift_array = np.array(self.timing_drift_samples)
+                    mean_drift = np.mean(drift_array)
+                    std_drift = np.std(drift_array)
+                    min_drift = np.min(drift_array)
+                    max_drift = np.max(drift_array)
+                    
+                    # Single-line log to avoid multi-line issues
+                    logger.info(f"{self.channel_name}: Timing Quality - "
+                               f"drift: {mean_drift:+.1f}±{std_drift:.1f}ms, "
+                               f"range: [{min_drift:+.1f}, {max_drift:+.1f}]ms, "
+                               f"n={len(self.timing_drift_samples)}")
+                except Exception as e:
+                    logger.error(f"{self.channel_name}: Timing quality calculation failed: {e}")
                 
                 self.last_timing_report = system_time
     
