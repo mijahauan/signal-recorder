@@ -517,11 +517,14 @@
         }
 
         function calculateDataQuality(stats) {
+            console.log('calculateDataQuality called', stats);
             if (!stats || !stats.recorders || Object.keys(stats.recorders).length === 0) {
+                console.log('No recorders data, hiding quality section');
                 document.getElementById('quality-section').style.display = 'none';
                 return;
             }
 
+            console.log('Showing quality section with', Object.keys(stats.recorders).length, 'recorders');
             document.getElementById('quality-section').style.display = 'block';
 
             const recorders = Object.values(stats.recorders);
