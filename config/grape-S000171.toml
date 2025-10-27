@@ -10,7 +10,7 @@ instrument_id = "172"
 description = "beelink rx888 SAS"
 
 [ka9q]
-status_address = "239.192.152.141"
+status_address = "bee1-hf-status.local"
 auto_create_channels = false
 
 [recorder]
