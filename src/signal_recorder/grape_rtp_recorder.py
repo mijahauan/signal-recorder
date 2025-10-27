@@ -607,8 +607,8 @@ class GRAPEChannelRecorder:
         
         # Resample when we have enough samples
         if accumulated_samples >= self.samples_per_packet:
-            # Get all accumulated samples
-            all_samples = np.array(self.sample_accumulator, dtype=np.complex64)
+            # Get all accumulated samples - concatenate to avoid dimension mismatch
+            all_samples = np.concatenate(self.sample_accumulator) if len(self.sample_accumulator) > 1 else self.sample_accumulator[0]
             self.sample_accumulator = []
             
             # Resample
