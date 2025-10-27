@@ -1192,8 +1192,8 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           if (parts.length >= 6) {
             const ssrc = parts[0];
             const preset = parts[1];
-            const rate = parts[2].replace(',', ''); // Remove comma
-            const freq_hz = parts[3].replace(',', ''); // Remove comma
+            const rate = parts[2].replace(/,/g, ''); // Remove all commas
+            const freq_hz = parts[3].replace(/,/g, ''); // Remove all commas
             const snr = parts[4];
             const address = parts[5]; // multicast:port
 
