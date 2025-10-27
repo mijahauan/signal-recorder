@@ -725,13 +725,31 @@ class GRAPERecorderManager:
         channels = recorder_config.get('channels', [])
         print(f"🔍 DEBUG: Found {len(channels)} channels in config")
         
-        # Get multicast address
+        # Get addresses
         ka9q_config = self.config.get('ka9q', {})
-        multicast_address = ka9q_config.get('status_address', '239.192.152.141')
-        print(f"🔍 DEBUG: Multicast address: {multicast_address}")
-        if ':' in multicast_address:
-            multicast_address = multicast_address.split(':')[0]
-            print(f"🔍 DEBUG: Cleaned multicast address: {multicast_address}")
+        status_address = ka9q_config.get('status_address', '239.192.152.141')
+        print(f"🔍 DEBUG: Status address: {status_address}")
+        
+        # Data multicast address: where RTP streams are broadcast
+        # This is different from status_address (which is for control/discovery)
+        # If status_address is mDNS (e.g., bee1-hf-status.local), we need to get
+        # the actual data multicast from radiod's channel configuration
+        data_address = ka9q_config.get('data_address')
+        
+        if data_address:
+            # Explicit data address in config
+            multicast_address = data_address.split(':')[0] if ':' in data_address else data_address
+            print(f"🔍 DEBUG: Using explicit data_address: {multicast_address}")
+        elif '.' in status_address and not status_address.endswith('.local'):
+            # Status address is already an IP address, use it
+            multicast_address = status_address.split(':')[0] if ':' in status_address else status_address
+            print(f"🔍 DEBUG: Using status_address as data address: {multicast_address}")
+        else:
+            # Status address is mDNS name, query radiod to get data multicast
+            # For now, use default GRAPE data multicast
+            multicast_address = '239.192.152.141'
+            print(f"🔍 DEBUG: Status address is mDNS, using default data multicast: {multicast_address}")
+            logger.info(f"Using default data multicast {multicast_address} (status_address is mDNS: {status_address})")
             
         # Create output directory
         print("🔍 DEBUG: Creating output directory...")
@@ -742,7 +760,8 @@ class GRAPERecorderManager:
         # Ensure all channels exist in radiod before starting recording
         print("🔍 DEBUG: About to check radiod channels...")
         logger.info("Checking radiod channels...")
-        channel_manager = ChannelManager(multicast_address)
+        # ChannelManager uses status_address for control/discovery
+        channel_manager = ChannelManager(status_address)
         
         # Build channel specifications from config
         required_channels = []
