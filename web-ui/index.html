@@ -239,12 +239,36 @@
                 <div class="nav-links">
                     <a href="#" onclick="showConfigurations()">Configurations</a>
                     <a href="#" onclick="showCreateForm()">New Configuration</a>
-                    <a href="/monitoring">📊 Monitor</a>
+                    <a href="/monitoring.html" target="_blank">📊 Monitoring</a>
                 </div>
                 <button class="logout-btn" onclick="logout()">Logout</button>
             </div>
 
             <div class="content">
+                <!-- Daemon Control Section -->
+                <div class="card" style="margin-bottom: 20px; background: #f8f9fa;">
+                    <div class="card-header">
+                        <h3 class="card-title">🎙️ Recording Daemon</h3>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <div>
+                            <div style="font-size: 16px; margin-bottom: 5px;">
+                                Status: <span id="daemon-status-main" style="font-weight: 600;">Checking...</span>
+                            </div>
+                            <div style="font-size: 13px; color: #666;">
+                                <span id="daemon-details">-</span>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button onclick="startDaemon()" style="background: #10b981;">▶️ Start Recording</button>
+                            <button onclick="stopDaemon()" class="btn-danger">⏹️ Stop Recording</button>
+                            <a href="/monitoring.html" target="_blank">
+                                <button class="btn-secondary">📊 View Live Monitor</button>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Configurations List -->
                 <div id="configurations-view">
                     <h2>Your Configurations</h2>
@@ -855,10 +879,77 @@
             }
         }
 
+        // Daemon control functions
+        async function checkDaemonStatus() {
+            try {
+                const data = await apiRequest('/monitoring/daemon-status');
+                const statusEl = document.getElementById('daemon-status-main');
+                const detailsEl = document.getElementById('daemon-details');
+                
+                if (data.running) {
+                    statusEl.innerHTML = '<span style="color: #10b981;">● Running</span>';
+                    detailsEl.textContent = `PID: ${data.pid} | Active since ${new Date(data.timestamp).toLocaleTimeString()}`;
+                } else {
+                    statusEl.innerHTML = '<span style="color: #f44336;">● Stopped</span>';
+                    detailsEl.textContent = 'Daemon is not running';
+                }
+            } catch (error) {
+                console.error('Failed to check daemon status:', error);
+                document.getElementById('daemon-status-main').innerHTML = '<span style="color: #ff9800;">● Unknown</span>';
+                document.getElementById('daemon-details').textContent = 'Status check failed';
+            }
+        }
+
+        async function startDaemon() {
+            try {
+                const data = await apiRequest('/monitoring/daemon-control', {
+                    method: 'POST',
+                    body: JSON.stringify({ action: 'start' })
+                });
+                
+                if (data.error) {
+                    alert('Failed to start daemon: ' + data.error);
+                } else {
+                    alert('Daemon started successfully!\n\nClick "View Live Monitor" to see real-time recording stats.');
+                    setTimeout(checkDaemonStatus, 2000);
+                }
+            } catch (error) {
+                alert('Failed to start daemon: ' + error.message);
+            }
+        }
+
+        async function stopDaemon() {
+            if (!confirm('Stop the recording daemon? This will stop all active recordings.')) {
+                return;
+            }
+            
+            try {
+                const data = await apiRequest('/monitoring/daemon-control', {
+                    method: 'POST',
+                    body: JSON.stringify({ action: 'stop' })
+                });
+                
+                if (data.error) {
+                    alert('Failed to stop daemon: ' + data.error);
+                } else {
+                    alert('Daemon stopped successfully');
+                    setTimeout(checkDaemonStatus, 2000);
+                }
+            } catch (error) {
+                alert('Failed to stop daemon: ' + error.message);
+            }
+        }
+
+        // Auto-check daemon status every 10 seconds
+        setInterval(checkDaemonStatus, 10000);
+
         // Initialize
         if (document.getElementById('username').value === 'admin' && document.getElementById('password').value === 'admin') {
             login();
         }
+        
+        // Check daemon status on page load
+        setTimeout(checkDaemonStatus, 1000);
     </script>
 </body>
 </html>

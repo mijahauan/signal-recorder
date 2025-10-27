@@ -127,18 +127,52 @@ class GRAPERecorderManager:
                 # Periodic status update
                 if time.time() - last_status >= status_interval:
                     status = rtp_recorder.get_status()
-                    print(f"\n{'='*70}")
-                    print(f"Status Update - {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
-                    print(f"{'='*70}")
-                    print(f"Recorder: {'RUNNING' if status['running'] else 'STOPPED'}")
-                    print(f"Active channels: {status['channels']}")
                     
-                    for ssrc, rec_status in status['recorders'].items():
-                        print(f"\n  {rec_status['channel_name']}:")
-                        print(f"    Frequency: {rec_status['frequency_hz']/1e6:.2f} MHz")
-                        print(f"    Packets received: {rec_status['packets_received']:,}")
+                    # System-wide status header
+                    print(f"\n{'='*80}")
+                    print(f"📊 GRAPE Recorder Status - {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
+                    print(f"{'='*80}")
                     
-                    print(f"{'='*70}\n")
+                    # Overall health summary
+                    duration_min = status['recording_duration_sec'] // 60
+                    duration_hrs = duration_min // 60
+                    duration_min_rem = duration_min % 60
+                    
+                    print(f"Recording Duration: {duration_hrs}h {duration_min_rem}m")
+                    print(f"Total Data Written: {status['total_data_mb']:.1f} MB")
+                    print(f"Aggregate Packet Loss: {status['aggregate_packet_loss_pct']:.2f}%")
+                    print(f"Channel Health: 🟢 {status['healthy_channels']} healthy  "
+                          f"🟡 {status['warning_channels']} warning  "
+                          f"🔴 {status['error_channels']} error")
+                    print()
+                    
+                    # Per-channel details
+                    for ssrc, rec in status['recorders'].items():
+                        # Status indicator based on health
+                        if rec['health_status'] == 'healthy':
+                            indicator = '🟢'
+                        elif rec['health_status'] == 'warning':
+                            indicator = '🟡'
+                        else:
+                            indicator = '🔴'
+                        
+                        print(f"{indicator} {rec['channel_name']} ({rec['frequency_mhz']:.2f} MHz)")
+                        print(f"   Status: {rec['health_message']}")
+                        print(f"   Data: {rec['completeness_pct']:.1f}% complete | "
+                              f"{rec['samples_received']:,} samples ({rec['samples_per_sec']:.1f}/s)")
+                        print(f"   Packets: {rec['packets_received']:,} received | "
+                              f"{rec['packets_dropped']} dropped ({rec['packet_loss_pct']:.2f}%)")
+                        print(f"   Output: {rec['file_count']} files | "
+                              f"{rec['total_size_mb']:.1f} MB | "
+                              f"{rec['data_rate_kbps']:.1f} KB/s")
+                        
+                        # Warning for stale data
+                        if rec['is_stale']:
+                            print(f"   ⚠️  WARNING: No data received for {rec['data_freshness_sec']} seconds!")
+                        
+                        print()
+                    
+                    print(f"{'='*80}\n")
                     last_status = time.time()
 
         except KeyboardInterrupt:

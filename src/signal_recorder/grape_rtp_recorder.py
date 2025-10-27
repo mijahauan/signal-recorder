@@ -29,6 +29,9 @@ from .grape_metadata import GRAPEMetadataGenerator
 
 logger = logging.getLogger(__name__)
 
+# Global stats file for web UI monitoring
+STATS_FILE = Path('/tmp/signal-recorder-stats.json')
+
 
 @dataclass
 class RTPHeader:
@@ -345,10 +348,15 @@ class GRAPEChannelRecorder:
             payload: RTP payload (IQ samples as float32)
         """
         # Track packet metadata
+        self.packets_received = getattr(self, 'packets_received', 0) + 1
+        self.samples_received = getattr(self, 'samples_received', 0)
+        self.last_packet_time = time.time()  # For freshness monitoring
+        
         if self.last_sequence is not None:
             expected_seq = (self.last_sequence + 1) & 0xFFFF
             if header.sequence != expected_seq:
                 dropped = (header.sequence - expected_seq) & 0xFFFF
+                self.packets_dropped = getattr(self, 'packets_dropped', 0) + dropped
                 self.metadata_gen.add_packet_event(
                     timestamp=header.timestamp / self.rtp_sample_rate,
                     sequence=header.sequence,
@@ -357,6 +365,8 @@ class GRAPEChannelRecorder:
                 )
                 logger.warning(f"{self.channel_name}: Dropped {dropped} packets "
                              f"(seq {expected_seq} → {header.sequence})")
+        else:
+            self.packets_dropped = 0
                 
         self.last_sequence = header.sequence
         self.last_timestamp = header.timestamp
@@ -397,6 +407,7 @@ class GRAPEChannelRecorder:
                 self._write_digital_rf(day_date, day_data)
                 
             # Track in metadata
+            self.samples_received += len(resampled)
             self.metadata_gen.add_packet_event(
                 timestamp=unix_time,
                 sequence=header.sequence,
@@ -523,6 +534,10 @@ class GRAPERecorderManager:
                 output_dir=output_dir,
                 station_config=station_config
             )
+            recorder.start_time = time.time()
+            recorder.packets_received = 0
+            recorder.packets_dropped = 0
+            recorder.samples_received = 0
             
             # Register with RTP receiver
             self.rtp_receiver.register_callback(ssrc, recorder.process_rtp_packet)
@@ -548,16 +563,151 @@ class GRAPERecorderManager:
         logger.info("GRAPE recorder manager stopped")
         
     def get_status(self) -> dict:
-        """Get status of all recorders"""
-        return {
+        """Get status of all recorders with comprehensive metrics"""
+        import json
+        
+        current_time = time.time()
+        
+        status = {
             'running': self.running,
             'channels': len(self.recorders),
-            'recorders': {
-                ssrc: {
-                    'channel_name': rec.channel_name,
-                    'frequency_hz': rec.frequency_hz,
-                    'packets_received': rec.metadata_gen.packets_received if hasattr(rec, 'metadata_gen') else 0
-                }
-                for ssrc, rec in self.recorders.items()
-            }
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'recording_duration_sec': 0,
+            'total_data_mb': 0.0,
+            'total_packets_received': 0,
+            'total_packets_dropped': 0,
+            'healthy_channels': 0,
+            'warning_channels': 0,
+            'error_channels': 0,
+            'recorders': {}
         }
+        
+        # Calculate system-wide start time
+        if self.recorders:
+            earliest_start = min(getattr(rec, 'start_time', current_time) 
+                               for rec in self.recorders.values())
+            status['recording_duration_sec'] = int(current_time - earliest_start)
+        
+        for ssrc, rec in self.recorders.items():
+            # Basic metrics
+            packets_received = getattr(rec, 'packets_received', 0)
+            packets_dropped = getattr(rec, 'packets_dropped', 0)
+            samples_received = getattr(rec, 'samples_received', 0)
+            start_time = getattr(rec, 'start_time', current_time)
+            elapsed = current_time - start_time
+            
+            # Calculate derived metrics
+            total_packets = packets_received + packets_dropped
+            packet_loss_pct = (packets_dropped / total_packets * 100) if total_packets > 0 else 0.0
+            
+            expected_samples = int(elapsed * 10)  # 10 Hz output rate
+            completeness_pct = min(100.0, (samples_received / expected_samples * 100)) if expected_samples > 0 else 0.0
+            
+            # Data rate calculation (last 30 seconds)
+            samples_rate = samples_received / elapsed if elapsed > 0 else 0.0
+            data_rate_kbps = samples_rate * 8 / 1024  # Complex64 = 8 bytes per sample
+            
+            # Check for stale data (no packets in last 10 seconds)
+            last_packet_time = getattr(rec, 'last_packet_time', start_time)
+            data_freshness_sec = int(current_time - last_packet_time)
+            is_stale = data_freshness_sec > 10
+            
+            # Count files in output directory
+            file_count = 0
+            total_size_bytes = 0
+            try:
+                if rec.channel_dir.exists():
+                    for f in rec.channel_dir.rglob('*.h5'):
+                        file_count += 1
+                        total_size_bytes += f.stat().st_size
+            except Exception as e:
+                logger.debug(f"Could not scan output dir: {e}")
+            
+            total_size_mb = total_size_bytes / (1024 * 1024)
+            
+            # Health status determination
+            if is_stale:
+                health_status = 'error'
+                health_message = f'No data for {data_freshness_sec}s'
+            elif completeness_pct < 95:
+                health_status = 'error'
+                health_message = f'Low completeness: {completeness_pct:.1f}%'
+            elif packet_loss_pct > 5:
+                health_status = 'error'
+                health_message = f'High packet loss: {packet_loss_pct:.1f}%'
+            elif completeness_pct < 99:
+                health_status = 'warning'
+                health_message = f'Completeness: {completeness_pct:.1f}%'
+            elif packet_loss_pct > 1:
+                health_status = 'warning'
+                health_message = f'Packet loss: {packet_loss_pct:.1f}%'
+            else:
+                health_status = 'healthy'
+                health_message = 'Operating normally'
+            
+            # Update system-wide counters
+            status['total_packets_received'] += packets_received
+            status['total_packets_dropped'] += packets_dropped
+            status['total_data_mb'] += total_size_mb
+            
+            if health_status == 'healthy':
+                status['healthy_channels'] += 1
+            elif health_status == 'warning':
+                status['warning_channels'] += 1
+            else:
+                status['error_channels'] += 1
+            
+            # Per-channel status
+            rec_status = {
+                'channel_name': rec.channel_name,
+                'frequency_hz': rec.frequency_hz,
+                'frequency_mhz': rec.frequency_hz / 1e6,
+                
+                # Data flow
+                'packets_received': packets_received,
+                'packets_dropped': packets_dropped,
+                'packet_loss_pct': round(packet_loss_pct, 2),
+                
+                # Samples
+                'samples_received': samples_received,
+                'expected_samples': expected_samples,
+                'completeness_pct': round(completeness_pct, 2),
+                'samples_per_sec': round(samples_rate, 2),
+                
+                # Data output
+                'output_dir': str(rec.channel_dir),
+                'file_count': file_count,
+                'total_size_mb': round(total_size_mb, 2),
+                'data_rate_kbps': round(data_rate_kbps, 2),
+                
+                # Timing
+                'recording_duration_sec': int(elapsed),
+                'data_freshness_sec': data_freshness_sec,
+                'is_stale': is_stale,
+                
+                # Health
+                'health_status': health_status,
+                'health_message': health_message
+            }
+            
+            # Add gap information if available
+            if hasattr(rec, 'metadata_gen'):
+                rec_status['gap_count'] = len(getattr(rec.metadata_gen, 'gaps', []))
+            
+            status['recorders'][ssrc] = rec_status
+        
+        # Calculate aggregate packet loss
+        total_pkts = status['total_packets_received'] + status['total_packets_dropped']
+        status['aggregate_packet_loss_pct'] = round(
+            (status['total_packets_dropped'] / total_pkts * 100) if total_pkts > 0 else 0.0, 
+            2
+        )
+        
+        # Write to stats file for web UI
+        try:
+            with open(STATS_FILE, 'w') as f:
+                json.dump(status, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to write stats file: {e}")
+        
+        return status

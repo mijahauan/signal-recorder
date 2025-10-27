@@ -720,6 +720,10 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
         console.log('Attempting to start daemon...');
         console.log('Command: python3 -m signal_recorder.cli daemon --config', configPath);
 
+        // Create log file for daemon output
+        const logFile = `/tmp/signal-recorder-daemon.log`;
+        const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+
         // Start daemon in background using spawn
         const daemonProcess = spawn(venvPython, ['-m', 'signal_recorder.cli', 'daemon', '--config', configPath], {
           cwd: installDir,
@@ -728,7 +732,7 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             PYTHONPATH: srcPath
           },
           detached: true,
-          stdio: 'ignore'
+          stdio: ['ignore', logStream, logStream]  // stdin ignored, stdout/stderr to log
         });
 
         // Detach the process so it runs independently
@@ -1207,50 +1211,58 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
 
 app.get('/api/monitoring/logs', requireAuth, async (req, res) => {
   try {
-    // Try multiple log locations and search patterns
+    let daemonLogs = [];
+    
+    // Try to read daemon log file
+    const logFile = `/tmp/signal-recorder-daemon.log`;
+    try {
+      if (fs.existsSync(logFile)) {
+        const logContent = fs.readFileSync(logFile, 'utf8');
+        daemonLogs = logContent.trim().split('\n').slice(-50);
+      }
+    } catch (e) {
+      console.log('Could not read daemon log file:', e.message);
+    }
+
+    // Try multiple log locations as fallback
     const logCommands = [
-      'tail -50 /var/log/syslog | grep -i "signal\\|grape\\|recorder" 2>/dev/null || echo "No logs in syslog"',
-      'tail -50 ~/.cache/signal-recorder.log 2>/dev/null || echo "No cache logs"',
-      'journalctl -n 50 --no-pager -u signal-recorder 2>/dev/null || echo "No systemd logs"',
-      'tail -50 /tmp/signal-recorder*.log 2>/dev/null || echo "No temp logs"'
+      'tail -50 /var/log/syslog | grep -i "signal\\|grape\\|recorder" 2>/dev/null || echo ""',
+      'tail -50 ~/.cache/signal-recorder.log 2>/dev/null || echo ""',
+      'journalctl -n 50 --no-pager -u signal-recorder 2>/dev/null || echo ""'
     ];
 
-    let allLogs = [];
-    let completedCommands = 0;
+    let allLogs = [...daemonLogs];
 
-    // Try each log source sequentially to avoid race conditions
+    // Try each log source sequentially
     for (const cmd of logCommands) {
       try {
         const result = await new Promise((resolve, reject) => {
           exec(cmd, { timeout: 5000 }, (error, stdout, stderr) => {
-            const logs = stdout.trim().split('\n').filter(line => line.trim() && !line.includes('No logs') && !line.includes('No cache') && !line.includes('No systemd') && !line.includes('No temp'));
+            const logs = stdout.trim().split('\n').filter(line => 
+              line.trim() && 
+              !line.includes('No logs') && 
+              !line.includes('No cache') && 
+              !line.includes('No systemd') && 
+              !line.includes('No temp')
+            );
             resolve(logs);
           });
         });
 
         allLogs = allLogs.concat(result);
-        completedCommands++;
-
-        // If we have logs, we can stop here
-        if (allLogs.length > 0) {
-          break;
-        }
       } catch (e) {
-        completedCommands++;
+        // Continue to next source
       }
     }
-
-    // Wait a bit for all commands to complete, then respond
-    await new Promise(resolve => setTimeout(resolve, 1000));
 
     // Remove duplicates and limit to 50 most recent
     const uniqueLogs = [...new Set(allLogs)].slice(-50);
 
     res.json({
-      logs: uniqueLogs.length > 0 ? uniqueLogs : ['No recent logs found in any location'],
+      logs: uniqueLogs.length > 0 ? uniqueLogs : ['No logs available - daemon may not be running or logging not configured'],
       timestamp: new Date().toISOString(),
       count: uniqueLogs.length,
-      sources: logCommands.length
+      hasDaemonLogs: daemonLogs.length > 0
     });
 
   } catch (error) {
@@ -1258,6 +1270,71 @@ app.get('/api/monitoring/logs', requireAuth, async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: 'Failed to get logs', details: error.message });
     }
+  }
+});
+
+// Recording statistics endpoint
+app.get('/api/monitoring/recording-stats', requireAuth, (req, res) => {
+  try {
+    const statsFile = '/tmp/signal-recorder-stats.json';
+    
+    // Check if stats file exists
+    if (!fs.existsSync(statsFile)) {
+      return res.json({
+        available: false,
+        message: 'No recording statistics available - daemon may not be running',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Read stats file
+    const stats = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
+    
+    // Add file sizes from output directories
+    const enrichedStats = {
+      ...stats,
+      available: true,
+      file_stats: {}
+    };
+    
+    for (const [ssrc, rec] of Object.entries(stats.recorders || {})) {
+      const outputDir = rec.output_dir;
+      if (outputDir && fs.existsSync(outputDir)) {
+        try {
+          const files = fs.readdirSync(outputDir);
+          const h5Files = files.filter(f => f.endsWith('.h5'));
+          let totalSize = 0;
+          
+          h5Files.forEach(file => {
+            try {
+              const filePath = path.join(outputDir, file);
+              const stats = fs.statSync(filePath);
+              totalSize += stats.size;
+            } catch (e) {
+              // Skip files we can't read
+            }
+          });
+          
+          enrichedStats.file_stats[ssrc] = {
+            file_count: h5Files.length,
+            total_size_bytes: totalSize,
+            total_size_mb: (totalSize / (1024 * 1024)).toFixed(2)
+          };
+        } catch (e) {
+          // Directory not readable
+        }
+      }
+    }
+    
+    res.json(enrichedStats);
+    
+  } catch (error) {
+    console.error('Failed to get recording stats:', error);
+    res.status(500).json({ 
+      error: 'Failed to get recording statistics', 
+      details: error.message,
+      available: false
+    });
   }
 });
 

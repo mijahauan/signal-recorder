@@ -3,494 +3,556 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GRAPE Signal Recorder Monitor</title>
+    <title>GRAPE Recorder Monitor</title>
     <style>
+        * { box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             margin: 0;
-            padding: 20px;
+            padding: 0;
             background: #f5f5f5;
         }
+        
+        /* Navigation bar */
+        .navbar {
+            background: #2c3e50;
+            color: white;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .navbar h2 {
+            margin: 0;
+            font-size: 20px;
+        }
+        .navbar .nav-links {
+            display: flex;
+            gap: 15px;
+        }
+        .navbar a {
+            color: white;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        .navbar a:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        .navbar a.active {
+            background: rgba(255,255,255,0.2);
+            font-weight: 600;
+        }
+        
+        .content {
+            padding: 20px;
+        }
+        
         .header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 20px;
+            padding: 20px 30px;
             border-radius: 10px;
             margin-bottom: 20px;
-            text-align: center;
         }
-        .status-grid {
+        .header h1 { margin: 0 0 5px 0; }
+        .header p { margin: 0; opacity: 0.9; }
+        
+        /* System-wide status summary */
+        .system-summary {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
             margin-bottom: 20px;
         }
-        .status-card {
+        .summary-card {
             background: white;
-            border-radius: 10px;
             padding: 20px;
+            border-radius: 10px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        .status-card h3 {
-            margin-top: 0;
+        .summary-card h3 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .summary-card .value {
+            font-size: 28px;
+            font-weight: bold;
             color: #333;
+        }
+        .summary-card .subtext {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+        
+        /* Health indicators */
+        .health-summary {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
             display: flex;
             align-items: center;
-            gap: 10px;
+            justify-content: space-between;
         }
-        .status-indicator {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            display: inline-block;
+        .health-indicators {
+            display: flex;
+            gap: 30px;
+            align-items: center;
         }
-        .status-indicator.running { background: #4CAF50; }
-        .status-indicator.stopped { background: #f44336; }
-        .status-indicator.warning { background: #ff9800; }
-        .channels-table {
-            width: 100%;
-            border-collapse: collapse;
-            background: white;
-            border-radius: 10px;
-            overflow: hidden;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .channels-table th, .channels-table td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        .channels-table th {
-            background: #f8f9fa;
+        .health-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 16px;
             font-weight: 600;
         }
-        .snr-good { color: #4CAF50; font-weight: bold; }
-        .snr-fair { color: #ff9800; }
-        .snr-poor { color: #f44336; }
+        .health-badge .count {
+            font-size: 24px;
+        }
+        
+        /* Controls */
         .controls {
             background: white;
-            border-radius: 10px;
             padding: 20px;
-            margin-bottom: 20px;
+            border-radius: 10px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            text-align: center;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
         }
-        .btn {
+        .btn-refresh {
             background: #667eea;
             color: white;
             border: none;
-            padding: 12px 24px;
+            padding: 10px 20px;
             border-radius: 6px;
             cursor: pointer;
-            font-size: 16px;
-            margin: 0 10px;
+            font-size: 14px;
             transition: background 0.3s;
         }
-        .btn:hover {
-            background: #5a6fd8;
-        }
-        .btn.stop {
-            background: #f44336;
-        }
-        .btn.stop:hover {
-            background: #d32f2f;
-        }
-        .logs {
+        .btn-refresh:hover { background: #5a6fd8; }
+        
+        .daemon-status-bar {
             background: white;
-            border-radius: 10px;
-            padding: 20px;
+            padding: 15px 20px;
+            border-radius: 8px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .daemon-status-bar .status {
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .daemon-status-bar .status.running { color: #4CAF50; }
+        .daemon-status-bar .status.stopped { color: #f44336; }
+        
+        /* Channel cards */
+        .channels-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .channel-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-left: 4px solid #ccc;
+        }
+        .channel-card.healthy { border-left-color: #4CAF50; }
+        .channel-card.warning { border-left-color: #ff9800; }
+        .channel-card.error { border-left-color: #f44336; }
+        
+        .channel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .channel-title {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+        }
+        .channel-freq {
+            font-size: 14px;
+            color: #666;
+        }
+        .health-indicator {
+            font-size: 24px;
+        }
+        
+        .channel-status {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .metrics-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .metric {
+            font-size: 13px;
+        }
+        .metric-label {
+            color: #666;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .metric-value {
+            font-weight: bold;
+            color: #333;
+            font-size: 15px;
+        }
+        .metric-value.good { color: #4CAF50; }
+        .metric-value.warning { color: #ff9800; }
+        .metric-value.error { color: #f44336; }
+        
+        /* Logs */
+        .logs-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .logs-content {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 6px;
             max-height: 300px;
             overflow-y: auto;
-            font-family: monospace;
+            font-family: 'Courier New', monospace;
             font-size: 12px;
+            line-height: 1.5;
         }
-        .log-entry {
-            padding: 2px 0;
-            border-bottom: 1px solid #f0f0f0;
-        }
-        .log-entry.error {
-            color: #f44336;
-            font-weight: bold;
-        }
-        .log-entry.warning {
-            color: #ff9800;
-        }
-        .refresh-btn {
-            background: #ff9800;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            float: right;
-        }
-        .refresh-btn:hover {
-            background: #f57c00;
-        }
+        .log-line { padding: 2px 0; }
+        .log-line.error { color: #f48771; }
+        .log-line.warning { color: #dcdcaa; }
+        
         .loading {
             text-align: center;
-            color: #666;
+            padding: 40px;
+            color: #999;
             font-style: italic;
+        }
+        .error-message {
+            background: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>📡 GRAPE Signal Recorder Monitor</h1>
-        <p>Real-time monitoring and control dashboard</p>
-    </div>
+    <nav class="navbar">
+        <h2>📡 GRAPE Signal Recorder</h2>
+        <div class="nav-links">
+            <a href="/">⚙️ Configuration</a>
+            <a href="/monitoring.html" class="active">📊 Monitoring</a>
+        </div>
+    </nav>
 
-    <div class="controls">
-        <button class="btn refresh-btn" onclick="refreshAll()">🔄 Refresh</button>
-        <button class="btn" onclick="startDaemon()">▶️ Start Daemon</button>
-        <button class="btn stop" onclick="stopDaemon()">⏹️ Stop Daemon</button>
-        <p id="daemon-status">Checking daemon status...</p>
-        <div id="debug-info" style="font-size: 12px; color: #666; margin-top: 10px;"></div>
-    </div>
-
-    <div class="status-grid">
-        <div class="status-card">
-            <h3>
-                <span id="daemon-indicator" class="status-indicator stopped"></span>
-                Daemon Status
-            </h3>
-            <p><strong>Status:</strong> <span id="daemon-status-text">Unknown</span></p>
-            <p><strong>PID:</strong> <span id="daemon-pid">-</span></p>
-            <p><strong>Last Update:</strong> <span id="daemon-timestamp">-</span></p>
+    <div class="content">
+        <div class="header">
+            <h1>📊 Live Monitoring Dashboard</h1>
+            <p>Real-time recording status and metrics • Auto-refreshes every 30s</p>
         </div>
 
-        <div class="status-card">
-            <h3>
-                <span id="data-indicator" class="status-indicator stopped"></span>
-                Data Storage
-            </h3>
-            <p><strong>Directory:</strong> <span id="data-dir-exists">Checking...</span></p>
-            <p><strong>Recent Files:</strong> <span id="recent-files">0</span></p>
-            <p><strong>Data Files:</strong> <span id="data-files">0</span></p>
-            <p><strong>Total Size:</strong> <span id="total-size">0</span></p>
+        <div class="daemon-status-bar">
+            <div>
+                <span style="color: #666; font-size: 14px;">Daemon Status:</span>
+                <span id="daemon-status-text" class="status">Checking...</span>
+            </div>
+            <button class="btn-refresh" onclick="refreshAll()">🔄 Refresh Now</button>
         </div>
 
-        <div class="status-card">
-            <h3>
-                <span id="channels-indicator" class="status-indicator stopped"></span>
-                Active Channels
-            </h3>
-            <p><strong>Total Channels:</strong> <span id="total-channels">0</span></p>
-            <p><strong>Recording:</strong> <span id="recording-channels">0</span></p>
-            <p><strong>Last Scan:</strong> <span id="channels-timestamp">-</span></p>
+    <div class="health-summary" id="health-summary" style="display: none;">
+        <div class="health-indicators">
+            <div class="health-badge">
+                🟢 <span class="count" id="healthy-count">0</span> Healthy
+            </div>
+            <div class="health-badge">
+                🟡 <span class="count" id="warning-count">0</span> Warning
+            </div>
+            <div class="health-badge">
+                🔴 <span class="count" id="error-count">0</span> Error
+            </div>
+        </div>
+        <div style="text-align: right; color: #666; font-size: 14px;">
+            <div><strong id="packet-loss-pct">0.00%</strong> Packet Loss</div>
         </div>
     </div>
 
-    <div class="status-card">
-        <h3>📻 RTP Channels Status</h3>
-        <div id="channels-loading" class="loading">Loading channel information...</div>
-        <table class="channels-table" id="channels-table" style="display: none;">
-            <thead>
-                <tr>
-                    <th>SSRC</th>
-                    <th>Frequency</th>
-                    <th>Rate</th>
-                    <th>Preset</th>
-                    <th>SNR</th>
-                    <th>Address</th>
-                </tr>
-            </thead>
-            <tbody id="channels-body">
-            </tbody>
-        </table>
-    </div>
-
-    <div class="status-card">
-        <h3>📋 Recent Logs</h3>
-        <button class="refresh-btn" onclick="refreshLogs()">🔄 Refresh Logs</button>
-        <div id="logs-loading" class="loading">Loading recent logs...</div>
-        <div class="logs" id="logs-container" style="display: none;">
-            <div class="log-entry">No logs available</div>
+    <div class="system-summary" id="system-summary" style="display: none;">
+        <div class="summary-card">
+            <h3>Recording Time</h3>
+            <div class="value" id="recording-duration">0m</div>
+            <div class="subtext">Active recording session</div>
+        </div>
+        <div class="summary-card">
+            <h3>Total Data</h3>
+            <div class="value" id="total-data">0 MB</div>
+            <div class="subtext">Across all channels</div>
+        </div>
+        <div class="summary-card">
+            <h3>Packets Received</h3>
+            <div class="value" id="total-packets">0</div>
+            <div class="subtext" id="packets-per-sec">0/sec</div>
+        </div>
+        <div class="summary-card">
+            <h3>Active Channels</h3>
+            <div class="value" id="channel-count">0</div>
+            <div class="subtext">Recording streams</div>
         </div>
     </div>
+
+    <div id="channels-container" class="channels-grid"></div>
+
+    <div id="error-container"></div>
+    <div id="loading-container" class="loading">Loading recording statistics...</div>
+
+        <div class="logs-container">
+            <div class="logs-header">
+                <h3 style="margin: 0;">📋 Daemon Logs</h3>
+                <button class="btn-refresh" onclick="loadLogs()">🔄 Refresh Logs</button>
+            </div>
+            <div class="logs-content" id="logs-content">
+                <div class="loading">Loading logs...</div>
+            </div>
+        </div>
+    </div> <!-- end content -->
 
     <script>
         let refreshInterval;
 
         async function apiRequest(endpoint, options = {}) {
-            const token = localStorage.getItem('authToken');
-            updateDebugInfo(`API Request: ${endpoint}`);
+            const token = localStorage.getItem('authToken') || 'admin-token';
+            const url = `/api${endpoint}`;
+            const cacheBustUrl = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
 
+            const response = await fetch(cacheBustUrl, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                    'Cache-Control': 'no-cache',
+                    ...options.headers
+                },
+                cache: 'no-store',
+                ...options
+            });
+
+            if (response.status === 401) {
+                window.location.href = '/';
+                return;
+            }
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            return await response.json();
+        }
+
+        function formatDuration(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+        }
+
+        function formatNumber(num) {
+            return num.toLocaleString();
+        }
+
+        async function loadRecordingStats() {
             try {
-                // Add cache-busting and prevent caching
-                const url = `/api${endpoint}`;
-                const cacheBustUrl = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
-
-                const response = await fetch(cacheBustUrl, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json',
-                        'Cache-Control': 'no-cache, no-store, must-revalidate',
-                        'Pragma': 'no-cache',
-                        'Expires': '0',
-                        ...options.headers
-                    },
-                    cache: 'no-store',
-                    ...options
-                });
-
-                if (response.status === 401) {
-                    // Redirect to main login page on authentication failure
-                    updateDebugInfo('Authentication failed, redirecting...');
-                    window.location.href = '/';
+                const stats = await apiRequest('/monitoring/recording-stats');
+                
+                if (!stats.available) {
+                    document.getElementById('loading-container').innerHTML = 
+                        '<div class="loading">⚠️ No recording statistics available - daemon may not be running</div>';
+                    document.getElementById('health-summary').style.display = 'none';
+                    document.getElementById('system-summary').style.display = 'none';
                     return;
                 }
 
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                // Hide loading, show content
+                document.getElementById('loading-container').style.display = 'none';
+                document.getElementById('health-summary').style.display = 'flex';
+                document.getElementById('system-summary').style.display = 'grid';
+                document.getElementById('error-container').innerHTML = '';
+
+                // Update health summary
+                document.getElementById('healthy-count').textContent = stats.healthy_channels;
+                document.getElementById('warning-count').textContent = stats.warning_channels;
+                document.getElementById('error-count').textContent = stats.error_channels;
+                document.getElementById('packet-loss-pct').textContent = stats.aggregate_packet_loss_pct.toFixed(2) + '%';
+
+                // Update system summary
+                document.getElementById('recording-duration').textContent = formatDuration(stats.recording_duration_sec);
+                document.getElementById('total-data').textContent = stats.total_data_mb.toFixed(1) + ' MB';
+                document.getElementById('total-packets').textContent = formatNumber(stats.total_packets_received);
+                document.getElementById('channel-count').textContent = stats.channels;
+
+                const packetsPerSec = stats.recording_duration_sec > 0 ? 
+                    (stats.total_packets_received / stats.recording_duration_sec).toFixed(1) : 0;
+                document.getElementById('packets-per-sec').textContent = packetsPerSec + ' packets/sec';
+
+                // Render channel cards
+                const container = document.getElementById('channels-container');
+                container.innerHTML = '';
+
+                for (const [ssrc, rec] of Object.entries(stats.recorders)) {
+                    const card = document.createElement('div');
+                    card.className = `channel-card ${rec.health_status}`;
+                    
+                    const indicator = rec.health_status === 'healthy' ? '🟢' :
+                                    rec.health_status === 'warning' ? '🟡' : '🔴';
+                    
+                    const completenessClass = rec.completeness_pct >= 99 ? 'good' :
+                                            rec.completeness_pct >= 95 ? 'warning' : 'error';
+                    
+                    const packetLossClass = rec.packet_loss_pct <= 1 ? 'good' :
+                                          rec.packet_loss_pct <= 5 ? 'warning' : 'error';
+                    
+                    card.innerHTML = `
+                        <div class="channel-header">
+                            <div>
+                                <div class="channel-title">${rec.channel_name}</div>
+                                <div class="channel-freq">${rec.frequency_mhz.toFixed(2)} MHz</div>
+                            </div>
+                            <div class="health-indicator">${indicator}</div>
+                        </div>
+                        <div class="channel-status">
+                            ${rec.is_stale ? '⚠️ No data for ' + rec.data_freshness_sec + 's' : rec.health_message}
+                        </div>
+                        <div class="metrics-row">
+                            <div class="metric">
+                                <div class="metric-label">Completeness</div>
+                                <div class="metric-value ${completenessClass}">${rec.completeness_pct.toFixed(1)}%</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-label">Packet Loss</div>
+                                <div class="metric-value ${packetLossClass}">${rec.packet_loss_pct.toFixed(2)}%</div>
+                            </div>
+                        </div>
+                        <div class="metrics-row">
+                            <div class="metric">
+                                <div class="metric-label">Samples Received</div>
+                                <div class="metric-value">${formatNumber(rec.samples_received)}</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-label">Sample Rate</div>
+                                <div class="metric-value">${rec.samples_per_sec.toFixed(1)}/s</div>
+                            </div>
+                        </div>
+                        <div class="metrics-row">
+                            <div class="metric">
+                                <div class="metric-label">Files Created</div>
+                                <div class="metric-value">${rec.file_count}</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-label">Data Written</div>
+                                <div class="metric-value">${rec.total_size_mb.toFixed(1)} MB</div>
+                            </div>
+                        </div>
+                        <div class="metrics-row">
+                            <div class="metric">
+                                <div class="metric-label">Packets</div>
+                                <div class="metric-value">${formatNumber(rec.packets_received)}</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-label">Duration</div>
+                                <div class="metric-value">${formatDuration(rec.recording_duration_sec)}</div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    container.appendChild(card);
                 }
 
-                const data = await response.json();
-                console.log(`API Response ${endpoint}:`, data);
-                return data;
             } catch (error) {
-                console.error(`API Error ${endpoint}:`, error);
-                updateDebugInfo(`API Error ${endpoint}: ${error.message}`);
-                throw error;
+                console.error('Failed to load recording stats:', error);
+                document.getElementById('error-container').innerHTML =
+                    `<div class="error-message">❌ Failed to load recording statistics: ${error.message}</div>`;
+                document.getElementById('loading-container').style.display = 'none';
             }
-        }
-
-        function updateDebugInfo(message) {
-            const debugDiv = document.getElementById('debug-info');
-            const timestamp = new Date().toLocaleTimeString();
-            debugDiv.innerHTML = `<small>[${timestamp}] ${message}</small>`;
         }
 
         async function checkDaemonStatus() {
-            updateDebugInfo('Checking daemon status...');
             try {
                 const data = await apiRequest('/monitoring/daemon-status');
-
-                const indicator = document.getElementById('daemon-indicator');
                 const statusText = document.getElementById('daemon-status-text');
-                const pidElement = document.getElementById('daemon-pid');
-                const timestampElement = document.getElementById('daemon-timestamp');
-
+                
                 if (data.running) {
-                    indicator.className = 'status-indicator running';
-                    statusText.textContent = 'Running';
-                    updateDebugInfo(`Daemon is running (PID: ${data.pid}) - Method: ${data.method || 'unknown'}`);
+                    statusText.className = 'status running';
+                    statusText.textContent = `● Running (PID: ${data.pid})`;
                 } else {
-                    indicator.className = 'status-indicator stopped';
-                    statusText.textContent = 'Stopped';
-                    updateDebugInfo(`Daemon is not running - ${data.details || 'No details'}`);
+                    statusText.className = 'status stopped';
+                    statusText.textContent = '● Stopped';
                 }
-
-                pidElement.textContent = data.pid || '-';
-                timestampElement.textContent = new Date(data.timestamp).toLocaleString();
-
-                // Update main status
-                document.getElementById('daemon-status').innerHTML =
-                    `Daemon is <strong>${data.running ? 'RUNNING' : 'STOPPED'}</strong>${data.pid ? ` (PID: ${data.pid})` : ''}`;
-
-                // Log detailed information for debugging
-                console.log('Daemon status response:', data);
-
             } catch (error) {
-                console.error('Failed to check daemon status:', error);
-                updateDebugInfo(`Error checking daemon: ${error.message}`);
-                document.getElementById('daemon-status').innerHTML =
-                    '<span style="color: red;">Error checking daemon status</span>';
-            }
-        }
-
-        async function checkDataStatus() {
-            try {
-                const data = await apiRequest('/monitoring/data-status');
-                document.getElementById('recent-files').textContent = data.recentFiles;
-                document.getElementById('total-size').textContent = data.totalSize;
-                document.getElementById('data-files').textContent = data.dataFiles || 0;
-                document.getElementById('data-dir-exists').textContent = data.directoryExists ? '✅ Exists' : '❌ Missing';
-
-                const indicator = document.getElementById('data-indicator');
-                if (data.directoryExists && data.recentFiles > 0) {
-                    indicator.className = 'status-indicator running';
-                } else if (data.directoryExists) {
-                    indicator.className = 'status-indicator warning';
-                } else {
-                    indicator.className = 'status-indicator stopped';
-                }
-
-                // Update debug info
-                updateDebugInfo(`Data: ${data.dataFiles} files, ${data.totalSize} total`);
-
-            } catch (error) {
-                console.error('Failed to check data status:', error);
-                updateDebugInfo(`Data status error: ${error.message}`);
-            }
-        }
-
-        async function loadChannels() {
-            updateDebugInfo('Loading channels...');
-            try {
-                const data = await apiRequest('/monitoring/channels');
-                const table = document.getElementById('channels-table');
-                const loading = document.getElementById('channels-loading');
-                const body = document.getElementById('channels-body');
-                const totalElement = document.getElementById('total-channels');
-                const timestampElement = document.getElementById('channels-timestamp');
-
-                loading.style.display = 'none';
-                table.style.display = 'table';
-
-                body.innerHTML = '';
-                data.channels.forEach(channel => {
-                    const row = document.createElement('tr');
-
-                    // SNR styling
-                    let snrClass = 'snr-poor';
-                    if (channel.snr === '-inf') snrClass = 'snr-poor';
-                    else if (channel.snr.includes('N/A')) snrClass = 'snr-fair';
-                    else if (parseFloat(channel.snr) > 10) snrClass = 'snr-good';
-                    else if (parseFloat(channel.snr) > 0) snrClass = 'snr-fair';
-
-                    row.innerHTML = `
-                        <td><code>${channel.ssrc}</code></td>
-                        <td>${channel.frequency}</td>
-                        <td>${channel.rate}</td>
-                        <td>${channel.preset}</td>
-                        <td class="${snrClass}">${channel.snr}</td>
-                        <td><code>${channel.address}</code></td>
-                    `;
-                    body.appendChild(row);
-                });
-
-                totalElement.textContent = data.total;
-                timestampElement.textContent = new Date(data.timestamp).toLocaleString();
-
-                const indicator = document.getElementById('channels-indicator');
-                if (data.total > 0) {
-                    indicator.className = 'status-indicator running';
-                } else {
-                    indicator.className = 'status-indicator stopped';
-                }
-
-                // Show command used or fallback status
-                if (data.commandUsed) {
-                    updateDebugInfo(`Channels loaded via: ${data.commandUsed}`);
-                }
-                if (data.note) {
-                    updateDebugInfo(data.note);
-                }
-
-            } catch (error) {
-                console.error('Failed to load channels:', error);
-                document.getElementById('channels-loading').innerHTML =
-                    `<span style="color: red;">Error loading channels: ${error.message}</span>`;
-                updateDebugInfo(`Channel API Error: ${error.message}`);
+                const statusText = document.getElementById('daemon-status-text');
+                statusText.className = 'status stopped';
+                statusText.textContent = '● Unknown';
             }
         }
 
         async function loadLogs() {
             try {
                 const data = await apiRequest('/monitoring/logs');
-                const container = document.getElementById('logs-container');
-                const loading = document.getElementById('logs-loading');
-
-                loading.style.display = 'none';
-                container.style.display = 'block';
-
+                const container = document.getElementById('logs-content');
+                
                 if (data.logs && data.logs.length > 0) {
                     container.innerHTML = data.logs.map(log => {
-                        // Simple log level detection
-                        let className = 'log-entry';
-                        if (log.includes('ERROR') || log.includes('error') || log.includes('Failed') || log.includes('Exception')) {
+                        let className = 'log-line';
+                        if (log.match(/error|failed|exception/i)) {
                             className += ' error';
-                        } else if (log.includes('WARNING') || log.includes('warning') || log.includes('warn')) {
+                        } else if (log.match(/warning|warn/i)) {
                             className += ' warning';
                         }
-
                         return `<div class="${className}">${log}</div>`;
                     }).join('');
                 } else {
-                    container.innerHTML = '<div class="log-entry">No recent logs found</div>';
-                }
-
-            } catch (error) {
-                console.error('Failed to load logs:', error);
-                document.getElementById('logs-loading').innerHTML =
-                    `<span style="color: red;">Error loading logs: ${error.message}</span>`;
-                updateDebugInfo(`Logs API Error: ${error.message}`);
-            }
-        }
-
-        async function startDaemon() {
-            updateDebugInfo('Starting daemon...');
-            console.log('Start daemon button clicked');
-
-            try {
-                console.log('Making API request to start daemon...');
-                updateDebugInfo('Making API request to /monitoring/daemon-control');
-
-                const data = await apiRequest('/monitoring/daemon-control', {
-                    method: 'POST',
-                    body: JSON.stringify({ action: 'start' })
-                });
-
-                console.log('Daemon start API response:', data);
-                updateDebugInfo(`API Response: ${JSON.stringify(data)}`);
-
-                if (data.error) {
-                    alert(`Failed to start daemon: ${data.error}`);
-                    updateDebugInfo(`Daemon start failed: ${data.error}`);
-                } else {
-                    alert(`Daemon start: ${data.message || 'Command sent'}`);
-                    updateDebugInfo(`Daemon start: ${data.message || 'Success'}`);
-                    // Force immediate refresh instead of waiting 2 seconds
-                    setTimeout(() => {
-                        checkDaemonStatus();
-                        updateDebugInfo('Forced daemon status refresh after start');
-                    }, 1000);
+                    container.innerHTML = '<div class="loading">No logs available</div>';
                 }
             } catch (error) {
-                console.error('Daemon start error:', error);
-                alert('Failed to start daemon: ' + error.message);
-                updateDebugInfo(`Daemon start error: ${error.message}`);
-            }
-        }
-
-        async function stopDaemon() {
-            updateDebugInfo('Stopping daemon...');
-            try {
-                const data = await apiRequest('/monitoring/daemon-control', {
-                    method: 'POST',
-                    body: JSON.stringify({ action: 'stop' })
-                });
-
-                if (data.error) {
-                    alert(`Failed to stop daemon: ${data.error}`);
-                    updateDebugInfo(`Daemon stop failed: ${data.error}`);
-                } else {
-                    alert(`Daemon stop: ${data.message || 'Command sent'}`);
-                    updateDebugInfo(`Daemon stop: ${data.message || 'Success'}`);
-                    // Force immediate refresh instead of waiting 2 seconds
-                    setTimeout(() => {
-                        checkDaemonStatus();
-                        updateDebugInfo('Forced daemon status refresh after stop');
-                    }, 1000);
-                }
-            } catch (error) {
-                alert('Failed to stop daemon: ' + error.message);
-                updateDebugInfo(`Daemon stop error: ${error.message}`);
+                document.getElementById('logs-content').innerHTML = 
+                    '<div class="log-line error">Failed to load logs: ' + error.message + '</div>';
             }
         }
 
         function refreshAll() {
             checkDaemonStatus();
-            checkDataStatus();
-            loadChannels();
-            refreshLogs();
-        }
-
-        function refreshLogs() {
-            document.getElementById('logs-loading').style.display = 'block';
-            document.getElementById('logs-container').style.display = 'none';
+            loadRecordingStats();
             loadLogs();
         }
 
@@ -499,22 +561,10 @@
 
         // Initial load
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('Monitoring page loaded, checking authentication...');
-            // Check authentication - use same system as main UI
             const token = localStorage.getItem('authToken');
-            console.log('Auth token:', token ? 'present' : 'missing');
-            updateDebugInfo(`Auth token: ${token ? 'present' : 'missing'}`);
-
-            // For testing: auto-set default token if none exists
             if (!token) {
-                console.log('No auth token found, setting default for testing...');
-                updateDebugInfo('Setting default test token...');
                 localStorage.setItem('authToken', 'admin-token');
-                updateDebugInfo('Default test token set');
             }
-
-            console.log('Starting monitoring refresh...');
-            updateDebugInfo('Starting monitoring refresh...');
             refreshAll();
         });
     </script>
