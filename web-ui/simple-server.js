@@ -336,7 +336,9 @@ app.get('/api/configurations/:id/export', requireAuth, async (req, res) => {
         toml += `ssrc = ${parseInt(channel.frequencyHz)}\n`;
         toml += `frequency_hz = ${parseInt(channel.frequencyHz)}\n`;
         toml += `preset = "iq"\n`;
-        toml += `sample_rate = ${parseInt(channel.sampleRate || '12000')}\n`;
+        toml += `sample_rate = ${parseInt(channel.sampleRate || '16000')}\n`;
+        toml += `agc = ${parseInt(channel.agc || '0')}\n`;
+        toml += `gain = ${parseInt(channel.gain || '0')}\n`;
         toml += `description = "${channel.description}"\n`;
         toml += `enabled = ${channel.enabled === 'yes'}\n`;
         toml += `processor = "${channel.processor || 'grape'}"\n\n`;
@@ -462,7 +464,9 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
         toml += `ssrc = ${parseInt(channel.frequencyHz)}\n`;
         toml += `frequency_hz = ${parseInt(channel.frequencyHz)}\n`;
         toml += `preset = "iq"\n`;
-        toml += `sample_rate = ${parseInt(channel.sampleRate || '12000')}\n`;
+        toml += `sample_rate = ${parseInt(channel.sampleRate || '16000')}\n`;
+        toml += `agc = ${parseInt(channel.agc || '0')}\n`;
+        toml += `gain = ${parseInt(channel.gain || '0')}\n`;
         toml += `description = "${channel.description}"\n`;
         toml += `enabled = ${channel.enabled === 'yes'}\n`;
         toml += `processor = "${channel.processor || 'grape'}"\n`;

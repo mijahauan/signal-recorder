@@ -716,7 +716,9 @@
                                 frequencyHz: frequency,
                                 ssrc: ssrc.toString(),
                                 enabled: 'yes',
-                                sampleRate: '12000',
+                                sampleRate: '16000',
+                                agc: '0',
+                                gain: '0',
                                 processor: 'grape'
                             })
                         });
@@ -792,7 +794,9 @@
                                 frequencyHz: channel.frequencyHz,
                                 ssrc: channel.ssrc,
                                 enabled: channel.enabled,
-                                sampleRate: channel.sampleRate,
+                                sampleRate: channel.sampleRate || '16000',
+                                agc: channel.agc || '0',
+                                gain: channel.gain || '0',
                                 processor: channel.processor
                             })
                         });
@@ -836,7 +840,9 @@
                         frequencyHz: frequency,
                         ssrc: ssrc,
                         enabled: 'yes',
-                        sampleRate: '12000',
+                        sampleRate: '16000',
+                        agc: '0',
+                        gain: '0',
                         processor: 'grape'
                     })
                 });
