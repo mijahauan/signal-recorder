@@ -1290,16 +1290,36 @@
 
         // Load active RTP channels
         async function loadActiveChannels() {
+            const table = document.getElementById('channels-table-container');
+            const loading = document.getElementById('channels-loading');
+            const body = document.getElementById('channels-body');
+            
             try {
-                const data = await apiRequest('/api/monitoring/channels');
-                const table = document.getElementById('channels-table-container');
-                const loading = document.getElementById('channels-loading');
-                const body = document.getElementById('channels-body');
+                const data = await apiRequest('/monitoring/channels');
+                
+                console.log('Channel data received:', data);
+                
+                // Check if we got valid data
+                if (!data || !data.channels) {
+                    throw new Error('Invalid response format: ' + JSON.stringify(data));
+                }
+                
+                // Show/hide setup button based on channel count
+                const setupBtn = document.getElementById('setup-channels-btn');
+                if (setupBtn) {
+                    setupBtn.style.display = data.channels.length === 0 ? 'block' : 'none';
+                }
 
                 loading.style.display = 'none';
                 table.style.display = 'block';
 
                 body.innerHTML = '';
+                
+                if (data.channels.length === 0) {
+                    body.innerHTML = '<tr><td colspan="6" style="padding: 20px; text-align: center; color: #666;">No active channels found. Click "Setup Channels" to create them.</td></tr>';
+                    return;
+                }
+                
                 data.channels.forEach(channel => {
                     const row = document.createElement('tr');
                     row.style.borderBottom = '1px solid #eee';
@@ -1332,7 +1352,7 @@
         // Check radiod status
         async function checkRadiodStatus() {
             try {
-                const result = await apiRequest('/api/radiod/status');
+                const result = await apiRequest('/radiod/status');
                 const indicator = document.getElementById('radiod-indicator');
                 const text = document.getElementById('radiod-text');
                 const detail = document.getElementById('radiod-detail');
@@ -1369,7 +1389,7 @@
             btn.textContent = '⏳ Creating channels...';
             
             try {
-                const result = await apiRequest('/api/channels/create', {
+                const result = await apiRequest('/channels/create', {
                     method: 'POST',
                     body: JSON.stringify({ configId: currentConfig.id })
                 });
