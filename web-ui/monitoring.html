@@ -719,6 +719,26 @@
                                 <div class="metric-value">${formatDuration(rec.recording_duration_sec)}</div>
                             </div>
                         </div>
+                        <div class="metrics-row">
+                            <div class="metric">
+                                <div class="metric-label">Sync State</div>
+                                <div class="metric-value">${rec.sync_state || 'unknown'}</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-label">Timing Drift</div>
+                                <div class="metric-value">${rec.timing_drift_mean_ms !== undefined ? rec.timing_drift_mean_ms.toFixed(1) + ' ms' : 'N/A'}</div>
+                            </div>
+                        </div>
+                        <div class="metrics-row">
+                            <div class="metric">
+                                <div class="metric-label">Timing Variance</div>
+                                <div class="metric-value">${rec.timing_drift_std_ms !== undefined ? rec.timing_drift_std_ms.toFixed(1) + ' ms' : 'N/A'}</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-label">Timing Samples</div>
+                                <div class="metric-value">${rec.timing_samples_count || 0}</div>
+                            </div>
+                        </div>
                     `;
                     
                     container.appendChild(card);
