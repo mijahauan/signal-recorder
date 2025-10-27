@@ -1104,20 +1104,54 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
   try {
     console.log('Attempting channel discovery via CLI command...');
 
-    // Try CLI discovery first (real radio addresses)
+    // First check if control utility is available
+    try {
+      await new Promise((resolve, reject) => {
+        exec('which control', {
+          timeout: 1000
+        }, (error, stdout, stderr) => {
+          if (error || !stdout.trim()) {
+            console.warn('control utility not found in PATH');
+            reject(new Error('control utility not found'));
+          } else {
+            console.log(`control utility found at: ${stdout.trim()}`);
+            resolve();
+          }
+        });
+      });
+    } catch (controlError) {
+      // control utility not available
+      res.json({
+        channels: [],
+        timestamp: new Date().toISOString(),
+        total: 0,
+        error: 'control utility not found',
+        details: 'ka9q-radio control utility is not installed or not in PATH',
+        note: 'Install ka9q-radio or add control to PATH. Channels cannot be discovered without it.'
+      });
+      return;
+    }
+
+    // Try CLI discovery (uses control utility internally)
     const statusAddr = '239.192.152.141';  // Real radio status address from config
 
     try {
       const result = await new Promise((resolve, reject) => {
-        exec(`"${venvPython}" -m signal_recorder.cli discover --radiod ${statusAddr} --config "${configPath}"`, {
+        const cmd = `"${venvPython}" -m signal_recorder.cli discover --radiod ${statusAddr} --config "${configPath}"`;
+        console.log('Running:', cmd);
+        
+        exec(cmd, {
           timeout: 9000,  // 9 second timeout - allows 7s for radiod + 2s buffer
           env: {
             ...process.env,
-            PYTHONPATH: srcPath
+            PYTHONPATH: srcPath,
+            PATH: '/usr/local/bin:/usr/bin:/bin:' + process.env.PATH
           }
         }, (error, stdout, stderr) => {
           if (error) {
-            reject(error);
+            console.error('Discovery error:', error.message);
+            console.error('stderr:', stderr);
+            reject({ error, stderr, stdout });
           } else {
             resolve({ stdout, stderr });
           }
@@ -1173,14 +1207,16 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
     } catch (cliError) {
       console.error('CLI discovery failed:', cliError);
       
-      // Return empty channels array with error info (no config fallback for web UI)
+      // Return empty channels array with detailed error info
       res.json({
         channels: [],
         timestamp: new Date().toISOString(),
         total: 0,
         error: 'Channel discovery failed',
-        details: cliError.message || 'Unable to discover channels from radiod',
-        note: 'No channels found - radiod may not be running or channels need to be created'
+        details: cliError.error?.message || cliError.message || 'Unable to discover channels from radiod',
+        stderr: cliError.stderr || '',
+        stdout: cliError.stdout || '',
+        note: 'No channels found - radiod may not be running, channels need to be created, or control utility failed'
       });
       return;
     }
@@ -1346,34 +1382,34 @@ app.get('/api/presets/chu', requireAuth, (req, res) => {
 // Radiod status check endpoint
 app.get('/api/radiod/status', requireAuth, async (req, res) => {
   try {
-    // Get status address from config
-    const { parse: parseToml } = await import('toml');
-    const configContent = fs.readFileSync(configPath, 'utf8');
-    const config = parseToml(configContent);
-    const statusAddr = config.ka9q?.status_address || 'bee1-hf-status.local';
-    
-    // Try to run control command (should be in PATH from ka9q-radio installation)
+    // Check if radiod process is running
     const result = await new Promise((resolve, reject) => {
-      exec(`control -v ${statusAddr}`, {
-        timeout: 4000,
-        env: {
-          ...process.env,
-          PATH: '/usr/local/bin:/usr/bin:/bin:' + process.env.PATH
-        }
+      exec('ps aux | grep "[r]x888d\\|[r]adiod"', {
+        timeout: 2000
       }, (error, stdout, stderr) => {
-        if (error) {
-          // Check if it's a timeout or command not found
-          if (error.message.includes('ENOENT')) {
-            resolve({ running: false, error: 'control command not found in PATH' });
-          } else if (error.killed) {
-            resolve({ running: false, error: 'radiod not responding (timeout)' });
-          } else {
-            resolve({ running: false, error: stderr || error.message });
-          }
-        } else if (stdout && stdout.length > 0) {
-          resolve({ running: true, output: stdout, channels: stdout.split('\n').length - 4 });
+        if (error || !stdout || stdout.trim().length === 0) {
+          resolve({ 
+            running: false, 
+            error: 'radiod process not found',
+            details: 'No rx888d or radiod process detected'
+          });
         } else {
-          resolve({ running: false, error: 'no response from radiod' });
+          // Parse process info
+          const lines = stdout.trim().split('\n');
+          const processes = lines.map(line => {
+            const parts = line.trim().split(/\s+/);
+            return {
+              pid: parts[1],
+              command: parts.slice(10).join(' ')
+            };
+          });
+          
+          resolve({ 
+            running: true, 
+            processes: processes,
+            count: processes.length,
+            details: `Found ${processes.length} radiod process(es)`
+          });
         }
       });
     });
