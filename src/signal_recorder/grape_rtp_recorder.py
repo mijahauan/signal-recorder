@@ -405,6 +405,10 @@ class GRAPEChannelRecorder:
         samples = np.frombuffer(payload, dtype=np.float32).reshape(-1, 2)
         iq_samples = samples[:, 0] + 1j * samples[:, 1]
         
+        # Log every 50th packet to track input sample rate
+        if self.packets_received % 50 == 0:
+            logger.info(f"{self.channel_name}: RTP packet #{self.packets_received}: {len(iq_samples)} samples, accumulated {sum(len(s) for s in self.sample_accumulator)}")
+        
         # Add to accumulator
         self.sample_accumulator.append(iq_samples)
         accumulated_samples = sum(len(s) for s in self.sample_accumulator)
