@@ -1132,27 +1132,27 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
       return;
     }
 
-    // Try CLI discovery (uses control utility internally)
-    const statusAddr = '239.192.152.141';  // Real radio status address from config
+    // Use control directly instead of Python CLI (which has config fallback)
+    const statusAddr = 'bee1-hf-status.local';
 
     try {
       const result = await new Promise((resolve, reject) => {
-        const cmd = `"${venvPython}" -m signal_recorder.cli discover --radiod ${statusAddr} --config "${configPath}"`;
+        const cmd = `control -v ${statusAddr}`;
         console.log('Running:', cmd);
         
         exec(cmd, {
-          timeout: 9000,  // 9 second timeout - allows 7s for radiod + 2s buffer
+          timeout: 5000,
           env: {
             ...process.env,
-            PYTHONPATH: srcPath,
             PATH: '/usr/local/bin:/usr/bin:/bin:' + process.env.PATH
           }
         }, (error, stdout, stderr) => {
           if (error) {
-            console.error('Discovery error:', error.message);
+            console.error('Control discovery error:', error.message);
             console.error('stderr:', stderr);
             reject({ error, stderr, stdout });
           } else {
+            console.log('Control output:', stdout);
             resolve({ stdout, stderr });
           }
         });
@@ -1163,27 +1163,31 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
         const lines = result.stdout.trim().split('\n');
         const channels = [];
 
-        // Skip header lines and separator, start from data lines (index 4)
-        for (let i = 4; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line.trim()) continue;
+        // Parse control output
+        // Format: SSRC    preset   samprate      freq, Hz   SNR output channel
+        //         1840       usb     12,000     1,840,000  -inf 239.160.155.125:5004
+        
+        for (const line of lines) {
+          // Skip header and empty lines
+          if (!line.trim() || line.includes('SSRC') || line.includes('---') || line.includes('@')) {
+            continue;
+          }
 
-          // Split by multiple spaces and handle variable number of parts
           const parts = line.trim().split(/\s+/);
           if (parts.length >= 6) {
-            // Format: SSRC, Frequency, Rate, Preset, SNR, Address
             const ssrc = parts[0];
-            const frequency = parts[1];
-            const rate = parts[2];
-            const preset = parts[3];
-
-            // SNR and Address might have spaces, so join the rest
+            const preset = parts[1];
+            const rate = parts[2].replace(',', ''); // Remove comma
+            const freq_hz = parts[3].replace(',', ''); // Remove comma
             const snr = parts[4];
-            const address = parts.slice(5).join(' ');
+            const address = parts[5]; // multicast:port
+
+            // Convert frequency from Hz to MHz for display
+            const freq_mhz = (parseInt(freq_hz) / 1000000).toFixed(2);
 
             channels.push({
               ssrc: ssrc,
-              frequency: frequency,
+              frequency: `${freq_mhz} MHz`,
               rate: rate,
               preset: preset,
               snr: snr,
@@ -1192,15 +1196,15 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           }
         }
 
-        console.log('Successfully discovered channels via CLI:', channels.length);
+        console.log('Successfully discovered channels via control:', channels.length);
 
         res.json({
           channels,
           timestamp: new Date().toISOString(),
           total: channels.length,
           rawOutput: result.stdout,
-          commandUsed: `"${venvPython}" -m signal_recorder.cli discover --radiod ${statusAddr} --config "${configPath}"`,
-          note: 'Discovered via CLI command - real radio addresses'
+          commandUsed: `control -v ${statusAddr}`,
+          note: 'Discovered via control utility - actual radiod channels'
         });
         return;
       }
