@@ -1140,14 +1140,19 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
         const cmd = `control -v ${statusAddr}`;
         console.log('Running:', cmd);
         
-        exec(cmd, {
-          timeout: 5000,
+        const proc = exec(cmd, {
+          timeout: 3000,  // Shorter timeout since we'll kill it
           env: {
             ...process.env,
             PATH: '/usr/local/bin:/usr/bin:/bin:' + process.env.PATH
           }
         }, (error, stdout, stderr) => {
-          if (error) {
+          // Control returns data but then waits for input - that's OK!
+          // Parse stdout even if there's an error (timeout)
+          if (stdout && stdout.includes('SSRC')) {
+            console.log('Control returned channel data (may have timed out waiting for input)');
+            resolve({ stdout, stderr });
+          } else if (error) {
             console.error('Control discovery error:', error.message);
             console.error('stderr:', stderr);
             reject({ error, stderr, stdout });
@@ -1156,6 +1161,16 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
             resolve({ stdout, stderr });
           }
         });
+        
+        // Send newline to control after 2 seconds to make it exit gracefully
+        setTimeout(() => {
+          try {
+            proc.stdin.write('\n');
+            proc.stdin.end();
+          } catch (e) {
+            // Process may already be done
+          }
+        }, 2000);
       });
 
       if (result.stdout && result.stdout.trim()) {
