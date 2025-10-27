@@ -42,10 +42,10 @@ def discover_channels_via_control(status_address: str, timeout: float = 30.0) ->
     channels = {}
     
     try:
-        # Run control utility with auto-selection to just list channels
+        # Run control utility with -v flag to get verbose channel listing
         # Send empty input to make it list and exit
         result = subprocess.run(
-            ['control', status_address],
+            ['control', '-v', status_address],
             input='\n',
             capture_output=True,
             text=True,
