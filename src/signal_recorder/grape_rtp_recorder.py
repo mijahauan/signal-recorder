@@ -226,15 +226,14 @@ class Resampler:
         
         if num_output_samples == 0:
             # Not enough samples yet, return empty array
-            logger.debug(f"Resampler: Buffer has {len(self.sample_buffer)} samples, need {self.decimation_factor} for 1 output")
             return np.array([], dtype=np.complex64)
-        
-        logger.debug(f"Resampler: Buffer {len(self.sample_buffer)} samples → {num_output_samples} outputs (phase={self.decimation_phase})")
         
         # Process enough samples to produce num_output_samples outputs
         num_input_samples = num_output_samples * self.decimation_factor
         samples_to_process = self.sample_buffer[:num_input_samples]
         self.sample_buffer = self.sample_buffer[num_input_samples:]  # Keep remainder
+        
+        logger.info(f"Resampler: Processing {num_input_samples} samples (keeping {len(self.sample_buffer)} in buffer), phase={self.decimation_phase}")
         
         # Split into I and Q
         i_samples = samples_to_process.real
@@ -249,13 +248,17 @@ class Resampler:
         i_decimated = i_filtered[self.decimation_phase::self.decimation_factor]
         q_decimated = q_filtered[self.decimation_phase::self.decimation_factor]
         
+        logger.info(f"Resampler: Decimated {len(i_filtered)} → {len(i_decimated)} outputs")
+        
         # Update phase for next buffer
         # Track how many input samples we've used modulo decimation_factor
         consumed_samples = num_input_samples
         self.decimation_phase = (self.decimation_phase + consumed_samples) % self.decimation_factor
         
         # Recombine into complex
-        return i_decimated + 1j * q_decimated
+        output = i_decimated + 1j * q_decimated
+        logger.info(f"Resampler: Returning {len(output)} complex samples (expected {num_output_samples})")
+        return output
 
 
 class DailyBuffer:
@@ -412,8 +415,12 @@ class GRAPEChannelRecorder:
             all_samples = np.concatenate(self.sample_accumulator)
             self.sample_accumulator = []
             
+            logger.info(f"{self.channel_name}: Accumulated {len(all_samples)} samples, sending to resampler")
+            
             # Resample
             resampled = self.resampler.resample(all_samples)
+            
+            logger.info(f"{self.channel_name}: Resampler returned {len(resampled)} samples (adding to daily buffer)")
             
             # Convert RTP timestamp to Unix time
             # RTP timestamp is in samples at 12 kHz
@@ -429,6 +436,7 @@ class GRAPEChannelRecorder:
                 
             # Track received samples
             self.samples_received += len(resampled)
+            logger.info(f"{self.channel_name}: Total samples_received now: {self.samples_received}")
             
     def _write_digital_rf(self, day_date, data: np.ndarray):
         """
