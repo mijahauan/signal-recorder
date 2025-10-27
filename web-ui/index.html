@@ -262,9 +262,6 @@
                         <div style="display: flex; gap: 10px;">
                             <button onclick="startDaemon()" style="background: #10b981;">▶️ Start Recording</button>
                             <button onclick="stopDaemon()" class="btn-danger">⏹️ Stop Recording</button>
-                            <a href="/monitoring.html" target="_blank">
-                                <button class="btn-secondary">📊 View Live Monitor</button>
-                            </a>
                         </div>
                     </div>
                 </div>
@@ -910,7 +907,7 @@
                 if (data.error) {
                     alert('Failed to start daemon: ' + data.error);
                 } else {
-                    alert('Daemon started successfully!\n\nClick "View Live Monitor" to see real-time recording stats.');
+                    alert('Daemon started successfully!\n\nClick "📊 Monitoring" in the navigation bar to view live recording stats.');
                     setTimeout(checkDaemonStatus, 2000);
                 }
             } catch (error) {
