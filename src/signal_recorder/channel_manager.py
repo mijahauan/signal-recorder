@@ -43,7 +43,8 @@ class ChannelManager:
         return channels
     
     def create_channel(self, ssrc: int, frequency_hz: float, preset: str = "iq", 
-                      sample_rate: Optional[int] = None, description: str = "") -> bool:
+                      sample_rate: Optional[int] = None, agc: int = 0, gain: float = 0.0,
+                      description: str = "") -> bool:
         """
         Create a new channel in radiod
         
@@ -51,7 +52,9 @@ class ChannelManager:
             ssrc: SSRC for the new channel
             frequency_hz: Frequency in Hz
             preset: Preset/mode (default: "iq")
-            sample_rate: Sample rate in Hz (optional)
+            sample_rate: Sample rate in Hz (optional, default: 16000)
+            agc: AGC enable (0=auto AGC, 1=manual) (default: 0)
+            gain: Manual gain in dB (default: 0.0)
             description: Human-readable description
         
         Returns:
@@ -61,7 +64,8 @@ class ChannelManager:
             logger.info(
                 f"Creating channel: SSRC={ssrc}, "
                 f"freq={frequency_hz/1e6:.3f} MHz, "
-                f"preset={preset}, "
+                f"preset={preset}, rate={sample_rate}Hz, "
+                f"agc={agc}, gain={gain}dB, "
                 f"description='{description}'"
             )
             
@@ -70,7 +74,9 @@ class ChannelManager:
                 ssrc=ssrc,
                 frequency_hz=frequency_hz,
                 preset=preset,
-                sample_rate=sample_rate
+                sample_rate=sample_rate,
+                agc_enable=agc,
+                gain=gain
             )
             
             # Wait for radiod to process
@@ -153,7 +159,9 @@ class ChannelManager:
                 ssrc=ssrc,
                 frequency_hz=channel_spec['frequency_hz'],
                 preset=channel_spec.get('preset', 'iq'),
-                sample_rate=channel_spec.get('sample_rate'),
+                sample_rate=channel_spec.get('sample_rate', 16000),
+                agc=channel_spec.get('agc', 0),
+                gain=channel_spec.get('gain', 0.0),
                 description=channel_spec.get('description', '')
             ):
                 create_success += 1
@@ -170,7 +178,9 @@ class ChannelManager:
                     ssrc=ssrc,
                     frequency_hz=channel_spec['frequency_hz'],
                     preset=channel_spec.get('preset', 'iq'),
-                    sample_rate=channel_spec.get('sample_rate')
+                    sample_rate=channel_spec.get('sample_rate', 16000),
+                    agc_enable=channel_spec.get('agc', 0),
+                    gain=channel_spec.get('gain', 0.0)
                 )
                 time.sleep(0.5)
                 

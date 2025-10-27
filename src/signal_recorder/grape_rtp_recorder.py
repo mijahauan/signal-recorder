@@ -16,6 +16,8 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Optional, Callable
 from dataclasses import dataclass
+from collections import deque
+from .channel_manager import ChannelManager
 from scipy import signal as scipy_signal
 
 try:
@@ -729,6 +731,35 @@ class GRAPERecorderManager:
         # Create output directory
         output_dir = Path(recorder_config.get('archive_dir', '/tmp/grape-data'))
         output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure all channels exist in radiod before starting recording
+        logger.info("Checking radiod channels...")
+        channel_manager = ChannelManager(multicast_address)
+        
+        # Build channel specifications from config
+        required_channels = []
+        for channel in channels:
+            if not channel.get('enabled', True):
+                continue
+            
+            required_channels.append({
+                'ssrc': channel['ssrc'],
+                'frequency_hz': channel['frequency_hz'],
+                'preset': channel.get('preset', 'iq'),
+                'sample_rate': channel.get('sample_rate', 16000),
+                'agc': channel.get('agc', 0),
+                'gain': channel.get('gain', 0),
+                'description': channel.get('description', '')
+            })
+        
+        # Create/verify channels
+        if required_channels:
+            logger.info(f"Ensuring {len(required_channels)} channels exist in radiod...")
+            if not channel_manager.ensure_channels_exist(required_channels, update_existing=False):
+                logger.error("Failed to ensure all channels exist. Recording may not work correctly.")
+                # Continue anyway - some channels might exist
+        else:
+            logger.warning("No enabled channels configured")
         
         # Create RTP receiver
         self.rtp_receiver = RTPReceiver(multicast_address, port=5004)
