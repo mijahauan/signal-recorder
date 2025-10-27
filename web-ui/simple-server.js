@@ -1172,51 +1172,18 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
       }
     } catch (cliError) {
       console.error('CLI discovery failed:', cliError);
+      
+      // Return empty channels array with error info (no config fallback for web UI)
+      res.json({
+        channels: [],
+        timestamp: new Date().toISOString(),
+        total: 0,
+        error: 'Channel discovery failed',
+        details: cliError.message || 'Unable to discover channels from radiod',
+        note: 'No channels found - radiod may not be running or channels need to be created'
+      });
+      return;
     }
-
-    // If CLI discovery fails, try configuration file fallback
-    console.log('CLI discovery failed, trying configuration file fallback...');
-
-    try {
-      const { parse: parseToml } = await import('toml');
-
-      const configPath = join(installDir, 'config', 'grape-S000171.toml');
-      const configContent = fs.readFileSync(configPath, 'utf8');
-      const config = parseToml(configContent);
-
-      if (config.recorder && config.recorder.channels) {
-        const channels = config.recorder.channels.map(channel => ({
-          ssrc: channel.ssrc.toString(),
-          frequency: `${(channel.frequency_hz / 1000000).toFixed(2)} MHz`,
-          rate: channel.sample_rate.toString(),
-          preset: channel.preset,
-          snr: 'N/A (config)',
-          address: '239.192.152.141:5004'  // Use real radio multicast address
-        }));
-
-        console.log('Successfully loaded channels from config:', channels.length);
-
-        res.json({
-          channels,
-          timestamp: new Date().toISOString(),
-          total: channels.length,
-          rawOutput: 'Using configuration file fallback',
-          commandUsed: 'config-fallback',
-          note: 'Loaded from configuration file - CLI discovery not available'
-        });
-        return;
-      }
-    } catch (configError) {
-      console.error('Config fallback also failed:', configError);
-    }
-
-    // If both methods fail, return error
-    res.status(500).json({
-      error: 'No channels discovered',
-      note: 'Both CLI discovery and configuration fallback failed',
-      cliError: 'CLI discovery failed',
-      configError: 'Configuration file fallback failed'
-    });
 
   } catch (error) {
     console.error('Failed to get channel status:', error);
@@ -1379,17 +1346,34 @@ app.get('/api/presets/chu', requireAuth, (req, res) => {
 // Radiod status check endpoint
 app.get('/api/radiod/status', requireAuth, async (req, res) => {
   try {
-    // Check if radiod is running by trying to discover channels
-    const statusAddr = '239.192.152.141';
+    // Get status address from config
+    const { parse: parseToml } = await import('toml');
+    const configContent = fs.readFileSync(configPath, 'utf8');
+    const config = parseToml(configContent);
+    const statusAddr = config.ka9q?.status_address || 'bee1-hf-status.local';
     
+    // Try to run control command (should be in PATH from ka9q-radio installation)
     const result = await new Promise((resolve, reject) => {
-      exec(`timeout 3 control -v ${statusAddr}`, {
-        timeout: 4000
+      exec(`control -v ${statusAddr}`, {
+        timeout: 4000,
+        env: {
+          ...process.env,
+          PATH: '/usr/local/bin:/usr/bin:/bin:' + process.env.PATH
+        }
       }, (error, stdout, stderr) => {
         if (error) {
-          resolve({ running: false, error: error.message });
+          // Check if it's a timeout or command not found
+          if (error.message.includes('ENOENT')) {
+            resolve({ running: false, error: 'control command not found in PATH' });
+          } else if (error.killed) {
+            resolve({ running: false, error: 'radiod not responding (timeout)' });
+          } else {
+            resolve({ running: false, error: stderr || error.message });
+          }
+        } else if (stdout && stdout.length > 0) {
+          resolve({ running: true, output: stdout, channels: stdout.split('\n').length - 4 });
         } else {
-          resolve({ running: true, output: stdout });
+          resolve({ running: false, error: 'no response from radiod' });
         }
       });
     });
