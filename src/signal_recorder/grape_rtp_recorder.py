@@ -713,26 +713,34 @@ class GRAPERecorderManager:
         
     def start(self):
         """Start recording all configured channels"""
+        print("🔍 DEBUG: GRAPERecorderManager.start() called")
         if self.running:
             logger.warning("Recorder already running")
             return
             
         # Get configuration
+        print("🔍 DEBUG: Getting configuration...")
         station_config = self.config.get('station', {})
         recorder_config = self.config.get('recorder', {})
         channels = recorder_config.get('channels', [])
+        print(f"🔍 DEBUG: Found {len(channels)} channels in config")
         
         # Get multicast address
         ka9q_config = self.config.get('ka9q', {})
         multicast_address = ka9q_config.get('status_address', '239.192.152.141')
+        print(f"🔍 DEBUG: Multicast address: {multicast_address}")
         if ':' in multicast_address:
             multicast_address = multicast_address.split(':')[0]
+            print(f"🔍 DEBUG: Cleaned multicast address: {multicast_address}")
             
         # Create output directory
+        print("🔍 DEBUG: Creating output directory...")
         output_dir = Path(recorder_config.get('archive_dir', '/tmp/grape-data'))
         output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"🔍 DEBUG: Output dir created: {output_dir}")
         
         # Ensure all channels exist in radiod before starting recording
+        print("🔍 DEBUG: About to check radiod channels...")
         logger.info("Checking radiod channels...")
         channel_manager = ChannelManager(multicast_address)
         
