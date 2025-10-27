@@ -362,9 +362,78 @@ class GRAPEChannelRecorder:
         # RTP timestamp tracking
         self.last_sequence = None
         self.last_timestamp = None
-        self.rtp_sample_rate = 12000  # RTP timestamp rate
+        self.rtp_sample_rate = 12000  # RTP timestamp rate (real samples, I+Q combined)
+        
+        # UTC synchronization (wsprdaemon-style)
+        self.sync_state = 'startup'  # startup → armed → active
+        self.utc_aligned_start = None  # UTC-aligned recording start time
+        self.rtp_start_timestamp = None  # RTP timestamp at recording start
+        self.expected_rtp_timestamp = None  # For gap detection
         
         logger.info(f"Channel recorder initialized: {channel_name} (SSRC {ssrc}, {frequency_hz/1e6:.2f} MHz)")
+        logger.info(f"{channel_name}: Sync state = startup, waiting for UTC boundary alignment")
+    
+    def _calculate_sample_time(self, rtp_timestamp: int) -> float:
+        """
+        Calculate Unix time for samples based on RTP timestamp.
+        This provides accurate timing independent of system clock drift.
+        
+        Args:
+            rtp_timestamp: RTP timestamp (12 kHz clock for real samples)
+            
+        Returns:
+            Unix timestamp (seconds since epoch)
+        """
+        if self.sync_state != 'active' or self.rtp_start_timestamp is None:
+            # Before sync, fall back to system time
+            return time.time()
+        
+        # Calculate elapsed time since recording started
+        # RTP timestamps wrap at 2^32, handle rollover
+        rtp_elapsed = (rtp_timestamp - self.rtp_start_timestamp) & 0xFFFFFFFF
+        
+        # Convert to seconds (12 kHz is for REAL samples, not complex)
+        elapsed_seconds = rtp_elapsed / self.rtp_sample_rate
+        
+        # Add to UTC-aligned start time
+        return self.utc_aligned_start + elapsed_seconds
+    
+    def _check_sync_state(self, header: RTPHeader) -> bool:
+        """
+        Implement wsprdaemon-style UTC boundary synchronization.
+        
+        Returns:
+            True if packet should be processed, False if dropped during sync
+        """
+        now = time.time()
+        current_second = int(now) % 60
+        
+        if self.sync_state == 'startup':
+            # Wait for second 59 to arm
+            if current_second == 59:
+                self.sync_state = 'armed'
+                logger.info(f"{self.channel_name}: Armed at :59, waiting for :00 to start recording")
+            return False  # Drop packets during startup
+            
+        elif self.sync_state == 'armed':
+            # Drop samples until second 0
+            if current_second == 0:
+                # Start recording at exact UTC minute boundary
+                self.utc_aligned_start = int(now / 60) * 60
+                self.rtp_start_timestamp = header.timestamp
+                self.expected_rtp_timestamp = header.timestamp
+                self.sync_state = 'active'
+                
+                utc_time = datetime.fromtimestamp(self.utc_aligned_start, timezone.utc)
+                logger.info(f"{self.channel_name}: Started recording at UTC {utc_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"{self.channel_name}: RTP start timestamp = {self.rtp_start_timestamp}")
+                return True  # Process this packet
+            return False  # Drop packets until :00
+            
+        elif self.sync_state == 'active':
+            return True  # Normal processing
+            
+        return False
         
     def process_rtp_packet(self, header: RTPHeader, payload: bytes):
         """
@@ -374,23 +443,55 @@ class GRAPEChannelRecorder:
             header: Parsed RTP header
             payload: RTP payload (IQ samples as float32)
         """
+        # Check UTC synchronization state
+        if not self._check_sync_state(header):
+            # Drop packet during startup/armed states
+            return
+        
         # Track packet metadata
         self.packets_received = getattr(self, 'packets_received', 0) + 1
         self.samples_received = getattr(self, 'samples_received', 0)
         self.last_packet_time = time.time()  # For freshness monitoring
         
-        if self.last_sequence is not None:
+        # Gap detection and filling (wsprdaemon-style)
+        if self.last_sequence is not None and self.expected_rtp_timestamp is not None:
             expected_seq = (self.last_sequence + 1) & 0xFFFF
             if header.sequence != expected_seq:
-                dropped = (header.sequence - expected_seq) & 0xFFFF
-                self.packets_dropped = getattr(self, 'packets_dropped', 0) + dropped
-                logger.warning(f"{self.channel_name}: Dropped {dropped} packets "
-                             f"(seq {expected_seq} → {header.sequence})")
+                gap_packets = (header.sequence - expected_seq) & 0xFFFF
+                self.packets_dropped = getattr(self, 'packets_dropped', 0) + gap_packets
+                
+                # Verify RTP timestamp jump is consistent with sequence gap
+                expected_rtp_ts = self.expected_rtp_timestamp
+                actual_rtp_ts = header.timestamp
+                rtp_jump = (actual_rtp_ts - expected_rtp_ts) & 0xFFFFFFFF
+                expected_jump = gap_packets * 120  # 120 complex samples per packet
+                
+                # If timestamp jump is reasonable, fill gap with silence
+                if abs(rtp_jump - expected_jump) < 240:  # Allow 2 packet tolerance
+                    # Insert silence for missing data
+                    gap_input_samples = gap_packets * 120  # At 6 kHz complex
+                    gap_output_samples = gap_input_samples // 600  # After 600:1 decimation
+                    
+                    if gap_output_samples > 0:
+                        silence = np.zeros(gap_output_samples, dtype=np.complex64)
+                        gap_time = self._calculate_sample_time(expected_rtp_ts)
+                        
+                        self.daily_buffer.add_samples(gap_time, silence)
+                        self.samples_received += gap_output_samples
+                        
+                        logger.warning(f"{self.channel_name}: Filled {gap_packets} dropped packets "
+                                     f"({gap_output_samples} output samples) with silence "
+                                     f"at {datetime.fromtimestamp(gap_time, timezone.utc).strftime('%H:%M:%S')}")
+                else:
+                    logger.error(f"{self.channel_name}: RTP timestamp jump ({rtp_jump}) inconsistent "
+                               f"with sequence gap ({gap_packets} packets, expected {expected_jump})")
         else:
             self.packets_dropped = 0
                 
         self.last_sequence = header.sequence
         self.last_timestamp = header.timestamp
+        # Update expected timestamp for next packet (120 complex samples at 12 kHz real = 120 samples)
+        self.expected_rtp_timestamp = (header.timestamp + 120) & 0xFFFFFFFF
         
         # Parse IQ samples (float32 I/Q pairs)
         num_samples = len(payload) // 8  # 2 floats per sample
@@ -426,9 +527,8 @@ class GRAPEChannelRecorder:
             if len(resampled) == 0:
                 logger.warning(f"{self.channel_name}: ⚠️  Resampler returned 0 samples from {len(all_samples)} inputs!")
             
-            # Convert RTP timestamp to Unix time
-            # RTP timestamp is in samples at 12 kHz
-            unix_time = time.time()  # Simplified - should use NTP or GPS time
+            # Calculate Unix time from RTP timestamp (precise, not system clock)
+            unix_time = self._calculate_sample_time(header.timestamp)
             
             # Add to daily buffer
             completed_day = self.daily_buffer.add_samples(unix_time, resampled)
@@ -445,63 +545,81 @@ class GRAPEChannelRecorder:
             
     def _write_digital_rf(self, day_date, data: np.ndarray):
         """
-        Write completed day to Digital RF format
+        Write completed day to Digital RF format (wsprdaemon-compatible)
         
         Args:
             day_date: Date of the data
             data: Complex IQ samples for the full day
         """
         try:
-            # Create Digital RF writer
-            # Directory structure: output_dir/channel_name/
+            # Calculate midnight UTC timestamp for this date (wsprdaemon-style)
+            day_start = datetime.combine(day_date, datetime.min.time(), tzinfo=timezone.utc)
+            start_time = day_start.timestamp()
+            
+            # Digital RF start_global_index must be tied to midnight UTC
+            # This is critical for PSWS compatibility
+            start_global_index = int(start_time * 10)  # 10 Hz sample rate
+            
+            # Create Digital RF writer directory
             drf_dir = self.channel_dir
             
-            # Digital RF expects interleaved I/Q as separate samples
-            # Convert complex to 2-channel real (I, Q)
-            iq_interleaved = np.empty(len(data) * 2, dtype=np.float32)
-            iq_interleaved[0::2] = np.real(data)
-            iq_interleaved[1::2] = np.imag(data)
+            # Generate UUID for this dataset
+            import uuid
+            dataset_uuid = uuid.uuid4().hex
             
-            # Create writer
-            writer = drf.DigitalRFWriter(
+            logger.info(f"{self.channel_name}: Writing Digital RF for {day_date}")
+            logger.info(f"{self.channel_name}: start_global_index = {start_global_index} (midnight UTC)")
+            logger.info(f"{self.channel_name}: {len(data)} complex samples (~{len(data)/864000*100:.1f}% of day)")
+            
+            # Create writer (wsprdaemon-compatible parameters)
+            with drf.DigitalRFWriter(
                 str(drf_dir),
-                dtype=np.float32,
-                subdir_cadence_secs=86400,  # 1 day subdirectories
-                file_cadence_millisecs=3600000,  # 1 hour files
-                start_global_index=0,
+                dtype=np.complex64,
+                subdir_cadence_secs=3600,      # 1 hour subdirectories (wsprdaemon uses 3600)
+                file_cadence_millisecs=1000,    # 1 second files (wsprdaemon uses 1000)
+                start_global_index=start_global_index,  # CRITICAL: Midnight UTC
                 sample_rate_numerator=10,
                 sample_rate_denominator=1,
-                is_complex=True,
+                uuid_str=dataset_uuid,
+                compression_level=6,            # wsprdaemon uses 6
+                checksum=False,
+                is_complex=True,                # True for I/Q data
                 num_subchannels=1,
-                is_continuous=True,
-                compression_level=9,
-                marching_periods=True
-            )
+                is_continuous=True,             # Now valid because we fill gaps!
+                marching_periods=False          # wsprdaemon uses False
+            ) as writer:
+                # Write data as complex64
+                writer.rf_write(data)
             
-            # Write data
-            # Start time: midnight UTC of the day
-            day_start = datetime.combine(day_date, datetime.min.time()).replace(tzinfo=timezone.utc)
-            start_sample = int(day_start.timestamp() * 10)  # Sample index at 10 Hz
+            # Write metadata (wsprdaemon-compatible format)
+            metadata_dir = drf_dir / 'metadata'
+            metadata_dir.mkdir(parents=True, exist_ok=True)
             
-            writer.rf_write(iq_interleaved, start_sample)
-            
-            # Write metadata
             metadata = {
                 'callsign': self.station_config.get('callsign', 'UNKNOWN'),
                 'grid_square': self.station_config.get('grid_square', 'UNKNOWN'),
                 'receiver_name': self.station_config.get('instrument_id', 'UNKNOWN'),
-                'center_frequencies': [self.frequency_hz],
+                'center_frequencies': np.array([self.frequency_hz], dtype=np.float64),
+                'uuid_str': dataset_uuid,
                 'sample_rate': 10.0,
                 'date': day_date.isoformat()
             }
             
-            writer.rf_write_metadata(metadata, start_sample)
+            # Write metadata using DigitalMetadataWriter
+            with drf.DigitalMetadataWriter(
+                str(metadata_dir),
+                subdir_cadence_secs=3600,
+                file_cadence_secs=3600,
+                sample_rate_numerator=10,
+                sample_rate_denominator=1,
+                file_name='metadata'
+            ) as metadata_writer:
+                metadata_writer.write(start_global_index, metadata)
             
-            logger.info(f"{self.channel_name}: Wrote Digital RF for {day_date} "
-                       f"({len(data)} samples, {len(data)/864000*100:.1f}% complete)")
+            logger.info(f"{self.channel_name}: ✅ Digital RF write complete for {day_date}")
                        
         except Exception as e:
-            logger.error(f"{self.channel_name}: Failed to write Digital RF: {e}")
+            logger.error(f"{self.channel_name}: Failed to write Digital RF: {e}", exc_info=True)
 
 
 class GRAPERecorderManager:
