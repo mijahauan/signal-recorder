@@ -1295,7 +1295,8 @@
             const body = document.getElementById('channels-body');
             
             try {
-                const data = await apiRequest('/monitoring/channels');
+                // Add cache-busting timestamp
+                const data = await apiRequest(`/monitoring/channels?t=${Date.now()}`);
                 
                 console.log('Channel data received:', data);
                 
