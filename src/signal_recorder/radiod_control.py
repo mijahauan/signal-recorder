@@ -1,8 +1,23 @@
 """
-Direct control of radiod via TLV command protocol
+General-purpose radiod control interface via TLV command protocol
 
-This module sends commands directly to radiod's control socket using the
-TLV (Type-Length-Value) protocol, based on ka9q-radio's status.c encoding.
+This module provides a complete interface to radiod's control protocol using
+TLV (Type-Length-Value) encoding, based on ka9q-radio's status.c/status.h.
+
+ARCHITECTURE:
+- This module exposes ALL radiod capabilities and parameters
+- Application-specific defaults (e.g., GRAPE's 16kHz IQ channels) live in
+  higher-level modules (grape_recorder.py, config files)
+- Reusable for any application needing radiod channel control
+
+USAGE:
+1. Create RadiodControl instance with status address
+2. Use granular setters (set_frequency, set_preset, etc.) OR
+3. Use create_and_configure_channel() for common channel creation patterns
+
+PARAMETERS:
+- All StatusType enum values from ka9q-radio/status.h are supported
+- See individual methods for parameter descriptions and valid ranges
 """
 
 import socket
@@ -94,8 +109,7 @@ class StatusType:
     OPUS_TTL = 72
     OPUS_BITRATE = 73
     OPUS_PACKETS = 74
-    
-    # Note: PRESET not found in status.h enum - handled via modes.txt or DEMOD_TYPE
+    PRESET = 85  # Mode/preset name (e.g., "iq", "usb", "lsb")
 
 
 # Command packet type
@@ -368,6 +382,125 @@ class RadiodControl:
         logger.info(f"Setting sample rate for SSRC {ssrc} to {sample_rate} Hz")
         self.send_command(cmdbuffer)
     
+    def set_agc(self, ssrc: int, enable: bool, hangtime: Optional[float] = None, 
+                headroom: Optional[float] = None, recovery_rate: Optional[float] = None,
+                attack_rate: Optional[float] = None):
+        """
+        Configure AGC (Automatic Gain Control) for a channel
+        
+        Args:
+            ssrc: SSRC of the channel
+            enable: Enable/disable AGC (True=enabled, False=manual gain)
+            hangtime: AGC hang time in seconds (optional)
+            headroom: Target headroom in dB (optional)
+            recovery_rate: AGC recovery rate (optional)
+            attack_rate: AGC attack rate (optional)
+        """
+        cmdbuffer = bytearray()
+        cmdbuffer.append(CMD)
+        
+        encode_int(cmdbuffer, StatusType.AGC_ENABLE, 1 if enable else 0)
+        if hangtime is not None:
+            encode_float(cmdbuffer, StatusType.AGC_HANGTIME, hangtime)
+        if headroom is not None:
+            encode_float(cmdbuffer, StatusType.HEADROOM, headroom)
+        if recovery_rate is not None:
+            encode_float(cmdbuffer, StatusType.AGC_RECOVERY_RATE, recovery_rate)
+        if attack_rate is not None:
+            encode_float(cmdbuffer, StatusType.AGC_ATTACK_RATE, attack_rate)
+        
+        encode_int(cmdbuffer, StatusType.OUTPUT_SSRC, ssrc)
+        encode_int(cmdbuffer, StatusType.COMMAND_TAG, random.randint(1, 2**31))
+        encode_eol(cmdbuffer)
+        
+        logger.info(f"Setting AGC for SSRC {ssrc}: enable={enable}, hangtime={hangtime}, headroom={headroom}")
+        self.send_command(cmdbuffer)
+    
+    def set_gain(self, ssrc: int, gain_db: float):
+        """
+        Set manual gain for a channel (linear modes only)
+        
+        Args:
+            ssrc: SSRC of the channel
+            gain_db: Gain in dB
+        """
+        cmdbuffer = bytearray()
+        cmdbuffer.append(CMD)
+        
+        encode_double(cmdbuffer, StatusType.GAIN, gain_db)
+        encode_int(cmdbuffer, StatusType.OUTPUT_SSRC, ssrc)
+        encode_int(cmdbuffer, StatusType.COMMAND_TAG, random.randint(1, 2**31))
+        encode_eol(cmdbuffer)
+        
+        logger.info(f"Setting gain for SSRC {ssrc} to {gain_db} dB")
+        self.send_command(cmdbuffer)
+    
+    def set_filter(self, ssrc: int, low_edge: Optional[float] = None, 
+                   high_edge: Optional[float] = None, kaiser_beta: Optional[float] = None):
+        """
+        Configure filter parameters for a channel
+        
+        Args:
+            ssrc: SSRC of the channel
+            low_edge: Low frequency edge in Hz (optional)
+            high_edge: High frequency edge in Hz (optional)
+            kaiser_beta: Kaiser window beta parameter (optional)
+        """
+        cmdbuffer = bytearray()
+        cmdbuffer.append(CMD)
+        
+        if low_edge is not None:
+            encode_double(cmdbuffer, StatusType.LOW_EDGE, low_edge)
+        if high_edge is not None:
+            encode_double(cmdbuffer, StatusType.HIGH_EDGE, high_edge)
+        if kaiser_beta is not None:
+            encode_float(cmdbuffer, StatusType.KAISER_BETA, kaiser_beta)
+        
+        encode_int(cmdbuffer, StatusType.OUTPUT_SSRC, ssrc)
+        encode_int(cmdbuffer, StatusType.COMMAND_TAG, random.randint(1, 2**31))
+        encode_eol(cmdbuffer)
+        
+        logger.info(f"Setting filter for SSRC {ssrc}: low={low_edge}, high={high_edge}, beta={kaiser_beta}")
+        self.send_command(cmdbuffer)
+    
+    def set_shift_frequency(self, ssrc: int, shift_hz: float):
+        """
+        Set post-detection frequency shift (for CW offset, etc.)
+        
+        Args:
+            ssrc: SSRC of the channel
+            shift_hz: Frequency shift in Hz
+        """
+        cmdbuffer = bytearray()
+        cmdbuffer.append(CMD)
+        
+        encode_double(cmdbuffer, StatusType.SHIFT_FREQUENCY, shift_hz)
+        encode_int(cmdbuffer, StatusType.OUTPUT_SSRC, ssrc)
+        encode_int(cmdbuffer, StatusType.COMMAND_TAG, random.randint(1, 2**31))
+        encode_eol(cmdbuffer)
+        
+        logger.info(f"Setting frequency shift for SSRC {ssrc} to {shift_hz} Hz")
+        self.send_command(cmdbuffer)
+    
+    def set_output_level(self, ssrc: int, level: float):
+        """
+        Set output level for a channel
+        
+        Args:
+            ssrc: SSRC of the channel
+            level: Output level (range depends on mode)
+        """
+        cmdbuffer = bytearray()
+        cmdbuffer.append(CMD)
+        
+        encode_float(cmdbuffer, StatusType.OUTPUT_LEVEL, level)
+        encode_int(cmdbuffer, StatusType.OUTPUT_SSRC, ssrc)
+        encode_int(cmdbuffer, StatusType.COMMAND_TAG, random.randint(1, 2**31))
+        encode_eol(cmdbuffer)
+        
+        logger.info(f"Setting output level for SSRC {ssrc} to {level}")
+        self.send_command(cmdbuffer)
+    
     def create_and_configure_channel(self, ssrc: int, frequency_hz: float, 
                                      preset: str = "iq", sample_rate: Optional[int] = 16000,
                                      agc_enable: int = 0, gain: float = 0.0):
@@ -394,11 +527,16 @@ class RadiodControl:
         cmdbuffer = bytearray()
         cmdbuffer.append(CMD)
         
+        # PRESET: Mode name (e.g., "iq", "usb", "lsb")
+        # This MUST come first - radiod uses it to set up the channel
+        encode_string(cmdbuffer, StatusType.PRESET, preset)
+        logger.info(f"Setting preset for SSRC {ssrc} to {preset}")
+        
         # DEMOD_TYPE: 0=linear (IQ/USB/LSB/etc), 1=FM
         # For IQ/GRAPE, we want linear mode
         demod_type = 0 if preset.lower() in ['iq', 'usb', 'lsb', 'cw', 'am'] else 1
         encode_int(cmdbuffer, StatusType.DEMOD_TYPE, demod_type)
-        logger.info(f"Setting DEMOD_TYPE for SSRC {ssrc} to {demod_type} ({preset})")
+        logger.info(f"Setting DEMOD_TYPE for SSRC {ssrc} to {demod_type}")
         
         # Frequency
         encode_double(cmdbuffer, StatusType.RADIO_FREQUENCY, frequency_hz)
