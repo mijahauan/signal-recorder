@@ -11,10 +11,22 @@ from .grape_recorder import GRAPERecorderManager
 def main():
     """Main entry point for signal-recorder command"""
     # Configure logging to show INFO level and above
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(levelname)s:%(name)s:%(message)s'
-    )
+    # Force level on root logger in case it was already configured
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # Add handler if none exists
+    if not root_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter('%(levelname)s:%(name)s:%(message)s'))
+        root_logger.addHandler(handler)
+    else:
+        # Set level on existing handlers too
+        for handler in root_logger.handlers:
+            handler.setLevel(logging.INFO)
+    
+    # Test that INFO logging works
+    logging.info("✓ Logging configured at INFO level")
     
     parser = argparse.ArgumentParser(description='Signal Recorder for GRAPE')
     parser.add_argument('command', choices=['daemon', 'discover'], help='Command to run')
