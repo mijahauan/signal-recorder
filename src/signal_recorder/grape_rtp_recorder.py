@@ -120,14 +120,35 @@ class RTPReceiver:
         
     def _receive_loop(self):
         """Main packet reception loop"""
+        packet_count = 0
+        ssrc_seen = set()
+        
         while self.running:
             try:
                 data, addr = self.socket.recvfrom(8192)
+                packet_count += 1
                 
                 # Parse RTP header
                 header = self._parse_rtp_header(data)
                 if not header:
                     continue
+                
+                # Log first packet from each SSRC for diagnostics
+                if header.ssrc not in ssrc_seen:
+                    ssrc_seen.add(header.ssrc)
+                    has_callback = header.ssrc in self.callbacks
+                    logger.info(f"📡 First packet from SSRC {header.ssrc}: "
+                               f"seq={header.sequence}, ts={header.timestamp}, "
+                               f"payload={len(data)-12} bytes, callback={'YES' if has_callback else 'NO'}")
+                    if not has_callback:
+                        logger.warning(f"⚠️  No callback registered for SSRC {header.ssrc}! "
+                                      f"Registered SSRCs: {list(self.callbacks.keys())}")
+                
+                # Log periodic stats every 1000 packets
+                if packet_count % 1000 == 0:
+                    logger.info(f"📊 RTP stats: {packet_count} packets, "
+                               f"{len(ssrc_seen)} unique SSRCs, "
+                               f"{len(self.callbacks)} callbacks registered")
                     
                 # Extract payload (after 12-byte header)
                 payload = data[12:]
