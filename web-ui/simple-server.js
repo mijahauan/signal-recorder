@@ -1376,6 +1376,74 @@ app.get('/api/presets/chu', requireAuth, (req, res) => {
   res.json(presets);
 });
 
+// Radiod status check endpoint
+app.get('/api/radiod/status', requireAuth, async (req, res) => {
+  try {
+    // Check if radiod is running by trying to discover channels
+    const statusAddr = '239.192.152.141';
+    
+    const result = await new Promise((resolve, reject) => {
+      exec(`timeout 3 control -v ${statusAddr}`, {
+        timeout: 4000
+      }, (error, stdout, stderr) => {
+        if (error) {
+          resolve({ running: false, error: error.message });
+        } else {
+          resolve({ running: true, output: stdout });
+        }
+      });
+    });
+    
+    res.json(result);
+  } catch (error) {
+    res.json({ running: false, error: error.message });
+  }
+});
+
+// Create missing channels endpoint
+app.post('/api/channels/create', requireAuth, async (req, res) => {
+  try {
+    const configId = req.body.configId;
+    
+    if (!configId) {
+      return res.status(400).json({ error: 'Configuration ID required' });
+    }
+    
+    console.log(`Creating channels for config ${configId}...`);
+    
+    // Run the channel creation via CLI
+    const result = await new Promise((resolve, reject) => {
+      exec(`"${venvPython}" -m signal_recorder.channel_manager --config "${configPath}" --create`, {
+        timeout: 30000,
+        env: {
+          ...process.env,
+          PYTHONPATH: srcPath
+        }
+      }, (error, stdout, stderr) => {
+        if (error) {
+          reject({ error: error.message, stderr });
+        } else {
+          resolve({ stdout, stderr });
+        }
+      });
+    });
+    
+    res.json({
+      success: true,
+      output: result.stdout,
+      message: 'Channels created successfully'
+    });
+    
+  } catch (error) {
+    console.error('Failed to create channels:', error);
+    res.status(500).json({
+      error: 'Failed to create channels',
+      details: error.error || error.message,
+      stderr: error.stderr
+    });
+  }
+});
+
 // Serve the monitoring dashboard
 app.get('/monitoring', (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');

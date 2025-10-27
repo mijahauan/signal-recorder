@@ -300,10 +300,29 @@
                     </div>
                 </div>
 
-                <!-- Active RTP Channels -->
+                <!-- Radiod Status -->
                 <div class="card" style="margin-bottom: 20px;">
                     <div class="card-header">
+                        <h3 class="card-title">🔌 Radiod Status</h3>
+                    </div>
+                    <div style="padding: 20px;">
+                        <div id="radiod-status" style="display: flex; align-items: center; gap: 15px;">
+                            <div id="radiod-indicator" style="font-size: 24px;">⏳</div>
+                            <div>
+                                <div id="radiod-text" style="font-weight: bold;">Checking radiod...</div>
+                                <div id="radiod-detail" style="font-size: 0.9em; color: #666; margin-top: 5px;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Active RTP Channels -->
+                <div class="card" style="margin-bottom: 20px;">
+                    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
                         <h3 class="card-title">📻 Active RTP Channels</h3>
+                        <button id="setup-channels-btn" onclick="setupChannels()" style="display: none; background: #3b82f6;">
+                            🔧 Setup Channels
+                        </button>
                     </div>
                     <div id="channels-loading" style="text-align: center; color: #666; padding: 20px;">Loading channel information...</div>
                     <div id="channels-table-container" style="display: none;">
@@ -593,8 +612,18 @@
 
         async function loadChannels(configId) {
             try {
-                const channels = await apiRequest(`/configurations/${configId}/channels`);
-                displayChannels(channels);
+                // Load actual channels from radiod (not config database)
+                const response = await apiRequest(`/api/monitoring/channels`);
+                if (response && response.channels) {
+                    displayChannels(response.channels);
+                    
+                    // Show setup button if no channels found
+                    if (response.channels.length === 0) {
+                        document.getElementById('setup-channels-btn').style.display = 'block';
+                    }
+                } else {
+                    displayChannels([]);
+                }
             } catch (error) {
                 console.error('Failed to load channels:', error);
             }
@@ -1297,10 +1326,71 @@
             }
         }
 
+        // Check radiod status
+        async function checkRadiodStatus() {
+            try {
+                const result = await apiRequest('/api/radiod/status');
+                const indicator = document.getElementById('radiod-indicator');
+                const text = document.getElementById('radiod-text');
+                const detail = document.getElementById('radiod-detail');
+                
+                if (result.running) {
+                    indicator.textContent = '✅';
+                    text.textContent = 'Radiod is running';
+                    detail.textContent = 'Ready to create channels and start recording';
+                    text.style.color = '#10b981';
+                } else {
+                    indicator.textContent = '❌';
+                    text.textContent = 'Radiod is not running';
+                    detail.textContent = 'Please start radiod before proceeding';
+                    text.style.color = '#ef4444';
+                }
+            } catch (error) {
+                const indicator = document.getElementById('radiod-indicator');
+                const text = document.getElementById('radiod-text');
+                indicator.textContent = '⚠️';
+                text.textContent = 'Cannot check radiod status';
+                text.style.color = '#f59e0b';
+            }
+        }
+        
+        // Setup channels in radiod
+        async function setupChannels() {
+            if (!currentConfig) {
+                alert('Please select a configuration first');
+                return;
+            }
+            
+            const btn = document.getElementById('setup-channels-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Creating channels...';
+            
+            try {
+                const result = await apiRequest('/api/channels/create', {
+                    method: 'POST',
+                    body: JSON.stringify({ configId: currentConfig.id })
+                });
+                
+                if (result.success) {
+                    alert('Channels created successfully! Refreshing...');
+                    loadActiveChannels();
+                    btn.style.display = 'none';
+                } else {
+                    alert('Failed to create channels: ' + (result.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to create channels: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔧 Setup Channels';
+            }
+        }
+
         // Auto-check daemon status and channels every 10 seconds
         setInterval(() => {
             checkDaemonStatus();
             loadActiveChannels();
+            checkRadiodStatus();
         }, 10000);
 
         // Initialize
@@ -1312,6 +1402,7 @@
         setTimeout(() => {
             checkDaemonStatus();
             loadActiveChannels();
+            checkRadiodStatus();
         }, 1000);
     </script>
 </body>

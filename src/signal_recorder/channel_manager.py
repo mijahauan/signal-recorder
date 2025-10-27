@@ -210,3 +210,61 @@ class ChannelManager:
         if self.control:
             self.control.close()
 
+
+if __name__ == '__main__':
+    import argparse
+    import toml
+    
+    parser = argparse.ArgumentParser(description='Manage radiod channels')
+    parser.add_argument('--config', required=True, help='Path to configuration file')
+    parser.add_argument('--create', action='store_true', help='Create missing channels from config')
+    parser.add_argument('--status-address', help='Radiod status address (default: from config)')
+    args = parser.parse_args()
+    
+    # Load config
+    with open(args.config) as f:
+        config = toml.load(f)
+    
+    # Get status address
+    status_address = args.status_address or config.get('ka9q', {}).get('status_address', '239.192.152.141')
+    
+    # Create channel manager
+    manager = ChannelManager(status_address)
+    
+    if args.create:
+        # Get channels from config
+        channels = config.get('recorder', {}).get('channels', [])
+        enabled_channels = [ch for ch in channels if ch.get('enabled', True)]
+        
+        if not enabled_channels:
+            print("No enabled channels found in configuration")
+            exit(1)
+        
+        # Build channel specs
+        channel_specs = []
+        for ch in enabled_channels:
+            channel_specs.append({
+                'ssrc': ch['ssrc'],
+                'frequency_hz': ch['frequency_hz'],
+                'preset': ch.get('preset', 'iq'),
+                'sample_rate': ch.get('sample_rate', 16000),
+                'agc': ch.get('agc', 0),
+                'gain': ch.get('gain', 0.0),
+                'description': ch.get('description', '')
+            })
+        
+        print(f"Creating {len(channel_specs)} channels...")
+        success = manager.ensure_channels_exist(channel_specs, update_existing=False)
+        
+        if success:
+            print("✓ All channels created successfully")
+            exit(0)
+        else:
+            print("⚠ Some channels failed to create")
+            exit(1)
+    else:
+        # Just discover channels
+        channels = manager.discover_existing_channels()
+        print(f"Found {len(channels)} existing channels:")
+        for ssrc, info in channels.items():
+            print(f"  {ssrc}: {info.frequency/1e6:.3f} MHz, {info.preset}, {info.sample_rate} Hz")
