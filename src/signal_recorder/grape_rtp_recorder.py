@@ -370,6 +370,12 @@ class GRAPEChannelRecorder:
         self.rtp_start_timestamp = None  # RTP timestamp at recording start
         self.expected_rtp_timestamp = None  # For gap detection
         
+        # Timing quality monitoring
+        self.current_minute_start = None  # Start of current UTC minute
+        self.current_minute_samples = 0  # Samples received in current minute
+        self.timing_drift_samples = []  # Track timing drift over time
+        self.last_timing_report = None  # Last timing quality report time
+        
         logger.info(f"Channel recorder initialized: {channel_name} (SSRC {ssrc}, {frequency_hz/1e6:.2f} MHz)")
         logger.info(f"{channel_name}: Sync state = startup, waiting for UTC boundary alignment")
     
@@ -397,6 +403,66 @@ class GRAPEChannelRecorder:
         
         # Add to UTC-aligned start time
         return self.utc_aligned_start + elapsed_seconds
+    
+    def _track_timing_quality(self, sample_time: float, num_output_samples: int):
+        """
+        Track timing quality metrics for monitoring.
+        Reports per-minute statistics and timing drift.
+        
+        Args:
+            sample_time: Unix timestamp from RTP calculation
+            num_output_samples: Number of 10 Hz samples added
+        """
+        if self.sync_state != 'active':
+            return
+        
+        system_time = time.time()
+        
+        # Calculate current UTC minute boundary
+        current_minute = int(sample_time / 60) * 60
+        
+        # Initialize or rollover to new minute
+        if self.current_minute_start != current_minute:
+            # Log previous minute statistics
+            if self.current_minute_start is not None and self.current_minute_samples > 0:
+                expected_samples = 600  # 10 Hz × 60 seconds
+                completeness = self.current_minute_samples / expected_samples * 100
+                minute_time = datetime.fromtimestamp(self.current_minute_start, timezone.utc)
+                
+                logger.info(f"{self.channel_name}: Minute {minute_time.strftime('%H:%M')} complete: "
+                          f"{self.current_minute_samples}/{expected_samples} samples ({completeness:.1f}%)")
+            
+            # Start new minute
+            self.current_minute_start = current_minute
+            self.current_minute_samples = 0
+        
+        # Accumulate samples for this minute
+        self.current_minute_samples += num_output_samples
+        
+        # Calculate timing drift (RTP time vs system time)
+        timing_drift_ms = (sample_time - system_time) * 1000
+        self.timing_drift_samples.append(timing_drift_ms)
+        
+        # Keep only last 100 samples for drift statistics
+        if len(self.timing_drift_samples) > 100:
+            self.timing_drift_samples.pop(0)
+        
+        # Report timing quality every 5 minutes
+        if self.last_timing_report is None or (system_time - self.last_timing_report) >= 300:
+            if len(self.timing_drift_samples) > 10:
+                drift_array = np.array(self.timing_drift_samples)
+                mean_drift = np.mean(drift_array)
+                std_drift = np.std(drift_array)
+                min_drift = np.min(drift_array)
+                max_drift = np.max(drift_array)
+                
+                logger.info(f"{self.channel_name}: Timing Quality Report:")
+                logger.info(f"  Mean drift: {mean_drift:+.1f} ms (RTP vs system time)")
+                logger.info(f"  Std dev: {std_drift:.1f} ms")
+                logger.info(f"  Range: {min_drift:+.1f} to {max_drift:+.1f} ms")
+                logger.info(f"  Samples in buffer: {len(self.timing_drift_samples)}")
+                
+                self.last_timing_report = system_time
     
     def _check_sync_state(self, header: RTPHeader) -> bool:
         """
@@ -532,6 +598,9 @@ class GRAPEChannelRecorder:
             
             # Add to daily buffer
             completed_day = self.daily_buffer.add_samples(unix_time, resampled)
+            
+            # Track timing quality (per-minute stats and drift monitoring)
+            self._track_timing_quality(unix_time, len(resampled))
             
             # Write completed day to Digital RF
             if completed_day and HAS_DIGITAL_RF:
@@ -803,6 +872,16 @@ class GRAPERecorderManager:
             else:
                 status['error_channels'] += 1
             
+            # Timing quality metrics
+            timing_drift_mean = 0.0
+            timing_drift_std = 0.0
+            timing_drift_samples_count = len(getattr(rec, 'timing_drift_samples', []))
+            
+            if timing_drift_samples_count > 0:
+                drift_array = np.array(rec.timing_drift_samples)
+                timing_drift_mean = float(np.mean(drift_array))
+                timing_drift_std = float(np.std(drift_array))
+            
             # Per-channel status
             rec_status = {
                 'channel_name': rec.channel_name,
@@ -830,6 +909,12 @@ class GRAPERecorderManager:
                 'recording_duration_sec': int(elapsed),
                 'data_freshness_sec': data_freshness_sec,
                 'is_stale': is_stale,
+                'sync_state': getattr(rec, 'sync_state', 'unknown'),
+                
+                # Timing Quality
+                'timing_drift_mean_ms': round(timing_drift_mean, 2),
+                'timing_drift_std_ms': round(timing_drift_std, 2),
+                'timing_samples_count': timing_drift_samples_count,
                 
                 # Health
                 'health_status': health_status,
