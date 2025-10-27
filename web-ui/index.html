@@ -300,6 +300,29 @@
                     </div>
                 </div>
 
+                <!-- Active RTP Channels -->
+                <div class="card" style="margin-bottom: 20px;">
+                    <div class="card-header">
+                        <h3 class="card-title">📻 Active RTP Channels</h3>
+                    </div>
+                    <div id="channels-loading" style="text-align: center; color: #666; padding: 20px;">Loading channel information...</div>
+                    <div id="channels-table-container" style="display: none;">
+                        <table class="channels-table" style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background: #f8f9fa;">
+                                    <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">SSRC</th>
+                                    <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Frequency</th>
+                                    <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Rate</th>
+                                    <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Preset</th>
+                                    <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">SNR</th>
+                                    <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Address</th>
+                                </tr>
+                            </thead>
+                            <tbody id="channels-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <!-- Configurations List -->
                 <div id="configurations-view">
                     <h2>Your Configurations</h2>
@@ -1227,16 +1250,63 @@
             }
         }
 
-        // Auto-check daemon status every 10 seconds
-        setInterval(checkDaemonStatus, 10000);
+        // Load active RTP channels
+        async function loadActiveChannels() {
+            try {
+                const data = await apiRequest('/monitoring/channels');
+                const table = document.getElementById('channels-table-container');
+                const loading = document.getElementById('channels-loading');
+                const body = document.getElementById('channels-body');
+
+                loading.style.display = 'none';
+                table.style.display = 'block';
+
+                body.innerHTML = '';
+                data.channels.forEach(channel => {
+                    const row = document.createElement('tr');
+                    row.style.borderBottom = '1px solid #eee';
+
+                    // SNR styling
+                    let snrClass = 'color: #f44336;';
+                    if (channel.snr === '-inf') snrClass = 'color: #f44336;';
+                    else if (channel.snr.includes('N/A')) snrClass = 'color: #ff9800;';
+                    else if (parseFloat(channel.snr) > 10) snrClass = 'color: #4CAF50; font-weight: bold;';
+                    else if (parseFloat(channel.snr) > 0) snrClass = 'color: #ff9800;';
+
+                    row.innerHTML = `
+                        <td style="padding: 12px;"><code>${channel.ssrc}</code></td>
+                        <td style="padding: 12px;">${channel.frequency}</td>
+                        <td style="padding: 12px;">${channel.rate}</td>
+                        <td style="padding: 12px;">${channel.preset}</td>
+                        <td style="padding: 12px; ${snrClass}">${channel.snr}</td>
+                        <td style="padding: 12px;"><code style="font-size: 11px;">${channel.address}</code></td>
+                    `;
+                    body.appendChild(row);
+                });
+
+            } catch (error) {
+                console.error('Failed to load channels:', error);
+                document.getElementById('channels-loading').innerHTML =
+                    `<span style="color: red;">Error loading channels: ${error.message}</span>`;
+            }
+        }
+
+        // Auto-check daemon status and channels every 10 seconds
+        setInterval(() => {
+            checkDaemonStatus();
+            loadActiveChannels();
+        }, 10000);
 
         // Initialize
         if (document.getElementById('username').value === 'admin' && document.getElementById('password').value === 'admin') {
             login();
         }
         
-        // Check daemon status on page load
-        setTimeout(checkDaemonStatus, 1000);
+        // Check daemon status and load channels on page load
+        setTimeout(() => {
+            checkDaemonStatus();
+            loadActiveChannels();
+        }, 1000);
     </script>
 </body>
 </html>
