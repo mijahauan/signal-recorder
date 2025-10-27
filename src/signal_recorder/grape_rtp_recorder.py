@@ -349,20 +349,20 @@ class GRAPEChannelRecorder:
         self.channel_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize components
-        # Note: Radiod reports 12 kHz sample rate, but that's for REAL samples (I+Q combined)
-        # For complex I/Q: 12 kHz real = 6 kHz complex = 6000 I/Q pairs/sec
-        # Verified: 50 packets/sec × 120 complex samples/packet = 6000 complex samples/sec
-        self.resampler = Resampler(input_rate=6000, output_rate=10)
+        # Note: Radiod reports 16 kHz sample rate, but that's for REAL samples (I+Q combined)
+        # For complex I/Q: 16 kHz real / 2 = 8 kHz complex samples
+        # Resampler: 8 kHz complex IQ → 10 Hz output (GRAPE standard)
+        self.resampler = Resampler(input_rate=8000, output_rate=10)
         self.daily_buffer = DailyBuffer(sample_rate=10)
         
         # Sample accumulator (for efficient resampling)
         self.sample_accumulator = []
-        self.samples_per_packet = 600  # Accumulate ~100ms at 6 kHz before resampling
+        self.samples_per_packet = 800  # Accumulate ~100ms at 8 kHz before resampling
         
         # RTP timestamp tracking
         self.last_sequence = None
         self.last_timestamp = None
-        self.rtp_sample_rate = 12000  # RTP timestamp rate (real samples, I+Q combined)
+        self.rtp_sample_rate = 16000  # RTP timestamp rate (real samples, I+Q combined) - GRAPE standard
         
         # UTC synchronization (wsprdaemon-style)
         self.sync_state = 'startup'  # startup → armed → active
@@ -530,13 +530,14 @@ class GRAPEChannelRecorder:
                 expected_rtp_ts = self.expected_rtp_timestamp
                 actual_rtp_ts = header.timestamp
                 rtp_jump = (actual_rtp_ts - expected_rtp_ts) & 0xFFFFFFFF
-                expected_jump = gap_packets * 120  # 120 complex samples per packet
+                expected_jump = gap_packets * 160  # 160 real samples per packet @ 16 kHz (10ms packets)
                 
                 # If timestamp jump is reasonable, fill gap with silence
-                if abs(rtp_jump - expected_jump) < 240:  # Allow 2 packet tolerance
+                if abs(rtp_jump - expected_jump) < 320:  # Allow 2 packet tolerance (2*160)
                     # Insert silence for missing data
-                    gap_input_samples = gap_packets * 120  # At 6 kHz complex
-                    gap_output_samples = gap_input_samples // 600  # After 600:1 decimation
+                    # 160 real samples per packet @ 16 kHz = 80 complex I/Q samples per packet
+                    gap_input_samples = gap_packets * 80  # At 8 kHz complex
+                    gap_output_samples = gap_input_samples // 800  # After 800:1 decimation (8000→10)
                     
                     if gap_output_samples > 0:
                         silence = np.zeros(gap_output_samples, dtype=np.complex64)
@@ -546,18 +547,18 @@ class GRAPEChannelRecorder:
                         self.samples_received += gap_output_samples
                         
                         logger.warning(f"{self.channel_name}: Filled {gap_packets} dropped packets "
-                                     f"({gap_output_samples} output samples) with silence "
-                                     f"at {datetime.fromtimestamp(gap_time, timezone.utc).strftime('%H:%M:%S')}")
+                                     f"({gap_output_samples} output samples) with silence at "
+                                     f"{datetime.fromtimestamp(gap_time, timezone.utc).strftime('%H:%M:%S')}")
                 else:
-                    logger.error(f"{self.channel_name}: RTP timestamp jump ({rtp_jump}) inconsistent "
-                               f"with sequence gap ({gap_packets} packets, expected {expected_jump})")
+                    logger.warning(f"{self.channel_name}: {gap_packets} packets dropped but timestamp "
+                                 f"jump ({rtp_jump}) doesn't match expected ({expected_jump})")
         else:
             self.packets_dropped = 0
                 
         self.last_sequence = header.sequence
         self.last_timestamp = header.timestamp
-        # Update expected timestamp for next packet (120 complex samples at 12 kHz real = 120 samples)
-        self.expected_rtp_timestamp = (header.timestamp + 120) & 0xFFFFFFFF
+        # Update expected timestamp for next packet (160 real samples @ 16 kHz = 10ms packets)
+        self.expected_rtp_timestamp = (header.timestamp + 160) & 0xFFFFFFFF
         
         # Parse IQ samples (float32 I/Q pairs)
         num_samples = len(payload) // 8  # 2 floats per sample

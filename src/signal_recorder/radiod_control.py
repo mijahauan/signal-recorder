@@ -15,33 +15,34 @@ from .control_discovery import discover_channels_via_control
 logger = logging.getLogger(__name__)
 
 
-# Status types from ka9q-radio/src/status.h
+# Status types from ka9q-radio/status.h
 # These MUST match the enum values in status.h exactly!
+# Verified against https://github.com/phase4ground/ka9q-radio/blob/master/status.h
 class StatusType:
     EOL = 0
     COMMAND_TAG = 1
-    CMD_CNT = 2
+    COMMANDS = 2
     GPS_TIME = 3
     DESCRIPTION = 4
-    STATUS_DEST_SOCKET = 5
-    SETOPTS = 6
-    CLEAROPTS = 7
-    RTP_TIMESNAP = 8
-    UNUSED4 = 9
+    INPUT_DATA_SOURCE_SOCKET = 5
+    INPUT_DATA_DEST_SOCKET = 6
+    INPUT_METADATA_SOURCE_SOCKET = 7
+    INPUT_METADATA_DEST_SOCKET = 8
+    INPUT_SSRC = 9
     INPUT_SAMPRATE = 10
-    UNUSED6 = 11
-    UNUSED7 = 12
+    INPUT_METADATA_PACKETS = 11
+    INPUT_DATA_PACKETS = 12
     INPUT_SAMPLES = 13
-    UNUSED8 = 14
-    UNUSED9 = 15
+    INPUT_DROPS = 14
+    INPUT_DUPES = 15
     OUTPUT_DATA_SOURCE_SOCKET = 16
     OUTPUT_DATA_DEST_SOCKET = 17
-    OUTPUT_SSRC = 18  # Was 14 - WRONG!
+    OUTPUT_SSRC = 18
     OUTPUT_TTL = 19
-    OUTPUT_SAMPRATE = 20  # Was 16 - WRONG!
+    OUTPUT_SAMPRATE = 20
     OUTPUT_METADATA_PACKETS = 21
     OUTPUT_DATA_PACKETS = 22
-    OUTPUT_ERRORS = 23
+    AD_LEVEL = 23
     CALIBRATE = 24
     LNA_GAIN = 25
     MIXER_GAIN = 26
@@ -51,20 +52,50 @@ class StatusType:
     IQ_IMBALANCE = 30
     IQ_PHASE = 31
     DIRECT_CONVERSION = 32
-    RADIO_FREQUENCY = 33  # Was 25 - WRONG!
+    RADIO_FREQUENCY = 33
     FIRST_LO_FREQUENCY = 34
     SECOND_LO_FREQUENCY = 35
     SHIFT_FREQUENCY = 36
     DOPPLER_FREQUENCY = 37
     DOPPLER_FREQUENCY_RATE = 38
-    LOW_EDGE = 39  # Was 42 - WRONG!
-    HIGH_EDGE = 40  # Was 43 - WRONG!
+    LOW_EDGE = 39
+    HIGH_EDGE = 40
     KAISER_BETA = 41
     FILTER_BLOCKSIZE = 42
     FILTER_FIR_LENGTH = 43
-    FILTER2 = 44
-    # ... (skipping many intermediate values)
-    PRESET = 85  # Was 29 - COMPLETELY WRONG! (Corrected from 87 to 85)
+    NOISE_BANDWIDTH = 44
+    IF_POWER = 45
+    BASEBAND_POWER = 46
+    NOISE_DENSITY = 47
+    DEMOD_TYPE = 48
+    OUTPUT_CHANNELS = 49
+    INDEPENDENT_SIDEBAND = 50
+    PLL_ENABLE = 51
+    PLL_LOCK = 52
+    PLL_SQUARE = 53
+    PLL_PHASE = 54
+    ENVELOPE = 55
+    FM_FLAT = 56
+    DEMOD_SNR = 57
+    FREQ_OFFSET = 58
+    PEAK_DEVIATION = 59
+    PL_TONE = 60
+    AGC_ENABLE = 61  # Boolean, linear modes only
+    HEADROOM = 62
+    AGC_HANGTIME = 63
+    AGC_RECOVERY_RATE = 64
+    AGC_ATTACK_RATE = 65
+    GAIN = 66  # AM, Linear only
+    OUTPUT_LEVEL = 67
+    OUTPUT_SAMPLES = 68
+    OPUS_SOURCE_SOCKET = 69
+    OPUS_DEST_SOCKET = 70
+    OPUS_SSRC = 71
+    OPUS_TTL = 72
+    OPUS_BITRATE = 73
+    OPUS_PACKETS = 74
+    
+    # Note: PRESET not found in status.h enum - handled via modes.txt or DEMOD_TYPE
 
 
 # Command packet type
@@ -338,9 +369,10 @@ class RadiodControl:
         self.send_command(cmdbuffer)
     
     def create_and_configure_channel(self, ssrc: int, frequency_hz: float, 
-                                     preset: str = "iq", sample_rate: Optional[int] = None):
+                                     preset: str = "iq", sample_rate: Optional[int] = 16000,
+                                     agc_enable: int = 0, gain: float = 0.0):
         """
-        Create a new channel and configure it
+        Create a new channel and configure it (GRAPE-compatible)
         
         This sends ALL parameters in a SINGLE packet to radiod.
         This is critical because radiod creates the channel when it receives
@@ -349,29 +381,41 @@ class RadiodControl:
         Args:
             ssrc: SSRC for the new channel
             frequency_hz: Frequency in Hz
-            preset: Preset/mode (default: "iq")
-            sample_rate: Sample rate in Hz (optional)
+            preset: Demod type (default: "iq" = linear mode)
+            sample_rate: Sample rate in Hz (default: 16000 for GRAPE)
+            agc_enable: AGC enable (0=off, 1=on) (default: 0 for GRAPE)
+            gain: Manual gain setting in dB (default: 0.0 for GRAPE)
         """
-        logger.info(f"Creating channel: SSRC={ssrc}, freq={frequency_hz/1e6:.3f} MHz, preset={preset}")
+        logger.info(f"Creating GRAPE channel: SSRC={ssrc}, freq={frequency_hz/1e6:.3f} MHz, "
+                   f"demod={preset}, rate={sample_rate}Hz, agc={agc_enable}, gain={gain}dB")
         
         # Build a single command packet with ALL parameters
-        # This ensures radiod creates the channel with the correct preset
+        # This ensures radiod creates the channel with the correct settings
         cmdbuffer = bytearray()
         cmdbuffer.append(CMD)
         
-        # CRITICAL: Send preset FIRST, before frequency
-        # This ensures the channel is created with the correct mode
-        encode_string(cmdbuffer, StatusType.PRESET, preset)
-        logger.info(f"Setting preset for SSRC {ssrc} to {preset}")
+        # DEMOD_TYPE: 0=linear (IQ/USB/LSB/etc), 1=FM
+        # For IQ/GRAPE, we want linear mode
+        demod_type = 0 if preset.lower() in ['iq', 'usb', 'lsb', 'cw', 'am'] else 1
+        encode_int(cmdbuffer, StatusType.DEMOD_TYPE, demod_type)
+        logger.info(f"Setting DEMOD_TYPE for SSRC {ssrc} to {demod_type} ({preset})")
         
-        # Then frequency
+        # Frequency
         encode_double(cmdbuffer, StatusType.RADIO_FREQUENCY, frequency_hz)
         logger.info(f"Setting frequency for SSRC {ssrc} to {frequency_hz/1e6:.3f} MHz")
         
-        # Then sample rate if specified
+        # Sample rate (16000 Hz for GRAPE)
         if sample_rate:
             encode_int(cmdbuffer, StatusType.OUTPUT_SAMPRATE, sample_rate)
             logger.info(f"Setting sample rate for SSRC {ssrc} to {sample_rate} Hz")
+        
+        # AGC setting (disable for GRAPE - use fixed gain)
+        encode_int(cmdbuffer, StatusType.AGC_ENABLE, agc_enable)
+        logger.info(f"Setting AGC_ENABLE for SSRC {ssrc} to {agc_enable}")
+        
+        # Gain setting (0 dB for GRAPE)
+        encode_double(cmdbuffer, StatusType.GAIN, gain)
+        logger.info(f"Setting GAIN for SSRC {ssrc} to {gain} dB")
         
         # SSRC and command tag
         encode_int(cmdbuffer, StatusType.OUTPUT_SSRC, ssrc)
@@ -381,7 +425,7 @@ class RadiodControl:
         # Send the single packet
         self.send_command(cmdbuffer)
         
-        logger.info(f"Channel {ssrc} created and configured")
+        logger.info(f"GRAPE channel {ssrc} created and configured")
     
     def verify_channel(self, ssrc: int, expected_freq: Optional[float] = None) -> bool:
         """
