@@ -133,22 +133,21 @@ class RTPReceiver:
                 if not header:
                     continue
                 
-                # Log first packet from each SSRC for diagnostics
+                # Log first packet from each SSRC for diagnostics (DEBUG level)
                 if header.ssrc not in ssrc_seen:
                     ssrc_seen.add(header.ssrc)
                     has_callback = header.ssrc in self.callbacks
-                    logger.info(f"📡 First packet from SSRC {header.ssrc}: "
-                               f"seq={header.sequence}, ts={header.timestamp}, "
-                               f"payload={len(data)-12} bytes, callback={'YES' if has_callback else 'NO'}")
+                    logger.debug(f"First packet from SSRC {header.ssrc}: "
+                                f"seq={header.sequence}, ts={header.timestamp}, "
+                                f"payload={len(data)-12} bytes, callback={'YES' if has_callback else 'NO'}")
                     if not has_callback:
-                        logger.warning(f"⚠️  No callback registered for SSRC {header.ssrc}! "
-                                      f"Registered SSRCs: {list(self.callbacks.keys())}")
+                        logger.debug(f"No callback registered for SSRC {header.ssrc}. "
+                                    f"Registered SSRCs: {list(self.callbacks.keys())}")
                 
-                # Log periodic stats every 1000 packets
-                if packet_count % 1000 == 0:
-                    logger.info(f"📊 RTP stats: {packet_count} packets, "
-                               f"{len(ssrc_seen)} unique SSRCs, "
-                               f"{len(self.callbacks)} callbacks registered")
+                # Log periodic stats every 10000 packets (reduced verbosity)
+                if packet_count % 10000 == 0:
+                    logger.info(f"RTP receiver: {packet_count} packets, "
+                               f"{len(ssrc_seen)} SSRCs ({len(self.callbacks)} registered)")
                     
                 # Extract payload (after 12-byte header)
                 payload = data[12:]
@@ -597,22 +596,20 @@ class GRAPEChannelRecorder:
         self.sample_accumulator.append(iq_samples)
         accumulated_samples = sum(len(s) for s in self.sample_accumulator)
         
-        # Log every 100th packet to track input sample rate
-        if self.packets_received % 100 == 0:
-            logger.warning(f"{self.channel_name}: RTP packet #{self.packets_received}: received {len(iq_samples)} samples, accumulated={accumulated_samples}, total_samples_received={getattr(self, 'samples_received', 0)}")
+        # Verbose packet logging removed - use DEBUG level if needed
+        # Log only every 1000th packet at DEBUG level
+        if self.packets_received % 1000 == 0:
+            logger.debug(f"{self.channel_name}: RTP packet #{self.packets_received}: "
+                        f"{len(iq_samples)} samples, accumulated={accumulated_samples}")
         
         # Resample when we have enough samples
         if accumulated_samples >= self.samples_per_packet:
-            # Concatenate accumulated samples
-            all_samples = np.concatenate(self.sample_accumulator)
+            # Get all accumulated samples
+            all_samples = np.array(self.sample_accumulator, dtype=np.complex64)
             self.sample_accumulator = []
-            
-            logger.warning(f"{self.channel_name}: Accumulated {len(all_samples)} samples, sending to resampler")
             
             # Resample
             resampled = self.resampler.resample(all_samples)
-            
-            logger.warning(f"{self.channel_name}: Resampler returned {len(resampled)} samples (adding to daily buffer)")
             
             if len(resampled) == 0:
                 logger.warning(f"{self.channel_name}: ⚠️  Resampler returned 0 samples from {len(all_samples)} inputs!")
@@ -632,9 +629,7 @@ class GRAPEChannelRecorder:
                 self._write_digital_rf(day_date, day_data)
                 
             # Track received samples
-            old_count = self.samples_received
             self.samples_received += len(resampled)
-            logger.warning(f"{self.channel_name}: Added {len(resampled)} samples: {old_count} → {self.samples_received}")
             
     def _write_digital_rf(self, day_date, data: np.ndarray):
         """
