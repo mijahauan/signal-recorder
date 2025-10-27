@@ -720,9 +720,15 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
         console.log('Attempting to start daemon...');
         console.log('Command: python3 -m signal_recorder.cli daemon --config', configPath);
 
-        // Create log file for daemon output
+        // Create/open log file for daemon output
         const logFile = `/tmp/signal-recorder-daemon.log`;
-        const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+        let logFd;
+        try {
+          logFd = fs.openSync(logFile, 'a');
+        } catch (err) {
+          console.error('Failed to open log file:', err);
+          logFd = null;
+        }
 
         // Start daemon in background using spawn
         const daemonProcess = spawn(venvPython, ['-m', 'signal_recorder.cli', 'daemon', '--config', configPath], {
@@ -732,8 +738,15 @@ app.post('/api/monitoring/daemon-control', requireAuth, async (req, res) => {
             PYTHONPATH: srcPath
           },
           detached: true,
-          stdio: ['ignore', logStream, logStream]  // stdin ignored, stdout/stderr to log
+          stdio: logFd ? ['ignore', logFd, logFd] : 'ignore'  // stdin ignored, stdout/stderr to log file
         });
+
+        // Close the file descriptor after spawning
+        if (logFd) {
+          fs.close(logFd, (err) => {
+            if (err) console.error('Error closing log fd:', err);
+          });
+        }
 
         // Detach the process so it runs independently
         daemonProcess.unref();
