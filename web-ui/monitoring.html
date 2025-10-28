@@ -46,6 +46,44 @@
             font-weight: 600;
         }
         
+        /* Tab Navigation */
+        .tabs {
+            background: white;
+            padding: 0 30px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            display: flex;
+            gap: 5px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        .tab {
+            padding: 15px 25px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 15px;
+            color: #666;
+            transition: all 0.3s;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+        }
+        .tab:hover {
+            color: #333;
+            background: #f8f8f8;
+        }
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+            font-weight: 600;
+        }
+        
+        /* Tab Panels */
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
+        
         .content {
             padding: 20px;
         }
@@ -298,6 +336,97 @@
             background: #ffebee;
         }
         
+        /* Summary Table */
+        .summary-table-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin: 20px 0;
+            overflow-x: auto;
+        }
+        .summary-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .summary-table th {
+            background: #f8f9fa;
+            padding: 12px 8px;
+            text-align: left;
+            font-weight: 600;
+            color: #666;
+            border-bottom: 2px solid #dee2e6;
+            cursor: pointer;
+            user-select: none;
+        }
+        .summary-table th:hover {
+            background: #e9ecef;
+        }
+        .summary-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #e9ecef;
+        }
+        .summary-table tr:hover {
+            background: #f8f9fa;
+        }
+        .summary-table .channel-name {
+            font-weight: 500;
+            color: #333;
+        }
+        .summary-table .metric-good {
+            color: #4CAF50;
+            font-weight: 500;
+        }
+        .summary-table .metric-warning {
+            color: #ff9800;
+            font-weight: 500;
+        }
+        .summary-table .metric-error {
+            color: #f44336;
+            font-weight: 500;
+        }
+        
+        /* WWV Validation Cards */
+        .wwv-section {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin: 20px 0;
+        }
+        .wwv-section h2 {
+            margin: 0 0 15px 0;
+            font-size: 18px;
+            color: #333;
+        }
+        .wwv-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        .wwv-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .wwv-card h3 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .wwv-card .value {
+            font-size: 32px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .wwv-card .subtext {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+        
         /* Logs */
         .logs-container {
             background: white;
@@ -350,6 +479,12 @@
         </div>
     </nav>
 
+    <!-- Tab Navigation -->
+    <div class="tabs">
+        <button class="tab active" onclick="switchTab('dashboard')">📊 Dashboard</button>
+        <button class="tab" onclick="switchTab('channels')">📡 Channels</button>
+    </div>
+
     <div class="content">
         <div id="auth-error" style="display: none; background: #fee; color: #c00; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #fcc;">
             <strong>⚠️ Authentication Error:</strong> <span id="auth-error-message"></span>
@@ -368,6 +503,9 @@
             </div>
             <button class="btn-refresh" onclick="refreshAll()">🔄 Refresh Now</button>
         </div>
+
+        <!-- Dashboard Tab Panel -->
+        <div id="dashboard-panel" class="tab-panel active">
 
     <div class="health-summary" id="health-summary" style="display: none;">
         <div class="health-indicators">
@@ -445,7 +583,64 @@
         <div class="quality-details" id="quality-details"></div>
     </div>
 
-    <div id="channels-container" class="channels-grid"></div>
+    <!-- WWV Timing Validation Section -->
+    <div class="wwv-section" id="wwv-section" style="display: none;">
+        <h2>⏱️ WWV/CHU Timing Validation</h2>
+        <div class="wwv-grid">
+            <div class="wwv-card">
+                <h3>Tone Detection Rate</h3>
+                <div class="value" id="wwv-detection-rate">--</div>
+                <div class="subtext" id="wwv-detection-count">0/0 tones detected</div>
+            </div>
+            <div class="wwv-card">
+                <h3>Timing Error (Mean)</h3>
+                <div class="value" id="wwv-timing-mean">--</div>
+                <div class="subtext">vs UTC ground truth</div>
+            </div>
+            <div class="wwv-card">
+                <h3>Timing Precision (Std)</h3>
+                <div class="value" id="wwv-timing-std">--</div>
+                <div class="subtext">Jitter / variance</div>
+            </div>
+            <div class="wwv-card">
+                <h3>Max Error</h3>
+                <div class="value" id="wwv-timing-max">--</div>
+                <div class="subtext">Worst case deviation</div>
+            </div>
+        </div>
+        <div style="margin-top: 15px; padding: 12px; background: #f8f9fa; border-radius: 6px; font-size: 13px; color: #666;">
+            <strong>Ground Truth Validation:</strong> WWV broadcasts a 1200 Hz tone at the start of each UTC minute. This provides independent timing verification beyond RTP timestamps.
+        </div>
+    </div>
+
+    <!-- Channel Summary Table -->
+    <div class="summary-table-container" id="summary-table-container" style="display: none;">
+        <h2 style="margin: 0 0 15px 0; font-size: 18px; color: #333;">📡 Channel Summary</h2>
+        <table class="summary-table">
+            <thead>
+                <tr>
+                    <th onclick="sortTable(0)">Channel</th>
+                    <th onclick="sortTable(1)">Health</th>
+                    <th onclick="sortTable(2)">Comp%</th>
+                    <th onclick="sortTable(3)">Loss%</th>
+                    <th onclick="sortTable(4)">Drift (ms)</th>
+                    <th onclick="sortTable(5)">WWV Detect</th>
+                    <th onclick="sortTable(6)">WWV Error</th>
+                    <th onclick="sortTable(7)">Gaps</th>
+                </tr>
+            </thead>
+            <tbody id="summary-table-body">
+                <!-- Populated by JavaScript -->
+            </tbody>
+        </table>
+    </div>
+
+    </div> <!-- end dashboard-panel -->
+
+    <!-- Channels Tab Panel -->
+    <div id="channels-panel" class="tab-panel">
+        <div id="channels-container" class="channels-grid"></div>
+    </div>
 
     <div id="error-container"></div>
     <div id="loading-container" class="loading">Loading recording statistics...</div>
@@ -498,6 +693,50 @@
             }
 
             return await response.json();
+        }
+
+        // Tab switching
+        function switchTab(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Update tab panels
+            document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.remove('active'));
+            document.getElementById(tabName + '-panel').classList.add('active');
+        }
+
+        // Sort summary table
+        let sortColumn = -1;
+        let sortAscending = true;
+        
+        function sortTable(columnIndex) {
+            const table = document.getElementById('summary-table-body');
+            const rows = Array.from(table.getElementsByTagName('tr'));
+            
+            // Toggle sort direction if same column
+            if (sortColumn === columnIndex) {
+                sortAscending = !sortAscending;
+            } else {
+                sortColumn = columnIndex;
+                sortAscending = true;
+            }
+            
+            rows.sort((a, b) => {
+                let aVal = a.cells[columnIndex].textContent.trim();
+                let bVal = b.cells[columnIndex].textContent.trim();
+                
+                // Extract numbers from percentage/numeric strings
+                aVal = parseFloat(aVal.replace(/[^0-9.-]/g, '')) || aVal;
+                bVal = parseFloat(bVal.replace(/[^0-9.-]/g, '')) || bVal;
+                
+                if (aVal < bVal) return sortAscending ? -1 : 1;
+                if (aVal > bVal) return sortAscending ? 1 : -1;
+                return 0;
+            });
+            
+            // Re-append sorted rows
+            rows.forEach(row => table.appendChild(row));
         }
 
         function formatDuration(seconds) {
@@ -651,7 +890,107 @@
                     (stats.total_packets_received / stats.recording_duration_sec).toFixed(1) : 0;
                 document.getElementById('packets-per-sec').textContent = packetsPerSec + ' packets/sec';
 
-                // Render channel cards
+                // Process WWV timing validation data
+                let wwvChannels = [];
+                let totalDetections = 0;
+                let expectedDetections = 0;
+                let timingErrors = [];
+                
+                for (const [ssrc, rec] of Object.entries(stats.recorders)) {
+                    if (rec.timing_validation && rec.timing_validation.enabled) {
+                        wwvChannels.push(rec);
+                        totalDetections += rec.timing_validation.tone_detections_total;
+                        expectedDetections += rec.timing_validation.tone_detections_expected;
+                        if (rec.timing_validation.timing_error_mean_ms !== null) {
+                            timingErrors.push({
+                                mean: rec.timing_validation.timing_error_mean_ms,
+                                std: rec.timing_validation.timing_error_std_ms,
+                                max: rec.timing_validation.timing_error_max_ms
+                            });
+                        }
+                    }
+                }
+                
+                // Update WWV validation section if we have WWV channels
+                if (wwvChannels.length > 0) {
+                    document.getElementById('wwv-section').style.display = 'block';
+                    
+                    const detectionRate = expectedDetections > 0 ? (totalDetections / expectedDetections) : 0;
+                    document.getElementById('wwv-detection-rate').textContent = (detectionRate * 100).toFixed(0) + '%';
+                    document.getElementById('wwv-detection-count').textContent = `${totalDetections}/${expectedDetections} tones detected`;
+                    
+                    if (timingErrors.length > 0) {
+                        const avgMean = timingErrors.reduce((sum, e) => sum + e.mean, 0) / timingErrors.length;
+                        const avgStd = timingErrors.reduce((sum, e) => sum + e.std, 0) / timingErrors.length;
+                        const maxError = Math.max(...timingErrors.map(e => e.max));
+                        
+                        document.getElementById('wwv-timing-mean').textContent = avgMean.toFixed(1) + ' ms';
+                        document.getElementById('wwv-timing-std').textContent = '±' + avgStd.toFixed(1) + ' ms';
+                        document.getElementById('wwv-timing-max').textContent = maxError.toFixed(1) + ' ms';
+                    } else {
+                        document.getElementById('wwv-timing-mean').textContent = '--';
+                        document.getElementById('wwv-timing-std').textContent = '--';
+                        document.getElementById('wwv-timing-max').textContent = '--';
+                    }
+                } else {
+                    document.getElementById('wwv-section').style.display = 'none';
+                }
+                
+                // Populate summary table
+                document.getElementById('summary-table-container').style.display = 'block';
+                const tableBody = document.getElementById('summary-table-body');
+                tableBody.innerHTML = '';
+                
+                for (const [ssrc, rec] of Object.entries(stats.recorders)) {
+                    const row = document.createElement('tr');
+                    
+                    const healthIcon = rec.health_status === 'healthy' ? '🟢' :
+                                      rec.health_status === 'warning' ? '🟡' : '🔴';
+                    
+                    const completenessClass = rec.completeness_pct >= 99 ? 'metric-good' :
+                                             rec.completeness_pct >= 95 ? 'metric-warning' : 'metric-error';
+                    const lossClass = rec.packet_loss_pct <= 1 ? 'metric-good' :
+                                     rec.packet_loss_pct <= 5 ? 'metric-warning' : 'metric-error';
+                    
+                    // WWV detection column
+                    let wwvDetect = 'N/A';
+                    if (rec.timing_validation && rec.timing_validation.enabled) {
+                        const rate = rec.timing_validation.detection_rate * 100;
+                        const rateClass = rate >= 80 ? 'metric-good' : rate >= 50 ? 'metric-warning' : 'metric-error';
+                        wwvDetect = `<span class="${rateClass}">${rec.timing_validation.tone_detections_total}/${rec.timing_validation.tone_detections_expected}</span>`;
+                    }
+                    
+                    // WWV timing error column
+                    let wwvError = 'N/A';
+                    if (rec.timing_validation && rec.timing_validation.last_timing_error_ms !== null) {
+                        const error = Math.abs(rec.timing_validation.last_timing_error_ms);
+                        const errorClass = error <= 10 ? 'metric-good' : error <= 50 ? 'metric-warning' : 'metric-error';
+                        wwvError = `<span class="${errorClass}">${rec.timing_validation.last_timing_error_ms.toFixed(1)} ms</span>`;
+                    }
+                    
+                    // Discontinuities column
+                    let gapsText = '0';
+                    if (rec.discontinuities) {
+                        const gapClass = rec.discontinuities.gaps === 0 ? 'metric-good' : 
+                                        rec.discontinuities.gaps <= 5 ? 'metric-warning' : 'metric-error';
+                        gapsText = `<span class="${gapClass}">${rec.discontinuities.gaps}</span>`;
+                    }
+                    
+                    row.innerHTML = `
+                        <td class="channel-name">${rec.channel_name}</td>
+                        <td>${healthIcon}</td>
+                        <td class="${completenessClass}">${rec.completeness_pct.toFixed(1)}%</td>
+                        <td class="${lossClass}">${rec.packet_loss_pct.toFixed(2)}%</td>
+                        <td>${rec.timing_drift_mean_ms.toFixed(1)}±${rec.timing_drift_std_ms.toFixed(1)}</td>
+                        <td>${wwvDetect}</td>
+                        <td>${wwvError}</td>
+                        <td>${gapsText}</td>
+                    `;
+                    
+                    tableBody.appendChild(row);
+                }
+
+                // Render channel cards (for Channels tab)
                 const container = document.getElementById('channels-container');
                 container.innerHTML = '';
 
@@ -749,6 +1088,76 @@
                             </div>
                         </div>
                     `;
+                    
+                    // Add WWV timing validation metrics if available
+                    if (rec.timing_validation && rec.timing_validation.enabled) {
+                        const detectionRate = (rec.timing_validation.detection_rate * 100).toFixed(0);
+                        const rateClass = detectionRate >= 80 ? 'good' : detectionRate >= 50 ? 'warning' : 'error';
+                        
+                        card.innerHTML += `
+                            <div style="border-top: 1px solid #e0e0e0; margin: 15px 0; padding-top: 15px;">
+                                <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #667eea;">⏱️ WWV Timing Validation</h4>
+                                <div class="metrics-row">
+                                    <div class="metric">
+                                        <div class="metric-label">Tone Detection</div>
+                                        <div class="metric-value ${rateClass}">${rec.timing_validation.tone_detections_total}/${rec.timing_validation.tone_detections_expected} (${detectionRate}%)</div>
+                                    </div>
+                                    <div class="metric">
+                                        <div class="metric-label">Timing Error</div>
+                                        <div class="metric-value">${rec.timing_validation.timing_error_mean_ms !== null ? rec.timing_validation.timing_error_mean_ms.toFixed(1) + ' ms' : 'N/A'}</div>
+                                    </div>
+                                </div>
+                                <div class="metrics-row">
+                                    <div class="metric">
+                                        <div class="metric-label">Error Std Dev</div>
+                                        <div class="metric-value">${rec.timing_validation.timing_error_std_ms !== null ? '±' + rec.timing_validation.timing_error_std_ms.toFixed(1) + ' ms' : 'N/A'}</div>
+                                    </div>
+                                    <div class="metric">
+                                        <div class="metric-label">Last Detection</div>
+                                        <div class="metric-value" style="font-size: 11px;">${rec.timing_validation.last_detection_time ? new Date(rec.timing_validation.last_detection_time).toLocaleTimeString() : 'Never'}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    
+                    // Add discontinuity tracking metrics if available
+                    if (rec.discontinuities && rec.discontinuities.total_count > 0) {
+                        const gapClass = rec.discontinuities.gaps === 0 ? 'good' : 
+                                        rec.discontinuities.gaps <= 5 ? 'warning' : 'error';
+                        
+                        card.innerHTML += `
+                            <div style="border-top: 1px solid #e0e0e0; margin: 15px 0; padding-top: 15px;">
+                                <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #f44336;">⚠️ Data Discontinuities</h4>
+                                <div class="metrics-row">
+                                    <div class="metric">
+                                        <div class="metric-label">Total Events</div>
+                                        <div class="metric-value ${gapClass}">${rec.discontinuities.total_count}</div>
+                                    </div>
+                                    <div class="metric">
+                                        <div class="metric-label">Packet Gaps</div>
+                                        <div class="metric-value ${gapClass}">${rec.discontinuities.gaps}</div>
+                                    </div>
+                                </div>
+                                <div class="metrics-row">
+                                    <div class="metric">
+                                        <div class="metric-label">Largest Gap</div>
+                                        <div class="metric-value">${rec.discontinuities.largest_gap_samples} samples</div>
+                                    </div>
+                                    <div class="metric">
+                                        <div class="metric-label">Total Gap Time</div>
+                                        <div class="metric-value">${rec.discontinuities.total_gap_duration_ms.toFixed(1)} ms</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    } else if (rec.discontinuities) {
+                        card.innerHTML += `
+                            <div style="border-top: 1px solid #e0e0e0; margin: 15px 0; padding-top: 15px; text-align: center; color: #4CAF50; font-weight: 500;">
+                                ✅ No discontinuities detected
+                            </div>
+                        `;
+                    }
                     
                     container.appendChild(card);
                 }
