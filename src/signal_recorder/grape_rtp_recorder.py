@@ -935,8 +935,17 @@ class GRAPEChannelRecorder:
             
             # WWV tone detection path (parallel to main 10 Hz path)
             if self.tone_detector is not None:
-                # Resample to 1 kHz for tone detection
+                # DEBUG: Check input to tone resampler
+                if np.random.random() < 0.01:
+                    logger.debug(f"{self.channel_name}: TONE RESAMPLE INPUT: len={len(all_samples)}, min={np.min(np.abs(all_samples)):.6f}, max={np.max(np.abs(all_samples)):.6f}, has_nan={np.any(np.isnan(all_samples))}")
+                
+                # Resample to 3 kHz for tone detection
                 tone_resampled = self.tone_resampler.resample(all_samples)
+                
+                # DEBUG: Check output from tone resampler
+                if np.random.random() < 0.01:
+                    logger.debug(f"{self.channel_name}: TONE RESAMPLE OUTPUT: len={len(tone_resampled)}, min={np.min(np.abs(tone_resampled)) if len(tone_resampled) > 0 else 'empty'}, max={np.max(np.abs(tone_resampled)) if len(tone_resampled) > 0 else 'empty'}, has_nan={np.any(np.isnan(tone_resampled)) if len(tone_resampled) > 0 else 'N/A'}")
+                
                 self.tone_accumulator.append(tone_resampled)
                 
                 # Check for tone every 2 seconds worth of data
