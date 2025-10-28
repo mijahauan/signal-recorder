@@ -198,9 +198,9 @@ class WWVToneDetector:
         )
         
         # Detection parameters
-        self.envelope_threshold = 0.3  # Relative to max envelope
-        self.min_tone_duration_sec = 0.8  # WWV tone is 1 sec, require 80%
-        self.max_tone_duration_sec = 1.2  # Allow some tolerance
+        self.envelope_threshold = 0.05  # Relative to max envelope (lowered from 0.3 - signal is noisy)
+        self.min_tone_duration_sec = 0.5  # WWV tone is 1 sec, but allow weaker detection (relaxed from 0.8)
+        self.max_tone_duration_sec = 1.5  # Allow some tolerance (relaxed from 1.2)
         
         # State
         self.last_detection_time = 0
@@ -973,18 +973,28 @@ class GRAPEChannelRecorder:
                 # Check for tone every 2 seconds worth of data
                 accumulated_tone_samples = sum(len(s) for s in self.tone_accumulator)
                 if accumulated_tone_samples >= self.tone_samples_per_check:
-                    # Concatenate and detect
-                    tone_buffer = np.concatenate(self.tone_accumulator) if len(self.tone_accumulator) > 1 else self.tone_accumulator[0]
-                    self.tone_accumulator = []
+                    # Only check during narrow window around minute boundary
+                    # WWV tone occurs at :00-:01, so check :58-:03 (5 second window)
+                    seconds_in_minute = unix_time % 60
+                    in_detection_window = (seconds_in_minute >= 58) or (seconds_in_minute <= 3)
                     
-                    # DEBUG: Log tone detection attempts
-                    logger.debug(f"{self.channel_name}: Checking for WWV tone (buffer={len(tone_buffer)} samples @ 3 kHz, time={unix_time})")
-                    
-                    # Detect WWV tone
-                    detected, onset_idx, timing_error_ms = self.tone_detector.detect_tone_onset(
-                        tone_buffer,
-                        unix_time
-                    )
+                    if in_detection_window:
+                        # Concatenate and detect
+                        tone_buffer = np.concatenate(self.tone_accumulator) if len(self.tone_accumulator) > 1 else self.tone_accumulator[0]
+                        self.tone_accumulator = []
+                        
+                        # DEBUG: Log tone detection attempts
+                        logger.debug(f"{self.channel_name}: Checking for WWV tone (buffer={len(tone_buffer)} samples @ 3 kHz, time={unix_time}, seconds_in_minute={seconds_in_minute:.1f})")
+                        
+                        # Detect WWV tone
+                        detected, onset_idx, timing_error_ms = self.tone_detector.detect_tone_onset(
+                            tone_buffer,
+                            unix_time
+                        )
+                    else:
+                        # Outside detection window - discard accumulated samples and skip detection
+                        self.tone_accumulator = []
+                        continue  # Skip to next packet
                     
                     if detected:
                         self.wwv_detections += 1
