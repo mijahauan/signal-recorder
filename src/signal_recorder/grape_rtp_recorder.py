@@ -14,9 +14,10 @@ import logging
 import numpy as np
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Dict, Optional, Callable
-from dataclasses import dataclass
+from typing import Dict, Optional, Callable, List
+from dataclasses import dataclass, asdict
 from collections import deque
+from enum import Enum
 from .channel_manager import ChannelManager
 from scipy import signal as scipy_signal
 
@@ -33,6 +34,254 @@ logger = logging.getLogger(__name__)
 
 # Global stats file for web UI monitoring
 STATS_FILE = Path('/tmp/signal-recorder-stats.json')
+
+
+# ===== Discontinuity Tracking =====
+
+class DiscontinuityType(Enum):
+    """Types of discontinuities in the data stream"""
+    GAP = "gap"                    # Missed packets, samples lost
+    SYNC_ADJUST = "sync_adjust"    # Time sync adjustment
+    RTP_RESET = "rtp_reset"        # RTP sequence/timestamp reset
+    OVERFLOW = "overflow"          # Buffer overflow, samples dropped
+    UNDERFLOW = "underflow"        # Buffer underflow, samples duplicated
+
+
+@dataclass
+class TimingDiscontinuity:
+    """
+    Record of a timing discontinuity in the data stream
+    
+    Every gap, jump, or correction is logged for scientific provenance.
+    """
+    timestamp: float  # Unix time when discontinuity was detected
+    sample_index: int  # Sample number in output stream where discontinuity occurs
+    discontinuity_type: DiscontinuityType
+    magnitude_samples: int  # Positive = gap/forward jump, negative = overlap/backward jump
+    magnitude_ms: float  # Time equivalent in milliseconds
+    
+    # RTP packet info
+    rtp_sequence_before: Optional[int]
+    rtp_sequence_after: Optional[int]
+    rtp_timestamp_before: Optional[int]
+    rtp_timestamp_after: Optional[int]
+    
+    # Validation
+    wwv_tone_detected: bool  # Was this related to WWV tone detection?
+    explanation: str  # Human-readable description
+    
+    def to_dict(self):
+        """Convert to dictionary for JSON serialization"""
+        d = asdict(self)
+        d['discontinuity_type'] = self.discontinuity_type.value
+        return d
+
+
+class DiscontinuityTracker:
+    """Track and log all timing discontinuities in the data stream"""
+    
+    def __init__(self, channel_name: str):
+        self.channel_name = channel_name
+        self.discontinuities: List[TimingDiscontinuity] = []
+        
+    def add_discontinuity(self, disc: TimingDiscontinuity):
+        """Add a discontinuity to the log"""
+        self.discontinuities.append(disc)
+        
+        # Log based on severity
+        if disc.discontinuity_type == DiscontinuityType.GAP:
+            if abs(disc.magnitude_ms) > 100:
+                logger.warning(f"{self.channel_name}: {disc.explanation}")
+            else:
+                logger.info(f"{self.channel_name}: {disc.explanation}")
+        else:
+            logger.info(f"{self.channel_name}: {disc.explanation}")
+    
+    def get_stats(self):
+        """Get summary statistics"""
+        if not self.discontinuities:
+            return {
+                'total_count': 0,
+                'gaps': 0,
+                'sync_adjustments': 0,
+                'rtp_resets': 0,
+                'total_samples_affected': 0,
+                'total_gap_duration_ms': 0,
+                'largest_gap_samples': 0,
+                'last_discontinuity': None
+            }
+        
+        gaps = [d for d in self.discontinuities if d.discontinuity_type == DiscontinuityType.GAP]
+        sync_adjusts = [d for d in self.discontinuities if d.discontinuity_type == DiscontinuityType.SYNC_ADJUST]
+        rtp_resets = [d for d in self.discontinuities if d.discontinuity_type == DiscontinuityType.RTP_RESET]
+        
+        total_samples = sum(abs(d.magnitude_samples) for d in self.discontinuities)
+        total_gap_ms = sum(d.magnitude_ms for d in gaps if d.magnitude_samples > 0)
+        largest_gap = max((abs(d.magnitude_samples) for d in gaps), default=0)
+        
+        return {
+            'total_count': len(self.discontinuities),
+            'gaps': len(gaps),
+            'sync_adjustments': len(sync_adjusts),
+            'rtp_resets': len(rtp_resets),
+            'total_samples_affected': total_samples,
+            'total_gap_duration_ms': total_gap_ms,
+            'largest_gap_samples': largest_gap,
+            'last_discontinuity': self.discontinuities[-1].to_dict() if self.discontinuities else None
+        }
+    
+    def export_to_csv(self, output_path):
+        """Export discontinuity log to CSV for analysis"""
+        import csv
+        
+        with open(output_path, 'w', newline='') as f:
+            if not self.discontinuities:
+                return
+            
+            fieldnames = [
+                'timestamp', 'sample_index', 'type', 
+                'magnitude_samples', 'magnitude_ms',
+                'rtp_seq_before', 'rtp_seq_after',
+                'rtp_ts_before', 'rtp_ts_after',
+                'wwv_validated', 'explanation'
+            ]
+            
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for disc in self.discontinuities:
+                row = {
+                    'timestamp': disc.timestamp,
+                    'sample_index': disc.sample_index,
+                    'type': disc.discontinuity_type.value,
+                    'magnitude_samples': disc.magnitude_samples,
+                    'magnitude_ms': disc.magnitude_ms,
+                    'rtp_seq_before': disc.rtp_sequence_before,
+                    'rtp_seq_after': disc.rtp_sequence_after,
+                    'rtp_ts_before': disc.rtp_timestamp_before,
+                    'rtp_ts_after': disc.rtp_timestamp_after,
+                    'wwv_validated': disc.wwv_tone_detected,
+                    'explanation': disc.explanation
+                }
+                writer.writerow(row)
+        
+        logger.info(f"{self.channel_name}: Exported {len(self.discontinuities)} discontinuities to {output_path}")
+
+
+# ===== WWV/CHU Tone Detection =====
+
+class WWVToneDetector:
+    """
+    Detect WWV 1200 Hz tone onset for timing validation
+    
+    WWV broadcasts a 1200 Hz tone for 1 second at the start of each minute (UTC).
+    This provides an independent ground truth for timing validation.
+    """
+    
+    def __init__(self, sample_rate=1000):
+        """
+        Initialize detector
+        
+        Args:
+            sample_rate: Input sample rate (Hz), should be ≥ 2.4 kHz for 1200 Hz
+        """
+        self.sample_rate = sample_rate
+        
+        # Design bandpass filter for 1200 Hz ± 50 Hz
+        self.sos = scipy_signal.butter(
+            N=4,
+            Wn=[1150, 1250],
+            btype='band',
+            fs=sample_rate,
+            output='sos'
+        )
+        
+        # Detection parameters
+        self.envelope_threshold = 0.3  # Relative to max envelope
+        self.min_tone_duration_sec = 0.8  # WWV tone is 1 sec, require 80%
+        self.max_tone_duration_sec = 1.2  # Allow some tolerance
+        
+        # State
+        self.last_detection_time = 0
+        self.detection_count = 0
+        
+    def detect_tone_onset(self, iq_samples, current_unix_time):
+        """
+        Detect 1200 Hz tone onset in IQ sample buffer
+        
+        Args:
+            iq_samples: Complex IQ samples (numpy array)
+            current_unix_time: Unix timestamp corresponding to first sample
+            
+        Returns:
+            tuple: (detected: bool, onset_sample_idx: int or None, timing_error_ms: float or None)
+        """
+        # 1. Bandpass filter around 1200 Hz
+        magnitude = np.abs(iq_samples)
+        filtered = scipy_signal.sosfiltfilt(self.sos, magnitude)
+        
+        # 2. Envelope detection
+        analytic = scipy_signal.hilbert(filtered)
+        envelope = np.abs(analytic)
+        
+        # Normalize envelope
+        max_envelope = np.max(envelope)
+        if max_envelope > 0:
+            envelope = envelope / max_envelope
+        
+        # 3. Threshold detection
+        above_threshold = envelope > self.envelope_threshold
+        
+        # Find edges (transitions)
+        edges = np.diff(above_threshold.astype(int))
+        rising_edges = np.where(edges == 1)[0]
+        falling_edges = np.where(edges == -1)[0]
+        
+        if len(rising_edges) == 0 or len(falling_edges) == 0:
+            return False, None, None
+        
+        # Take first rising edge as onset candidate
+        onset_idx = rising_edges[0]
+        
+        # Find corresponding falling edge
+        offset_candidates = falling_edges[falling_edges > onset_idx]
+        if len(offset_candidates) == 0:
+            # Tone continues beyond buffer
+            return False, None, None
+        
+        offset_idx = offset_candidates[0]
+        
+        # 4. Validate tone duration
+        tone_duration_samples = offset_idx - onset_idx
+        tone_duration_sec = tone_duration_samples / self.sample_rate
+        
+        if tone_duration_sec < self.min_tone_duration_sec:
+            return False, None, None  # Too short
+        
+        if tone_duration_sec > self.max_tone_duration_sec:
+            return False, None, None  # Too long
+        
+        # 5. Calculate timing error
+        # Onset should occur at a minute boundary (0 seconds past the minute)
+        onset_time = current_unix_time + (onset_idx / self.sample_rate)
+        
+        # Get the minute boundary
+        minute_boundary = int(onset_time / 60) * 60
+        
+        # Calculate error (how far from the minute boundary)
+        timing_error_sec = onset_time - minute_boundary
+        
+        # Handle case where onset is near the end of previous minute
+        if timing_error_sec > 30:
+            timing_error_sec -= 60  # It was actually late in previous minute
+        
+        timing_error_ms = timing_error_sec * 1000
+        
+        # Update state
+        self.last_detection_time = onset_time
+        self.detection_count += 1
+        
+        return True, onset_idx, timing_error_ms
 
 
 @dataclass
@@ -398,6 +647,23 @@ class GRAPEChannelRecorder:
         self.timing_drift_samples = []  # Track timing drift over time
         self.last_timing_report = None  # Last timing quality report time
         
+        # Discontinuity tracking (Phase 1)
+        self.discontinuity_tracker = DiscontinuityTracker(channel_name)
+        
+        # WWV tone detection (Phase 1) - detect 1200 Hz tone for timing validation
+        self.is_wwv_channel = 'WWV' in channel_name.upper()
+        if self.is_wwv_channel:
+            # Create 1 kHz resampler for tone detection (parallel to main 10 Hz path)
+            self.tone_resampler = Resampler(input_rate=8000, output_rate=1000)
+            self.tone_detector = WWVToneDetector(sample_rate=1000)
+            self.tone_accumulator = []  # Buffer for tone detection
+            self.tone_samples_per_check = 2000  # Check for tone every 2 seconds at 1 kHz
+            self.wwv_detections = 0
+            self.wwv_timing_errors = []  # Track timing errors from WWV tone
+            logger.info(f"{channel_name}: WWV tone detection ENABLED (1200 Hz)")
+        else:
+            self.tone_detector = None
+        
         logger.info(f"Channel recorder initialized: {channel_name} (SSRC {ssrc}, {frequency_hz/1e6:.2f} MHz)")
         logger.info(f"{channel_name}: Sync state = startup, waiting for UTC boundary alignment")
     
@@ -571,6 +837,22 @@ class GRAPEChannelRecorder:
                         self.daily_buffer.add_samples(gap_time, silence)
                         self.samples_received += gap_output_samples
                         
+                        # Track discontinuity
+                        discontinuity = TimingDiscontinuity(
+                            timestamp=time.time(),
+                            sample_index=self.samples_received - gap_output_samples,
+                            discontinuity_type=DiscontinuityType.GAP,
+                            magnitude_samples=gap_output_samples,
+                            magnitude_ms=(gap_output_samples / 10.0) * 1000,  # 10 Hz output rate
+                            rtp_sequence_before=self.last_sequence,
+                            rtp_sequence_after=header.sequence,
+                            rtp_timestamp_before=expected_rtp_ts,
+                            rtp_timestamp_after=actual_rtp_ts,
+                            wwv_tone_detected=False,
+                            explanation=f"Missed {gap_packets} packets, {gap_output_samples} samples lost"
+                        )
+                        self.discontinuity_tracker.add_discontinuity(discontinuity)
+                        
                         logger.warning(f"{self.channel_name}: Filled {gap_packets} dropped packets "
                                      f"({gap_output_samples} output samples) with silence at "
                                      f"{datetime.fromtimestamp(gap_time, timezone.utc).strftime('%H:%M:%S')}")
@@ -611,7 +893,7 @@ class GRAPEChannelRecorder:
             all_samples = np.concatenate(self.sample_accumulator) if len(self.sample_accumulator) > 1 else self.sample_accumulator[0]
             self.sample_accumulator = []
             
-            # Resample
+            # Main path: Resample to 10 Hz for Digital RF
             resampled = self.resampler.resample(all_samples)
             
             if len(resampled) == 0:
@@ -619,6 +901,37 @@ class GRAPEChannelRecorder:
             
             # Calculate Unix time from RTP timestamp (precise, not system clock)
             unix_time = self._calculate_sample_time(header.timestamp)
+            
+            # WWV tone detection path (parallel to main 10 Hz path)
+            if self.tone_detector is not None:
+                # Resample to 1 kHz for tone detection
+                tone_resampled = self.tone_resampler.resample(all_samples)
+                self.tone_accumulator.append(tone_resampled)
+                
+                # Check for tone every 2 seconds worth of data
+                accumulated_tone_samples = sum(len(s) for s in self.tone_accumulator)
+                if accumulated_tone_samples >= self.tone_samples_per_check:
+                    # Concatenate and detect
+                    tone_buffer = np.concatenate(self.tone_accumulator) if len(self.tone_accumulator) > 1 else self.tone_accumulator[0]
+                    self.tone_accumulator = []
+                    
+                    # Detect WWV tone
+                    detected, onset_idx, timing_error_ms = self.tone_detector.detect_tone_onset(
+                        tone_buffer,
+                        unix_time
+                    )
+                    
+                    if detected:
+                        self.wwv_detections += 1
+                        self.wwv_timing_errors.append(timing_error_ms)
+                        
+                        # Keep only last 60 detections for statistics
+                        if len(self.wwv_timing_errors) > 60:
+                            self.wwv_timing_errors.pop(0)
+                        
+                        logger.info(f"{self.channel_name}: WWV tone detected! "
+                                   f"Timing error: {timing_error_ms:+.1f} ms "
+                                   f"(detection #{self.wwv_detections})")
             
             # Add to daily buffer
             completed_day = self.daily_buffer.add_samples(unix_time, resampled)
@@ -999,9 +1312,42 @@ class GRAPERecorderManager:
                 'health_message': health_message
             }
             
-            # Add gap information if available
-            if hasattr(rec, 'metadata_gen'):
-                rec_status['gap_count'] = len(getattr(rec.metadata_gen, 'gaps', []))
+            # Discontinuity tracking stats
+            if hasattr(rec, 'discontinuity_tracker'):
+                disc_stats = rec.discontinuity_tracker.get_stats()
+                rec_status['discontinuities'] = disc_stats
+            
+            # WWV timing validation stats
+            if hasattr(rec, 'tone_detector') and rec.tone_detector is not None:
+                wwv_timing_error_mean = 0.0
+                wwv_timing_error_std = 0.0
+                wwv_timing_error_max = 0.0
+                
+                if hasattr(rec, 'wwv_timing_errors') and len(rec.wwv_timing_errors) > 0:
+                    error_array = np.array(rec.wwv_timing_errors)
+                    wwv_timing_error_mean = float(np.mean(error_array))
+                    wwv_timing_error_std = float(np.std(error_array))
+                    wwv_timing_error_max = float(np.max(np.abs(error_array)))
+                
+                # Calculate expected detections (1 per minute if recording for >1 minute)
+                expected_detections = max(1, int(elapsed / 60))
+                detection_rate = (getattr(rec, 'wwv_detections', 0) / expected_detections) if expected_detections > 0 else 0.0
+                
+                rec_status['timing_validation'] = {
+                    'enabled': True,
+                    'tone_type': 'wwv_1200hz',
+                    'tone_detections_total': getattr(rec, 'wwv_detections', 0),
+                    'tone_detections_expected': expected_detections,
+                    'detection_rate': round(detection_rate, 2),
+                    'timing_error_mean_ms': round(wwv_timing_error_mean, 2),
+                    'timing_error_std_ms': round(wwv_timing_error_std, 2),
+                    'timing_error_max_ms': round(wwv_timing_error_max, 2),
+                    'last_detection_time': datetime.fromtimestamp(
+                        getattr(rec.tone_detector, 'last_detection_time', 0),
+                        timezone.utc
+                    ).isoformat() if getattr(rec.tone_detector, 'last_detection_time', 0) > 0 else None,
+                    'last_timing_error_ms': round(rec.wwv_timing_errors[-1], 2) if len(rec.wwv_timing_errors) > 0 else None
+                }
             
             status['recorders'][ssrc] = rec_status
         

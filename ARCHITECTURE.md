@@ -111,7 +111,7 @@ GRAPE analyzes **long-term timing variations** in WWV/CHU signals. The 10 Hz rat
 
 ### 2. Timing & Quality Monitoring
 
-The system tracks three critical metrics:
+The system tracks comprehensive quality metrics with **independent WWV/CHU timing validation**:
 
 #### Completeness
 ```
@@ -128,7 +128,7 @@ The system tracks three critical metrics:
 - Detected via RTP sequence number gaps
 - Indicates network congestion or multicast issues
 
-#### Timing Drift
+#### Timing Drift (RTP vs System Clock)
 ```
 RTP timestamp - system clock offset
 ```
@@ -136,10 +136,64 @@ RTP timestamp - system clock offset
 - Mean ± std deviation tracked
 - Should be < ±50 ms for healthy streams
 
-These metrics are:
+#### WWV/CHU Timing Validation (NEW - Phase 1)
+**Ground truth validation using time-standard signals:**
+
+WWV broadcasts a **1200 Hz tone for 1 second** at the start of each UTC minute. CHU broadcasts a **60 Hz tone**. We use these as independent timing references.
+
+**Parallel Processing:**
+```
+RTP Stream (16 kHz IQ)
+  ├─→ Main: 16 kHz → 10 Hz (Digital RF)
+  └─→ Tone: 16 kHz → 1 kHz (WWV detection)
+            ↓
+      1200 Hz bandpass filter
+            ↓
+      Envelope detection & onset timing
+            ↓
+      Compare to UTC minute boundary
+```
+
+**Metrics Tracked:**
+- **Tone detection rate**: % of expected tones detected
+- **Timing error**: RTP timestamp vs WWV tone onset (ms)
+- **Mean ± std**: Statistical distribution of timing errors
+- **Last detection**: Timestamp of most recent tone
+
+**Benefits:**
+- ✅ Independent of RTP/system clocks
+- ✅ Validates timing accuracy against UTC ground truth
+- ✅ Detects clock drift before it becomes significant
+- ✅ Scientific proof of data quality
+
+**Implementation:** See [docs/TIMING_VALIDATION.md](docs/TIMING_VALIDATION.md)
+
+#### Discontinuity Tracking (NEW - Phase 1)
+**Complete provenance of timing discontinuities:**
+
+Every gap, sync adjustment, or timing jump is logged with:
+- Sample index where it occurred
+- Magnitude (samples and milliseconds)
+- RTP sequence/timestamp before and after
+- Explanation (human-readable)
+- WWV validation flag
+
+**Discontinuity Types:**
+- **GAP**: Missed packets, samples lost/filled with zeros
+- **SYNC_ADJUST**: Time sync correction (future: based on WWV tone)
+- **RTP_RESET**: RTP sequence or timestamp reset
+- **OVERFLOW/UNDERFLOW**: Buffer issues
+
+**Export Formats:**
+- Embedded in Digital RF metadata (per-sample provenance)
+- JSON stats file (real-time monitoring)
+- CSV export (offline analysis)
+
+All quality metrics are:
 - Logged to `/tmp/signal-recorder-stats.json`
 - Displayed in real-time web UI
 - Used for health status (🟢/🟡/🔴)
+- Exportable for scientific analysis
 
 ---
 
