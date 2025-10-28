@@ -217,11 +217,16 @@ class WWVToneDetector:
         Returns:
             tuple: (detected: bool, onset_sample_idx: int or None, timing_error_ms: float or None)
         """
-        # 1. Bandpass filter around 1200 Hz
-        magnitude = np.abs(iq_samples)
-        filtered = scipy_signal.sosfiltfilt(self.sos, magnitude)
+        # 1. AM demodulation: extract envelope (audio) from IQ
+        am_audio = np.abs(iq_samples)
         
-        # 2. Envelope detection
+        # Remove DC component to get just the modulation
+        am_audio = am_audio - np.mean(am_audio)
+        
+        # 2. Bandpass filter around 1200 Hz in the demodulated audio
+        filtered = scipy_signal.sosfiltfilt(self.sos, am_audio)
+        
+        # 3. Envelope detection of the 1200 Hz component
         analytic = scipy_signal.hilbert(filtered)
         envelope = np.abs(analytic)
         
@@ -233,12 +238,20 @@ class WWVToneDetector:
         # 3. Threshold detection
         above_threshold = envelope > self.envelope_threshold
         
+        # DEBUG: Log detection attempts periodically
+        if np.random.random() < 0.01:  # 1% sampling to avoid log spam
+            above_count = np.sum(above_threshold)
+            logger.debug(f"WWV detector: max_envelope={max_envelope:.6f}, above_threshold={above_count}/{len(above_threshold)} samples ({above_count/len(above_threshold)*100:.1f}%)")
+        
         # Find edges (transitions)
         edges = np.diff(above_threshold.astype(int))
         rising_edges = np.where(edges == 1)[0]
         falling_edges = np.where(edges == -1)[0]
         
         if len(rising_edges) == 0 or len(falling_edges) == 0:
+            # DEBUG: Log why detection failed
+            if np.random.random() < 0.01:  # 1% sampling
+                logger.debug(f"WWV detector: No edges found (rising={len(rising_edges)}, falling={len(falling_edges)})")
             return False, None, None
         
         # Take first rising edge as onset candidate
@@ -916,6 +929,9 @@ class GRAPEChannelRecorder:
                     # Concatenate and detect
                     tone_buffer = np.concatenate(self.tone_accumulator) if len(self.tone_accumulator) > 1 else self.tone_accumulator[0]
                     self.tone_accumulator = []
+                    
+                    # DEBUG: Log tone detection attempts
+                    logger.debug(f"{self.channel_name}: Checking for WWV tone (buffer={len(tone_buffer)} samples @ 3 kHz, time={unix_time})")
                     
                     # Detect WWV tone
                     detected, onset_idx, timing_error_ms = self.tone_detector.detect_tone_onset(

@@ -32,8 +32,16 @@ def main():
     parser.add_argument('command', choices=['daemon', 'discover', 'create-channels'], help='Command to run')
     parser.add_argument('--config', '-c', help='Configuration file path')
     parser.add_argument('--radiod', '-r', help='RadioD address for discovery')
+    parser.add_argument('--debug', '-d', action='store_true', help='Enable DEBUG logging')
     
     args = parser.parse_args()
+    
+    # Update logging level if debug flag is set
+    if args.debug:
+        root_logger.setLevel(logging.DEBUG)
+        for handler in root_logger.handlers:
+            handler.setLevel(logging.DEBUG)
+        logging.info("DEBUG logging enabled")
     
     if args.command == 'daemon':
         # Start daemon mode
