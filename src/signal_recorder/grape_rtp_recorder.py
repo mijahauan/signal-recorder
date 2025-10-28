@@ -220,15 +220,31 @@ class WWVToneDetector:
         # 1. AM demodulation: extract envelope (audio) from IQ
         am_audio = np.abs(iq_samples)
         
+        # DEBUG: Check input
+        if np.random.random() < 0.01:
+            logger.debug(f"WWV detector step 1: IQ samples min={np.min(np.abs(iq_samples)):.6f}, max={np.max(np.abs(iq_samples)):.6f}, mean={np.mean(am_audio):.6f}")
+        
         # Remove DC component to get just the modulation
-        am_audio = am_audio - np.mean(am_audio)
+        am_audio_dc_removed = am_audio - np.mean(am_audio)
+        
+        # DEBUG: Check after DC removal
+        if np.random.random() < 0.01:
+            logger.debug(f"WWV detector step 2: After DC removal min={np.min(am_audio_dc_removed):.6f}, max={np.max(am_audio_dc_removed):.6f}")
         
         # 2. Bandpass filter around 1200 Hz in the demodulated audio
-        filtered = scipy_signal.sosfiltfilt(self.sos, am_audio)
+        filtered = scipy_signal.sosfiltfilt(self.sos, am_audio_dc_removed)
+        
+        # DEBUG: Check after filtering
+        if np.random.random() < 0.01:
+            logger.debug(f"WWV detector step 3: After filter min={np.min(filtered):.6f}, max={np.max(filtered):.6f}, has_nan={np.any(np.isnan(filtered))}")
         
         # 3. Envelope detection of the 1200 Hz component
         analytic = scipy_signal.hilbert(filtered)
         envelope = np.abs(analytic)
+        
+        # DEBUG: Check envelope
+        if np.random.random() < 0.01:
+            logger.debug(f"WWV detector step 4: Envelope min={np.min(envelope):.6f}, max={np.max(envelope):.6f}, has_nan={np.any(np.isnan(envelope))}")
         
         # Normalize envelope
         max_envelope = np.max(envelope)
