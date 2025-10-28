@@ -1187,6 +1187,12 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
           if (!line.trim() || line.includes('SSRC') || line.includes('---') || line.includes('@')) {
             continue;
           }
+          
+          // Stop parsing when we hit the prompt (before control re-displays the list)
+          if (line.includes('choose SSRC') || line.includes('hit return')) {
+            console.log('Reached end of first channel list, stopping parse');
+            break;
+          }
 
           const parts = line.trim().split(/\s+/);
           if (parts.length >= 6) {
