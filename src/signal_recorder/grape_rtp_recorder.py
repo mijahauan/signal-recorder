@@ -285,6 +285,10 @@ class WWVToneDetector:
         tone_duration_samples = offset_idx - onset_idx
         tone_duration_sec = tone_duration_samples / self.sample_rate
         
+        # DEBUG: Always log duration validation (not sampled - need to see rejections!)
+        if tone_duration_sec < self.min_tone_duration_sec or tone_duration_sec > self.max_tone_duration_sec:
+            logger.debug(f"WWV detector: REJECTED duration={tone_duration_sec:.3f}s (need {self.min_tone_duration_sec}-{self.max_tone_duration_sec}s), edges found: rising={len(rising_edges)}, falling={len(falling_edges)}")
+        
         if tone_duration_sec < self.min_tone_duration_sec:
             return False, None, None  # Too short
         
