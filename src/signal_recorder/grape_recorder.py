@@ -143,6 +143,36 @@ class GRAPERecorderManager:
         else:
             print("\n⚠️  Some channels failed to create. Check logs above.")
             return False
+    
+    def _start_watchdog(self):
+        """Start the watchdog process to monitor daemon status"""
+        import subprocess
+        from pathlib import Path
+        
+        # Find watchdog script
+        script_dir = Path(__file__).parent.parent.parent  # Go up to project root
+        watchdog_script = script_dir / "test-watchdog.py"
+        
+        if not watchdog_script.exists():
+            print(f"⚠️  Watchdog script not found at {watchdog_script}")
+            print("   Web UI status monitoring may not work correctly")
+            return None
+        
+        try:
+            # Start watchdog as a separate process
+            import sys
+            watchdog_process = subprocess.Popen(
+                [sys.executable, str(watchdog_script)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True  # Detach from parent
+            )
+            print(f"✓ Watchdog started (PID: {watchdog_process.pid})")
+            return watchdog_process
+        except Exception as e:
+            print(f"⚠️  Failed to start watchdog: {e}")
+            print("   Web UI status monitoring may not work correctly")
+            return None
         
     def run(self):
         """Run the recorder daemon"""
@@ -150,8 +180,12 @@ class GRAPERecorderManager:
         print("Press Ctrl+C to stop...")
 
         self.running = True
+        watchdog_process = None
         
         try:
+            # Start watchdog process
+            watchdog_process = self._start_watchdog()
+            
             from .grape_rtp_recorder import GRAPERecorderManager as RTPRecorderManager
             
             # Initialize RTP recorder manager
@@ -245,6 +279,20 @@ class GRAPERecorderManager:
                     rtp_recorder.stop()
             except Exception as e:
                 print(f"Error during shutdown: {e}")
+            
+            # Stop watchdog
+            if watchdog_process:
+                try:
+                    print("Stopping watchdog...")
+                    watchdog_process.terminate()
+                    watchdog_process.wait(timeout=5)
+                except Exception as e:
+                    print(f"Error stopping watchdog: {e}")
+                    try:
+                        watchdog_process.kill()
+                    except:
+                        pass
+            
             print("Daemon stopped")
             
     def stop(self):
