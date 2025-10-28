@@ -991,22 +991,21 @@ class GRAPEChannelRecorder:
                             tone_buffer,
                             unix_time
                         )
+                        
+                        if detected:
+                            self.wwv_detections += 1
+                            self.wwv_timing_errors.append(timing_error_ms)
+                            
+                            # Keep only last 60 detections for statistics
+                            if len(self.wwv_timing_errors) > 60:
+                                self.wwv_timing_errors.pop(0)
+                            
+                            logger.info(f"{self.channel_name}: WWV tone detected! "
+                                       f"Timing error: {timing_error_ms:+.1f} ms "
+                                       f"(detection #{self.wwv_detections})")
                     else:
-                        # Outside detection window - discard accumulated samples and skip detection
+                        # Outside detection window - discard accumulated samples
                         self.tone_accumulator = []
-                        continue  # Skip to next packet
-                    
-                    if detected:
-                        self.wwv_detections += 1
-                        self.wwv_timing_errors.append(timing_error_ms)
-                        
-                        # Keep only last 60 detections for statistics
-                        if len(self.wwv_timing_errors) > 60:
-                            self.wwv_timing_errors.pop(0)
-                        
-                        logger.info(f"{self.channel_name}: WWV tone detected! "
-                                   f"Timing error: {timing_error_ms:+.1f} ms "
-                                   f"(detection #{self.wwv_detections})")
             
             # Add to daily buffer
             completed_day = self.daily_buffer.add_samples(unix_time, resampled)
