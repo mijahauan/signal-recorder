@@ -1251,6 +1251,10 @@
                             <div><div style="color: #666; font-size: 11px;">SAMPLE RATE</div><div style="font-weight: bold; font-size: 15px;">${rec.samples_per_sec.toFixed(1)}/s</div></div>
                             <div><div style="color: #666; font-size: 11px;">FILES</div><div style="font-weight: bold; font-size: 15px;">${rec.file_count}</div></div>
                             <div><div style="color: #666; font-size: 11px;">DATA</div><div style="font-weight: bold; font-size: 15px;">${rec.total_size_mb.toFixed(1)} MB</div></div>
+                            <div><div style="color: #666; font-size: 11px;">SYNC STATE</div><div style="font-weight: bold; font-size: 15px;">${rec.sync_state || 'unknown'}</div></div>
+                            <div><div style="color: #666; font-size: 11px;">TIMING DRIFT</div><div style="font-weight: bold; font-size: 15px;">${rec.timing_drift_mean_ms !== undefined ? rec.timing_drift_mean_ms.toFixed(1) + ' ms' : 'N/A'}</div></div>
+                            <div><div style="color: #666; font-size: 11px;">TIMING VARIANCE</div><div style="font-weight: bold; font-size: 15px;">${rec.timing_drift_std_ms !== undefined ? rec.timing_drift_std_ms.toFixed(1) + ' ms' : 'N/A'}</div></div>
+                            <div><div style="color: #666; font-size: 11px;">TIMING SAMPLES</div><div style="font-weight: bold; font-size: 15px;">${rec.timing_samples_count || 0}</div></div>
                         </div>
                     `;
                     
