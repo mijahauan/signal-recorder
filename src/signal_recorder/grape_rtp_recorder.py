@@ -898,15 +898,21 @@ class GRAPEChannelRecorder:
         # Update expected timestamp for next packet (160 real samples @ 16 kHz = 10ms packets)
         self.expected_rtp_timestamp = (header.timestamp + 160) & 0xFFFFFFFF
         
-        # Parse IQ samples (float32 I/Q pairs)
-        num_samples = len(payload) // 8  # 2 floats per sample
-        if len(payload) % 8 != 0:
-            logger.warning(f"{self.channel_name}: Payload size not multiple of 8")
+        # Parse IQ samples (int16 I/Q pairs from KA9Q radio)
+        # Each IQ sample = 2 int16 values (I and Q) = 4 bytes
+        if len(payload) % 4 != 0:
+            logger.warning(f"{self.channel_name}: Payload size not multiple of 4 (got {len(payload)} bytes)")
             return
             
-        # Unpack as interleaved I/Q float32
-        samples = np.frombuffer(payload, dtype=np.float32).reshape(-1, 2)
-        iq_samples = samples[:, 0] + 1j * samples[:, 1]
+        # Unpack as interleaved I/Q int16, then normalize to float
+        try:
+            samples_int16 = np.frombuffer(payload, dtype=np.int16).reshape(-1, 2)
+            # Normalize int16 (-32768 to 32767) to float (-1.0 to 1.0)
+            samples = samples_int16.astype(np.float32) / 32768.0
+            iq_samples = samples[:, 0] + 1j * samples[:, 1]
+        except Exception as e:
+            logger.error(f"{self.channel_name}: Failed to parse RTP payload as int16: {e}")
+            return
         
         # DEBUG: Check for huge values right after RTP extraction
         if self.packets_received % 1000 == 0:
