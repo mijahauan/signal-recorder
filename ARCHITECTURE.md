@@ -145,7 +145,7 @@ WWV broadcasts a **1200 Hz tone for 1 second** at the start of each UTC minute. 
 ```
 RTP Stream (16 kHz IQ)
   ├─→ Main: 16 kHz → 10 Hz (Digital RF)
-  └─→ Tone: 16 kHz → 1 kHz (WWV detection)
+  └─→ Tone: 16 kHz → 3 kHz (WWV detection)
             ↓
       1200 Hz bandpass filter
             ↓

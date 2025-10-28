@@ -61,7 +61,7 @@ RTP Packet (16 kHz IQ)
     │                          ↓
     │                    Digital RF Writer
     │
-    └─→ Tone Detection Path: 16 kHz → 1 kHz (scipy decimate 16x)
+    └─→ Tone Detection Path: 16 kHz → 3 kHz (scipy decimate 2.67x)
                                         ↓
                               WWV/CHU Tone Detector
                                         ↓
@@ -94,7 +94,7 @@ RTP Packet (16 kHz IQ)
 
 **Tone Detection:**
 - ✅ WWV 1200 Hz tone detection
-- ✅ 1 kHz decimation path (parallel to 10 Hz main path)
+- ✅ 3 kHz decimation path (parallel to 10 Hz main path)
 - ✅ Log tone detections with timing error vs RTP
 - ✅ Add to monitoring stats
 
@@ -120,7 +120,7 @@ class WWVToneDetector:
     This provides an independent ground truth for timing validation.
     """
     
-    def __init__(self, sample_rate=1000):
+    def __init__(self, sample_rate=3000):
         """
         Initialize detector
         

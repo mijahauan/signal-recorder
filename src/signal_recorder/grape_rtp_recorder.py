@@ -178,12 +178,13 @@ class WWVToneDetector:
     This provides an independent ground truth for timing validation.
     """
     
-    def __init__(self, sample_rate=1000):
+    def __init__(self, sample_rate=3000):
         """
         Initialize detector
         
         Args:
-            sample_rate: Input sample rate (Hz), should be ≥ 2.4 kHz for 1200 Hz
+            sample_rate: Input sample rate (Hz), must be ≥ 2.4 kHz for 1200 Hz tone
+                        (default 3000 Hz provides good margin)
         """
         self.sample_rate = sample_rate
         
@@ -653,14 +654,15 @@ class GRAPEChannelRecorder:
         # WWV tone detection (Phase 1) - detect 1200 Hz tone for timing validation
         self.is_wwv_channel = 'WWV' in channel_name.upper()
         if self.is_wwv_channel:
-            # Create 1 kHz resampler for tone detection (parallel to main 10 Hz path)
-            self.tone_resampler = Resampler(input_rate=8000, output_rate=1000)
-            self.tone_detector = WWVToneDetector(sample_rate=1000)
+            # Create 3 kHz resampler for tone detection (parallel to main 10 Hz path)
+            # Need at least 2.4 kHz for 1200 Hz tone (Nyquist), use 3 kHz for margin
+            self.tone_resampler = Resampler(input_rate=8000, output_rate=3000)
+            self.tone_detector = WWVToneDetector(sample_rate=3000)
             self.tone_accumulator = []  # Buffer for tone detection
-            self.tone_samples_per_check = 2000  # Check for tone every 2 seconds at 1 kHz
+            self.tone_samples_per_check = 6000  # Check for tone every 2 seconds at 3 kHz
             self.wwv_detections = 0
             self.wwv_timing_errors = []  # Track timing errors from WWV tone
-            logger.info(f"{channel_name}: WWV tone detection ENABLED (1200 Hz)")
+            logger.info(f"{channel_name}: WWV tone detection ENABLED (1200 Hz at 3 kHz sample rate)")
         else:
             self.tone_detector = None
         
