@@ -197,10 +197,10 @@ class WWVToneDetector:
             output='sos'
         )
         
-        # Detection parameters
-        self.envelope_threshold = 0.05  # Relative to max envelope (lowered from 0.3 - signal is noisy)
-        self.min_tone_duration_sec = 0.5  # WWV tone is 1 sec, but allow weaker detection (relaxed from 0.8)
-        self.max_tone_duration_sec = 1.5  # Allow some tolerance (relaxed from 1.2)
+        # Detection parameters (extremely relaxed to capture any tone presence)
+        self.envelope_threshold = 0.01  # Relative to max envelope (1% - very permissive)
+        self.min_tone_duration_sec = 0.2  # Minimal requirement (20% of 1 sec expected tone)
+        self.max_tone_duration_sec = 2.0  # Very tolerant range
         
         # State
         self.last_detection_time = 0
