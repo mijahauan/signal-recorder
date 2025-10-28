@@ -908,6 +908,12 @@ class GRAPEChannelRecorder:
         samples = np.frombuffer(payload, dtype=np.float32).reshape(-1, 2)
         iq_samples = samples[:, 0] + 1j * samples[:, 1]
         
+        # DEBUG: Check for huge values right after RTP extraction
+        if self.packets_received % 1000 == 0:
+            logger.debug(f"{self.channel_name}: RTP PAYLOAD EXTRACT: len={len(iq_samples)}, "
+                        f"min={np.min(np.abs(iq_samples)):.6f}, max={np.max(np.abs(iq_samples)):.6f}, "
+                        f"has_nan={np.any(np.isnan(iq_samples))}, has_inf={np.any(np.isinf(iq_samples))}")
+        
         # Add to accumulator
         self.sample_accumulator.append(iq_samples)
         accumulated_samples = sum(len(s) for s in self.sample_accumulator)
@@ -923,6 +929,12 @@ class GRAPEChannelRecorder:
             # Get all accumulated samples - concatenate to avoid dimension mismatch
             all_samples = np.concatenate(self.sample_accumulator) if len(self.sample_accumulator) > 1 else self.sample_accumulator[0]
             self.sample_accumulator = []
+            
+            # DEBUG: Check all_samples before resampling
+            if np.random.random() < 0.01:
+                logger.debug(f"{self.channel_name}: ALL_SAMPLES BEFORE RESAMPLE: len={len(all_samples)}, "
+                            f"min={np.min(np.abs(all_samples)):.6f}, max={np.max(np.abs(all_samples)):.6f}, "
+                            f"has_nan={np.any(np.isnan(all_samples))}, has_inf={np.any(np.isinf(all_samples))}")
             
             # Main path: Resample to 10 Hz for Digital RF
             resampled = self.resampler.resample(all_samples)
