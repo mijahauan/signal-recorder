@@ -1183,15 +1183,16 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
         //         1840       usb     12,000     1,840,000  -inf 239.160.155.125:5004
         
         for (const line of lines) {
+          // Stop parsing when we hit the prompt (before control re-displays the list)
+          // MUST check this BEFORE the header skip, since prompt contains 'SSRC'
+          if (line.includes('channels;') && (line.includes('choose') || line.includes('hit return'))) {
+            console.log('Reached end of first channel list, stopping parse');
+            break;
+          }
+          
           // Skip header and empty lines
           if (!line.trim() || line.includes('SSRC') || line.includes('---') || line.includes('@')) {
             continue;
-          }
-          
-          // Stop parsing when we hit the prompt (before control re-displays the list)
-          if (line.includes('choose SSRC') || line.includes('hit return')) {
-            console.log('Reached end of first channel list, stopping parse');
-            break;
           }
 
           const parts = line.trim().split(/\s+/);
