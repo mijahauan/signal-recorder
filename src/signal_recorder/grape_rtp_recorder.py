@@ -198,10 +198,10 @@ class WWVToneDetector:
             output='sos'
         )
         
-        # Detection parameters (extremely relaxed to capture any tone presence)
-        self.envelope_threshold = 0.01  # Relative to max envelope (1% - very permissive)
-        self.min_tone_duration_sec = 0.2  # Minimal requirement (20% of 1 sec expected tone)
-        self.max_tone_duration_sec = 2.0  # Very tolerant range
+        # Detection parameters (balanced for real WWV 1000 Hz tone)
+        self.envelope_threshold = 0.03  # Relative to max envelope (3% - reduces false positives)
+        self.min_tone_duration_sec = 0.3  # Require at least 30% of expected 1-sec tone
+        self.max_tone_duration_sec = 1.5  # Tolerant but not excessive
         
         # State
         self.last_detection_time = 0
@@ -209,7 +209,7 @@ class WWVToneDetector:
         
     def detect_tone_onset(self, iq_samples, current_unix_time):
         """
-        Detect 1200 Hz tone onset in IQ sample buffer
+        Detect 1000 Hz WWV tone onset in IQ sample buffer
         
         Args:
             iq_samples: Complex IQ samples (numpy array)
@@ -302,6 +302,15 @@ class WWVToneDetector:
         
         # Get the minute boundary
         minute_boundary = int(onset_time / 60) * 60
+        
+        # Check if we already detected in this minute (prevent duplicates)
+        if self.last_detection_time > 0:
+            last_minute = int(self.last_detection_time / 60) * 60
+            current_minute = minute_boundary
+            if last_minute == current_minute:
+                # Already detected this minute, skip
+                logger.debug(f"WWV detector: Skipping duplicate detection in same minute (last={self.last_detection_time:.1f}, current={onset_time:.1f})")
+                return False, None, None
         
         # Calculate error (how far from the minute boundary)
         timing_error_sec = onset_time - minute_boundary
