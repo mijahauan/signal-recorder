@@ -44,11 +44,11 @@ class AudioStreamer:
         self.socket = None
         self.running = False
         self.thread = None
+        self.rtp_sample_rate = 16000  # WWV channels are 16 kHz IQ
+        self.output_audio_rate = 8000  # Decimate to 8 kHz for audio output
         
-        # Note: We output at native 8 kHz (RTP rate) instead of resampling
-        # Browser audio can handle 8 kHz just fine
         logger.info(f"Audio streamer initialized: {multicast_address}:{multicast_port} "
-                   f"mode={mode}, output_rate=8000 Hz (native RTP rate)")
+                   f"mode={mode}, rtp_rate=16kHz, output_rate=8kHz")
     
     def start(self):
         """Start receiving and streaming audio"""
@@ -106,18 +106,21 @@ class AudioStreamer:
                 # Accumulate samples
                 sample_accumulator.append(iq_samples)
                 
-                # Process when we have enough (e.g., 800 samples @ 8kHz = 100ms)
+                # Process when we have enough (e.g., 1600 samples @ 16kHz = 100ms)
                 accumulated = sum(len(s) for s in sample_accumulator)
-                if accumulated >= 800:
+                if accumulated >= 1600:
                     all_samples = np.concatenate(sample_accumulator)
                     sample_accumulator = []
                     
-                    # Demodulate to audio (output at native 8 kHz)
-                    audio = self._demodulate(all_samples)
+                    # Demodulate to audio at 16 kHz
+                    audio_16k = self._demodulate(all_samples)
                     
-                    if len(audio) > 0:
+                    # Decimate from 16 kHz to 8 kHz (factor of 2)
+                    audio_8k = scipy_signal.decimate(audio_16k, 2, ftype='fir')
+                    
+                    if len(audio_8k) > 0:
                         # Convert to int16 PCM
-                        audio_int16 = (audio * 32767).astype(np.int16)
+                        audio_int16 = (audio_8k * 32767).astype(np.int16)
                         
                         # Add to queue (drop if full)
                         try:
@@ -137,10 +140,22 @@ class AudioStreamer:
     def _demodulate(self, iq_samples):
         """Demodulate IQ to audio based on mode"""
         if self.mode == 'AM':
-            # AM: magnitude of IQ
-            audio = np.abs(iq_samples)
-            # Remove DC
-            audio = audio - np.mean(audio)
+            # AM: magnitude of IQ (envelope detection)
+            envelope = np.abs(iq_samples)
+            
+            # Remove DC component to extract modulation (audio)
+            audio = envelope - np.mean(envelope)
+            
+            # Apply audio bandpass filter (300-3000 Hz for voice)
+            # This removes sub-audio rumble and high-frequency noise
+            sos = scipy_signal.butter(4, [300, 3000], btype='band', fs=16000, output='sos')
+            audio = scipy_signal.sosfilt(sos, audio)
+            
+            # Normalize to prevent clipping
+            max_val = np.max(np.abs(audio))
+            if max_val > 0:
+                audio = audio / max_val * 0.8  # Leave headroom
+            
             return audio
         
         elif self.mode == 'USB':
