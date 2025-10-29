@@ -1517,19 +1517,19 @@ app.get('/api/audio/stream/:ssrc', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Transfer-Encoding', 'chunked');
   
-  // Spawn Python audio streamer
+  // Spawn Python audio streamer (outputs at native 8kHz RTP rate)
   const audioStreamScript = join(srcPath, 'signal_recorder', 'audio_stream.py');
   const audioStreamer = spawn(venvPython, [
     audioStreamScript,
     '--multicast-address', multicastAddr,
     '--multicast-port', multicastPort,
     '--mode', 'AM',
-    '--audio-rate', '12000'
+    '--audio-rate', '8000'
   ], {
     cwd: installDir
   });
   
-  // Write WAV header (44 bytes for 12kHz mono PCM)
+  // Write WAV header (44 bytes for 8kHz mono PCM)
   const wavHeader = Buffer.alloc(44);
   wavHeader.write('RIFF', 0);
   wavHeader.writeUInt32LE(0xFFFFFFFF, 4);  // File size (unknown for stream)
@@ -1538,8 +1538,8 @@ app.get('/api/audio/stream/:ssrc', (req, res) => {
   wavHeader.writeUInt32LE(16, 16);  // fmt chunk size
   wavHeader.writeUInt16LE(1, 20);   // PCM format
   wavHeader.writeUInt16LE(1, 22);   // Mono
-  wavHeader.writeUInt32LE(12000, 24); // Sample rate
-  wavHeader.writeUInt32LE(24000, 28); // Byte rate (12000 * 2)
+  wavHeader.writeUInt32LE(8000, 24); // Sample rate (8 kHz)
+  wavHeader.writeUInt32LE(16000, 28); // Byte rate (8000 * 2)
   wavHeader.writeUInt16LE(2, 32);   // Block align
   wavHeader.writeUInt16LE(16, 34);  // Bits per sample
   wavHeader.write('data', 36);

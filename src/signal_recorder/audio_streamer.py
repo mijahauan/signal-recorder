@@ -38,23 +38,17 @@ class AudioStreamer:
         self.audio_rate = audio_rate
         
         # Audio buffer queue
-        self.audio_queue = Queue(maxsize=100)  # ~2 seconds @ 12kHz with 256-sample chunks
+        self.audio_queue = Queue(maxsize=100)  # ~2 seconds @ 8kHz with 256-sample chunks
         
         # RTP state
         self.socket = None
         self.running = False
         self.thread = None
         
-        # Resampler for audio rate conversion (8kHz RTP → audio_rate)
-        self.setup_resampler(8000, audio_rate)
-        
+        # Note: We output at native 8 kHz (RTP rate) instead of resampling
+        # Browser audio can handle 8 kHz just fine
         logger.info(f"Audio streamer initialized: {multicast_address}:{multicast_port} "
-                   f"mode={mode}, audio_rate={audio_rate} Hz")
-    
-    def setup_resampler(self, input_rate, output_rate):
-        """Setup resampler for audio rate conversion"""
-        from signal_recorder.grape_rtp_recorder import Resampler
-        self.resampler = Resampler(input_rate, output_rate)
+                   f"mode={mode}, output_rate=8000 Hz (native RTP rate)")
     
     def start(self):
         """Start receiving and streaming audio"""
@@ -118,15 +112,12 @@ class AudioStreamer:
                     all_samples = np.concatenate(sample_accumulator)
                     sample_accumulator = []
                     
-                    # Demodulate to audio
+                    # Demodulate to audio (output at native 8 kHz)
                     audio = self._demodulate(all_samples)
                     
-                    # Resample to output audio rate
-                    audio_resampled = self.resampler.resample(audio)
-                    
-                    if len(audio_resampled) > 0:
+                    if len(audio) > 0:
                         # Convert to int16 PCM
-                        audio_int16 = (audio_resampled * 32767).astype(np.int16)
+                        audio_int16 = (audio * 32767).astype(np.int16)
                         
                         # Add to queue (drop if full)
                         try:
