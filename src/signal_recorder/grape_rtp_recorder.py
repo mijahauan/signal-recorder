@@ -172,10 +172,11 @@ class DiscontinuityTracker:
 
 class WWVToneDetector:
     """
-    Detect WWV 1200 Hz tone onset for timing validation
+    Detect 1000 Hz tone at start of minute in WWV time signal broadcasts
     
-    WWV broadcasts a 1200 Hz tone for 1 second at the start of each minute (UTC).
-    This provides an independent ground truth for timing validation.
+    WWV (Fort Collins) broadcasts a 1-second 1000 Hz tone at :00 seconds.
+    WWVH (Hawaii) broadcasts 1200 Hz (not detected here - WWV is closer).
+    This provides an independent timing reference beyond RTP timestamps.
     """
     
     def __init__(self, sample_rate=3000):
@@ -183,15 +184,15 @@ class WWVToneDetector:
         Initialize detector
         
         Args:
-            sample_rate: Input sample rate (Hz), must be ≥ 2.4 kHz for 1200 Hz tone
+            sample_rate: Input sample rate (Hz), must be ≥ 2.0 kHz for 1000 Hz tone
                         (default 3000 Hz provides good margin)
         """
         self.sample_rate = sample_rate
         
-        # Design bandpass filter for 1200 Hz ± 50 Hz
+        # Design bandpass filter for 1000 Hz ± 50 Hz (WWV Fort Collins, not WWVH 1200 Hz)
         self.sos = scipy_signal.butter(
             N=4,
-            Wn=[1150, 1250],
+            Wn=[950, 1050],
             btype='band',
             fs=sample_rate,
             output='sos'
