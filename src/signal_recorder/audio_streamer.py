@@ -53,7 +53,7 @@ class AudioStreamer:
     
     def setup_resampler(self, input_rate, output_rate):
         """Setup resampler for audio rate conversion"""
-        from .grape_rtp_recorder import Resampler
+        from signal_recorder.grape_rtp_recorder import Resampler
         self.resampler = Resampler(input_rate, output_rate)
     
     def start(self):

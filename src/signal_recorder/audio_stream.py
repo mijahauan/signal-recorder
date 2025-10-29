@@ -7,9 +7,14 @@ Outputs PCM audio to stdout for HTTP streaming.
 """
 
 import sys
+import os
 import argparse
 import logging
-from .audio_streamer import AudioStreamer
+
+# Add parent directory to path for imports when run as script
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from signal_recorder.audio_streamer import AudioStreamer
 
 # Suppress logging to stderr since we're outputting audio to stdout
 logging.basicConfig(
