@@ -1363,6 +1363,10 @@ class GRAPERecorderManager:
                 'frequency_hz': rec.frequency_hz,
                 'frequency_mhz': rec.frequency_hz / 1e6,
                 
+                # Multicast info (for audio streaming)
+                'multicast_address': self.rtp_receiver.multicast_address,
+                'multicast_port': self.rtp_receiver.port,
+                
                 # Data flow
                 'packets_received': packets_received,
                 'packets_dropped': packets_dropped,

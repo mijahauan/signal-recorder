@@ -1494,6 +1494,24 @@ app.post('/api/channels/create', requireAuth, async (req, res) => {
 app.get('/api/audio/stream/:ssrc', (req, res) => {
   const ssrc = req.params.ssrc;
   
+  // Read stats to get multicast address for this channel
+  let multicastAddr = '239.1.2.1';
+  let multicastPort = '5004';
+  
+  try {
+    const statsData = fs.readFileSync('/tmp/signal-recorder-stats.json', 'utf8');
+    const stats = JSON.parse(statsData);
+    if (stats.recorders && stats.recorders[ssrc]) {
+      const channel = stats.recorders[ssrc];
+      multicastAddr = channel.multicast_address || multicastAddr;
+      multicastPort = String(channel.multicast_port || multicastPort);
+    }
+  } catch (error) {
+    console.error('Failed to read stats for multicast info:', error.message);
+  }
+  
+  console.log(`Starting audio stream for SSRC ${ssrc}: ${multicastAddr}:${multicastPort}`);
+  
   // Set headers for audio streaming
   res.setHeader('Content-Type', 'audio/wav');
   res.setHeader('Cache-Control', 'no-cache');
@@ -1503,7 +1521,8 @@ app.get('/api/audio/stream/:ssrc', (req, res) => {
   const audioStreamScript = join(srcPath, 'signal_recorder', 'audio_stream.py');
   const audioStreamer = spawn(venvPython, [
     audioStreamScript,
-    '--ssrc', ssrc,
+    '--multicast-address', multicastAddr,
+    '--multicast-port', multicastPort,
     '--mode', 'AM',
     '--audio-rate', '12000'
   ], {
