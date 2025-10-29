@@ -119,8 +119,9 @@ class AudioStreamer:
                     audio_8k = scipy_signal.decimate(audio_16k, 2, ftype='fir')
                     
                     if len(audio_8k) > 0:
-                        # Convert to int16 PCM
-                        audio_int16 = (audio_8k * 32767).astype(np.int16)
+                        # Clamp to [-1, 1] and convert to int16 PCM
+                        audio_clamped = np.clip(audio_8k, -1.0, 1.0)
+                        audio_int16 = (audio_clamped * 32767).astype(np.int16)
                         
                         # Add to queue (drop if full)
                         try:
@@ -151,10 +152,10 @@ class AudioStreamer:
             sos = scipy_signal.butter(4, [300, 3000], btype='band', fs=16000, output='sos')
             audio = scipy_signal.sosfilt(sos, audio)
             
-            # Normalize to prevent clipping
-            max_val = np.max(np.abs(audio))
-            if max_val > 0:
-                audio = audio / max_val * 0.8  # Leave headroom
+            # Normalize using 95th percentile to avoid amplifying transient peaks
+            p95 = np.percentile(np.abs(audio), 95)
+            if p95 > 0.001:  # Only normalize if there's actual signal
+                audio = audio / p95 * 0.5  # Leave significant headroom
             
             return audio
         
