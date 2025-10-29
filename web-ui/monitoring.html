@@ -977,7 +977,14 @@
                     }
                     
                     row.innerHTML = `
-                        <td class="channel-name">${rec.channel_name}</td>
+                        <td class="channel-name">
+                            <button class="listen-btn" onclick="toggleAudio('${ssrc}')" id="listen-btn-${ssrc}" 
+                                    style="background: none; border: none; cursor: pointer; font-size: 16px; margin-right: 8px; vertical-align: middle;" 
+                                    title="Listen to channel">
+                                🔈
+                            </button>
+                            ${rec.channel_name}
+                        </td>
                         <td>${healthIcon}</td>
                         <td class="${completenessClass}">${rec.completeness_pct.toFixed(1)}%</td>
                         <td class="${lossClass}">${rec.packet_loss_pct.toFixed(2)}%</td>
@@ -1220,6 +1227,60 @@
                 document.getElementById('logs-content').innerHTML = 
                     '<div class="log-line error">Failed to load logs: ' + error.message + '</div>';
             }
+        }
+
+        // Audio streaming state
+        let currentAudio = null;
+        let currentSSRC = null;
+
+        function toggleAudio(ssrc) {
+            const btn = document.getElementById(`listen-btn-${ssrc}`);
+            
+            // If already playing this channel, stop it
+            if (currentSSRC === ssrc && currentAudio) {
+                currentAudio.pause();
+                currentAudio.src = '';
+                currentAudio = null;
+                currentSSRC = null;
+                btn.textContent = '🔈';
+                btn.title = 'Listen to channel';
+                return;
+            }
+            
+            // Stop any currently playing audio
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio.src = '';
+                const oldBtn = document.getElementById(`listen-btn-${currentSSRC}`);
+                if (oldBtn) {
+                    oldBtn.textContent = '🔈';
+                    oldBtn.title = 'Listen to channel';
+                }
+            }
+            
+            // Start new audio stream
+            currentAudio = new Audio(`/api/audio/stream/${ssrc}`);
+            currentSSRC = ssrc;
+            
+            currentAudio.play().then(() => {
+                btn.textContent = '🔊';
+                btn.title = 'Stop listening';
+            }).catch(error => {
+                console.error('Failed to start audio:', error);
+                alert('Failed to start audio stream. Check console for details.');
+                currentAudio = null;
+                currentSSRC = null;
+                btn.textContent = '🔈';
+            });
+            
+            // Handle audio errors
+            currentAudio.onerror = (e) => {
+                console.error('Audio stream error:', e);
+                btn.textContent = '🔈';
+                btn.title = 'Listen to channel';
+                currentAudio = null;
+                currentSSRC = null;
+            };
         }
 
         function refreshAll() {

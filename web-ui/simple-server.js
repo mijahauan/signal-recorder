@@ -1490,6 +1490,64 @@ app.post('/api/channels/create', requireAuth, async (req, res) => {
   }
 });
 
+// Audio streaming endpoint
+app.get('/api/audio/stream/:ssrc', (req, res) => {
+  const ssrc = req.params.ssrc;
+  
+  // Set headers for audio streaming
+  res.setHeader('Content-Type', 'audio/wav');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Transfer-Encoding', 'chunked');
+  
+  // Spawn Python audio streamer
+  const audioStreamScript = join(srcPath, 'signal_recorder', 'audio_stream.py');
+  const audioStreamer = spawn(venvPython, [
+    audioStreamScript,
+    '--ssrc', ssrc,
+    '--mode', 'AM',
+    '--audio-rate', '12000'
+  ], {
+    cwd: installDir
+  });
+  
+  // Write WAV header (44 bytes for 12kHz mono PCM)
+  const wavHeader = Buffer.alloc(44);
+  wavHeader.write('RIFF', 0);
+  wavHeader.writeUInt32LE(0xFFFFFFFF, 4);  // File size (unknown for stream)
+  wavHeader.write('WAVE', 8);
+  wavHeader.write('fmt ', 12);
+  wavHeader.writeUInt32LE(16, 16);  // fmt chunk size
+  wavHeader.writeUInt16LE(1, 20);   // PCM format
+  wavHeader.writeUInt16LE(1, 22);   // Mono
+  wavHeader.writeUInt32LE(12000, 24); // Sample rate
+  wavHeader.writeUInt32LE(24000, 28); // Byte rate (12000 * 2)
+  wavHeader.writeUInt16LE(2, 32);   // Block align
+  wavHeader.writeUInt16LE(16, 34);  // Bits per sample
+  wavHeader.write('data', 36);
+  wavHeader.writeUInt32LE(0xFFFFFFFF, 40); // Data size (unknown for stream)
+  
+  res.write(wavHeader);
+  
+  // Pipe audio data from Python process
+  audioStreamer.stdout.on('data', (chunk) => {
+    res.write(chunk);
+  });
+  
+  audioStreamer.stderr.on('data', (data) => {
+    console.error(`Audio streamer error: ${data}`);
+  });
+  
+  audioStreamer.on('close', (code) => {
+    console.log(`Audio streamer exited with code ${code}`);
+    res.end();
+  });
+  
+  // Clean up on client disconnect
+  req.on('close', () => {
+    audioStreamer.kill();
+  });
+});
+
 // Serve the monitoring dashboard
 app.get('/monitoring', (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
