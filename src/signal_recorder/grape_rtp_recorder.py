@@ -919,8 +919,9 @@ class GRAPEChannelRecorder:
             return
             
         # Unpack as interleaved I/Q int16, then normalize to float
+        # CRITICAL: RTP payloads use network byte order (BIG-ENDIAN)
         try:
-            samples_int16 = np.frombuffer(payload, dtype=np.int16).reshape(-1, 2)
+            samples_int16 = np.frombuffer(payload, dtype='>i2').reshape(-1, 2)  # Big-endian!
             # Normalize int16 (-32768 to 32767) to float (-1.0 to 1.0)
             samples = samples_int16.astype(np.float32) / 32768.0
             iq_samples = samples[:, 0] + 1j * samples[:, 1]

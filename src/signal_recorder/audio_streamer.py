@@ -44,11 +44,12 @@ class AudioStreamer:
         self.socket = None
         self.running = False
         self.thread = None
-        self.rtp_sample_rate = 16000  # WWV channels are 16 kHz IQ
-        self.output_audio_rate = 8000  # Decimate to 8 kHz for audio output
+        # Note: Radiod sample_rate=16000 means 16k REAL samples = 8k COMPLEX IQ samples
+        self.iq_sample_rate = 8000  # Complex IQ sample rate
+        self.output_audio_rate = 8000  # Output audio rate (no decimation needed!)
         
         logger.info(f"Audio streamer initialized: {multicast_address}:{multicast_port} "
-                   f"mode={mode}, rtp_rate=16kHz, output_rate=8kHz")
+                   f"mode={mode}, iq_rate=8kHz complex, output_rate=8kHz")
     
     def start(self):
         """Start receiving and streaming audio"""
@@ -95,32 +96,31 @@ class AudioStreamer:
                 # Parse RTP header (skip for now, just get payload)
                 payload = data[12:]  # Skip 12-byte RTP header
                 
-                # Unpack IQ samples (int16 interleaved I/Q)
+                # Unpack IQ samples (int16 I/Q pairs from KA9Q radio)
+                # Each IQ sample = 2 int16 values (I and Q) = 4 bytes
+                # CRITICAL: RTP payloads use network byte order (BIG-ENDIAN)
                 if len(payload) % 4 != 0:
                     continue
                 
-                samples_int16 = np.frombuffer(payload, dtype=np.int16).reshape(-1, 2)
+                samples_int16 = np.frombuffer(payload, dtype='>i2').reshape(-1, 2)  # Big-endian!
                 samples = samples_int16.astype(np.float32) / 32768.0
                 iq_samples = samples[:, 0] + 1j * samples[:, 1]
                 
                 # Accumulate samples
                 sample_accumulator.append(iq_samples)
                 
-                # Process when we have enough (e.g., 1600 samples @ 16kHz = 100ms)
+                # Process when we have enough (e.g., 800 samples @ 8kHz = 100ms)
                 accumulated = sum(len(s) for s in sample_accumulator)
-                if accumulated >= 1600:
+                if accumulated >= 800:
                     all_samples = np.concatenate(sample_accumulator)
                     sample_accumulator = []
                     
-                    # Demodulate to audio at 16 kHz
-                    audio_16k = self._demodulate(all_samples)
+                    # Demodulate IQ to audio (both at 8 kHz, no decimation needed)
+                    audio = self._demodulate(all_samples)
                     
-                    # Decimate from 16 kHz to 8 kHz (factor of 2)
-                    audio_8k = scipy_signal.decimate(audio_16k, 2, ftype='fir')
-                    
-                    if len(audio_8k) > 0:
+                    if len(audio) > 0:
                         # Clamp to [-1, 1] and convert to int16 PCM
-                        audio_clamped = np.clip(audio_8k, -1.0, 1.0)
+                        audio_clamped = np.clip(audio, -1.0, 1.0)
                         audio_int16 = (audio_clamped * 32767).astype(np.int16)
                         
                         # Add to queue (drop if full)
@@ -141,15 +141,16 @@ class AudioStreamer:
     def _demodulate(self, iq_samples):
         """Demodulate IQ to audio based on mode"""
         if self.mode == 'AM':
-            # AM: magnitude of IQ (envelope detection)
+            # For radiod "iq" preset: baseband IQ with carrier at DC
+            # AM demodulation: take magnitude (envelope detection)
+            # This preserves carrier for doppler measurements in GRAPE
             envelope = np.abs(iq_samples)
-            
-            # Remove DC component to extract modulation (audio)
-            audio = envelope - np.mean(envelope)
+            audio = envelope - np.mean(envelope)  # Remove DC
             
             # Apply audio bandpass filter (300-3000 Hz for voice)
             # This removes sub-audio rumble and high-frequency noise
-            sos = scipy_signal.butter(4, [300, 3000], btype='band', fs=16000, output='sos')
+            # IQ sample rate is 8 kHz
+            sos = scipy_signal.butter(4, [300, 3000], btype='band', fs=8000, output='sos')
             audio = scipy_signal.sosfilt(sos, audio)
             
             # Normalize using 95th percentile to avoid amplifying transient peaks
