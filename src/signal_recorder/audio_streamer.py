@@ -109,9 +109,9 @@ class AudioStreamer:
                 # Accumulate samples
                 sample_accumulator.append(iq_samples)
                 
-                # Process when we have enough (e.g., 800 samples @ 8kHz = 100ms)
+                # Process when we have enough (e.g., 8000 samples @ 8kHz = 1 second for smoother streaming)
                 accumulated = sum(len(s) for s in sample_accumulator)
-                if accumulated >= 800:
+                if accumulated >= 8000:
                     all_samples = np.concatenate(sample_accumulator)
                     sample_accumulator = []
                     
@@ -142,21 +142,16 @@ class AudioStreamer:
         """Demodulate IQ to audio based on mode"""
         if self.mode == 'AM':
             # For radiod "iq" preset: baseband IQ with carrier at DC
-            # AM demodulation: take magnitude (envelope detection)
-            # This preserves carrier for doppler measurements in GRAPE
+            # AM demodulation: simple envelope detection (magnitude)
             envelope = np.abs(iq_samples)
-            audio = envelope - np.mean(envelope)  # Remove DC
             
-            # Apply audio bandpass filter (300-3000 Hz for voice)
-            # This removes sub-audio rumble and high-frequency noise
-            # IQ sample rate is 8 kHz
-            sos = scipy_signal.butter(4, [300, 3000], btype='band', fs=8000, output='sos')
-            audio = scipy_signal.sosfilt(sos, audio)
+            # Remove DC and normalize in one pass for efficiency
+            audio = envelope - np.mean(envelope)
             
-            # Normalize using 95th percentile to avoid amplifying transient peaks
-            p95 = np.percentile(np.abs(audio), 95)
-            if p95 > 0.001:  # Only normalize if there's actual signal
-                audio = audio / p95 * 0.5  # Leave significant headroom
+            # Simple normalization using max value for speed
+            max_val = np.max(np.abs(audio))
+            if max_val > 0.001:
+                audio = audio / max_val * 0.5  # Normalize to 50% to leave headroom
             
             return audio
         
