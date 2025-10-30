@@ -36,8 +36,9 @@ def capture_iq(ssrc=5000000, duration=10):
     
     target_samples = duration * 8000
     all_samples_raw = []
+    total_samples = 0
     
-    while len(all_samples_raw) < target_samples:
+    while total_samples < target_samples:
         data, _ = sock.recvfrom(8192)
         if len(data) < 12:
             continue
@@ -51,6 +52,10 @@ def capture_iq(ssrc=5000000, duration=10):
             # Just get raw int16 pairs - DON'T form complex yet
             samples_int16 = np.frombuffer(payload, dtype='>i2').reshape(-1, 2)
             all_samples_raw.append(samples_int16)
+            total_samples += len(samples_int16)
+            
+            if total_samples % 8000 == 0 or (total_samples % 1600 == 0 and total_samples < 8000):
+                print(f"  Progress: {total_samples}/{target_samples} samples")
     
     sock.close()
     
