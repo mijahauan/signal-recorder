@@ -109,9 +109,9 @@ class AudioStreamer:
                 # Accumulate samples
                 sample_accumulator.append(iq_samples)
                 
-                # Process when we have enough (e.g., 8000 samples @ 8kHz = 1 second for smoother streaming)
+                # Process when we have enough (e.g., 1600 samples @ 8kHz = 200ms for balanced latency/smoothness)
                 accumulated = sum(len(s) for s in sample_accumulator)
-                if accumulated >= 8000:
+                if accumulated >= 1600:
                     all_samples = np.concatenate(sample_accumulator)
                     sample_accumulator = []
                     
