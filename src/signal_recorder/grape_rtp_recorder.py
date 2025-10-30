@@ -924,7 +924,9 @@ class GRAPEChannelRecorder:
             samples_int16 = np.frombuffer(payload, dtype='>i2').reshape(-1, 2)  # Big-endian!
             # Normalize int16 (-32768 to 32767) to float (-1.0 to 1.0)
             samples = samples_int16.astype(np.float32) / 32768.0
-            iq_samples = samples[:, 0] + 1j * samples[:, 1]
+            # CRITICAL: KA9Q sends Q,I pairs (not I,Q) for proper phase
+            # Use Q + jI to get carrier centered at DC
+            iq_samples = samples[:, 1] + 1j * samples[:, 0]  # Q + jI
         except Exception as e:
             logger.error(f"{self.channel_name}: Failed to parse RTP payload as int16: {e}")
             return

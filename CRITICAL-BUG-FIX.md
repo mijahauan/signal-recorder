@@ -1,24 +1,42 @@
-# CRITICAL BUG FIX - Byte Order Correction
+# CRITICAL BUG FIXES - Byte Order & I/Q Phase
 
 **Date:** October 30, 2025  
 **Severity:** CRITICAL - Data Corruption  
-**Status:** FIXED in commit b61475a
+**Status:** FIXED in commits b61475a (byte order) and [PENDING] (I/Q phase)
 
 ---
 
-## The Problem
+## The Problems
 
+### Bug #1: Byte Order (FIXED in b61475a)
 All audio streaming produced noise, and all recorded IQ data was corrupted due to incorrect byte order parsing.
 
-## Root Cause
+### Bug #2: I/Q Phase Swap (FIXED in [PENDING])
+IQ samples were using I+jQ instead of Q+jI, causing carrier to be offset by ~500 Hz instead of centered at DC.
 
+## Root Causes
+
+### Bug #1: Byte Order
 RTP payloads from `radiod` use **network byte order (big-endian)** for int16 samples, but we were parsing them as **little-endian** (numpy's default `dtype=np.int16`).
 
 This caused complete byte-swapping:
 - Every sample `0x1234` was read as `0x3412`
 - Resulted in completely scrambled data
 
+### Bug #2: I/Q Phase
+KA9Q radiod sends samples in **Q, I order** (not I, Q order as expected). Using `I + jQ` results in incorrect phase, shifting the carrier off-center.
+
+Proper baseband IQ should have:
+- Carrier **centered exactly at DC (0 Hz)**
+- **Symmetric sidebands** around the carrier
+
+Using `I + jQ` gave:
+- Carrier **offset to -500 Hz**
+- Asymmetric signal (all energy on negative frequencies)
+
 ## Evidence
+
+### Byte Order Evidence
 
 Testing with SSRC 1000 (AM preset, 12 kHz audio):
 
@@ -29,11 +47,27 @@ Testing with SSRC 1000 (AM preset, 12 kHz audio):
 
 Listening test confirmed: big-endian produces perfect WWV broadcast (voice announcements, 1000 Hz tone, second ticks).
 
-## The Fix
+### I/Q Phase Evidence
 
+Power spectrum comparison (WWV 5 MHz, 10 seconds):
+
+| IQ Formation | Carrier Location | Spectrum Shape | Result |
+|--------------|------------------|----------------|---------|
+| `I + jQ` (WRONG) | -500 Hz | Asymmetric, all negative frequencies | Doppler offset by 500 Hz |
+| `I - jQ` (WRONG) | +500 Hz | Asymmetric, all positive frequencies | Doppler offset by 500 Hz |
+| **`Q + jI` (CORRECT)** | **0 Hz (DC)** | **Symmetric sidebands** | **Carrier centered ✅** |
+
+Spectrogram test showed:
+- GREEN (Q+jI): Strong carrier **exactly at 0 Hz** with symmetric ±1 kHz sidebands
+- Blue (I+jQ): Carrier offset to **-500 Hz**, all energy on negative frequencies  
+- Orange (I-jQ): Carrier offset to **+500 Hz**, all energy on positive frequencies
+
+## The Fixes
+
+### Byte Order Fix
 Changed from:
 ```python
-np.frombuffer(payload, dtype=np.int16)   # Little-endian (default)
+np.frombuffer(payload, dtype=np.int16)   # Little-endian default
 ```
 
 To:
@@ -41,9 +75,21 @@ To:
 np.frombuffer(payload, dtype='>i2')      # Big-endian (network order)
 ```
 
+### I/Q Phase Fix
+Changed from:
+```python
+iq_samples = samples[:, 0] + 1j * samples[:, 1]  # I + jQ (WRONG)
+```
+
+To:
+```python
+iq_samples = samples[:, 1] + 1j * samples[:, 0]  # Q + jI (CORRECT)
+```
+
 Applied in:
-1. `src/signal_recorder/audio_streamer.py` - Line 105
-2. `src/signal_recorder/grape_rtp_recorder.py` - Line 924
+1. `src/signal_recorder/audio_streamer.py`
+2. `src/signal_recorder/grape_rtp_recorder.py`
+3. `verify_iq_data.py`
 
 ## Impact
 

@@ -47,11 +47,12 @@ def capture_iq_data(ssrc, duration_sec=60, multicast_addr='239.192.152.141', por
         packet_count += 1
         payload = data[12:]
         
-        # Parse IQ samples with CORRECT byte order (big-endian)
+        # Parse IQ samples with CORRECT byte order (big-endian) and phase (Q+jI)
         if len(payload) % 4 == 0:
             samples_int16 = np.frombuffer(payload, dtype='>i2').reshape(-1, 2)
             samples = samples_int16.astype(np.float32) / 32768.0
-            iq_samples = samples[:, 0] + 1j * samples[:, 1]
+            # CRITICAL: KA9Q sends Q,I pairs - use Q + jI for carrier at DC
+            iq_samples = samples[:, 1] + 1j * samples[:, 0]  # Q + jI
             all_samples.extend(iq_samples)
         
         if packet_count % 100 == 0:
