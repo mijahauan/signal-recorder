@@ -718,6 +718,7 @@ class GRAPEChannelRecorder:
             self.tone_resampler = Resampler(input_rate=8000, output_rate=3000)
             self.tone_detector = WWVToneDetector(sample_rate=3000)
             self.tone_accumulator = []  # Buffer for tone detection
+            self.tone_accumulator_start_time = None  # Timestamp of first sample in accumulator
             self.tone_samples_per_check = 6000  # Check for tone every 2 seconds at 3 kHz
             self.wwv_detections = 0
             self.wwv_timing_errors = []  # Track timing errors from WWV tone
@@ -997,10 +998,22 @@ class GRAPEChannelRecorder:
                 if np.random.random() < 0.01:
                     logger.debug(f"{self.channel_name}: TONE RESAMPLE OUTPUT: len={len(tone_resampled)}, min={np.min(np.abs(tone_resampled)) if len(tone_resampled) > 0 else 'empty'}, max={np.max(np.abs(tone_resampled)) if len(tone_resampled) > 0 else 'empty'}, has_nan={np.any(np.isnan(tone_resampled)) if len(tone_resampled) > 0 else 'N/A'}")
                 
+                # Track when accumulator starts
+                if self.tone_accumulator_start_time is None:
+                    self.tone_accumulator_start_time = unix_time
+                
                 self.tone_accumulator.append(tone_resampled)
                 
                 # Check for tone every 2 seconds worth of data
                 accumulated_tone_samples = sum(len(s) for s in self.tone_accumulator)
+                
+                # DEBUG: Periodically log accumulator status
+                seconds_in_minute = unix_time % 60
+                if np.random.random() < 0.05:  # Log 5% of the time
+                    logger.info(f"{self.channel_name}: TONE ACCUM: samples={accumulated_tone_samples}/{self.tone_samples_per_check}, "
+                               f"chunks={len(self.tone_accumulator)}, time=:mm.{int(seconds_in_minute):02d}, "
+                               f"resampled_len={len(tone_resampled)}")
+                
                 if accumulated_tone_samples >= self.tone_samples_per_check:
                     # Only check during narrow window around minute boundary
                     # WWV 800ms tone starts at :00.0, so check :59-:02 (3 second window)
@@ -1008,18 +1021,25 @@ class GRAPEChannelRecorder:
                     seconds_in_minute = unix_time % 60
                     in_detection_window = (seconds_in_minute >= 59) or (seconds_in_minute <= 2)
                     
+                    # DEBUG: Log when we have enough samples
+                    logger.info(f"{self.channel_name}: TONE CHECK: samples={accumulated_tone_samples}, "
+                               f"window={in_detection_window}, :mm.{int(seconds_in_minute):02d}")
+                    
                     if in_detection_window:
                         # Concatenate and detect
                         tone_buffer = np.concatenate(self.tone_accumulator) if len(self.tone_accumulator) > 1 else self.tone_accumulator[0]
+                        buffer_start_time = self.tone_accumulator_start_time if self.tone_accumulator_start_time else unix_time
                         self.tone_accumulator = []
+                        self.tone_accumulator_start_time = None
                         
-                        # DEBUG: Log tone detection attempts
-                        logger.debug(f"{self.channel_name}: Checking for WWV tone (buffer={len(tone_buffer)} samples @ 3 kHz, time={unix_time}, seconds_in_minute={seconds_in_minute:.1f})")
+                        # Log tone detection attempts (INFO level so we can see them)
+                        logger.info(f"{self.channel_name}: Checking for WWV tone (buffer={len(tone_buffer)} samples @ 3 kHz, "
+                                   f"time={buffer_start_time:.1f}, :mm.{int(seconds_in_minute):02d})")
                         
-                        # Detect WWV tone
+                        # Detect WWV tone (use timestamp of FIRST sample in buffer)
                         detected, onset_idx, timing_error_ms = self.tone_detector.detect_tone_onset(
                             tone_buffer,
-                            unix_time
+                            buffer_start_time
                         )
                         
                         if detected:
@@ -1036,6 +1056,7 @@ class GRAPEChannelRecorder:
                     else:
                         # Outside detection window - discard accumulated samples
                         self.tone_accumulator = []
+                        self.tone_accumulator_start_time = None
             
             # Add to daily buffer
             completed_day = self.daily_buffer.add_samples(unix_time, resampled)
