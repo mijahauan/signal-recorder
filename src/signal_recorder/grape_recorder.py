@@ -152,6 +152,7 @@ class GRAPERecorderManager:
         # Find watchdog script
         script_dir = Path(__file__).parent.parent.parent  # Go up to project root
         watchdog_script = script_dir / "test-watchdog.py"
+        watchdog_pid_file = script_dir / "data" / "watchdog.pid"
         
         if not watchdog_script.exists():
             print(f"⚠️  Watchdog script not found at {watchdog_script}")
@@ -167,6 +168,11 @@ class GRAPERecorderManager:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True  # Detach from parent
             )
+            
+            # Save PID to file for cleanup on shutdown
+            watchdog_pid_file.parent.mkdir(parents=True, exist_ok=True)
+            watchdog_pid_file.write_text(str(watchdog_process.pid))
+            
             print(f"✓ Watchdog started (PID: {watchdog_process.pid})")
             return watchdog_process
         except Exception as e:
@@ -177,6 +183,20 @@ class GRAPERecorderManager:
     def run(self):
         """Run the recorder daemon"""
         print(f"Starting GRAPE recorder daemon with config: {self.config_file}")
+        
+        # Clean up any orphaned watchdog processes from previous crashes
+        print("Cleaning up any orphaned watchdog processes...")
+        try:
+            import subprocess
+            result = subprocess.run(['pkill', '-f', 'test-watchdog.py'],
+                                  capture_output=True, timeout=5)
+            if result.returncode == 0:
+                print("✓ Cleaned up orphaned watchdog processes")
+            else:
+                print("✓ No orphaned watchdog processes found")
+        except Exception as e:
+            print(f"⚠️  Watchdog cleanup warning: {e}")
+        
         print("Press Ctrl+C to stop...")
 
         self.running = True
@@ -280,18 +300,47 @@ class GRAPERecorderManager:
             except Exception as e:
                 print(f"Error during shutdown: {e}")
             
-            # Stop watchdog
+            # Stop watchdog - comprehensive cleanup to prevent orphans
+            print("Stopping watchdog...")
+            
+            # Method 1: Try to stop the watchdog process we started
             if watchdog_process:
                 try:
-                    print("Stopping watchdog...")
                     watchdog_process.terminate()
-                    watchdog_process.wait(timeout=5)
+                    watchdog_process.wait(timeout=3)
+                    print("✓ Watchdog terminated via process handle")
                 except Exception as e:
-                    print(f"Error stopping watchdog: {e}")
+                    print(f"⚠️  Failed to terminate watchdog via handle: {e}")
                     try:
                         watchdog_process.kill()
                     except:
                         pass
+            
+            # Method 2: Kill by PID file (in case process handle lost)
+            from pathlib import Path
+            script_dir = Path(__file__).parent.parent.parent
+            watchdog_pid_file = script_dir / "data" / "watchdog.pid"
+            
+            if watchdog_pid_file.exists():
+                try:
+                    import os
+                    import signal as sig
+                    pid = int(watchdog_pid_file.read_text().strip())
+                    os.kill(pid, sig.SIGTERM)
+                    print(f"✓ Killed watchdog PID {pid} from PID file")
+                    watchdog_pid_file.unlink()  # Remove PID file
+                except Exception as e:
+                    print(f"⚠️  Failed to kill watchdog by PID file: {e}")
+            
+            # Method 3: Nuclear option - kill all watchdog processes (catches orphans)
+            try:
+                import subprocess
+                result = subprocess.run(['pkill', '-f', 'test-watchdog.py'],
+                                      capture_output=True, timeout=5)
+                if result.returncode == 0:
+                    print("✓ Killed any remaining watchdog processes")
+            except Exception as e:
+                print(f"⚠️  pkill cleanup failed: {e}")
             
             print("Daemon stopped")
             
