@@ -93,8 +93,33 @@ class AudioStreamer:
                 if len(data) < 12:
                     continue  # Too short for RTP header
                 
-                # Parse RTP header (skip for now, just get payload)
-                payload = data[12:]  # Skip 12-byte RTP header
+                # Parse RTP header to calculate correct payload offset
+                # RTP header format:
+                #   Byte 0: V(2) P(1) X(1) CC(4)
+                #   Byte 1: M(1) PT(7)
+                #   Bytes 2-3: Sequence number
+                #   Bytes 4-7: Timestamp
+                #   Bytes 8-11: SSRC
+                #   + Optional CSRC list (CC * 4 bytes)
+                #   + Optional extension header (if X=1)
+                
+                header_byte0 = data[0]
+                csrc_count = header_byte0 & 0x0F  # Lower 4 bits
+                has_extension = (header_byte0 & 0x10) != 0  # X bit
+                
+                # Start after fixed 12-byte header + CSRC list
+                payload_offset = 12 + (csrc_count * 4)
+                
+                # Handle extension header if present
+                if has_extension and len(data) >= payload_offset + 4:
+                    # Extension header: 2 bytes profile + 2 bytes length (in 32-bit words)
+                    ext_length_words = struct.unpack('>H', data[payload_offset+2:payload_offset+4])[0]
+                    payload_offset += 4 + (ext_length_words * 4)
+                
+                if payload_offset >= len(data):
+                    continue  # Malformed packet
+                
+                payload = data[payload_offset:]
                 
                 # Unpack IQ samples (int16 I/Q pairs from KA9Q radio)
                 # Each IQ sample = 2 int16 values (I and Q) = 4 bytes
