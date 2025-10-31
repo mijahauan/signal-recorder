@@ -184,6 +184,17 @@ class GRAPERecorderManager:
         """Run the recorder daemon"""
         print(f"Starting GRAPE recorder daemon with config: {self.config_file}")
         
+        # Register signal handlers for graceful shutdown
+        import signal
+        def signal_handler(signum, frame):
+            signame = 'SIGINT' if signum == signal.SIGINT else 'SIGTERM'
+            print(f"\n{signame} received, shutting down gracefully...")
+            self.running = False
+        
+        signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+        signal.signal(signal.SIGTERM, signal_handler)  # kill/pkill default
+        print("✓ Signal handlers registered (SIGINT, SIGTERM)")
+        
         # Clean up any orphaned watchdog processes from previous crashes
         print("Cleaning up any orphaned watchdog processes...")
         try:
