@@ -3,6 +3,9 @@ import fs from 'fs';
 import { spawn, exec } from 'child_process';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
+import dgram from 'dgram';
+import { EventEmitter } from 'events';
+import { WebSocketServer } from 'ws';
 
 const __dirname = join(fileURLToPath(import.meta.url), '..');
 
@@ -24,6 +27,379 @@ const statusFile = join(installDir, 'data', 'daemon-status.json');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// RTP constants from ka9q-web
+const RTP_MIN_SIZE = 12;
+const CMD = 1;
+const OUTPUT_SSRC = 2;
+const RADIO_FREQUENCY = 3;
+const COMMAND_TAG = 4;
+const PRESET = 5;
+
+// Integrated ka9q-radio Audio Proxy
+class Ka9qRadioProxy extends EventEmitter {
+  constructor() {
+    super();
+    this.controlSocket = null;
+    this.audioSocket = null;
+    this.sessionId = 1000;
+    this.activeStreams = new Map();
+    this.joinedMulticastGroups = new Set(); // Track which multicast groups we've joined
+    
+    this.init();
+  }
+
+  init() {
+    // Create control socket (sends commands AND receives status from radiod)
+    this.controlSocket = dgram.createSocket('udp4');
+    this.controlSocket.bind(5006, () => {
+      console.log(`🎛️ ka9q-radio control socket bound to port 5006`);
+      
+      // Join status multicast to receive radiod status updates
+      this.controlSocket.addMembership('239.192.152.141', '0.0.0.0');
+      console.log(`📡 Joined status multicast 239.192.152.141 (bee1-hf-status.local)`);
+      
+      this.setupStatusReception();
+    });
+
+    // Create audio socket (receives RTP from radiod) - bind to port 5004
+    this.audioSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    
+    // Enable SO_REUSEPORT so multiple processes can receive multicast on same port
+    this.audioSocket.on('listening', () => {
+      const port = this.audioSocket.address().port;
+      console.log(`🎧 ka9q-radio audio socket bound to port ${port}`);
+      this.setupAudioReception();
+    });
+    
+    this.audioSocket.bind(5004);
+    
+    this.audioSocket.on('error', (err) => {
+      console.error('Audio socket error:', err);
+    });
+  }
+  
+  setupStatusReception() {
+    this.controlSocket.on('message', (msg, rinfo) => {
+      // Parse status message from radiod to discover multicast addresses
+      try {
+        const status = this.parseStatusMessage(msg);
+        if (status && status.ssrc) {
+          console.log(`📊 Status update: SSRC=${status.ssrc}, multicast=${status.multicast_address}:${status.multicast_port}`);
+          
+          // Check if this is one of our PCM streams
+          const stream = this.activeStreams.get(status.ssrc);
+          if (stream && !stream.multicastAddress) {
+            console.log(`✅ Discovered PCM stream: SSRC=${status.ssrc} → ${status.multicast_address}:${status.multicast_port}`);
+            
+            stream.multicastAddress = status.multicast_address;
+            stream.multicastPort = status.multicast_port;
+            
+            // Join this specific multicast group
+            this.audioSocket.addMembership(status.multicast_address, '0.0.0.0');
+            console.log(`📡 Joined multicast ${status.multicast_address} for SSRC ${status.ssrc}`);
+          }
+        }
+      } catch (err) {
+        // Ignore parse errors - status messages can be frequent
+      }
+    });
+  }
+  
+  parseStatusMessage(msg) {
+    // Parse ka9q-radio status message (TLV format)
+    // Returns { ssrc, multicast_address, multicast_port, ... }
+    let offset = 0;
+    const status = {};
+    
+    while (offset < msg.length) {
+      if (offset + 2 > msg.length) break;
+      
+      const tag = msg.readUInt8(offset++);
+      const len = msg.readUInt8(offset++);
+      
+      if (offset + len > msg.length) break;
+      
+      // SSRC (tag 10)
+      if (tag === 10 && len === 4) {
+        status.ssrc = msg.readUInt32BE(offset);
+      }
+      // Multicast address (tag 20) 
+      else if (tag === 20) {
+        const addr = msg.slice(offset, offset + len).toString('utf8');
+        status.multicast_address = addr;
+      }
+      // Multicast port (tag 21)
+      else if (tag === 21 && len === 2) {
+        status.multicast_port = msg.readUInt16BE(offset);
+      }
+      
+      offset += len;
+    }
+    
+    return status.ssrc ? status : null;
+  }
+
+  setupAudioReception() {
+    this.audioSocket.on('message', (msg, rinfo) => {
+      // Parse RTP header to get SSRC
+      if (msg.length < RTP_MIN_SIZE) return;
+
+      // Extract SSRC from RTP header (bytes 8-11)
+      const ssrc = msg.readUInt32BE(8);
+      
+      console.log(`📨 Received RTP packet: SSRC=${ssrc}, size=${msg.length} bytes from ${rinfo.address}:${rinfo.port}`);
+      
+      // Forward to any active streams for this SSRC
+      const stream = this.activeStreams.get(ssrc);
+      if (stream) {
+        console.log(`🎵 Forwarding RTP packet for SSRC ${ssrc}`);
+        
+        // Forward to WebSocket clients (ka9q-web style)
+        if (global.audioSessions) {
+          const session = global.audioSessions.get(ssrc);
+          if (session && session.audio_active && session.ws.readyState === 1) {
+            // Send raw RTP packet as binary data (like ka9q-web)
+            session.ws.send(msg);
+          }
+        }
+      }
+    });
+
+    this.audioSocket.on('error', (err) => {
+      console.error('Audio socket error:', err);
+    });
+  }
+
+  extractPCMFromRTP(rtpPacket) {
+    // Skip RTP header (12 bytes minimum)
+    const headerLength = 12; // Basic RTP header
+    
+    if (rtpPacket.length <= headerLength) {
+      return null; // No audio data
+    }
+    
+    // Extract payload (PCM audio data)
+    const payload = rtpPacket.slice(headerLength);
+    
+    // Convert to 16-bit PCM if needed
+    // Assuming radiod sends 16-bit PCM samples
+    return payload;
+  }
+
+  async startAudioStream(iqSsrc, frequency = 10000000) {
+    console.log(`🎵 Starting PCM audio stream for IQ SSRC ${iqSsrc} at ${frequency} Hz`);
+    
+    // Use SSRC+1 pattern for PCM audio stream
+    const pcmSsrc = iqSsrc + 1;
+    
+    console.log(`🎵 Requesting PCM audio stream: IQ SSRC ${iqSsrc} → PCM SSRC ${pcmSsrc}`);
+    
+    return new Promise((resolve, reject) => {
+      // Use the RadiodStreamManager Python module to request the stream
+      const pythonScript = `
+from signal_recorder import RadiodStreamManager
+import json
+import sys
+
+try:
+    manager = RadiodStreamManager('bee1-hf-status.local')
+    stream = manager.request_stream(
+        ssrc=${pcmSsrc},
+        frequency=${frequency},
+        preset='am',
+        sample_rate=12000,
+        agc=1,
+        gain=50
+    )
+    
+    result = {
+        'success': True,
+        'ssrc': stream.ssrc,
+        'frequency': stream.frequency,
+        'multicast_address': stream.multicast_address,
+        'multicast_port': stream.multicast_port,
+        'sample_rate': stream.sample_rate,
+        'snr': stream.snr
+    }
+    print(json.dumps(result))
+except Exception as e:
+    result = {
+        'success': False,
+        'error': str(e)
+    }
+    print(json.dumps(result))
+    sys.exit(1)
+`;
+      
+      // Execute Python script using venv
+      const venvPython = join(installDir, 'venv', 'bin', 'python3');
+      exec(`${venvPython} -c "${pythonScript}"`, { timeout: 10000 }, (error, stdout, stderr) => {
+        if (error && !stdout) {
+          console.error(`❌ Failed to request stream:`, error);
+          console.error(`stderr: ${stderr}`);
+          reject(error);
+          return;
+        }
+        
+        try {
+          const result = JSON.parse(stdout.trim());
+          
+          if (!result.success) {
+            console.error(`❌ Stream request failed: ${result.error}`);
+            reject(new Error(result.error));
+            return;
+          }
+          
+          console.log(`✅ PCM stream created: SSRC=${result.ssrc} → ${result.multicast_address}:${result.multicast_port}`);
+          console.log(`   Frequency: ${result.frequency/1e6} MHz, SNR: ${result.snr.toFixed(1)} dB`);
+          
+          const stream = {
+            pcmSsrc: result.ssrc,
+            iqSsrc,
+            active: true,
+            response: null,
+            frequency: result.frequency,
+            multicastAddress: result.multicast_address,
+            multicastPort: result.multicast_port,
+            sampleRate: result.sample_rate,
+            snr: result.snr
+          };
+          
+          this.activeStreams.set(pcmSsrc, stream);
+          
+          // Join the multicast group for this PCM stream (if not already joined)
+          if (!this.joinedMulticastGroups.has(result.multicast_address)) {
+            this.audioSocket.addMembership(result.multicast_address, '0.0.0.0');
+            this.joinedMulticastGroups.add(result.multicast_address);
+            console.log(`📡 Joined multicast ${result.multicast_address} for SSRC ${pcmSsrc}`);
+          } else {
+            console.log(`📡 Already joined multicast ${result.multicast_address} for SSRC ${pcmSsrc}`);
+          }
+          
+          resolve(stream);
+        } catch (parseError) {
+          console.error(`❌ Failed to parse Python output:`, parseError);
+          console.error(`stdout: ${stdout}`);
+          console.error(`stderr: ${stderr}`);
+          reject(parseError);
+        }
+      });
+    });
+  }
+  
+  
+  stopAudioStream(ssrc) {
+    console.log(`🛑 Stopping ka9q-radio stream for SSRC ${ssrc}`);
+    
+    const stream = this.activeStreams.get(ssrc);
+    if (stream) {
+      stream.active = false;
+      if (stream.response) {
+        stream.response.end();
+      }
+      this.activeStreams.delete(ssrc);
+    }
+  }
+
+  buildPCMCommand(iqSsrc, pcmSsrc, frequency) {
+    // Build binary command to request PCM audio for existing IQ stream
+    const buffer = Buffer.alloc(128);
+    let offset = 0;
+
+    // Command byte
+    buffer.writeUInt8(CMD, offset++);
+    
+    // Radio frequency (tune to same frequency as IQ stream)
+    buffer.writeUInt8(RADIO_FREQUENCY, offset++);
+    buffer.writeUInt8(8, offset++); // 8-byte double
+    buffer.writeDoubleBE(frequency, offset);
+    offset += 8;
+    
+    // Output SSRC (request PCM audio with unique SSRC)
+    buffer.writeUInt8(OUTPUT_SSRC, offset++);
+    buffer.writeUInt8(4, offset++); // 4-byte int
+    buffer.writeUInt32BE(pcmSsrc, offset);
+    offset += 4;
+    
+    // Don't specify destination port - let radiod choose
+    // This allows radiod to use its default port assignment
+    
+    // Set PCM mode (not IQ mode)
+    buffer.writeUInt8(PRESET, offset++);
+    const pcmMode = 'pcm';  // Request PCM audio output
+    buffer.writeUInt8(pcmMode.length, offset++);
+    buffer.write(pcmMode, offset, pcmMode.length);
+    offset += pcmMode.length;
+    
+    // Command tag
+    buffer.writeUInt8(COMMAND_TAG, offset++);
+    buffer.writeUInt8(4, offset++); // 4-byte int
+    buffer.writeUInt32BE(Math.floor(Math.random() * 0xFFFFFFFF), offset);
+    offset += 4;
+    
+    // End of list
+    buffer.writeUInt8(0, offset++); // EOL
+    
+    return buffer.slice(0, offset);
+  }
+
+  buildAudioCommand(ssrc, frequency) {
+    // Build binary command using ka9q-web protocol (kept for reference)
+    const buffer = Buffer.alloc(128);
+    let offset = 0;
+
+    // Command byte
+    buffer.writeUInt8(CMD, offset++);
+    
+    // Radio frequency
+    buffer.writeUInt8(RADIO_FREQUENCY, offset++);
+    buffer.writeUInt8(8, offset++); // 8-byte double
+    buffer.writeDoubleBE(frequency, offset);
+    offset += 8;
+    
+    // Output SSRC
+    buffer.writeUInt8(OUTPUT_SSRC, offset++);
+    buffer.writeUInt8(4, offset++); // 4-byte int
+    buffer.writeUInt32BE(ssrc, offset);
+    offset += 4;
+    
+    // Command tag
+    buffer.writeUInt8(COMMAND_TAG, offset++);
+    buffer.writeUInt8(4, offset++); // 4-byte int
+    buffer.writeUInt32BE(Math.floor(Math.random() * 0xFFFFFFFF), offset);
+    offset += 4;
+    
+    // End of list
+    buffer.writeUInt8(0, offset++); // EOL
+    
+    return buffer.slice(0, offset);
+  }
+
+  setStreamResponse(ssrc, response) {
+    const stream = this.activeStreams.get(ssrc);
+    if (stream) {
+      stream.response = response;
+    }
+  }
+
+  shutdown() {
+    console.log('🛑 Shutting down ka9q-radio proxy...');
+    
+    // Stop all active streams
+    for (const [ssrc] of this.activeStreams) {
+      this.stopAudioStream(ssrc);
+    }
+    
+    // Close sockets
+    if (this.controlSocket) this.controlSocket.close();
+    if (this.audioSocket) this.audioSocket.close();
+  }
+}
+
+// Create ka9q-radio proxy instance
+const radioProxy = new Ka9qRadioProxy();
+
 
 // Middleware
 app.use(express.json({ limit: '50mb' }));
@@ -1490,80 +1866,46 @@ app.post('/api/channels/create', requireAuth, async (req, res) => {
   }
 });
 
-// Audio streaming endpoint
-app.get('/api/audio/stream/:ssrc', (req, res) => {
-  const ssrc = req.params.ssrc;
+// Audio streaming endpoint - request PCM stream from radiod
+app.get('/api/audio/stream/:iqSsrc', async (req, res) => {
+  const iqSsrc = parseInt(req.params.iqSsrc);
   
-  // Read stats to get multicast address for this channel
-  let multicastAddr = '239.1.2.1';
-  let multicastPort = '5004';
+  console.log(`🎵 Requesting PCM audio stream for IQ SSRC ${iqSsrc}`);
   
   try {
-    const statsData = fs.readFileSync('/tmp/signal-recorder-stats.json', 'utf8');
-    const stats = JSON.parse(statsData);
-    if (stats.recorders && stats.recorders[ssrc]) {
-      const channel = stats.recorders[ssrc];
-      multicastAddr = channel.multicast_address || multicastAddr;
-      multicastPort = String(channel.multicast_port || multicastPort);
-    }
-  } catch (error) {
-    console.error('Failed to read stats for multicast info:', error.message);
-  }
-  
-  console.log(`Starting audio stream for SSRC ${ssrc}: ${multicastAddr}:${multicastPort}`);
-  
-  // Set headers for audio streaming
-  res.setHeader('Content-Type', 'audio/wav');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Transfer-Encoding', 'chunked');
-  
-  // Spawn Python audio streamer (outputs at native 8kHz RTP rate)
-  const audioStreamScript = join(srcPath, 'signal_recorder', 'audio_stream.py');
-  const audioStreamer = spawn(venvPython, [
-    audioStreamScript,
-    '--multicast-address', multicastAddr,
-    '--multicast-port', multicastPort,
-    '--mode', 'AM',
-    '--audio-rate', '8000'
-  ], {
-    cwd: installDir
-  });
-  
-  // Write WAV header (44 bytes for 8kHz mono PCM)
-  const wavHeader = Buffer.alloc(44);
-  wavHeader.write('RIFF', 0);
-  wavHeader.writeUInt32LE(0xFFFFFFFF, 4);  // File size (unknown for stream)
-  wavHeader.write('WAVE', 8);
-  wavHeader.write('fmt ', 12);
-  wavHeader.writeUInt32LE(16, 16);  // fmt chunk size
-  wavHeader.writeUInt16LE(1, 20);   // PCM format
-  wavHeader.writeUInt16LE(1, 22);   // Mono
-  wavHeader.writeUInt32LE(8000, 24); // Sample rate (8 kHz)
-  wavHeader.writeUInt32LE(16000, 28); // Byte rate (8000 * 2)
-  wavHeader.writeUInt16LE(2, 32);   // Block align
-  wavHeader.writeUInt16LE(16, 34);  // Bits per sample
-  wavHeader.write('data', 36);
-  wavHeader.writeUInt32LE(0xFFFFFFFF, 40); // Data size (unknown for stream)
-  
-  res.write(wavHeader);
-  
-  // Pipe audio data from Python process
-  audioStreamer.stdout.on('data', (chunk) => {
-    res.write(chunk);
-  });
-  
-  audioStreamer.stderr.on('data', (data) => {
-    console.error(`Audio streamer error: ${data}`);
-  });
-  
-  audioStreamer.on('close', (code) => {
-    console.log(`Audio streamer exited with code ${code}`);
+    // Request PCM stream from radiod using our ka9q-radio proxy
+    const stream = await radioProxy.startAudioStream(iqSsrc);
+    
+    console.log(`✅ PCM stream created: IQ SSRC ${iqSsrc} → PCM SSRC ${stream.pcmSsrc}`);
+    console.log(`📍 Multicast: ${stream.multicastAddress}:${stream.multicastPort}`);
+    
+    // Create WebSocket for real-time RTP forwarding
+    res.setHeader('Content-Type', 'text/plain');
+    res.write(`WebSocket: ws://${req.headers.host}/api/audio/ws/${stream.pcmSsrc}\n`);
+    res.write(`PCM SSRC: ${stream.pcmSsrc}\n`);
+    res.write(`Multicast: ${stream.multicastAddress}:${stream.multicastPort}\n`);
     res.end();
-  });
+    
+  } catch (error) {
+    console.error('❌ Failed to create PCM stream:', error);
+    res.status(500).json({ error: 'Failed to create PCM stream', details: error.message });
+  }
+});
+
+// ka9q-radio proxy health check
+app.get('/api/audio/health', (req, res) => {
+  const streamInfo = Array.from(radioProxy.activeStreams.entries()).map(([pcmSsrc, stream]) => ({
+    pcmSsrc,
+    iqSsrc: stream.iqSsrc,
+    frequency: stream.frequency,
+    active: stream.active
+  }));
   
-  // Clean up on client disconnect
-  req.on('close', () => {
-    audioStreamer.kill();
+  res.json({ 
+    status: 'ok', 
+    service: 'integrated-ka9q-radio-proxy',
+    activeStreams: radioProxy.activeStreams.size,
+    streams: streamInfo
   });
 });
 
@@ -1587,14 +1929,96 @@ app.get('*', (req, res) => {
 function startServer() {
   initializeDefaultUser();
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`🚀 GRAPE Configuration UI Server running on http://localhost:${PORT}/`);
     console.log(`📊 Monitoring Dashboard available at http://localhost:${PORT}/monitoring`);
     console.log(`📁 Using JSON database in ./data/ directory`);
     console.log(`👤 Default login: admin / admin`);
     console.log(`🔧 Enhanced monitoring with debugging and robust API handling`);
     console.log(`✅ JSON database implementation working!`);
+    console.log(`🎵 WebSocket audio streaming enabled`);
+  });
+  
+  // WebSocket server for audio streaming (ka9q-web style)
+  const wss = new WebSocketServer({ noServer: true });
+
+  // Audio session management (global for ka9q-radio proxy access)
+  global.audioSessions = new Map(); // ssrc -> { ws, audio_active: boolean }
+
+  // Handle WebSocket upgrade
+  server.on('upgrade', (request, socket, head) => {
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    
+    if (url.pathname.startsWith('/api/audio/ws/')) {
+      const ssrc = parseInt(url.pathname.split('/')[4]);
+      if (!isNaN(ssrc)) {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit('connection', ws, request, ssrc);
+        });
+      } else {
+        socket.destroy();
+      }
+    } else {
+      socket.destroy();
+    }
+  });
+
+  wss.on('connection', (ws, request, ssrc) => {
+    console.log(`🎵 WebSocket audio connection for SSRC ${ssrc}`);
+    
+    // Create audio session
+    const session = {
+      ws,
+      ssrc,
+      audio_active: false
+    };
+    
+    global.audioSessions.set(ssrc, session);
+    
+    ws.on('message', (message) => {
+      const msg = message.toString();
+      console.log(`📨 Received WebSocket message for SSRC ${ssrc}: ${msg}`);
+      
+      if (msg.startsWith('A:')) {
+        if (msg.includes('START')) {
+          session.audio_active = true;
+          console.log(`✅ Audio activated for SSRC ${ssrc}`);
+        } else if (msg.includes('STOP')) {
+          session.audio_active = false;
+          console.log(`⏹️ Audio deactivated for SSRC ${ssrc}`);
+        }
+      }
+    });
+    
+    ws.on('close', () => {
+      console.log(`👋 WebSocket audio connection closed for SSRC ${ssrc}`);
+      global.audioSessions.delete(ssrc);
+    });
+    
+    ws.on('error', (error) => {
+      console.error(`❌ WebSocket error for SSRC ${ssrc}:`, error);
+      global.audioSessions.delete(ssrc);
+    });
   });
 }
 
 startServer();
+
+// Handle graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\n🛑 Shutting down GRAPE Configuration UI Server...');
+  
+  // Shutdown ka9q-radio proxy
+  radioProxy.shutdown();
+  
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Received SIGTERM, shutting down...');
+  
+  // Shutdown ka9q-radio proxy
+  radioProxy.shutdown();
+  
+  process.exit(0);
+});

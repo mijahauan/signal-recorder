@@ -1238,8 +1238,10 @@
             
             // If already playing this channel, stop it
             if (currentSSRC === ssrc && currentAudio) {
-                currentAudio.pause();
-                currentAudio.src = '';
+                if (currentAudio.readyState === 1) { // WebSocket is OPEN
+                    currentAudio.send('A:STOP');
+                    currentAudio.close();
+                }
                 currentAudio = null;
                 currentSSRC = null;
                 btn.textContent = '🔈';
@@ -1249,8 +1251,11 @@
             
             // Stop any currently playing audio
             if (currentAudio) {
-                currentAudio.pause();
-                currentAudio.src = '';
+                if (currentAudio.readyState === 1) { // WebSocket is OPEN
+                    currentAudio.send('A:STOP');
+                    currentAudio.close();
+                }
+                currentAudio = null;
                 const oldBtn = document.getElementById(`listen-btn-${currentSSRC}`);
                 if (oldBtn) {
                     oldBtn.textContent = '🔈';
@@ -1258,29 +1263,174 @@
                 }
             }
             
-            // Start new audio stream
-            currentAudio = new Audio(`/api/audio/stream/${ssrc}`);
-            currentSSRC = ssrc;
+            // Start new audio stream using WebSocket (ka9q-web style)
+            console.log(`Starting WebSocket audio stream for SSRC ${ssrc}`);
             
-            currentAudio.play().then(() => {
-                btn.textContent = '🔊';
-                btn.title = 'Stop listening';
-            }).catch(error => {
-                console.error('Failed to start audio:', error);
-                alert('Failed to start audio stream. Check console for details.');
-                currentAudio = null;
-                currentSSRC = null;
-                btn.textContent = '🔈';
-            });
-            
-            // Handle audio errors
-            currentAudio.onerror = (e) => {
-                console.error('Audio stream error:', e);
-                btn.textContent = '🔈';
-                btn.title = 'Listen to channel';
-                currentAudio = null;
-                currentSSRC = null;
-            };
+            // First request PCM stream from radiod
+            fetch(`/api/audio/stream/${ssrc}`)
+                .then(response => response.text())
+                .then(data => {
+                    console.log(`PCM stream info: ${data}`);
+                    
+                    // Parse the response to get WebSocket URL
+                    const lines = data.split('\n');
+                    const wsLine = lines.find(line => line.startsWith('WebSocket:'));
+                    if (wsLine) {
+                        const wsUrl = wsLine.split(': ')[1];
+                        console.log(`Connecting to WebSocket: ${wsUrl}`);
+                        
+                        // Create WebSocket connection
+                        const ws = new WebSocket(wsUrl);
+                        ws.binaryType = 'arraybuffer';
+                        
+                        ws.onopen = () => {
+                            console.log('WebSocket audio connection opened');
+                            btn.textContent = '🔊';
+                            btn.title = 'Stop listening';
+                            currentSSRC = ssrc;
+                            currentAudio = ws;
+                            
+                            // Send START command (like ka9q-web)
+                            ws.send('A:START');
+                        };
+                        
+                        // Create Web Audio context for playback
+                        const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                            sampleRate: 12000 // Match radiod's PCM output
+                        });
+                        
+                        // Create a buffer to queue audio samples
+                        let audioQueue = [];
+                        let isPlaying = false;
+                        let nextPlayTime = 0;
+                        
+                        let packetCount = 0;
+                        
+                        ws.onmessage = (event) => {
+                            if (event.data instanceof ArrayBuffer) {
+                                // Parse RTP packet and extract PCM audio
+                                const rtpPacket = new DataView(event.data);
+                                
+                                // RTP header is at least 12 bytes
+                                if (rtpPacket.byteLength < 12) return;
+                                
+                                // Debug first few packets
+                                if (packetCount < 3) {
+                                    console.log(`RTP packet ${packetCount}: size=${rtpPacket.byteLength}, first bytes:`, 
+                                        Array.from(new Uint8Array(event.data, 0, Math.min(32, rtpPacket.byteLength)))
+                                            .map(b => b.toString(16).padStart(2, '0')).join(' '));
+                                    packetCount++;
+                                }
+                                
+                                // Parse RTP header (matching our Python audio_streamer.py)
+                                const headerByte0 = rtpPacket.getUint8(0);
+                                const csrcCount = headerByte0 & 0x0F;
+                                const hasExtension = (headerByte0 & 0x10) !== 0;
+                                
+                                // Start after fixed 12-byte header + CSRC list
+                                let payloadOffset = 12 + (csrcCount * 4);
+                                
+                                // Handle extension header if present (ka9q-radio uses this)
+                                if (hasExtension && rtpPacket.byteLength >= payloadOffset + 4) {
+                                    const extLengthWords = rtpPacket.getUint16(payloadOffset + 2, false); // Big-endian
+                                    payloadOffset += 4 + (extLengthWords * 4);
+                                }
+                                
+                                if (payloadOffset >= rtpPacket.byteLength) {
+                                    return; // No payload
+                                }
+                                
+                                // Extract PCM payload (16-bit signed samples, big-endian like IQ data)
+                                const payloadLength = rtpPacket.byteLength - payloadOffset;
+                                const sampleCount = Math.floor(payloadLength / 2); // 16-bit samples
+                                
+                                if (packetCount < 3) {
+                                    console.log(`  Payload offset: ${payloadOffset}, length: ${payloadLength}, samples: ${sampleCount}`);
+                                }
+                                
+                                // Convert to Float32Array for Web Audio API
+                                // ka9q-radio sends PCM as big-endian 16-bit samples
+                                const pcmSamples = new Float32Array(sampleCount);
+                                for (let i = 0; i < sampleCount; i++) {
+                                    const sample = rtpPacket.getInt16(payloadOffset + (i * 2), false); // Big-endian
+                                    pcmSamples[i] = sample / 32768.0; // Convert to -1.0 to 1.0 range
+                                }
+                                
+                                // Add samples to queue
+                                audioQueue.push(pcmSamples);
+                                
+                                // Start playback if not already playing
+                                if (!isPlaying) {
+                                    isPlaying = true;
+                                    playAudioQueue();
+                                }
+                                
+                                function playAudioQueue() {
+                                    if (audioQueue.length === 0) {
+                                        isPlaying = false;
+                                        return;
+                                    }
+                                    
+                                    const samples = audioQueue.shift();
+                                    
+                                    // Create audio buffer
+                                    const buffer = audioContext.createBuffer(1, samples.length, audioContext.sampleRate);
+                                    buffer.getChannelData(0).set(samples);
+                                    
+                                    // Create source and connect to destination
+                                    const source = audioContext.createBufferSource();
+                                    source.buffer = buffer;
+                                    source.connect(audioContext.destination);
+                                    
+                                    // Schedule playback at precise time
+                                    const currentTime = audioContext.currentTime;
+                                    if (nextPlayTime < currentTime) {
+                                        nextPlayTime = currentTime;
+                                    }
+                                    source.start(nextPlayTime);
+                                    
+                                    // Update next play time
+                                    const duration = samples.length / audioContext.sampleRate;
+                                    nextPlayTime += duration;
+                                    
+                                    // Continue playback
+                                    if (audioQueue.length > 0) {
+                                        playAudioQueue();
+                                    } else {
+                                        // Wait a bit for more packets
+                                        setTimeout(() => {
+                                            if (audioQueue.length > 0) {
+                                                playAudioQueue();
+                                            } else {
+                                                isPlaying = false;
+                                            }
+                                        }, 50);
+                                    }
+                                }
+                            }
+                        };
+                        
+                        ws.onerror = (error) => {
+                            console.error('WebSocket audio error:', error);
+                            btn.textContent = '🔈';
+                            currentAudio = null;
+                            currentSSRC = null;
+                            alert('Failed to start audio stream. Check console for details.');
+                        };
+                        
+                        ws.onclose = () => {
+                            console.log('WebSocket audio connection closed');
+                            btn.textContent = '🔈';
+                            btn.title = 'Listen to channel';
+                            currentAudio = null;
+                            currentSSRC = null;
+                        };
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to request PCM stream:', error);
+                    alert('Failed to start audio stream. Check console for details.');
+                });
         }
 
         function refreshAll() {

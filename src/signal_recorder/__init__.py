@@ -28,6 +28,7 @@ from .grape_recorder import GRAPERecorderManager as GRAPECLIManager
 from .channel_manager import ChannelManager
 from .control_discovery import discover_channels_via_control, ChannelInfo
 from .radiod_control import RadiodControl
+from .radiod_stream_manager import RadiodStreamManager, StreamInfo
 
 # Upload (exists but not yet integrated into daemon)
 from .uploader import UploadManager, SSHRsyncUpload
@@ -43,6 +44,8 @@ __all__ = [
     "discover_channels_via_control",
     "ChannelInfo",
     "RadiodControl",
+    "RadiodStreamManager",
+    "StreamInfo",
     # Upload
     "UploadManager",
     "SSHRsyncUpload",
