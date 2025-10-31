@@ -174,9 +174,11 @@ class WWVToneDetector:
     """
     Detect 1000 Hz tone at start of minute in WWV time signal broadcasts
     
-    WWV (Fort Collins) broadcasts a 1-second 1000 Hz tone at :00 seconds.
-    WWVH (Hawaii) broadcasts 1200 Hz (not detected here - WWV is closer).
-    This provides an independent timing reference beyond RTP timestamps.
+    Per NIST: WWV (Fort Collins) broadcasts an 800ms 1000 Hz tone at second 0 of each minute.
+    WWVH (Hawaii) broadcasts 1200 Hz instead (not detected here - WWV closer to CONUS).
+    
+    This provides an independent timing reference beyond RTP timestamps for
+    verifying time synchronization and detecting clock drift.
     """
     
     def __init__(self, sample_rate=3000):
@@ -198,10 +200,10 @@ class WWVToneDetector:
             output='sos'
         )
         
-        # Detection parameters (balanced for real WWV 1000 Hz tone)
+        # Detection parameters tuned for WWV 800ms 1000 Hz tone (per NIST spec)
         self.envelope_threshold = 0.03  # Relative to max envelope (3% - reduces false positives)
-        self.min_tone_duration_sec = 0.3  # Require at least 30% of expected 1-sec tone
-        self.max_tone_duration_sec = 1.5  # Tolerant but not excessive
+        self.min_tone_duration_sec = 0.6  # Expect 800ms ± propagation/processing delays
+        self.max_tone_duration_sec = 1.0  # Allow margin for poor SNR or fading
         
         # State
         self.last_detection_time = 0
@@ -232,14 +234,14 @@ class WWVToneDetector:
         if np.random.random() < 0.01:
             logger.debug(f"WWV detector step 2: After DC removal min={np.min(am_audio_dc_removed):.6f}, max={np.max(am_audio_dc_removed):.6f}")
         
-        # 2. Bandpass filter around 1200 Hz in the demodulated audio
+        # 2. Bandpass filter around 1000 Hz in the demodulated audio
         filtered = scipy_signal.sosfiltfilt(self.sos, am_audio_dc_removed)
         
         # DEBUG: Check after filtering
         if np.random.random() < 0.01:
-            logger.debug(f"WWV detector step 3: After filter min={np.min(filtered):.6f}, max={np.max(filtered):.6f}, has_nan={np.any(np.isnan(filtered))}")
+            logger.debug(f"WWV detector step 3: After 1000Hz filter min={np.min(filtered):.6f}, max={np.max(filtered):.6f}, has_nan={np.any(np.isnan(filtered))}")
         
-        # 3. Envelope detection of the 1200 Hz component
+        # 3. Envelope detection of the 1000 Hz component
         analytic = scipy_signal.hilbert(filtered)
         envelope = np.abs(analytic)
         
@@ -712,14 +714,14 @@ class GRAPEChannelRecorder:
         self.is_wwv_channel = 'WWV' in channel_name.upper()
         if self.is_wwv_channel:
             # Create 3 kHz resampler for tone detection (parallel to main 10 Hz path)
-            # Need at least 2.4 kHz for 1200 Hz tone (Nyquist), use 3 kHz for margin
+            # Need at least 2.0 kHz for 1000 Hz tone (Nyquist), use 3 kHz for margin
             self.tone_resampler = Resampler(input_rate=8000, output_rate=3000)
             self.tone_detector = WWVToneDetector(sample_rate=3000)
             self.tone_accumulator = []  # Buffer for tone detection
             self.tone_samples_per_check = 6000  # Check for tone every 2 seconds at 3 kHz
             self.wwv_detections = 0
             self.wwv_timing_errors = []  # Track timing errors from WWV tone
-            logger.info(f"{channel_name}: WWV tone detection ENABLED (1200 Hz at 3 kHz sample rate)")
+            logger.info(f"{channel_name}: WWV tone detection ENABLED (1000 Hz minute markers, 800ms duration, 3 kHz sample rate)")
         else:
             self.tone_detector = None
         
@@ -1001,9 +1003,10 @@ class GRAPEChannelRecorder:
                 accumulated_tone_samples = sum(len(s) for s in self.tone_accumulator)
                 if accumulated_tone_samples >= self.tone_samples_per_check:
                     # Only check during narrow window around minute boundary
-                    # WWV tone occurs at :00-:01, so check :58-:03 (5 second window)
+                    # WWV 800ms tone starts at :00.0, so check :59-:02 (3 second window)
+                    # Window accounts for: RTP jitter, processing delays, propagation time
                     seconds_in_minute = unix_time % 60
-                    in_detection_window = (seconds_in_minute >= 58) or (seconds_in_minute <= 3)
+                    in_detection_window = (seconds_in_minute >= 59) or (seconds_in_minute <= 2)
                     
                     if in_detection_window:
                         # Concatenate and detect
