@@ -442,8 +442,22 @@ class RTPReceiver:
                     logger.info(f"RTP receiver: {packet_count} packets, "
                                f"{len(ssrc_seen)} SSRCs ({len(self.callbacks)} registered)")
                     
-                # Extract payload (after 12-byte header)
-                payload = data[12:]
+                # Extract payload - account for CSRC list and extension headers
+                payload_offset = 12 + (header.csrc_count * 4)  # Base header + CSRC list
+                
+                # Handle extension header if present
+                if header.extension:
+                    if len(data) >= payload_offset + 4:
+                        # Extension header: 2 bytes profile + 2 bytes length (in 32-bit words)
+                        ext_header = struct.unpack('>HH', data[payload_offset:payload_offset+4])
+                        ext_length_words = ext_header[1]
+                        payload_offset += 4 + (ext_length_words * 4)
+                
+                if payload_offset >= len(data):
+                    logger.warning(f"Invalid RTP packet: payload_offset={payload_offset}, len={len(data)}")
+                    continue
+                
+                payload = data[payload_offset:]
                 
                 # Dispatch to appropriate callback
                 callback = self.callbacks.get(header.ssrc)
