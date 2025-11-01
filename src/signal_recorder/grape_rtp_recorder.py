@@ -800,7 +800,15 @@ class GRAPEChannelRecorder:
         self.current_minute_samples += num_output_samples
         
         # Calculate timing drift (RTP time vs system time)
-        timing_drift_ms = (sample_time - system_time) * 1000
+        # Both times should be relative to the same reference point (recording start)
+        if self.utc_aligned_start is not None:
+            system_elapsed = system_time - self.utc_aligned_start
+            rtp_elapsed = sample_time - self.utc_aligned_start
+            # Drift is the difference between how much time passed according to each clock
+            timing_drift_ms = (rtp_elapsed - system_elapsed) * 1000
+        else:
+            timing_drift_ms = 0.0  # No drift calculation before sync
+        
         self.timing_drift_samples.append(timing_drift_ms)
         
         # Keep only last 100 samples for drift statistics
