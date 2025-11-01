@@ -468,6 +468,22 @@
             border-radius: 6px;
             margin: 20px 0;
         }
+        
+        /* Listen button hover effect */
+        .listen-btn:hover {
+            background: rgba(255, 255, 255, 0.1) !important;
+            transform: scale(1.1);
+        }
+        
+        /* Pulse animation for active audio button */
+        @keyframes pulse {
+            0%, 100% {
+                box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+            }
+            50% {
+                box-shadow: 0 0 20px rgba(76, 175, 80, 0.8), 0 0 30px rgba(76, 175, 80, 0.4);
+            }
+        }
     </style>
 </head>
 <body>
@@ -979,7 +995,7 @@
                     row.innerHTML = `
                         <td class="channel-name">
                             <button class="listen-btn" onclick="toggleAudio('${ssrc}')" id="listen-btn-${ssrc}" 
-                                    style="background: none; border: none; cursor: pointer; font-size: 16px; margin-right: 8px; vertical-align: middle;" 
+                                    style="background: none; border: 2px solid transparent; cursor: pointer; font-size: 18px; margin-right: 8px; vertical-align: middle; padding: 4px 8px; border-radius: 4px; transition: all 0.3s ease;" 
                                     title="Listen to channel">
                                 🔈
                             </button>
@@ -1260,6 +1276,9 @@
                 if (oldBtn) {
                     oldBtn.textContent = '🔈';
                     oldBtn.title = 'Listen to channel';
+                    oldBtn.style.background = 'none';
+                    oldBtn.style.border = '2px solid transparent';
+                    oldBtn.style.animation = 'none';
                 }
             }
             
@@ -1287,6 +1306,10 @@
                             console.log('WebSocket audio connection opened');
                             btn.textContent = '🔊';
                             btn.title = 'Stop listening';
+                            btn.style.background = 'linear-gradient(135deg, #4CAF50 0%, #45a049 100%)';
+                            btn.style.border = '2px solid #2e7d32';
+                            btn.style.boxShadow = '0 0 10px rgba(76, 175, 80, 0.5)';
+                            btn.style.animation = 'pulse 2s ease-in-out infinite';
                             currentSSRC = ssrc;
                             currentAudio = ws;
                             
@@ -1413,6 +1436,11 @@
                         ws.onerror = (error) => {
                             console.error('WebSocket audio error:', error);
                             btn.textContent = '🔈';
+                            btn.style.background = 'none';
+                            btn.style.border = '2px solid transparent';
+                            btn.style.boxShadow = 'none';
+                            btn.style.animation = 'none';
+                            btn.title = 'Listen to channel';
                             currentAudio = null;
                             currentSSRC = null;
                             alert('Failed to start audio stream. Check console for details.');
@@ -1421,6 +1449,10 @@
                         ws.onclose = () => {
                             console.log('WebSocket audio connection closed');
                             btn.textContent = '🔈';
+                            btn.style.background = 'none';
+                            btn.style.border = '2px solid transparent';
+                            btn.style.boxShadow = 'none';
+                            btn.style.animation = 'none';
                             btn.title = 'Listen to channel';
                             currentAudio = null;
                             currentSSRC = null;
