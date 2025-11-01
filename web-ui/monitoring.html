@@ -487,6 +487,8 @@
     </style>
     <!-- Chart.js for timing visualizations -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- Chart.js date adapter for time scales -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 </head>
 <body>
     <nav class="navbar">
@@ -1566,11 +1568,21 @@
         
         function updateTimingChart(timeSeries) {
             const canvas = document.getElementById('timing-chart');
+            if (!canvas) {
+                console.error('timing-chart canvas not found');
+                return;
+            }
+            
             const ctx = canvas.getContext('2d');
             
             // Destroy existing chart
             if (timingChart) {
                 timingChart.destroy();
+            }
+            
+            if (timeSeries.length === 0) {
+                console.log('No timing data to plot yet');
+                return;
             }
             
             // Group data by frequency
@@ -1592,7 +1604,10 @@
                 });
             });
             
-            timingChart = new Chart(ctx, {
+            console.log(`Creating timing chart with ${Object.keys(datasets).length} frequencies, ${timeSeries.length} total points`);
+            
+            try {
+                timingChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     datasets: Object.values(datasets)
@@ -1633,6 +1648,9 @@
                     }
                 }
             });
+            } catch (error) {
+                console.error('Failed to create timing chart:', error);
+            }
         }
         
         function updateTimingHistogram(byFrequency) {
