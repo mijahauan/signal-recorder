@@ -827,6 +827,43 @@ class GRAPEChannelRecorder:
                 
                 self.last_timing_report = system_time
     
+    def _log_wwv_timing(self, detection_time: float, timing_error_ms: float):
+        """
+        Log WWV timing data to CSV for analysis and graphing.
+        
+        Args:
+            detection_time: Unix timestamp of detection
+            timing_error_ms: Timing error in milliseconds
+        """
+        import csv
+        from pathlib import Path
+        
+        # CSV file path
+        csv_path = Path(__file__).parent.parent.parent / 'logs' / 'wwv_timing.csv'
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Extract frequency from channel name (e.g., "WWV 10 MHz Audio" -> 10.0)
+        try:
+            freq_str = self.channel_name.split()[1]  # Get "10" from "WWV 10 MHz Audio"
+            frequency_mhz = float(freq_str)
+        except (IndexError, ValueError):
+            frequency_mhz = self.frequency_hz / 1e6
+        
+        # Append to CSV
+        try:
+            with open(csv_path, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    detection_time,                    # timestamp
+                    self.channel_name,                 # channel
+                    frequency_mhz,                     # frequency_mhz
+                    f"{timing_error_ms:.2f}",         # timing_error_ms
+                    self.wwv_detections,              # detection_count
+                    "N/A"                              # snr_estimate (can add later)
+                ])
+        except Exception as e:
+            logger.error(f"{self.channel_name}: Failed to log WWV timing: {e}")
+    
     def _check_sync_state(self, header: RTPHeader) -> bool:
         """
         Implement wsprdaemon-style UTC boundary synchronization.
@@ -1072,6 +1109,9 @@ class GRAPEChannelRecorder:
                             logger.info(f"{self.channel_name}: WWV tone detected! "
                                        f"Timing error: {timing_error_ms:+.1f} ms "
                                        f"(detection #{self.wwv_detections})")
+                            
+                            # Log to CSV for analysis and graphing
+                            self._log_wwv_timing(unix_time, timing_error_ms)
                     else:
                         # Outside detection window - discard accumulated samples
                         self.tone_accumulator = []
