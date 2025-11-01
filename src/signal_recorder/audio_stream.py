@@ -56,7 +56,8 @@ def main():
         
         # Stream audio chunks to stdout
         while True:
-            chunk = streamer.get_audio_chunk(timeout=1.0)
+            # Short timeout (50ms = 1 chunk duration) for smooth streaming
+            chunk = streamer.get_audio_chunk(timeout=0.05)
             
             # Write raw PCM to stdout
             sys.stdout.buffer.write(chunk)

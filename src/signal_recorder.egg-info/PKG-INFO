@@ -1,4 +1,4 @@
-Metadata-Version: 2.4
+Metadata-Version: 2.1
 Name: signal-recorder
 Version: 0.1.0
 Summary: Automated recording and upload system for ka9q-radio streams
@@ -15,300 +15,419 @@ Classifier: Programming Language :: Python :: 3.11
 Classifier: Programming Language :: Python :: 3.12
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
-License-File: LICENSE
-Requires-Dist: toml>=0.10.2
-Requires-Dist: numpy>=1.24.0
-Requires-Dist: scipy>=1.10.0
-Requires-Dist: soundfile>=0.12.0
-Requires-Dist: digital_rf>=2.6.0
-Requires-Dist: zeroconf>=0.132.0
 Provides-Extra: dev
-Requires-Dist: pytest>=7.0.0; extra == "dev"
-Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
-Requires-Dist: black>=23.0.0; extra == "dev"
-Requires-Dist: flake8>=6.0.0; extra == "dev"
-Requires-Dist: mypy>=1.0.0; extra == "dev"
-Dynamic: author
-Dynamic: classifier
-Dynamic: description
-Dynamic: description-content-type
-Dynamic: home-page
-Dynamic: license-file
-Dynamic: provides-extra
-Dynamic: requires-dist
-Dynamic: requires-python
-Dynamic: summary
+License-File: LICENSE
 
-# Signal Recorder
+# GRAPE Signal Recorder
 
-A modular, extensible system for recording and uploading scientific signal data from ka9q-radio.
+**A specialized system for recording and archiving WWV/CHU time-standard signals for the HamSCI GRAPE (Grape Radio Aurora and Plasma Experiment) project.**
 
-## Overview
-
-Signal Recorder is designed to work with [ka9q-radio](https://github.com/ka9q/ka9q-radio) to automatically:
-
-1. **Discover** available signal streams via Avahi/mDNS
-2. **Record** time-synchronized audio/IQ data from multiple frequencies
-3. **Process** recordings with signal-specific plugins (GRAPE, CODAR, etc.)
-4. **Upload** processed data to remote repositories (HamSCI PSWS, etc.)
-
-## Key Features
-
-- **Automatic Stream Discovery**: No manual configuration of multicast addresses, ports, or SSRCs
-- **Dynamic Adaptation**: Automatically handles radiod restarts and configuration changes
-- **Plugin Architecture**: Easy to add new signal types without modifying core code
-- **Reliable Upload**: Queue-based upload with retry logic and verification
-- **Minimal Configuration**: Users specify stream names, not low-level networking parameters
-- **Web Configuration UI**: User-friendly web interface for managing configurations (see `web-ui/`)
-
-## 📋 **Quick Start (Recommended)**
-
-### **Use the Web Configuration UI**
-
-For the easiest setup experience:
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/signal-recorder.git
-cd signal-recorder
-
-# Start the configuration UI with pnpm (recommended, faster)
-cd web-ui
-pnpm install
-pnpm start
-
-# Access http://localhost:3000 (admin/admin)
-# Create your configuration through the guided interface
-# Save directly to config/ directory
-```
-
-**The web UI generates the correct configuration automatically!**
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
-## Installation
+## What is GRAPE?
 
-### From Source
+The [HamSCI GRAPE project](https://hamsci.org/grape) studies **ionospheric disturbances** by analyzing **timing variations** in WWV (Fort Collins, CO) and CHU (Ottawa, Canada) time-standard broadcasts. Amateur radio operators worldwide contribute data to build a global observation network.
+
+This recorder:
+- ✅ Captures **high-precision IQ data** from ka9q-radio
+- ✅ Processes to **10 Hz Digital RF format** for timing analysis  
+- ✅ Monitors **data quality metrics** (completeness, timing drift, packet loss)
+- ✅ Uploads to **HamSCI PSWS repository** via rsync
+- ✅ Provides **web-based management** and real-time monitoring
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+1. **ka9q-radio** installed and configured ([installation guide](https://github.com/ka9q/ka9q-radio))
+2. **Linux system** with multicast networking
+3. **Python 3.8+** and **Node.js 16+**
+4. **PSWS account** from HamSCI (for uploads)
+
+### Installation
 
 ```bash
-# Clone the repository
+# Clone repository
 git clone https://github.com/yourusername/signal-recorder.git
 cd signal-recorder
 
-# Create virtual environment
+# Install Python dependencies
 python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -e .
+
+# Install web UI dependencies
+cd web-ui
+pnpm install  # or: npm install
 ```
 
-## Configuration
+### Configuration
 
-### **Web-Based Configuration UI (Recommended)**
-
-The project includes a **simplified web-based configuration interface**:
+**Use the web interface** (easiest):
 
 ```bash
 cd web-ui
-npm install
-npm start
+pnpm start
+# Open http://localhost:3000 (login: admin/admin)
 ```
 
-**Features:**
-- **Guided setup** with form validation
-- **Channel presets** for WWV/CHU frequencies
-- **Auto-generates** correct TOML format
-- **Real-time validation** prevents configuration errors
-- **Save to config directory** with one click
+The web UI guides you through:
+1. Station info (callsign, grid square, instrument)
+2. Channel selection (WWV/CHU presets available)
+3. PSWS upload credentials
+4. Export to `config/grape-<callsign>.toml`
 
-**Access:** http://localhost:3000 (login: admin/admin)
+**Or edit TOML manually** (advanced users): see [Configuration Guide](docs/configuration.md)
 
-### **Manual Configuration (Advanced)**
+### Running
 
-For advanced users, create a configuration file:
+```bash
+# Start the recorder daemon
+signal-recorder daemon --config config/grape-<callsign>.toml
+
+# Or use the web UI to start/stop:
+http://localhost:3000
+```
+
+### Monitoring
+
+Real-time dashboard shows:
+- 📊 Channel health (🟢/🟡/🔴)
+- 📈 Completeness, packet loss, timing drift
+- 📁 Files written and data uploaded
+- 📋 Live daemon logs
+
+Access: `http://localhost:3000/monitoring`
+
+---
+
+## Key Features
+
+### 🎯 Purpose-Built for GRAPE
+
+Unlike generic SDR recorders, this system is **optimized for continuous timing signal analysis**:
+
+| Feature | GRAPE Recorder | Generic Recorders |
+|---------|---------------|-------------------|
+| **Data Format** | Digital RF (10 Hz IQ) | Audio/WAV/Raw IQ |
+| **Timing Validation** | RTP clock tracking, drift monitoring | None |
+| **Quality Metrics** | Completeness, packet loss, timing stats | File size only |
+| **Upload** | rsync to PSWS | Manual/FTP |
+| **Management** | Web UI + monitoring | Command-line only |
+
+### 🔬 Precision Signal Processing
+
+```
+ka9q-radio RTP stream (16 kHz IQ)
+    ↓ scipy.signal.decimate (anti-aliased FIR)
+10 Hz IQ samples
+    ↓ Digital RF Writer (HDF5 + metadata)
+Time-indexed archive
+    ↓ rsync with verification
+HamSCI PSWS repository
+```
+
+**Why scipy instead of sox/wsprdaemon?**
+- Direct RTP→Digital RF pipeline (no external tools)
+- Sub-millisecond timing preservation
+- Continuous data flow (not 2-minute WSPR cycles)
+- Pure Python (no sox/jt9 dependencies)
+
+### 📊 Real-Time Quality Monitoring
+
+Every channel tracks:
+
+**Completeness** - Percentage of expected samples received
+- 🟢 ≥99% (healthy)
+- 🟡 95-99% (warning)
+- 🔴 <95% (error)
+
+**Timing Drift** - RTP timestamp vs system clock offset
+- Measured every 10 seconds
+- Mean ± std deviation tracked
+- Should be < ±50 ms
+
+**Packet Loss** - RTP sequence gaps
+- < 1% is healthy
+- Indicates network/multicast issues
+
+All metrics logged to JSON and displayed in web UI.
+
+### 🌐 Web Management Interface
+
+<img src="docs/images/web-ui-screenshot.png" alt="Web UI" width="600">
+
+**Configuration Tab:**
+- Station setup wizard
+- WWV/CHU channel presets
+- PSWS credentials
+- TOML export
+
+**Monitoring Tab:**
+- Real-time health dashboard
+- Channel-by-channel metrics
+- Daemon logs (tail -100)
+- Auto-refresh every 30 seconds
+
+**Technology:**
+- Node.js backend (Express.js)
+- Vanilla HTML/CSS/JS frontend
+- JSON file database (no PostgreSQL/MySQL)
+- RESTful API
+
+---
+
+## Documentation
+
+### Getting Started
+- **[INSTALLATION.md](INSTALLATION.md)** - Detailed setup guide
+- **[Configuration Guide](docs/configuration.md)** - TOML reference
+- **[Web UI Guide](web-ui/README.md)** - Interface walkthrough
+
+### Technical Details
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design & rationale
+- **[GRAPE Digital RF Format](docs/GRAPE_DIGITAL_RF_RECORDER.md)** - Output specification
+- **[PSWS Upload Setup](docs/PSWS_SETUP_GUIDE.md)** - rsync configuration
+
+### Operations
+- **[Monitoring Guide](docs/monitoring.md)** - Interpreting metrics
+- **[Troubleshooting](docs/troubleshooting.md)** - Common issues
+- **[Deployment Guide](DEPLOYMENT_GUIDE.md)** - systemd setup
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────┐
+│   Web UI (Node.js)      │  Configuration & Monitoring
+│   http://localhost:3000 │
+└────────────┬────────────┘
+             │
+┌────────────▼────────────┐
+│  GRAPE Recorder Daemon  │  Python (signal-recorder)
+│  • RTP reception        │
+│  • scipy decimation     │
+│  • Digital RF output    │
+│  • Quality monitoring   │
+└────────────┬────────────┘
+             │
+┌────────────▼────────────┐
+│    ka9q-radio (radiod)  │  RTP stream source
+│  • WWV/CHU channels     │
+│  • 16 kHz IQ multicast  │
+└────────────┬────────────┘
+             │
+┌────────────▼────────────┐
+│  HamSCI PSWS Repository │  Data archive (rsync/SSH)
+│  pswsnetwork.eng.ua.edu │
+└─────────────────────────┘
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design rationale.
+
+---
+
+## Requirements
+
+### Hardware
+- **Receiver**: Any SDR supported by ka9q-radio (RX888, Airspy, SDRPlay, etc.)
+- **Antenna**: HF antenna for WWV/CHU bands (2.5-25 MHz)
+- **Computer**: Linux system with 1+ GB RAM
+
+### Software
+- **ka9q-radio** (radiod + control utility)
+- **Python 3.8+** with:
+  - `digital_rf>=3.0.0`
+  - `scipy>=1.7.0`
+  - `numpy>=1.20.0`
+- **Node.js 16+** (for web UI)
+- **rsync** with SSH keys (for PSWS upload)
+
+### Network
+- **Multicast-capable network** (for RTP reception)
+- **Internet connectivity** (for PSWS upload)
+- **Open ports**: 3000 (web UI), 5004 (RTP)
+
+---
+
+## Example Configuration
 
 ```toml
 [station]
 callsign = "AC0G"
 grid_square = "EM38ww"
-id = "AC0G"
 instrument_id = "RX888"
-description = "GRAPE station with RX888 MkII and ka9q-radio"
 
 [ka9q]
-status_address = "239.251.200.193"
-auto_create_channels = true
+status_address = "239.192.152.141"
 
 [recorder]
-data_dir = "/var/lib/signal-recorder/data"
 archive_dir = "/var/lib/signal-recorder/archive"
-recording_interval = 60
-continuous = true
+
+[[recorder.channels]]
+ssrc = 2500000
+frequency_hz = 2500000
+description = "WWV 2.5 MHz"
+enabled = true
 
 [[recorder.channels]]
 ssrc = 10000000
 frequency_hz = 10000000
-preset = "iq"
-sample_rate = 12000
 description = "WWV 10 MHz"
 enabled = true
-processor = "grape"
-
-[processor]
-enabled = false
-
-[processor.grape]
-process_time = "00:05"
-process_timezone = "UTC"
-expected_files_per_day = 1440
-output_sample_rate = 10
-output_format = "digital_rf"
 
 [uploader]
-enabled = false
+enabled = true
 protocol = "rsync"
-# ... PSWS configuration when enabled
-
-[logging]
-level = "INFO"
-console_output = true
-
-[monitoring]
-enable_metrics = false
+remote_host = "pswsnetwork.eng.ua.edu"
+remote_user = "user_ac0g"
+remote_path = "/var/psws/archive/data/GRAPE/AC0G"
+ssh_key_path = "~/.ssh/psws_key"
 ```
 
-## Usage
-
-### **Test Configuration**
-```bash
-# Validate your configuration
-python3 -c "
-import toml
-config = toml.load('config/grape-your-station.toml')
-print('✅ Configuration valid')
-print(f'Station: {config[\"station\"][\"callsign\"]}')
-print(f'Channels: {len(config.get(\"recorder\", {}).get(\"channels\", []))}')
-"
-```
-
-### **Run GRAPE Recorder**
-```bash
-# Test with your configuration
-python3 test_grape_recorder.py --config config/grape-your-station.toml
-
-# Monitor logs
-tail -f /tmp/grape_recorder_test.log
-```
-
-### **Service Installation**
-```bash
-# Create systemd service
-sudo tee /etc/systemd/system/signal-recorder.service > /dev/null <<EOF
-[Unit]
-Description=Signal Recorder Daemon
-After=network-online.target
-
-[Service]
-User=$USER
-Group=$USER
-WorkingDirectory=/home/$USER/signal-recorder
-ExecStart=/home/$USER/signal-recorder/venv/bin/python3 test_grape_recorder.py --config config/grape-your-station.toml
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Enable and start
-sudo systemctl daemon-reload
-sudo systemctl enable signal-recorder
-sudo systemctl start signal-recorder
-```
-
-## Architecture
-
-```
-ka9q-radio (radiod)
-    ↓ RTP streams + Status metadata
-Stream Discovery Module
-    ↓ Discovered SSRCs and parameters
-Stream Recorder Module
-    ↓ Time-synchronized Digital RF files
-Storage Manager
-    ↓ Organized archive
-Signal Processor Plugins (GRAPE, CODAR, etc.)
-    ↓ Processed datasets
-Upload Manager
-    ↓ SSH/rsync, HTTP, S3
-Remote Repository (HamSCI PSWS, etc.)
-```
-
-## Web Configuration UI
-
-The project includes a **simplified web-based configuration interface** that eliminates the need for manual TOML editing:
-
-```bash
-cd web-ui
-pnpm install  # Recommended (faster than npm)
-pnpm start
-```
-
-**Features:**
-- Visual form-based configuration (no TOML editing required)
-- Real-time validation of grid squares, PSWS IDs, and frequencies
-- One-click WWV/CHU channel presets
-- TOML export for use with the signal recorder
-- Multi-configuration management
-
-**Technology:**
-- **Backend**: Node.js with Express.js (single file)
-- **Frontend**: Pure HTML/CSS/JavaScript (single file)
-- **Database**: JSON files (no database server required)
-- **Dependencies**: Only Express.js (minimal)
-
-See [web-ui/README.md](web-ui/README.md) for detailed usage instructions.
-
-## Documentation
-
-### Signal Recorder (Python)
-- [Installation Guide](docs/installation.md)
-- [Configuration Reference](docs/configuration.md)
-- [GRAPE Digital RF Recorder](docs/GRAPE_DIGITAL_RF_RECORDER.md)
-- [PSWS Setup Guide](docs/PSWS_SETUP_GUIDE.md)
-
-### Web Configuration UI (Node.js)
-- [Web UI README](web-ui/README.md)
-
-## Status
-
-### ✅ **Completed**
-- **Configuration UI** - Web interface fully functional
-- **TOML Export** - Generates correct format for signal-recorder
-- **Channel Management** - Presets and custom channels working
-- **Cross-platform Compatibility** - Verified on Linux, macOS, Windows
-
-### ⚠️ **Pending Integration Testing**
-- **signal-recorder with web UI configs** - Integration testing needed
-- **End-to-end PSWS upload** - Full pipeline verification
-- **Long-term reliability** - Production deployment testing
-
-## License
-
-MIT License - see LICENSE file for details
-
-## Contributing
-
-Contributions welcome! Please see CONTRIBUTING.md for guidelines.
-
-## Acknowledgments
-
-- [ka9q-radio](https://github.com/ka9q/ka9q-radio) by Phil Karn, KA9Q
-- [wsprdaemon](https://github.com/rrobinett/wsprdaemon) by Rob Robinett, AI6VN
-- [HamSCI](https://hamsci.org/) GRAPE project
+**Generate this automatically with the web UI!**
 
 ---
 
-**🎯 The web-based configuration UI eliminates most setup complexity - try it first!**
+## Typical Workflow
 
+### Setup (one-time)
+1. Install ka9q-radio and configure for WWV/CHU
+2. Install GRAPE recorder and dependencies
+3. Use web UI to create configuration
+4. Set up PSWS SSH keys
+5. Test recording for 5 minutes
+
+### Daily Operation
+1. Daemon runs continuously via systemd
+2. Web UI shows real-time health metrics
+3. Data auto-uploads to PSWS every 5 minutes
+4. Monitor for 🟢 healthy status
+
+### Maintenance
+1. Check web UI monitoring weekly
+2. Verify PSWS uploads are completing
+3. Review logs if warnings/errors appear
+4. Update software as needed
+
+---
+
+## Comparison: GRAPE vs wsprdaemon
+
+| Aspect | wsprdaemon | GRAPE Recorder |
+|--------|------------|----------------|
+| **Project** | WSPR decoding | GRAPE timing analysis |
+| **Data** | Audio (WAV) | IQ samples (Digital RF) |
+| **Output Rate** | N/A (spots only) | 10 Hz IQ |
+| **Tools** | sox, wsprd, jt9 | Pure Python (scipy) |
+| **Upload** | wsprnet.org (HTTP) | PSWS (rsync/SSH) |
+| **Monitoring** | Spot count | Completeness, drift, loss |
+| **Cycle** | 2-minute WSPR windows | Continuous 60-second files |
+
+**Bottom line**: If you're doing WSPR, use wsprdaemon. If you're doing GRAPE, use this!
+
+---
+
+## Troubleshooting
+
+### No data recorded
+
+**Check radiod is running:**
+```bash
+control -v 239.192.152.141  # Your radiod address
+# Should list active channels
+```
+
+**Check multicast routing:**
+```bash
+ip mroute show  # Should show active routes
+netstat -g      # Should show multicast group membership
+```
+
+**Check firewall:**
+```bash
+sudo ufw allow 5004/udp  # RTP packets
+sudo ufw allow 3000/tcp  # Web UI
+```
+
+### Data quality issues
+
+**Completeness < 99%:**
+- Check network congestion
+- Verify multicast switch configuration
+- Look for packet loss in `ifconfig`
+
+**Timing drift > 50ms:**
+- Verify NTP is running (`timedatectl`)
+- Check radiod clock sync
+- Review system load
+
+**Packet loss > 1%:**
+- Increase RTP buffer size in config
+- Check CPU usage during recording
+- Test with fewer channels
+
+See [Troubleshooting Guide](docs/troubleshooting.md) for more.
+
+---
+
+## Contributing
+
+Contributions welcome! Areas of interest:
+
+- **Testing**: Try on different SDRs/systems
+- **Documentation**: Improve guides/tutorials
+- **Features**: Multi-site monitoring, cloud upload
+- **Bug reports**: GitHub issues
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file.
+
+---
+
+## Credits
+
+### Projects
+- **[ka9q-radio](https://github.com/ka9q/ka9q-radio)** by Phil Karn (KA9Q) - Multichannel SDR
+- **[Digital RF](http://digitalrf.readthedocs.io/)** by MIT Haystack - HDF5 time-series format
+- **[HamSCI](https://hamsci.org/)** - Citizen science ionospheric research
+- **[wsprdaemon](https://github.com/rrobinett/wsprdaemon)** by Rob Robinett (AI6VN) - Inspiration
+
+### People
+- **Nathaniel Frissell (W2NAF)** - HamSCI GRAPE project lead
+- **Phil Karn (KA9Q)** - ka9q-radio author
+- **Rob Robinett (AI6VN)** - wsprdaemon author
+- **Michael Hauan (AC0G)** - This GRAPE recorder implementation
+
+---
+
+## Support
+
+### Documentation
+- **[Installation Guide](INSTALLATION.md)**
+- **[Architecture Document](ARCHITECTURE.md)**
+- **[Configuration Reference](docs/configuration.md)**
+
+### Community
+- **HamSCI Groups.io**: [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io)
+- **GitHub Issues**: [Report bugs](https://github.com/yourusername/signal-recorder/issues)
+
+### Getting PSWS Access
+Contact HamSCI GRAPE coordinators via Groups.io to:
+1. Register your station
+2. Receive PSWS credentials
+3. Get SSH key setup help
+
+---
+
+**🎯 Ready to contribute to ionospheric science? Install the recorder and start monitoring WWV/CHU today!**

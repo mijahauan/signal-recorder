@@ -1,0 +1,23 @@
+
+> grape-config-ui@1.0.0 build /home/mjh/git/signal-recorder/web-ui
+> vite build && esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist
+
+vite v7.1.9 building for production...
+(!) %VITE_APP_LOGO% is not defined in env variables found in /index.html. Is the variable mistyped?
+(!) %VITE_APP_LOGO% is not defined in env variables found in /index.html. Is the variable mistyped?
+(!) %VITE_APP_TITLE% is not defined in env variables found in /index.html. Is the variable mistyped?
+(!) %VITE_ANALYTICS_ENDPOINT% is not defined in env variables found in /index.html. Is the variable mistyped?
+(!) %VITE_ANALYTICS_WEBSITE_ID% is not defined in env variables found in /index.html. Is the variable mistyped?
+<script src="%VITE_ANALYTICS_ENDPOINT%/umami"> in "/index.html" can't be bundled without type="module" attribute
+transforming...
+✓ 6 modules transformed.
+✗ Build failed in 121ms
+error during build:
+[vite:load-fallback] Could not load /home/mjh/git/signal-recorder/web-ui/client/src/lib/trpc (imported by client/src/main.tsx): ENOENT: no such file or directory, open '/home/mjh/git/signal-recorder/web-ui/client/src/lib/trpc'
+    at async open (node:internal/fs/promises:639:25)
+    at async Object.readFile (node:internal/fs/promises:1246:14)
+    at async Object.handler (file:///home/mjh/git/signal-recorder/web-ui/node_modules/.pnpm/vite@7.1.9_@types+node@24.7.0_jiti@2.6.1_lightningcss@1.30.1_tsx@4.20.6/node_modules/vite/dist/node/chunks/dep-Chhhsdoe.js:33624:21)
+    at async PluginDriver.hookFirstAndGetPlugin (file:///home/mjh/git/signal-recorder/web-ui/node_modules/.pnpm/rollup@4.52.4/node_modules/rollup/dist/es/shared/node-entry.js:22308:28)
+    at async file:///home/mjh/git/signal-recorder/web-ui/node_modules/.pnpm/rollup@4.52.4/node_modules/rollup/dist/es/shared/node-entry.js:21308:33
+    at async Queue.work (file:///home/mjh/git/signal-recorder/web-ui/node_modules/.pnpm/rollup@4.52.4/node_modules/rollup/dist/es/shared/node-entry.js:22536:32)
+ ELIFECYCLE  Command failed with exit code 1.
