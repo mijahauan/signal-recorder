@@ -277,7 +277,7 @@
 
             <ul class="tabs">
                 <li class="tab active" onclick="switchTab('config-tab')">⚙️ Configuration & Control</li>
-                <li class="tab" onclick="switchTab('monitoring-tab')">📊 Live Monitoring</li>
+                <li class="tab" onclick="window.location.href='/monitoring'">📊 Live Monitoring</li>
             </ul>
 
             <!-- Configuration Tab -->
@@ -441,14 +441,7 @@
                 </div>
             </div> <!-- end config-tab -->
 
-            <!-- Monitoring Tab -->
-            <div id="monitoring-tab" class="tab-content">
-                <div id="monitoring-content">
-                    <p style="text-align: center; color: #666; padding: 40px;">
-                        Loading monitoring dashboard...
-                    </p>
-                </div>
-            </div> <!-- end monitoring-tab -->
+            <!-- Note: Monitoring tab redirects to /monitoring -->
         </div> <!-- end dashboard -->
     </div> <!-- end container -->
 
@@ -1041,40 +1034,19 @@
             }
         }
 
-        // Tab switching
-        let monitoringLoaded = false;
-        let monitoringRefreshInterval = null;
-
+        // Tab switching (Note: Monitoring tab now redirects to /monitoring)
         function switchTab(tabId) {
             // Hide all tabs
-            document.querySelectorAll('.tab-content').forEach(content => {
-                content.classList.remove('active');
-            });
-            document.querySelectorAll('.tab').forEach(tab => {
-                tab.classList.remove('active');
-            });
-
+            const tabs = document.querySelectorAll('.tab-content');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            
             // Show selected tab
             document.getElementById(tabId).classList.add('active');
+            
+            // Update active tab button
+            const tabButtons = document.querySelectorAll('.tab');
+            tabButtons.forEach(btn => btn.classList.remove('active'));
             event.target.classList.add('active');
-
-            // Load monitoring content if switching to monitoring tab
-            if (tabId === 'monitoring-tab') {
-                if (!monitoringLoaded) {
-                    loadMonitoringContent();
-                    monitoringLoaded = true;
-                }
-                // Start auto-refresh for monitoring
-                if (!monitoringRefreshInterval) {
-                    monitoringRefreshInterval = setInterval(refreshMonitoring, 30000);
-                }
-            } else {
-                // Stop auto-refresh when leaving monitoring tab
-                if (monitoringRefreshInterval) {
-                    clearInterval(monitoringRefreshInterval);
-                    monitoringRefreshInterval = null;
-                }
-            }
         }
 
         async function loadMonitoringContent() {
