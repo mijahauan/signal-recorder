@@ -187,8 +187,14 @@ class Ka9qRadioProxy extends EventEmitter {
     return payload;
   }
 
-  async startAudioStream(iqSsrc, frequency = 10000000) {
-    console.log(`🎵 Starting PCM audio stream for IQ SSRC ${iqSsrc} at ${frequency} Hz`);
+  async startAudioStream(iqSsrc, frequency = null) {
+    // Derive frequency from SSRC if not provided
+    // SSRC pattern: SSRC equals frequency in Hz (2500000=2.5MHz, 5000000=5MHz, etc.)
+    if (frequency === null) {
+      frequency = iqSsrc;  // SSRC IS the frequency in Hz
+    }
+    
+    console.log(`🎵 Starting PCM audio stream for IQ SSRC ${iqSsrc} at ${frequency} Hz (${frequency/1e6} MHz)`);
     
     // Use SSRC+1 pattern for PCM audio stream
     const pcmSsrc = iqSsrc + 1;
