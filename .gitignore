@@ -43,8 +43,27 @@ Thumbs.db
 .coverage
 htmlcov/
 
-# Logs
+# Logs and data directories
 *.log
+logs/*
+!logs/.gitkeep
+data/*
+!data/.gitkeep
+test-data/
+!web-ui/data/.gitignore
+
+# Data files
+*.csv
+*.json
+!package.json
+!package-lock.json
+!web-ui/package.json
+!tsconfig.json
+
+# Recording outputs
+*.wav
+*.sigmf-*
+*.drf
 
 # Temporary files
 *.tmp
