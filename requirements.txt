@@ -19,3 +19,7 @@ digital_rf>=2.6.0
 # mDNS/Avahi service discovery for ka9q-radio streams
 zeroconf>=0.132.0
 
+# WWV Timing Analysis & Visualization (optional, for plot_wwv_timing.py)
+pandas>=2.0.0
+matplotlib>=3.7.0
+
