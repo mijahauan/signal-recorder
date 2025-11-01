@@ -181,15 +181,17 @@ class WWVToneDetector:
     verifying time synchronization and detecting clock drift.
     """
     
-    def __init__(self, sample_rate=3000):
+    def __init__(self, sample_rate=3000, is_pcm_audio=False):
         """
         Initialize detector
         
         Args:
             sample_rate: Input sample rate (Hz), must be ≥ 2.0 kHz for 1000 Hz tone
                         (default 3000 Hz provides good margin)
+            is_pcm_audio: If True, input is real PCM audio (skip AM demodulation)
         """
         self.sample_rate = sample_rate
+        self.is_pcm_audio = is_pcm_audio
         
         # Design bandpass filter for 1000 Hz ± 50 Hz (WWV Fort Collins, not WWVH 1200 Hz)
         self.sos = scipy_signal.butter(
@@ -201,41 +203,38 @@ class WWVToneDetector:
         )
         
         # Detection parameters tuned for WWV 800ms 1000 Hz tone (per NIST spec)
-        self.envelope_threshold = 0.03  # Relative to max envelope (3% - reduces false positives)
-        self.min_tone_duration_sec = 0.6  # Expect 800ms ± propagation/processing delays
-        self.max_tone_duration_sec = 1.0  # Allow margin for poor SNR or fading
+        self.envelope_threshold = 0.5  # Relative to normalized max envelope (50% - detect strong tone pulse)
+        self.min_tone_duration_sec = 0.5  # Expect 800ms ± propagation/processing delays (allow 0.5-1.2s)
+        self.max_tone_duration_sec = 1.2  # Allow margin for poor SNR or fading
         
         # State
         self.last_detection_time = 0
         self.detection_count = 0
         
-    def detect_tone_onset(self, iq_samples, current_unix_time):
+    def detect_tone_onset(self, audio_samples, current_unix_time):
         """
-        Detect 1000 Hz WWV tone onset in IQ sample buffer
+        Detect 1000 Hz WWV tone onset in audio sample buffer
         
         Args:
-            iq_samples: Complex IQ samples (numpy array)
+            audio_samples: Audio samples - either real PCM or complex IQ (numpy array)
             current_unix_time: Unix timestamp corresponding to first sample
             
         Returns:
             tuple: (detected: bool, onset_sample_idx: int or None, timing_error_ms: float or None)
         """
-        # 1. AM demodulation: extract envelope (audio) from IQ
-        am_audio = np.abs(iq_samples)
+        # Step 1: Get real audio signal
+        if self.is_pcm_audio:
+            # PCM is already real audio - use directly
+            audio = audio_samples.real if np.iscomplexobj(audio_samples) else audio_samples
+        else:
+            # IQ samples - do AM demodulation (extract envelope)
+            audio = np.abs(audio_samples)
         
-        # DEBUG: Check input
-        if np.random.random() < 0.01:
-            logger.debug(f"WWV detector step 1: IQ samples min={np.min(np.abs(iq_samples)):.6f}, max={np.max(np.abs(iq_samples)):.6f}, mean={np.mean(am_audio):.6f}")
+        # Remove DC component to get just the signal
+        audio_dc_removed = audio - np.mean(audio)
         
-        # Remove DC component to get just the modulation
-        am_audio_dc_removed = am_audio - np.mean(am_audio)
-        
-        # DEBUG: Check after DC removal
-        if np.random.random() < 0.01:
-            logger.debug(f"WWV detector step 2: After DC removal min={np.min(am_audio_dc_removed):.6f}, max={np.max(am_audio_dc_removed):.6f}")
-        
-        # 2. Bandpass filter around 1000 Hz in the demodulated audio
-        filtered = scipy_signal.sosfiltfilt(self.sos, am_audio_dc_removed)
+        # Step 2: Bandpass filter around 1000 Hz
+        filtered = scipy_signal.sosfiltfilt(self.sos, audio_dc_removed)
         
         # DEBUG: Check after filtering
         if np.random.random() < 0.01:
@@ -251,16 +250,24 @@ class WWVToneDetector:
         
         # Normalize envelope
         max_envelope = np.max(envelope)
+        mean_envelope = np.mean(envelope)
+        std_envelope = np.std(envelope)
+        
         if max_envelope > 0:
             envelope = envelope / max_envelope
+        else:
+            logger.info(f"WWV detector: ❌ Zero max envelope - no signal")
+            return False, None, None
         
         # 3. Threshold detection
         above_threshold = envelope > self.envelope_threshold
         
-        # DEBUG: Log detection attempts periodically
-        if np.random.random() < 0.01:  # 1% sampling to avoid log spam
-            above_count = np.sum(above_threshold)
-            logger.debug(f"WWV detector: max_envelope={max_envelope:.6f}, above_threshold={above_count}/{len(above_threshold)} samples ({above_count/len(above_threshold)*100:.1f}%)")
+        # Log detection attempts at INFO level with signal statistics
+        above_count = np.sum(above_threshold)
+        snr_estimate = max_envelope / (mean_envelope + 1e-9) if mean_envelope > 0 else 0
+        logger.info(f"WWV detector: max_env={max_envelope:.6f}, mean={mean_envelope:.6f}, std={std_envelope:.6f}, "
+                   f"SNR~{snr_estimate:.1f}x, threshold={self.envelope_threshold:.2f}, "
+                   f"above={above_count}/{len(above_threshold)} ({above_count/len(above_threshold)*100:.1f}%)")
         
         # Find edges (transitions)
         edges = np.diff(above_threshold.astype(int))
@@ -268,9 +275,8 @@ class WWVToneDetector:
         falling_edges = np.where(edges == -1)[0]
         
         if len(rising_edges) == 0 or len(falling_edges) == 0:
-            # DEBUG: Log why detection failed
-            if np.random.random() < 0.01:  # 1% sampling
-                logger.debug(f"WWV detector: No edges found (rising={len(rising_edges)}, falling={len(falling_edges)})")
+            # Log why detection failed at INFO level
+            logger.info(f"WWV detector: ❌ No edges found (rising={len(rising_edges)}, falling={len(falling_edges)})")
             return False, None, None
         
         # Take first rising edge as onset candidate
@@ -288,14 +294,16 @@ class WWVToneDetector:
         tone_duration_samples = offset_idx - onset_idx
         tone_duration_sec = tone_duration_samples / self.sample_rate
         
-        # DEBUG: Always log duration validation (not sampled - need to see rejections!)
-        if tone_duration_sec < self.min_tone_duration_sec or tone_duration_sec > self.max_tone_duration_sec:
-            logger.debug(f"WWV detector: REJECTED duration={tone_duration_sec:.3f}s (need {self.min_tone_duration_sec}-{self.max_tone_duration_sec}s), edges found: rising={len(rising_edges)}, falling={len(falling_edges)}")
+        # Always log duration validation at INFO level
+        logger.info(f"WWV detector: duration={tone_duration_sec:.3f}s, need {self.min_tone_duration_sec:.1f}-{self.max_tone_duration_sec:.1f}s, "
+                   f"edges: rising={len(rising_edges)}, falling={len(falling_edges)}")
         
         if tone_duration_sec < self.min_tone_duration_sec:
+            logger.info(f"WWV detector: ❌ REJECTED - too short ({tone_duration_sec:.3f}s < {self.min_tone_duration_sec:.1f}s)")
             return False, None, None  # Too short
         
         if tone_duration_sec > self.max_tone_duration_sec:
+            logger.info(f"WWV detector: ❌ REJECTED - too long ({tone_duration_sec:.3f}s > {self.max_tone_duration_sec:.1f}s)")
             return False, None, None  # Too long
         
         # 5. Calculate timing error
@@ -710,19 +718,21 @@ class GRAPEChannelRecorder:
         # Discontinuity tracking (Phase 1)
         self.discontinuity_tracker = DiscontinuityTracker(channel_name)
         
-        # WWV tone detection (Phase 1) - detect 1200 Hz tone for timing validation
-        self.is_wwv_channel = 'WWV' in channel_name.upper()
-        if self.is_wwv_channel:
+        # WWV tone detection - USE PCM AUDIO CHANNELS ONLY for clean signal
+        # PCM is already AM-demodulated by radiod, giving clean 1000 Hz tone for timing
+        self.is_wwv_audio_channel = 'WWV' in channel_name.upper() and 'Audio' in channel_name
+        if self.is_wwv_audio_channel:
             # Create 3 kHz resampler for tone detection (parallel to main 10 Hz path)
             # Need at least 2.0 kHz for 1000 Hz tone (Nyquist), use 3 kHz for margin
-            self.tone_resampler = Resampler(input_rate=8000, output_rate=3000)
-            self.tone_detector = WWVToneDetector(sample_rate=3000)
+            # Input is 12 kHz PCM audio (real samples, already AM-demodulated)
+            self.tone_resampler = Resampler(input_rate=12000, output_rate=3000)
+            self.tone_detector = WWVToneDetector(sample_rate=3000, is_pcm_audio=True)
             self.tone_accumulator = []  # Buffer for tone detection
             self.tone_accumulator_start_time = None  # Timestamp of first sample in accumulator
             self.tone_samples_per_check = 6000  # Check for tone every 2 seconds at 3 kHz
             self.wwv_detections = 0
             self.wwv_timing_errors = []  # Track timing errors from WWV tone
-            logger.info(f"{channel_name}: WWV tone detection ENABLED (1000 Hz minute markers, 800ms duration, 3 kHz sample rate)")
+            logger.info(f"{channel_name}: WWV tone detection ENABLED on PCM Audio (1000 Hz, 800ms, 3 kHz sample rate)")
         else:
             self.tone_detector = None
         
@@ -929,23 +939,32 @@ class GRAPEChannelRecorder:
         # Update expected timestamp for next packet (160 real samples @ 16 kHz = 10ms packets)
         self.expected_rtp_timestamp = (header.timestamp + 160) & 0xFFFFFFFF
         
-        # Parse IQ samples (int16 I/Q pairs from KA9Q radio)
-        # Each IQ sample = 2 int16 values (I and Q) = 4 bytes
-        if len(payload) % 4 != 0:
-            logger.warning(f"{self.channel_name}: Payload size not multiple of 4 (got {len(payload)} bytes)")
-            return
-            
-        # Unpack as interleaved I/Q int16, then normalize to float
-        # CRITICAL: RTP payloads use network byte order (BIG-ENDIAN)
+        # Parse samples from RTP payload
+        # Audio channels: Real int16 PCM samples (2 bytes each)
+        # IQ channels: Complex I/Q pairs (4 bytes each: Q and I int16)
         try:
-            samples_int16 = np.frombuffer(payload, dtype='>i2').reshape(-1, 2)  # Big-endian!
-            # Normalize int16 (-32768 to 32767) to float (-1.0 to 1.0)
-            samples = samples_int16.astype(np.float32) / 32768.0
-            # CRITICAL: KA9Q sends Q,I pairs (not I,Q) for proper phase
-            # Use Q + jI to get carrier centered at DC
-            iq_samples = samples[:, 1] + 1j * samples[:, 0]  # Q + jI
+            if self.is_wwv_audio_channel:
+                # PCM Audio: Real int16 samples
+                if len(payload) % 2 != 0:
+                    logger.warning(f"{self.channel_name}: PCM payload size not multiple of 2 (got {len(payload)} bytes)")
+                    return
+                
+                # Unpack as real int16, normalize to float
+                samples_int16 = np.frombuffer(payload, dtype='>i2')  # Big-endian
+                # Normalize and convert to complex (imaginary part = 0) for resampler compatibility
+                iq_samples = (samples_int16.astype(np.float32) / 32768.0).astype(np.complex64)
+            else:
+                # IQ channels: Complex Q+jI pairs
+                if len(payload) % 4 != 0:
+                    logger.warning(f"{self.channel_name}: IQ payload size not multiple of 4 (got {len(payload)} bytes)")
+                    return
+                
+                samples_int16 = np.frombuffer(payload, dtype='>i2').reshape(-1, 2)  # Big-endian
+                samples = samples_int16.astype(np.float32) / 32768.0
+                # KA9Q sends Q,I pairs - use Q + jI for carrier at DC
+                iq_samples = samples[:, 1] + 1j * samples[:, 0]  # Q + jI
         except Exception as e:
-            logger.error(f"{self.channel_name}: Failed to parse RTP payload as int16: {e}")
+            logger.error(f"{self.channel_name}: Failed to parse RTP payload: {e}")
             return
         
         # DEBUG: Check for huge values right after RTP extraction
