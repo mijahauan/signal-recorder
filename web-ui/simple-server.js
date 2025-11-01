@@ -1915,6 +1915,96 @@ app.get('/api/audio/health', (req, res) => {
   });
 });
 
+// WWV Timing data endpoint
+app.get('/api/monitoring/wwv-timing', (req, res) => {
+  const csvPath = join(installDir, 'logs', 'wwv_timing.csv');
+  
+  // Check if file exists
+  if (!fs.existsSync(csvPath)) {
+    return res.json({
+      timeSeries: [],
+      byFrequency: {},
+      recent: [],
+      message: 'No timing data yet. Waiting for WWV tone detections...'
+    });
+  }
+  
+  try {
+    // Read and parse CSV
+    const csvData = fs.readFileSync(csvPath, 'utf-8');
+    const lines = csvData.trim().split('\n');
+    
+    // Skip header
+    const dataLines = lines.slice(1);
+    
+    if (dataLines.length === 0) {
+      return res.json({
+        timeSeries: [],
+        byFrequency: {},
+        recent: [],
+        message: 'No timing data yet.'
+      });
+    }
+    
+    // Parse data
+    const timeSeries = [];
+    const byFrequency = {};
+    
+    dataLines.forEach(line => {
+      const [timestamp, channel, frequency, timing_error, detection_count, snr] = line.split(',');
+      
+      const freq = parseFloat(frequency);
+      const error = parseFloat(timing_error);
+      const ts = parseFloat(timestamp);
+      
+      timeSeries.push({
+        timestamp: ts,
+        channel: channel,
+        frequency: freq,
+        timing_error: error,
+        detection_count: parseInt(detection_count)
+      });
+      
+      // Aggregate by frequency
+      if (!byFrequency[freq]) {
+        byFrequency[freq] = {
+          count: 0,
+          errors: []
+        };
+      }
+      byFrequency[freq].count++;
+      byFrequency[freq].errors.push(error);
+    });
+    
+    // Calculate statistics for each frequency
+    Object.keys(byFrequency).forEach(freq => {
+      const errors = byFrequency[freq].errors;
+      const mean = errors.reduce((a, b) => a + b, 0) / errors.length;
+      const variance = errors.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / errors.length;
+      const std = Math.sqrt(variance);
+      
+      byFrequency[freq] = {
+        count: byFrequency[freq].count,
+        mean: mean,
+        std: std,
+        min: Math.min(...errors),
+        max: Math.max(...errors)
+      };
+    });
+    
+    // Return data
+    res.json({
+      timeSeries: timeSeries,
+      byFrequency: byFrequency,
+      recent: timeSeries.slice(-100).reverse() // Last 100 detections, newest first
+    });
+    
+  } catch (error) {
+    console.error('Error reading WWV timing data:', error);
+    res.status(500).json({ error: 'Failed to read timing data', details: error.message });
+  }
+});
+
 // Serve the monitoring dashboard
 app.get('/monitoring', (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');

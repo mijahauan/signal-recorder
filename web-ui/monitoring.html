@@ -485,6 +485,8 @@
             }
         }
     </style>
+    <!-- Chart.js for timing visualizations -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
     <nav class="navbar">
@@ -499,6 +501,7 @@
     <div class="tabs">
         <button class="tab active" onclick="switchTab('dashboard')">📊 Dashboard</button>
         <button class="tab" onclick="switchTab('channels')">📡 Channels</button>
+        <button class="tab" onclick="switchTab('timing')">⏱️ WWV Timing</button>
     </div>
 
     <div class="content">
@@ -658,6 +661,51 @@
         <div id="channels-container" class="channels-grid"></div>
     </div>
 
+    <!-- WWV Timing Tab Panel -->
+    <div id="timing-panel" class="tab-panel">
+        <div class="header">
+            <h1>⏱️ WWV Timing Analysis</h1>
+            <p>Ionospheric propagation delays for each frequency • Updates every 60s</p>
+        </div>
+
+        <div id="timing-summary" class="card" style="margin-bottom: 20px;">
+            <h3>Detection Summary</h3>
+            <div id="timing-stats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
+                <!-- Stats will be populated here -->
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Timing Variation Over Time</h3>
+            <canvas id="timing-chart" style="max-height: 400px;"></canvas>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+            <h3>Distribution by Frequency</h3>
+            <canvas id="timing-histogram" style="max-height: 300px;"></canvas>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+            <h3>Recent Detections</h3>
+            <div style="overflow-x: auto;">
+                <table id="timing-table" class="channel-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Channel</th>
+                            <th>Frequency</th>
+                            <th>Timing Error</th>
+                            <th>Detection #</th>
+                        </tr>
+                    </thead>
+                    <tbody id="timing-table-body">
+                        <!-- Will be populated -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
     <div id="error-container"></div>
     <div id="loading-container" class="loading">Loading recording statistics...</div>
 
@@ -720,6 +768,11 @@
             // Update tab panels
             document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.remove('active'));
             document.getElementById(tabName + '-panel').classList.add('active');
+            
+            // Load timing data when timing tab is opened
+            if (tabName === 'timing') {
+                loadTimingData();
+            }
         }
 
         // Sort summary table
@@ -1465,10 +1518,204 @@
                 });
         }
 
+        // WWV Timing visualization
+        let timingChart = null;
+        let timingHistogram = null;
+        
+        async function loadTimingData() {
+            try {
+                const response = await fetch('/api/monitoring/wwv-timing');
+                const data = await response.json();
+                
+                if (data.error) {
+                    console.error('Error loading timing data:', data.error);
+                    return;
+                }
+                
+                // Update summary stats
+                updateTimingStats(data.byFrequency);
+                
+                // Update charts
+                updateTimingChart(data.timeSeries);
+                updateTimingHistogram(data.byFrequency);
+                
+                // Update table
+                updateTimingTable(data.recent);
+                
+            } catch (error) {
+                console.error('Failed to load timing data:', error);
+            }
+        }
+        
+        function updateTimingStats(byFrequency) {
+            const container = document.getElementById('timing-stats');
+            container.innerHTML = Object.keys(byFrequency).sort((a, b) => parseFloat(a) - parseFloat(b)).map(freq => {
+                const stats = byFrequency[freq];
+                const color = getFrequencyColor(parseFloat(freq));
+                return `
+                    <div style="background: ${color}22; border-left: 4px solid ${color}; padding: 12px; border-radius: 4px;">
+                        <div style="font-weight: bold; font-size: 16px;">${freq} MHz</div>
+                        <div style="font-size: 14px; color: #666; margin-top: 4px;">
+                            ${stats.count} detections<br>
+                            ${stats.mean >= 0 ? '+' : ''}${stats.mean.toFixed(1)} ± ${stats.std.toFixed(1)} ms
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function updateTimingChart(timeSeries) {
+            const canvas = document.getElementById('timing-chart');
+            const ctx = canvas.getContext('2d');
+            
+            // Destroy existing chart
+            if (timingChart) {
+                timingChart.destroy();
+            }
+            
+            // Group data by frequency
+            const datasets = {};
+            timeSeries.forEach(point => {
+                if (!datasets[point.frequency]) {
+                    datasets[point.frequency] = {
+                        label: `${point.frequency} MHz`,
+                        data: [],
+                        borderColor: getFrequencyColor(point.frequency),
+                        backgroundColor: getFrequencyColor(point.frequency) + '33',
+                        tension: 0.4,
+                        pointRadius: 3
+                    };
+                }
+                datasets[point.frequency].data.push({
+                    x: new Date(point.timestamp * 1000),
+                    y: point.timing_error
+                });
+            });
+            
+            timingChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: Object.values(datasets)
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'minute',
+                                displayFormats: {
+                                    minute: 'HH:mm'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Time (UTC)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Timing Error (ms)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        },
+                        tooltip: {
+                            mode: 'nearest',
+                            intersect: false
+                        }
+                    }
+                }
+            });
+        }
+        
+        function updateTimingHistogram(byFrequency) {
+            const canvas = document.getElementById('timing-histogram');
+            const ctx = canvas.getContext('2d');
+            
+            // Destroy existing chart
+            if (timingHistogram) {
+                timingHistogram.destroy();
+            }
+            
+            const frequencies = Object.keys(byFrequency).sort((a, b) => parseFloat(a) - parseFloat(b));
+            
+            timingHistogram = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: frequencies.map(f => `${f} MHz`),
+                    datasets: [{
+                        label: 'Mean Timing Error',
+                        data: frequencies.map(f => byFrequency[f].mean),
+                        backgroundColor: frequencies.map(f => getFrequencyColor(parseFloat(f)) + '99'),
+                        borderColor: frequencies.map(f => getFrequencyColor(parseFloat(f))),
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    scales: {
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Timing Error (ms)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        }
+        
+        function updateTimingTable(recent) {
+            const tbody = document.getElementById('timing-table-body');
+            tbody.innerHTML = recent.slice(0, 50).map(row => {
+                const date = new Date(row.timestamp * 1000);
+                return `
+                    <tr>
+                        <td>${date.toLocaleTimeString('en-US', {hour12: false})}</td>
+                        <td>${row.channel}</td>
+                        <td>${row.frequency} MHz</td>
+                        <td style="color: ${row.timing_error >= 0 ? '#e67e22' : '#3498db'};">
+                            ${row.timing_error >= 0 ? '+' : ''}${row.timing_error.toFixed(2)} ms
+                        </td>
+                        <td>#${row.detection_count}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        function getFrequencyColor(freq) {
+            const colors = {
+                2.5: '#e74c3c',
+                5: '#e67e22',
+                10: '#f39c12',
+                15: '#2ecc71',
+                20: '#3498db',
+                25: '#9b59b6'
+            };
+            return colors[freq] || '#95a5a6';
+        }
+
         function refreshAll() {
             checkDaemonStatus();
             loadRecordingStats();
             loadLogs();
+            // Also refresh timing if that tab is active
+            if (document.getElementById('timing-panel').classList.contains('active')) {
+                loadTimingData();
+            }
         }
 
         // Auto-refresh every 30 seconds
