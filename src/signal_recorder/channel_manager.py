@@ -7,8 +7,7 @@ This module creates and configures channels in radiod using the TLV control prot
 import logging
 import time
 from typing import List, Dict, Optional
-from .control_discovery import discover_channels_via_control, ChannelInfo
-from .radiod_control import RadiodControl
+from ka9q import discover_channels, ChannelInfo, RadiodControl
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +37,7 @@ class ChannelManager:
             Dictionary mapping SSRC to ChannelInfo
         """
         logger.info(f"Discovering existing channels from {self.status_address}")
-        channels = discover_channels_via_control(self.status_address)
+        channels = discover_channels(self.status_address)
         logger.info(f"Found {len(channels)} existing channels")
         return channels
     

@@ -42,10 +42,10 @@ class GRAPERecorderManager:
 
         # Try to discover channels using control utility
         try:
-            from .control_discovery import discover_channels_via_control
+            from ka9q import discover_channels
             
             # Increased timeout to allow radiod to fully respond with all channel status messages
-            channels = discover_channels_via_control(radiod_address, timeout=7.0)
+            channels = discover_channels(radiod_address, timeout=7.0)
             
             if channels:
                 print("SSRC      Frequency  Rate   Preset  SNR    Address")

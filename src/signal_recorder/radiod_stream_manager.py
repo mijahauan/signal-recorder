@@ -31,8 +31,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict
-from .radiod_control import RadiodControl
-from .control_discovery import discover_channels_via_control, ChannelInfo
+from ka9q import RadiodControl, discover_channels, ChannelInfo
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +226,7 @@ class RadiodStreamManager:
             Dictionary mapping SSRC to StreamInfo for all streams
         """
         try:
-            channels = discover_channels_via_control(self.status_address, timeout=5.0)
+            channels = discover_channels(self.status_address, timeout=5.0)
             
             streams = {}
             for ssrc, channel in channels.items():
@@ -257,7 +256,7 @@ class RadiodStreamManager:
         Returns:
             ChannelInfo if found, None otherwise
         """
-        channels = discover_channels_via_control(self.status_address, timeout=timeout)
+        channels = discover_channels(self.status_address, timeout=timeout)
         return channels.get(ssrc)
     
     def close(self):

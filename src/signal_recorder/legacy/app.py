@@ -11,9 +11,12 @@ from pathlib import Path
 from typing import Dict
 from datetime import datetime, timezone, timedelta
 
-from .channel_manager import ChannelManager
-from .control_discovery import discover_channels_via_control, ChannelInfo
-from .grape_recorder import GRAPERecorderManager
+from ..channel_manager import ChannelManager
+from ka9q import discover_channels, ChannelInfo
+from ..grape_recorder import GRAPERecorderManager
+
+# Legacy alias
+discover_channels_via_control = discover_channels
 from .processor import get_processor
 from .storage import StorageManager
 from .uploader import UploadManager
