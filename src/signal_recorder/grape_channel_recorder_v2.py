@@ -151,16 +151,22 @@ class GRAPEChannelRecorderV2:
             t_wwv = np.arange(0, 0.8, 1/fs_proc)
             self.template_wwv = np.sin(2 * np.pi * 1000 * t_wwv)
             self.template_wwv *= scipy_signal.windows.tukey(len(t_wwv), alpha=0.1)
+            # Normalize to unit energy for proper matched filtering
+            self.template_wwv /= np.linalg.norm(self.template_wwv)
             
             # WWVH: 800ms of 1200 Hz (Hawaii)
             t_wwvh = np.arange(0, 0.8, 1/fs_proc)
             self.template_wwvh = np.sin(2 * np.pi * 1200 * t_wwvh)
             self.template_wwvh *= scipy_signal.windows.tukey(len(t_wwvh), alpha=0.1)
+            # Normalize to unit energy for proper matched filtering
+            self.template_wwvh /= np.linalg.norm(self.template_wwvh)
             
             # CHU: 500ms of 1000 Hz (Canada)
             t_chu = np.arange(0, 0.5, 1/fs_proc)
             self.template_chu = np.sin(2 * np.pi * 1000 * t_chu)
             self.template_chu *= scipy_signal.windows.tukey(len(t_chu), alpha=0.1)
+            # Normalize to unit energy for proper matched filtering
+            self.template_chu /= np.linalg.norm(self.template_chu)
             
             logger.info(f"{channel_name}: Matched filter templates created (WWV 1000Hz, WWVH 1200Hz, CHU 1000Hz)")
         
