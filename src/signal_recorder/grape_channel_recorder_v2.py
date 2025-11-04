@@ -904,9 +904,9 @@ class GRAPEChannelRecorderV2:
         minute_boundary = int(onset_utc / 60) * 60
         
         # Calculate RTP timestamp that should correspond to minute boundary
-        # Account for timing error: onset may be slightly off from :00.000
-        timing_error_sec = wwv_result['timing_error_ms'] / 1000.0
-        offset_from_boundary = (onset_utc - minute_boundary) - timing_error_sec
+        # onset_utc already includes the actual detected position, so we just
+        # need to back-calculate to the minute boundary
+        offset_from_boundary = onset_utc - minute_boundary
         offset_samples = int(offset_from_boundary * self.sample_rate)
         
         # Calculate time_snap: RTP timestamp at the minute boundary
@@ -923,10 +923,11 @@ class GRAPEChannelRecorderV2:
             # Don't report it as drift to avoid confusion
             self.current_minute_wwv_drift_ms = None
             
-            logger.info(f"{self.channel_name}: ⏱️  TIME_SNAP ESTABLISHED from WWV")
+            timing_offset_ms = offset_from_boundary * 1000
+            logger.info(f"{self.channel_name}: ⏱️  TIME_SNAP ESTABLISHED")
             logger.info(f"  RTP timestamp {self.time_snap_rtp} = "
                        f"UTC {datetime.fromtimestamp(minute_boundary, tz=timezone.utc).strftime('%H:%M:%S')}")
-            logger.info(f"  Initial calibration offset: {timing_error_sec*1000:+.1f} ms (NOT drift)")
+            logger.info(f"  Tone detected at: {timing_offset_ms:+.1f} ms from minute boundary")
         else:
             # Subsequent detection - verify drift
             # Predict what UTC time this RTP timestamp should map to
