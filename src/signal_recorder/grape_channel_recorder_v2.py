@@ -599,6 +599,7 @@ class GRAPEChannelRecorderV2:
         audio_3k = scipy_signal.resample_poly(audio_signal, 3, 16)
         
         # 3. Cross-correlate with appropriate templates based on channel
+        # Apply station-specific bandpass filters for optimal SNR
         # WWV frequencies: 2.5, 5, 10, 15, 20, 25 MHz -> WWV + WWVH
         # CHU frequencies: 3.33, 7.85, 14.67 MHz -> CHU only
         is_chu_channel = 'CHU' in self.channel_name
@@ -608,16 +609,26 @@ class GRAPEChannelRecorderV2:
         stations = []  # (name, correlation, duration, frequency)
         
         if is_chu_channel:
-            # CHU channel: Only correlate with CHU template
-            corr_chu = correlate(audio_3k, self.template_chu, mode='valid')
+            # CHU channel: Bandpass 1000 Hz ±50 Hz, then correlate
+            sos_chu = scipy_signal.butter(4, [950, 1050], btype='band', fs=3000, output='sos')
+            audio_chu = scipy_signal.sosfilt(sos_chu, audio_3k)
+            corr_chu = correlate(audio_chu, self.template_chu, mode='valid')
             if len(corr_chu) == 0:
                 logger.debug(f"{self.channel_name}: Buffer too short for correlation")
                 return None
             stations.append(('CHU', corr_chu, 0.5, 1000))
         else:
-            # WWV channel: Correlate with both WWV and WWVH templates
-            corr_wwv = correlate(audio_3k, self.template_wwv, mode='valid')
-            corr_wwvh = correlate(audio_3k, self.template_wwvh, mode='valid')
+            # WWV channel: Apply separate bandpass for each station type
+            # WWV: 1000 Hz ±50 Hz
+            sos_wwv = scipy_signal.butter(4, [950, 1050], btype='band', fs=3000, output='sos')
+            audio_wwv = scipy_signal.sosfilt(sos_wwv, audio_3k)
+            corr_wwv = correlate(audio_wwv, self.template_wwv, mode='valid')
+            
+            # WWVH: 1200 Hz ±50 Hz
+            sos_wwvh = scipy_signal.butter(4, [1150, 1250], btype='band', fs=3000, output='sos')
+            audio_wwvh = scipy_signal.sosfilt(sos_wwvh, audio_3k)
+            corr_wwvh = correlate(audio_wwvh, self.template_wwvh, mode='valid')
+            
             if len(corr_wwv) == 0:
                 logger.debug(f"{self.channel_name}: Buffer too short for correlation")
                 return None
