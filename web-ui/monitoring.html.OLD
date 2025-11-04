@@ -496,6 +496,7 @@
         <div class="nav-links">
             <a href="/">⚙️ Configuration</a>
             <a href="/monitoring" class="active">📊 Monitoring</a>
+            <a href="/timing-dashboard.html" style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981;">⏱️ Timing & Quality</a>
         </div>
     </nav>
 
@@ -503,6 +504,7 @@
     <div class="tabs">
         <button class="tab active" onclick="switchTab('dashboard')">📊 Dashboard</button>
         <button class="tab" onclick="switchTab('channels')">📡 Channels</button>
+        <button class="tab" onclick="switchTab('quality')">✨ Quality</button>
         <button class="tab" onclick="switchTab('timing')">⏱️ WWV Timing</button>
     </div>
 
@@ -522,7 +524,13 @@
                 <span style="color: #666; font-size: 14px;">Daemon Status:</span>
                 <span id="daemon-status-text" class="status">Checking...</span>
             </div>
-            <button class="btn-refresh" onclick="refreshAll()">🔄 Refresh Now</button>
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="font-size: 13px; color: #888;">
+                    <span id="data-source-indicator"></span>
+                    <span id="refresh-countdown" style="margin-left: 10px;">Next refresh in 30s</span>
+                </div>
+                <button class="btn-refresh" onclick="refreshAll()">🔄 Refresh Now</button>
+            </div>
         </div>
 
         <!-- Dashboard Tab Panel -->
@@ -663,6 +671,59 @@
         <div id="channels-container" class="channels-grid"></div>
     </div>
 
+    <!-- Quality Tab Panel -->
+    <div id="quality-panel" class="tab-panel">
+        <div class="header">
+            <h1>✨ Live Quality Metrics</h1>
+            <p>Real-time data quality and completeness • Updates every 5s</p>
+        </div>
+
+        <div id="quality-system-status" style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 30px; justify-content: space-around;">
+            <div style="text-align: center;">
+                <div style="font-size: 12px; color: #666; text-transform: uppercase;">Uptime</div>
+                <div id="quality-uptime" style="font-size: 24px; font-weight: bold; color: #667eea;">--</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 12px; color: #666; text-transform: uppercase;">Active Channels</div>
+                <div id="quality-channels" style="font-size: 24px; font-weight: bold; color: #667eea;">--</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="font-size: 12px; color: #666; text-transform: uppercase;">Total Packets</div>
+                <div id="quality-packets" style="font-size: 24px; font-weight: bold; color: #667eea;">--</div>
+            </div>
+        </div>
+
+        <div id="quality-channels-container" style="background: white; border-radius: 8px; overflow: hidden;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #f5f5f5; border-bottom: 2px solid #e0e0e0;">
+                        <th style="padding: 12px; text-align: left; font-size: 11px; color: #666; font-weight: 600;">STATUS</th>
+                        <th style="padding: 12px; text-align: left; font-size: 11px; color: #666; font-weight: 600;">CHANNEL</th>
+                        <th style="padding: 12px; text-align: center; font-size: 11px; color: #666; font-weight: 600;">FREQUENCY</th>
+                        <th style="padding: 12px; text-align: center; font-size: 11px; color: #666; font-weight: 600;">MINUTE PROGRESS</th>
+                        <th style="padding: 12px; text-align: center; font-size: 11px; color: #666; font-weight: 600;">MINUTES</th>
+                        <th style="padding: 12px; text-align: center; font-size: 11px; color: #666; font-weight: 600;">PACKET LOSS</th>
+                        <th style="padding: 12px; text-align: center; font-size: 11px; color: #666; font-weight: 600;">PACKETS/SEC</th>
+                        <th style="padding: 12px; text-align: center; font-size: 11px; color: #666; font-weight: 600;">RTP TIMING</th>
+                        <th style="padding: 12px; text-align: center; font-size: 11px; color: #666; font-weight: 600;">WWV ERROR</th>
+                    </tr>
+                </thead>
+                <tbody id="quality-table-body">
+                    <!-- Will be populated by JavaScript -->
+                </tbody>
+            </table>
+        </div>
+
+        <div id="quality-loading" class="loading" style="text-align: center; padding: 40px; color: #666;">
+            ⏳ Loading live quality data...
+        </div>
+
+        <div id="quality-error" style="display: none; background: #fff3cd; color: #856404; padding: 15px; border-radius: 8px; border: 1px solid #ffeeba;">
+            <strong>ℹ️ Note:</strong> Live quality metrics are only available when using the V2 recorder.
+            <br><small>The V1 recorder does not export this data format.</small>
+        </div>
+    </div>
+
     <!-- WWV Timing Tab Panel -->
     <div id="timing-panel" class="tab-panel">
         <div class="header">
@@ -724,15 +785,17 @@
 
     <script>
         let refreshInterval;
+        let countdownSeconds = 30;
+        let lastDataSource = 'unknown';
 
         async function apiRequest(endpoint, options = {}) {
             const token = localStorage.getItem('authToken');
             
-            // If no token, set default and don't make request yet
+            // If no token, redirect to login
             if (!token) {
-                console.log('No auth token found, setting default');
-                localStorage.setItem('authToken', 'admin-token');
-                throw new Error('Authentication token not found - please refresh the page');
+                console.log('No auth token found, redirecting to login');
+                window.location.href = '/index.html';
+                throw new Error('Authentication required');
             }
             
             const url = `/api${endpoint}`;
@@ -774,6 +837,131 @@
             // Load timing data when timing tab is opened
             if (tabName === 'timing') {
                 loadTimingData();
+            }
+            
+            // Load quality data when quality tab is opened
+            if (tabName === 'quality') {
+                loadQualityData();
+            }
+        }
+
+        // Load live quality data
+        async function loadQualityData() {
+            try {
+                const data = await apiRequest('/monitoring/live-quality');
+                
+                // Update data source indicator
+                const sourceIndicator = document.getElementById('data-source-indicator');
+                if (sourceIndicator && data.available) {
+                    sourceIndicator.innerHTML = '✨ <span style="color: #4CAF50;">V2 Recorder (Live)</span>';
+                    lastDataSource = 'v2';
+                }
+                
+                if (!data.available) {
+                    document.getElementById('quality-loading').style.display = 'none';
+                    document.getElementById('quality-error').style.display = 'block';
+                    return;
+                }
+                
+                document.getElementById('quality-loading').style.display = 'none';
+                document.getElementById('quality-error').style.display = 'none';
+                
+                // Update system stats
+                const uptime = Math.floor(data.system.uptime_seconds);
+                const hours = Math.floor(uptime / 3600);
+                const minutes = Math.floor((uptime % 3600) / 60);
+                document.getElementById('quality-uptime').textContent = `${hours}h ${minutes}m`;
+                document.getElementById('quality-channels').textContent = 
+                    `${data.system.channels_active}/${data.system.channels_total}`;
+                document.getElementById('quality-packets').textContent = 
+                    (data.system.total_packets / 1000).toFixed(1) + 'K';
+                
+                // Display channels in table
+                const tbody = document.getElementById('quality-table-body');
+                tbody.innerHTML = '';
+                
+                // Sort channels by frequency
+                const channels = Object.entries(data.channels).sort((a, b) => 
+                    a[1].frequency_hz - b[1].frequency_hz
+                );
+                
+                for (const [name, ch] of channels) {
+                    const statusColor = ch.status === 'ok' ? '#4CAF50' : 
+                                       ch.status === 'warning' ? '#FF9800' : '#F44336';
+                    
+                    const lossColor = ch.packet_loss_percent < 0.01 ? '#4CAF50' : 
+                                     ch.packet_loss_percent < 0.1 ? '#FF9800' : '#F44336';
+                    
+                    // Calculate minute progress (fix the calculation)
+                    const currentSamples = ch.current_minute_samples || 0;
+                    const minuteProgress = Math.min((currentSamples / 480000 * 100), 100);
+                    
+                    const row = document.createElement('tr');
+                    row.style.borderBottom = '1px solid #f0f0f0';
+                    row.style.transition = 'background 0.2s';
+                    row.onmouseenter = () => row.style.background = '#f9f9f9';
+                    row.onmouseleave = () => row.style.background = 'white';
+                    
+                    row.innerHTML = `
+                        <td style="padding: 12px; text-align: center;">
+                            <div style="width: 10px; height: 10px; border-radius: 50%; background: ${statusColor}; margin: 0 auto; box-shadow: 0 0 6px ${statusColor};"></div>
+                        </td>
+                        <td style="padding: 12px;">
+                            <div style="font-weight: 600; color: #333;">${name}</div>
+                        </td>
+                        <td style="padding: 12px; text-align: center; color: #666;">
+                            ${ch.frequency_mhz.toFixed(2)} MHz
+                        </td>
+                        <td style="padding: 12px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <div style="flex: 1; background: #e0e0e0; height: 6px; border-radius: 3px; overflow: hidden;">
+                                    <div style="background: linear-gradient(90deg, #667eea, #764ba2); height: 100%; width: ${minuteProgress}%; transition: width 0.3s;"></div>
+                                </div>
+                                <span style="font-size: 12px; font-weight: 600; color: #667eea; min-width: 45px;">${minuteProgress.toFixed(1)}%</span>
+                            </div>
+                            <div style="font-size: 10px; color: #999; margin-top: 2px;">
+                                ${currentSamples.toLocaleString()} / 480K samples
+                            </div>
+                        </td>
+                        <td style="padding: 12px; text-align: center;">
+                            <div style="font-size: 18px; font-weight: bold; color: #667eea;">${ch.minutes_written || 0}</div>
+                            <div style="font-size: 10px; color: #999;">${((ch.minutes_written || 0) / 1440 * 100).toFixed(1)}%</div>
+                        </td>
+                        <td style="padding: 12px; text-align: center;">
+                            <div style="font-size: 16px; font-weight: bold; color: ${lossColor};">
+                                ${ch.packet_loss_percent.toFixed(3)}%
+                            </div>
+                            <div style="font-size: 10px; color: #999;">${ch.total_packets_dropped || 0} lost</div>
+                        </td>
+                        <td style="padding: 12px; text-align: center; font-size: 14px; font-weight: 500; color: #666;">
+                            ${ch.packets_per_second ? ch.packets_per_second.toFixed(1) : '--'}
+                        </td>
+                        <td style="padding: 12px; text-align: center;">
+                            ${ch.rtp_timing_deviation_ms !== null && ch.rtp_timing_deviation_ms !== undefined ? `
+                                <div style="font-size: 16px; font-weight: bold; color: ${Math.abs(ch.rtp_timing_deviation_ms) < 1 ? '#4CAF50' : Math.abs(ch.rtp_timing_deviation_ms) < 5 ? '#FF9800' : '#F44336'};">
+                                    ${ch.rtp_timing_deviation_ms > 0 ? '+' : ''}${ch.rtp_timing_deviation_ms.toFixed(1)} ms
+                                </div>
+                            ` : '<span style="color: #ccc;">--</span>'}
+                        </td>
+                        <td style="padding: 12px; text-align: center;">
+                            ${ch.wwv && ch.wwv.last_error_ms !== null ? `
+                                <div style="font-size: 16px; font-weight: bold; color: ${Math.abs(ch.wwv.last_error_ms) < 5 ? '#4CAF50' : Math.abs(ch.wwv.last_error_ms) < 10 ? '#FF9800' : '#F44336'};">
+                                    ${ch.wwv.last_error_ms > 0 ? '+' : ''}${ch.wwv.last_error_ms.toFixed(1)} ms
+                                </div>
+                            ` : '<span style="color: #ccc;">--</span>'}
+                        </td>
+                    `;
+                    
+                    tbody.appendChild(row);
+                }
+                
+            } catch (error) {
+                console.error('Failed to load quality data:', error);
+                document.getElementById('quality-loading').style.display = 'none';
+                document.getElementById('quality-error').style.display = 'block';
+                document.getElementById('quality-error').innerHTML = `
+                    <strong>⚠️ Error:</strong> ${error.message}
+                `;
             }
         }
 
@@ -931,7 +1119,21 @@
             try {
                 const stats = await apiRequest('/monitoring/recording-stats');
                 
-                if (!stats.available) {
+                // Update data source indicator
+                const sourceIndicator = document.getElementById('data-source-indicator');
+                if (sourceIndicator) {
+                    const now = Date.now() / 1000;
+                    const statsAge = stats.timestamp ? (now - new Date(stats.timestamp).getTime() / 1000) : 999;
+                    
+                    if (stats.available && statsAge < 60) {
+                        sourceIndicator.innerHTML = '📡 <span style="color: #4CAF50;">V1 Recorder</span>';
+                        lastDataSource = 'v1';
+                    } else {
+                        sourceIndicator.innerHTML = '⚠️ <span style="color: #FF9800;">Old Data</span>';
+                    }
+                }
+                
+                if (!stats || !stats.available) {
                     document.getElementById('loading-container').innerHTML = 
                         '<div class="loading">⚠️ No recording statistics available - daemon may not be running</div>';
                     document.getElementById('health-summary').style.display = 'none';
@@ -1734,24 +1936,55 @@
             if (document.getElementById('timing-panel').classList.contains('active')) {
                 loadTimingData();
             }
+            // Also refresh quality if that tab is active
+            if (document.getElementById('quality-panel').classList.contains('active')) {
+                loadQualityData();
+            }
+            
+            // Reset countdown
+            countdownSeconds = 30;
+            updateCountdownDisplay();
         }
+
+        // Update countdown display
+        function updateCountdownDisplay() {
+            const countdownEl = document.getElementById('refresh-countdown');
+            if (countdownEl) {
+                if (countdownSeconds > 0) {
+                    countdownEl.textContent = `Next refresh in ${countdownSeconds}s`;
+                    countdownEl.style.color = countdownSeconds <= 5 ? '#ff9800' : '#888';
+                } else {
+                    countdownEl.textContent = 'Refreshing...';
+                    countdownEl.style.color = '#667eea';
+                }
+            }
+        }
+
+        // Countdown timer
+        setInterval(() => {
+            countdownSeconds--;
+            updateCountdownDisplay();
+            if (countdownSeconds < 0) {
+                countdownSeconds = 30;
+            }
+        }, 1000);
 
         // Auto-refresh every 30 seconds
         setInterval(refreshAll, 30000);
 
         // Initial load
         document.addEventListener('DOMContentLoaded', function() {
-            // Ensure auth token is set before making any requests
+            // Check if authenticated
             let token = localStorage.getItem('authToken');
             if (!token) {
-                console.log('Setting default auth token');
-                localStorage.setItem('authToken', 'admin-token');
-                token = 'admin-token';
+                console.log('No auth token, redirecting to login');
+                window.location.href = '/index.html';
+                return;
             }
             
             console.log('Monitoring page loaded, auth token:', token ? 'present' : 'missing');
             
-            // Small delay to ensure token is committed to localStorage
+            // Small delay to ensure stable loading
             setTimeout(() => {
                 refreshAll();
             }, 100);

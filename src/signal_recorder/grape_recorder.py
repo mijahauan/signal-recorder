@@ -218,9 +218,13 @@ class GRAPERecorderManager:
             watchdog_process = self._start_watchdog()
             
             from .grape_rtp_recorder import GRAPERecorderManager as RTPRecorderManager
+            from .config_utils import PathResolver
             
-            # Initialize RTP recorder manager
-            rtp_recorder = RTPRecorderManager(self.config)
+            # Initialize path resolver for standardized paths
+            path_resolver = PathResolver(self.config, development_mode=False)
+            
+            # Initialize RTP recorder manager with path resolver
+            rtp_recorder = RTPRecorderManager(self.config, path_resolver=path_resolver)
             
             print(f"Archive directory: {self.config.get('recorder', {}).get('archive_dir', 'not configured')}")
 

@@ -25,12 +25,13 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def load_upload_config_from_toml(toml_config: Dict) -> Dict:
+def load_upload_config_from_toml(toml_config: Dict, path_resolver=None) -> Dict:
     """
     Convert TOML configuration to UploadManager format.
     
     Args:
         toml_config: Parsed TOML configuration dict
+        path_resolver: Optional PathResolver for standardized paths
         
     Returns:
         Dict suitable for UploadManager initialization
@@ -47,19 +48,36 @@ def load_upload_config_from_toml(toml_config: Dict) -> Dict:
     else:
         proto_config = uploader.get('rsync', {})
     
+    # Get queue file path
+    if path_resolver:
+        queue_file = path_resolver.get_upload_queue_file()
+    elif 'queue_file' in uploader:
+        queue_file = Path(uploader['queue_file'])
+    elif 'queue_dir' in uploader:
+        queue_file = Path(uploader['queue_dir']) / 'queue.json'
+    else:
+        queue_file = Path('/var/lib/signal-recorder/upload/queue.json')
+    
+    # Get SSH key path
+    ssh_key = proto_config.get('ssh_key', '')
+    if path_resolver and ssh_key:
+        ssh_key_path = path_resolver.get_ssh_key_path()
+        if ssh_key_path:
+            ssh_key = str(ssh_key_path)
+    
     # Build unified config
     config = {
         'protocol': protocol,
         'host': proto_config.get('host', 'pswsnetwork.eng.ua.edu'),
         'user': proto_config.get('user', station.get('id', '')),
         'ssh': {
-            'key_file': proto_config.get('ssh_key', '')
+            'key_file': ssh_key
         },
         'bandwidth_limit_kbps': proto_config.get('bandwidth_limit_kbps', 
                                                  proto_config.get('bandwidth_limit', 100)),
         'max_retries': uploader.get('max_retries', 5),
         'retry_backoff_base': 2 if uploader.get('exponential_backoff', True) else 1,
-        'queue_file': Path(uploader.get('queue_dir', '/tmp')).parent / 'upload_queue.json'
+        'queue_file': queue_file
     }
     
     return config

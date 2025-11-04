@@ -13,8 +13,8 @@ import time
 import logging
 import numpy as np
 from pathlib import Path
-from datetime import datetime, timezone
-from typing import Dict, Optional, Callable, List
+from datetime import datetime, timezone, date
+from typing import Dict, Optional, Tuple, Callable, List
 from dataclasses import dataclass, asdict
 from collections import deque
 from enum import Enum
@@ -33,6 +33,7 @@ from .grape_metadata import GRAPEMetadataGenerator
 logger = logging.getLogger(__name__)
 
 # Global stats file for web UI monitoring
+# Default location - will be overridden by config if PathResolver is used
 STATS_FILE = Path('/tmp/signal-recorder-stats.json')
 
 
@@ -217,10 +218,13 @@ class WWVToneDetector:
         
         Args:
             audio_samples: Audio samples - either real PCM or complex IQ (numpy array)
-            current_unix_time: Unix timestamp corresponding to first sample
+            current_unix_time: Unix timestamp corresponding to first sample (wall clock or time_snap-corrected)
             
         Returns:
             tuple: (detected: bool, onset_sample_idx: int or None, timing_error_ms: float or None)
+        
+        Note: current_unix_time may be approximate (from time.time()) before time_snap is established.
+              The detector uses it to find the nearest minute boundary, so small errors (~1s) are tolerable.
         """
         # Step 1: Get real audio signal
         if self.is_pcm_audio:
@@ -262,12 +266,13 @@ class WWVToneDetector:
         # 3. Threshold detection
         above_threshold = envelope > self.envelope_threshold
         
-        # Log detection attempts at INFO level with signal statistics
+        # Log detection attempts at DEBUG level with signal statistics
         above_count = np.sum(above_threshold)
         snr_estimate = max_envelope / (mean_envelope + 1e-9) if mean_envelope > 0 else 0
-        logger.info(f"WWV detector: max_env={max_envelope:.6f}, mean={mean_envelope:.6f}, std={std_envelope:.6f}, "
-                   f"SNR~{snr_estimate:.1f}x, threshold={self.envelope_threshold:.2f}, "
-                   f"above={above_count}/{len(above_threshold)} ({above_count/len(above_threshold)*100:.1f}%)")
+        
+        logger.debug(f"WWV detector: max_env={max_envelope:.6f}, mean={mean_envelope:.6f}, std={std_envelope:.6f}, "
+                    f"SNR~{snr_estimate:.1f}x, threshold={self.envelope_threshold:.2f}, "
+                    f"above={above_count}/{len(above_threshold)} ({above_count/len(above_threshold)*100:.1f}%)")
         
         # Find edges (transitions)
         edges = np.diff(above_threshold.astype(int))
@@ -275,8 +280,8 @@ class WWVToneDetector:
         falling_edges = np.where(edges == -1)[0]
         
         if len(rising_edges) == 0 or len(falling_edges) == 0:
-            # Log why detection failed at INFO level
-            logger.info(f"WWV detector: ❌ No edges found (rising={len(rising_edges)}, falling={len(falling_edges)})")
+            # No edges found
+            logger.debug(f"WWV detector: No edges found (rising={len(rising_edges)}, falling={len(falling_edges)})")
             return False, None, None
         
         # Take first rising edge as onset candidate
@@ -294,17 +299,15 @@ class WWVToneDetector:
         tone_duration_samples = offset_idx - onset_idx
         tone_duration_sec = tone_duration_samples / self.sample_rate
         
-        # Always log duration validation at INFO level
-        logger.info(f"WWV detector: duration={tone_duration_sec:.3f}s, need {self.min_tone_duration_sec:.1f}-{self.max_tone_duration_sec:.1f}s, "
-                   f"edges: rising={len(rising_edges)}, falling={len(falling_edges)}")
+        logger.debug(f"WWV detector: duration={tone_duration_sec:.3f}s, need {self.min_tone_duration_sec:.1f}-{self.max_tone_duration_sec:.1f}s")
         
         if tone_duration_sec < self.min_tone_duration_sec:
-            logger.info(f"WWV detector: ❌ REJECTED - too short ({tone_duration_sec:.3f}s < {self.min_tone_duration_sec:.1f}s)")
-            return False, None, None  # Too short
+            logger.debug(f"WWV detector: Rejected - too short ({tone_duration_sec:.3f}s)")
+            return False, None, None
         
         if tone_duration_sec > self.max_tone_duration_sec:
-            logger.info(f"WWV detector: ❌ REJECTED - too long ({tone_duration_sec:.3f}s > {self.max_tone_duration_sec:.1f}s)")
-            return False, None, None  # Too long
+            logger.debug(f"WWV detector: Rejected - too long ({tone_duration_sec:.3f}s)")
+            return False, None, None
         
         # 5. Calculate timing error
         # Onset should occur at a minute boundary (0 seconds past the minute)
@@ -608,10 +611,12 @@ class DailyBuffer:
         """
         self.sample_rate = sample_rate
         self.samples_per_day = sample_rate * 86400  # 864,000 samples for 10 Hz
+        self.samples_per_hour = sample_rate * 3600  # 36,000 samples per hour
         
         # Initialize buffer with NaN (for gap detection)
         self.buffer = np.full(self.samples_per_day, np.nan, dtype=np.complex64)
         self.current_day = None
+        self.last_write_hour = None  # Track last hourly write
         
         logger.info(f"Daily buffer initialized: {self.samples_per_day} samples @ {sample_rate} Hz")
         
@@ -655,6 +660,23 @@ class DailyBuffer:
             # Remaining samples go to next day
             
         return completed_day
+    
+    def should_write_hourly(self, timestamp: float) -> bool:
+        """Check if we should perform an hourly write"""
+        dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        current_hour = (dt.date(), dt.hour)
+        
+        if self.last_write_hour != current_hour and dt.minute >= 1:  # Write 1 min past the hour
+            self.last_write_hour = current_hour
+            return True
+        return False
+    
+    def get_current_data(self) -> Optional[Tuple[date, np.ndarray]]:
+        """Get current day's data for periodic writes"""
+        if self.current_day is not None:
+            # Return copy of current buffer
+            return (self.current_day, self.buffer.copy())
+        return None
         
     def get_buffer(self) -> np.ndarray:
         """Get current buffer"""
@@ -666,22 +688,26 @@ class GRAPEChannelRecorder:
     Per-channel GRAPE recorder with Digital RF output
     """
     
-    def __init__(self, ssrc: int, frequency_hz: float, channel_name: str,
-                 output_dir: Path, station_config: dict):
+    def __init__(self, ssrc: int, channel_name: str, frequency_hz: float, output_dir: Path,
+                 station_config: dict, is_wwv_audio_channel: bool = False, path_resolver=None):
         """
-        Initialize channel recorder
+        Initialize GRAPE channel recorder
         
         Args:
-            ssrc: RTP SSRC
+            ssrc: RTP SSRC identifier
+            channel_name: Channel name (e.g., "WWV-10.0")
             frequency_hz: Center frequency
-            channel_name: Channel name (e.g., "WWV_2_5")
-            output_dir: Base output directory
+            output_dir: Base output directory for Digital RF
             station_config: Station configuration dict
+            is_wwv_audio_channel: True if this is a WWV audio channel (PCM) instead of IQ
+            path_resolver: Optional PathResolver for standardized paths
         """
         self.ssrc = ssrc
-        self.frequency_hz = frequency_hz
         self.channel_name = channel_name
+        self.frequency_hz = frequency_hz
         self.station_config = station_config
+        self.is_wwv_audio_channel = is_wwv_audio_channel
+        self.path_resolver = path_resolver
         
         # Create channel-specific output directory
         self.channel_dir = output_dir / channel_name
@@ -846,8 +872,13 @@ class GRAPEChannelRecorder:
         import csv
         from pathlib import Path
         
-        # CSV file path
-        csv_path = Path(__file__).parent.parent.parent / 'logs' / 'wwv_timing.csv'
+        # CSV file path - use path resolver if available
+        if self.path_resolver:
+            csv_path = self.path_resolver.get_wwv_timing_csv()
+        else:
+            # Fallback for backward compatibility
+            csv_path = Path(__file__).parent.parent.parent / 'logs' / 'wwv_timing.csv'
+        
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Extract frequency from channel name (e.g., "WWV 10 MHz Audio" -> 10.0)
@@ -1131,10 +1162,18 @@ class GRAPEChannelRecorder:
             # Track timing quality (per-minute stats and drift monitoring)
             self._track_timing_quality(unix_time, len(resampled))
             
-            # Write completed day to Digital RF
+            # Write completed day to Digital RF (at midnight rollover)
             if completed_day and HAS_DIGITAL_RF:
                 day_date, day_data = completed_day
                 self._write_digital_rf(day_date, day_data)
+            
+            # Also write hourly (to avoid losing data if daemon crashes)
+            if HAS_DIGITAL_RF and self.daily_buffer.should_write_hourly(unix_time):
+                current_data = self.daily_buffer.get_current_data()
+                if current_data:
+                    day_date, day_data = current_data
+                    logger.info(f"{self.channel_name}: Hourly write triggered")
+                    self._write_digital_rf(day_date, day_data)
                 
             # Track received samples
             self.samples_received += len(resampled)
@@ -1223,17 +1262,27 @@ class GRAPERecorderManager:
     Manager for multiple GRAPE channel recorders
     """
     
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, path_resolver=None):
         """
         Initialize recorder manager
         
         Args:
             config: Configuration dictionary
+            path_resolver: Optional PathResolver for standardized paths
         """
         self.config = config
+        self.path_resolver = path_resolver
         self.recorders: Dict[int, GRAPEChannelRecorder] = {}
         self.rtp_receiver = None
         self.running = False
+        
+        # Set global stats file location
+        global STATS_FILE
+        if path_resolver:
+            STATS_FILE = path_resolver.get_status_file()
+            logger.info(f"Stats file: {STATS_FILE}")
+        else:
+            logger.info(f"Using default stats file: {STATS_FILE}")
         
     def start(self):
         """Start recording all configured channels"""
@@ -1277,7 +1326,11 @@ class GRAPERecorderManager:
             
         # Create output directory
         print("🔍 DEBUG: Creating output directory...")
-        output_dir = Path(recorder_config.get('archive_dir', '/tmp/grape-data'))
+        if self.path_resolver:
+            output_dir = self.path_resolver.get_data_dir()
+        else:
+            # Backward compatibility
+            output_dir = Path(recorder_config.get('archive_dir', '/tmp/grape-data'))
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"🔍 DEBUG: Output dir created: {output_dir}")
         
@@ -1327,10 +1380,12 @@ class GRAPERecorderManager:
             # Create recorder
             recorder = GRAPEChannelRecorder(
                 ssrc=ssrc,
-                frequency_hz=frequency_hz,
                 channel_name=channel_name,
+                frequency_hz=frequency_hz,
                 output_dir=output_dir,
-                station_config=station_config
+                station_config=station_config,
+                is_wwv_audio_channel=False,
+                path_resolver=self.path_resolver
             )
             recorder.start_time = time.time()
             recorder.packets_received = 0

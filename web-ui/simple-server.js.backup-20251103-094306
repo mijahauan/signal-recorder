@@ -1,28 +1,11 @@
 import express from 'express';
 import fs from 'fs';
-import { spawn, exec, execFile } from 'child_process';
+import { spawn, exec } from 'child_process';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import dgram from 'dgram';
 import { EventEmitter } from 'events';
 import { WebSocketServer } from 'ws';
-import helmet from 'helmet';
-import cors from 'cors';
-import rateLimit from 'express-rate-limit';
-
-// Security utilities
-import { hashPassword, verifyPassword, generateToken, verifyToken, ensureDefaultAdmin } from './utils/auth.js';
-import { auditLog, logAuth, logConfigChange, logDaemonControl, logSecurityViolation } from './utils/audit.js';
-import { validateCallsign, validateSSRC, validateFrequency, validatePID, sanitizeCallsign, sanitizeFilename } from './middleware/validation.js';
-
-// Radiod channel management
-import { createChannel, verifyChannel, discoverChannels } from './utils/radiod.js';
-
-// Config file synchronization
-import { syncConfigWithRadiod, parseConfigFile, importChannelsFromConfig } from './utils/config-sync.js';
-
-// CSV parsing for quality metrics
-import { parse } from 'csv-parse/sync';
 
 const __dirname = join(fileURLToPath(import.meta.url), '..');
 
@@ -165,14 +148,12 @@ class Ka9qRadioProxy extends EventEmitter {
       // Extract SSRC from RTP header (bytes 8-11)
       const ssrc = msg.readUInt32BE(8);
       
-      // Disabled verbose RTP packet logging - uncomment for debugging:
-      // console.log(`📨 Received RTP packet: SSRC=${ssrc}, size=${msg.length} bytes from ${rinfo.address}:${rinfo.port}`);
+      console.log(`📨 Received RTP packet: SSRC=${ssrc}, size=${msg.length} bytes from ${rinfo.address}:${rinfo.port}`);
       
       // Forward to any active streams for this SSRC
       const stream = this.activeStreams.get(ssrc);
       if (stream) {
-        // Disabled verbose forwarding log - uncomment for debugging:
-        // console.log(`🎵 Forwarding RTP packet for SSRC ${ssrc}`);
+        console.log(`🎵 Forwarding RTP packet for SSRC ${ssrc}`);
         
         // Forward to WebSocket clients (ka9q-web style)
         if (global.audioSessions) {
@@ -426,38 +407,6 @@ except Exception as e:
 const radioProxy = new Ka9qRadioProxy();
 
 
-// Security middleware
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrcAttr: ["'unsafe-inline'"],  // Allow inline event handlers like onclick
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:"],
-      connectSrc: ["'self'", "ws:", "wss:"]
-    }
-  },
-  hsts: {
-    maxAge: 31536000,
-    includeSubDomains: true
-  }
-}));
-
-app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS || 'http://localhost:3000',
-  credentials: true
-}));
-
-// Rate limiting for auth endpoints
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 attempts per window
-  message: 'Too many login attempts, please try again later',
-  standardHeaders: true,
-  legacyHeaders: false
-});
-
 // Middleware
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -484,91 +433,61 @@ function writeJsonFile(filename, data) {
   }
 }
 
-// Initialize default admin user with secure password
-async function initializeDefaultUser() {
-  const usersFile = join(__dirname, 'data', 'users.json');
-  const created = await ensureDefaultAdmin(usersFile);
-  
-  if (created) {
-    console.log('');
-    console.log('⚠️  SECURITY WARNING: Default admin account created!');
-    console.log('   Username: admin');
-    console.log('   Password: admin');
-    console.log('');
-    console.log('   CHANGE THIS PASSWORD IMMEDIATELY!');
-    console.log('   Run: node scripts/create-admin.js <username> <password>');
-    console.log('');
+// Initialize default user
+function initializeDefaultUser() {
+  try {
+    const users = readJsonFile('users.json');
+    if (users.length === 0) {
+      writeJsonFile('users.json', [{
+        id: 'local-admin',
+        name: 'Administrator',
+        email: 'admin',
+        loginMethod: 'local',
+        role: 'admin',
+        createdAt: new Date().toISOString(),
+        lastSignedIn: new Date().toISOString(),
+      }]);
+      console.log('Default admin user created');
+      console.log('Username: admin');
+      console.log('Password: admin');
+    }
+  } catch (error) {
+    console.error('Failed to initialize user:', error);
   }
 }
 
-// Secure authentication middleware using JWT
+// Authentication middleware
 function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    logSecurityViolation('AUTH_MISSING', null, { ip: req.ip, path: req.path });
     return res.status(401).json({ error: 'Authentication required' });
   }
 
+  // Simple token validation - in production, use proper JWT
   const token = authHeader.substring(7);
-  const decoded = verifyToken(token);
-  
-  if (!decoded) {
-    logSecurityViolation('AUTH_INVALID_TOKEN', null, { ip: req.ip, path: req.path });
-    return res.status(401).json({ error: 'Invalid or expired token' });
+  if (token === 'admin-token') {
+    req.user = { id: 'local-admin', role: 'admin' };
+    return next();
   }
-  
-  req.user = decoded;
-  next();
+
+  res.status(401).json({ error: 'Invalid token' });
 }
 
-// API Routes - Secure login with bcrypt and JWT
-app.post('/api/login', loginLimiter, async (req, res) => {
+// API Routes
+app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
 
-  // Validate inputs
-  if (!username || !password) {
-    logAuth('LOGIN_FAILED', username, false, { reason: 'missing_credentials', ip: req.ip });
-    return res.status(400).json({ success: false, error: 'Username and password required' });
-  }
-
-  try {
-    // Load users from file
-    const usersFile = join(__dirname, 'data', 'users.json');
-    let users = [];
-    if (fs.existsSync(usersFile)) {
-      const data = fs.readFileSync(usersFile, 'utf8');
-      users = JSON.parse(data);
-    }
-
-    // Find user
-    const user = users.find(u => u.username === username);
-    if (!user) {
-      logAuth('LOGIN_FAILED', username, false, { reason: 'user_not_found', ip: req.ip });
-      return res.status(401).json({ success: false, error: 'Invalid credentials' });
-    }
-
-    // Verify password
-    const valid = await verifyPassword(password, user.passwordHash);
-    if (!valid) {
-      logAuth('LOGIN_FAILED', username, false, { reason: 'invalid_password', ip: req.ip });
-      return res.status(401).json({ success: false, error: 'Invalid credentials' });
-    }
-
-    // Generate JWT token
-    const token = generateToken(user);
-    
-    logAuth('LOGIN_SUCCESS', username, true, { userId: user.id, ip: req.ip });
-
+  if (username === 'admin' && password === 'admin') {
     res.json({
       success: true,
-      token,
+      token: 'admin-token',
       user: {
-        id: user.id,
-        username: user.username
+        id: 'local-admin',
+        name: 'Administrator',
+        role: 'admin'
       }
     });
-  } catch (error) {
-    logAuth('LOGIN_FAILED', username, false, { error: error.message, ip: req.ip });
+  } else {
     res.status(401).json({ success: false, error: 'Invalid credentials' });
   }
 });
@@ -683,93 +602,24 @@ app.get('/api/configurations/:configId/channels', requireAuth, async (req, res) 
 
 app.post('/api/configurations/:configId/channels', requireAuth, async (req, res) => {
   try {
-    // Validate inputs
-    const frequencyHz = parseInt(req.body.frequencyHz);
-    const ssrc = parseInt(req.body.ssrc || frequencyHz); // Use frequency as SSRC if not provided
-    
-    if (!validateFrequency(frequencyHz)) {
-      return res.status(400).json({ error: 'Invalid frequency' });
-    }
-    
-    if (!validateSSRC(ssrc)) {
-      return res.status(400).json({ error: 'Invalid SSRC' });
-    }
-    
     const channels = readJsonFile('channels.json');
-    
-    // Check if SSRC already exists
-    const existingChannel = channels.find(c => parseInt(c.ssrc) === ssrc);
-    if (existingChannel) {
-      return res.status(400).json({ 
-        error: 'SSRC already exists',
-        details: `Channel with SSRC ${ssrc} already configured` 
-      });
-    }
-    
-    // Create channel in radiod first
-    console.log(`Creating channel in radiod: SSRC=${ssrc}, Freq=${frequencyHz} Hz`);
-    
-    try {
-      const radiodResult = await createChannel({
-        ssrc,
-        frequencyHz,
-        preset: req.body.preset || 'iq',
-        sampleRate: parseInt(req.body.sampleRate || '16000'),
-        statusAddress: 'bee1-hf-status.local'
-      });
-      
-      console.log('Radiod channel created:', radiodResult);
-      
-      // Verify it was created
-      const verification = await verifyChannel(ssrc);
-      
-      if (!verification.exists) {
-        throw new Error('Channel created but verification failed');
-      }
-      
-      console.log('Channel verified in radiod');
-      
-    } catch (radiodError) {
-      console.error('Failed to create channel in radiod:', radiodError);
-      return res.status(500).json({ 
-        error: 'Failed to create channel in radiod',
-        details: radiodError.message 
-      });
-    }
-    
-    // Save to database
     const newChannel = {
       id: Date.now().toString(),
       configId: req.params.configId,
-      description: req.body.description,
-      frequencyHz: frequencyHz.toString(),
-      ssrc: ssrc.toString(),
       enabled: req.body.enabled || 'yes',
-      sampleRate: req.body.sampleRate || '16000',
-      agc: req.body.agc || '0',
-      gain: req.body.gain || '0',
+      description: req.body.description,
+      frequencyHz: req.body.frequencyHz,
+      ssrc: req.body.ssrc,
+      sampleRate: req.body.sampleRate || '12000',
       processor: req.body.processor || 'grape',
       createdAt: new Date().toISOString(),
-      radiodStatus: 'verified'
     };
-    
     channels.push(newChannel);
     writeJsonFile('channels.json', channels);
-    
-    logConfigChange('CHANNEL_CREATED', req.user, req.params.configId, { 
-      ssrc, 
-      frequencyHz,
-      radiodVerified: true 
-    });
-    
-    res.json({
-      ...newChannel,
-      message: 'Channel created and verified in radiod'
-    });
-    
+    res.json(newChannel);
   } catch (error) {
     console.error('Failed to create channel:', error);
-    res.status(500).json({ error: 'Failed to create channel', details: error.message });
+    res.status(500).json({ error: 'Failed to create channel' });
   }
 });
 
@@ -950,15 +800,6 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
       return res.status(404).json({ error: 'Configuration not found' });
     }
 
-    // Validate callsign to prevent path traversal
-    if (!validateCallsign(config.callsign)) {
-      logSecurityViolation('PATH_TRAVERSAL_ATTEMPT', req.user, { 
-        callsign: config.callsign,
-        ip: req.ip 
-      });
-      return res.status(400).json({ error: 'Invalid callsign format' });
-    }
-
     const channels = readJsonFile('channels.json');
     const configChannels = channels.filter(c => c.configId === req.params.id);
 
@@ -1065,18 +906,8 @@ app.post('/api/configurations/:id/save-to-config', requireAuth, async (req, res)
 
     // Save to signal-recorder config directory
     const configDir = join(installDir, 'config');
-    const safeCallsign = sanitizeCallsign(config.stationId || config.callsign);
-    const filename = `grape-${safeCallsign}.toml`;
+    const filename = `grape-${config.stationId || config.callsign}.toml`;
     const configPath = join(configDir, filename);
-    
-    // Verify path doesn't escape config directory
-    if (!configPath.startsWith(configDir)) {
-      logSecurityViolation('PATH_TRAVERSAL_ATTEMPT', req.user, { 
-        attempted_path: configPath,
-        ip: req.ip 
-      });
-      return res.status(400).json({ error: 'Invalid configuration path' });
-    }
 
     // Write the file
     fs.writeFileSync(configPath, toml);
@@ -1759,7 +1590,7 @@ app.get('/api/monitoring/channels', requireAuth, async (req, res) => {
             const freq_mhz = (parseInt(freq_hz) / 1000000).toFixed(2);
 
             channels.push({
-              ssrc: parseInt(ssrc),  // Convert to number for matching
+              ssrc: ssrc,
               frequency: `${freq_mhz} MHz`,
               rate: rate,
               preset: preset,
@@ -1873,23 +1704,10 @@ app.get('/api/monitoring/logs', requireAuth, async (req, res) => {
 // Recording statistics endpoint
 app.get('/api/monitoring/recording-stats', requireAuth, (req, res) => {
   try {
-    // Try multiple locations for stats file (new path structure, then fallback)
-    const possibleStatsFiles = [
-      '/var/lib/signal-recorder/status/recording-stats.json',  // Production FHS
-      join(installDir, 'data', 'status', 'recording-stats.json'),  // Development
-      '/tmp/signal-recorder-stats.json'  // Legacy fallback
-    ];
-    
-    let statsFile = null;
-    for (const file of possibleStatsFiles) {
-      if (fs.existsSync(file)) {
-        statsFile = file;
-        break;
-      }
-    }
+    const statsFile = '/tmp/signal-recorder-stats.json';
     
     // Check if stats file exists
-    if (!statsFile) {
+    if (!fs.existsSync(statsFile)) {
       return res.json({
         available: false,
         message: 'No recording statistics available - daemon may not be running',
@@ -1942,228 +1760,6 @@ app.get('/api/monitoring/recording-stats', requireAuth, (req, res) => {
     console.error('Failed to get recording stats:', error);
     res.status(500).json({ 
       error: 'Failed to get recording statistics', 
-      details: error.message,
-      available: false
-    });
-  }
-});
-
-// Live quality status endpoint (no auth for testing)
-app.get('/api/monitoring/live-quality', (req, res) => {
-  try {
-    // Try multiple possible locations for live quality status
-    const possibleStatusFiles = [
-      join(installDir, 'analytics', 'live_quality_status.json'),  // Development
-      '/var/lib/signal-recorder/analytics/live_quality_status.json',  // Production
-      '/tmp/live_quality_status.json'  // Test fallback
-    ];
-    
-    let statusFile = null;
-    for (const file of possibleStatusFiles) {
-      if (fs.existsSync(file)) {
-        statusFile = file;
-        break;
-      }
-    }
-    
-    if (!statusFile) {
-      return res.json({
-        available: false,
-        message: 'Live quality status not available (daemon may not be running with V2 recorder)'
-      });
-    }
-    
-    // Read and parse status
-    const statusData = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
-    
-    res.json({
-      available: true,
-      ...statusData
-    });
-    
-  } catch (error) {
-    console.error('Failed to get live quality status:', error);
-    res.status(500).json({ 
-      error: 'Failed to get live quality status', 
-      details: error.message,
-      available: false
-    });
-  }
-});
-
-// Enhanced Timing & Quality Dashboard API (KA9Q architecture)
-app.get('/api/monitoring/timing-quality', (req, res) => {
-  try {
-    // Find quality CSV files
-    const possibleQualityDirs = [
-      join(installDir, 'analytics', 'quality'),
-      '/tmp/signal-recorder/overnight_20251103/analytics/quality',
-      '/var/lib/signal-recorder/analytics/quality'
-    ];
-    
-    let qualityDir = null;
-    for (const dir of possibleQualityDirs) {
-      if (fs.existsSync(dir)) {
-        qualityDir = dir;
-        break;
-      }
-    }
-    
-    if (!qualityDir) {
-      return res.json({
-        available: false,
-        message: 'Quality data not available'
-      });
-    }
-    
-    // Find today's CSV files - they're in a YYYYMMDD subdirectory
-    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
-    const todayDir = join(qualityDir, today);
-    
-    let csvFiles = [];
-    if (fs.existsSync(todayDir)) {
-      csvFiles = fs.readdirSync(todayDir)
-        .filter(f => f.endsWith('.csv') && f.includes('minute_quality'))
-        .map(f => join(today, f)); // Include subdirectory in path
-    } else {
-      // Fallback: try direct directory
-      csvFiles = fs.readdirSync(qualityDir)
-        .filter(f => f.endsWith('.csv') && f.includes('minute_quality'));
-    }
-    
-    if (csvFiles.length === 0) {
-      return res.json({
-        available: false,
-        message: 'No quality CSV files found'
-      });
-    }
-    
-    // Parse CSV files and aggregate data
-    const channelData = {};
-    let timeSnapStatus = null;
-    
-    for (const csvFile of csvFiles) {
-      const channelName = csvFile.split('_minute_quality_')[0];
-      const csvPath = join(qualityDir, csvFile);
-      const csvContent = fs.readFileSync(csvPath, 'utf8');
-      const records = parse(csvContent, { columns: true, skip_empty_lines: true });
-      
-      if (records.length === 0) continue;
-      
-      // Get last 60 minutes for hourly summary
-      const recentRecords = records.slice(-60);
-      const latestRecord = records[records.length - 1];
-      
-      // Calculate statistics
-      const grades = recentRecords.map(r => r.quality_grade).filter(g => g);
-      const gradeCounts = {
-        A: grades.filter(g => g === 'A').length,
-        B: grades.filter(g => g === 'B').length,
-        C: grades.filter(g => g === 'C').length,
-        D: grades.filter(g => g === 'D').length,
-        F: grades.filter(g => g === 'F').length
-      };
-      
-      const avgLoss = recentRecords.reduce((sum, r) => 
-        sum + parseFloat(r.packet_loss_pct || 0), 0) / recentRecords.length;
-      
-      const drifts = recentRecords
-        .map(r => parseFloat(r.drift_ms))
-        .filter(d => !isNaN(d));
-      const avgDrift = drifts.length > 0 ? 
-        drifts.reduce((sum, d) => sum + d, 0) / drifts.length : null;
-      
-      const wwvDetections = recentRecords.filter(r => r.wwv_detected === 'True').length;
-      
-      channelData[channelName] = {
-        latestGrade: latestRecord.quality_grade || 'UNKNOWN',
-        latestScore: parseFloat(latestRecord.quality_score || 0),
-        minutesInHour: recentRecords.length,
-        sampleCompleteness: 100.0, // Always 100% with zero-filling
-        avgPacketLoss: avgLoss,
-        avgDrift: avgDrift,
-        wwvDetections: wwvDetections,
-        wwvDetectionRate: (wwvDetections / recentRecords.length * 100).toFixed(1),
-        gradeCounts: gradeCounts,
-        recentMinutes: recentRecords.slice(-10).map(r => ({
-          time: r.minute_start,
-          grade: r.quality_grade,
-          score: parseFloat(r.quality_score || 0),
-          samples: parseInt(r.samples || 0),
-          loss: parseFloat(r.packet_loss_pct || 0),
-          drift: r.drift_ms ? parseFloat(r.drift_ms) : null,
-          alerts: r.alerts || '',
-          resequenced: parseInt(r.resequenced || 0)
-        })),
-        alerts: latestRecord.alerts || null
-      };
-      
-      // Track time_snap status from WWV channels
-      if (channelName.startsWith('WWV') && latestRecord.time_snap === 'wwv_verified') {
-        if (!timeSnapStatus || avgDrift < timeSnapStatus.drift) {
-          timeSnapStatus = {
-            established: true,
-            source: channelName,
-            drift: avgDrift,
-            age: parseInt(latestRecord.time_snap_age_minutes || 0),
-            status: latestRecord.time_snap
-          };
-        }
-      }
-    }
-    
-    // Calculate overall statistics
-    const allGrades = Object.values(channelData)
-      .flatMap(ch => Object.entries(ch.gradeCounts)
-        .flatMap(([grade, count]) => Array(count).fill(grade)));
-    
-    const gradeDistribution = {
-      A: allGrades.filter(g => g === 'A').length,
-      B: allGrades.filter(g => g === 'B').length,
-      C: allGrades.filter(g => g === 'C').length,
-      D: allGrades.filter(g => g === 'D').length,
-      F: allGrades.filter(g => g === 'F').length
-    };
-    
-    const totalMinutes = allGrades.length;
-    const gradePercentages = {};
-    for (const [grade, count] of Object.entries(gradeDistribution)) {
-      gradePercentages[grade] = totalMinutes > 0 ? 
-        (count / totalMinutes * 100).toFixed(1) : '0.0';
-    }
-    
-    // Collect active alerts
-    const activeAlerts = [];
-    for (const [channel, data] of Object.entries(channelData)) {
-      if (data.alerts) {
-        activeAlerts.push({
-          channel: channel,
-          time: data.recentMinutes[data.recentMinutes.length - 1]?.time || 'Unknown',
-          alert: data.alerts
-        });
-      }
-    }
-    
-    res.json({
-      available: true,
-      timestamp: new Date().toISOString(),
-      timeSnap: timeSnapStatus || {
-        established: false,
-        message: 'No WWV time_snap established yet'
-      },
-      channels: channelData,
-      overall: {
-        gradeDistribution: gradeDistribution,
-        gradePercentages: gradePercentages,
-        totalMinutes: totalMinutes
-      },
-      alerts: activeAlerts
-    });
-    
-  } catch (error) {
-    console.error('Failed to get timing-quality data:', error);
-    res.status(500).json({ 
-      error: 'Failed to get timing-quality data', 
       details: error.message,
       available: false
     });
@@ -2302,11 +1898,13 @@ app.get('/api/audio/stream/:iqSsrc', async (req, res) => {
   }
 });
 
+// ka9q-radio proxy health check
 app.get('/api/audio/health', (req, res) => {
   const streamInfo = Array.from(radioProxy.activeStreams.entries()).map(([pcmSsrc, stream]) => ({
     pcmSsrc,
     iqSsrc: stream.iqSsrc,
-    multicast: `${stream.multicastAddress}:${stream.multicastPort}`
+    frequency: stream.frequency,
+    active: stream.active
   }));
   
   res.json({ 
@@ -2317,149 +1915,17 @@ app.get('/api/audio/health', (req, res) => {
   });
 });
 
-// Config synchronization endpoints
-app.post('/api/config/sync', requireAuth, async (req, res) => {
-  try {
-    const configFilePath = req.body.configPath || join(installDir, 'config', 'grape-S000171.toml');
-    const createMissing = req.body.createMissing !== false; // default true
-    
-    console.log(`Syncing config file: ${configFilePath}`);
-    
-    // Verify file exists
-    if (!fs.existsSync(configFilePath)) {
-      return res.status(404).json({ 
-        error: 'Config file not found',
-        path: configFilePath 
-      });
-    }
-    
-    // Perform sync
-    const results = await syncConfigWithRadiod(configFilePath, 'bee1-hf-status.local', createMissing);
-    
-    logConfigChange('CONFIG_SYNC', req.user, 'radiod', {
-      configPath: configFilePath,
-      summary: results.summary
-    });
-    
-    res.json({
-      success: true,
-      ...results
-    });
-    
-  } catch (error) {
-    console.error('Config sync failed:', error);
-    res.status(500).json({
-      error: 'Config sync failed',
-      details: error.message
-    });
-  }
-});
-
-app.get('/api/config/parse', requireAuth, async (req, res) => {
-  try {
-    const configFilePath = req.query.path || join(installDir, 'config', 'grape-S000171.toml');
-    
-    // Verify file exists
-    if (!fs.existsSync(configFilePath)) {
-      return res.status(404).json({ 
-        error: 'Config file not found',
-        path: configFilePath 
-      });
-    }
-    
-    // Parse config
-    const config = parseConfigFile(configFilePath);
-    
-    res.json({
-      success: true,
-      configPath: configFilePath,
-      station: config.station,
-      channels: config.channels,
-      channelCount: config.channels.length
-    });
-    
-  } catch (error) {
-    console.error('Config parse failed:', error);
-    res.status(500).json({
-      error: 'Config parse failed',
-      details: error.message
-    });
-  }
-});
-
-app.post('/api/config/import-channels', requireAuth, async (req, res) => {
-  try {
-    const configFilePath = req.body.configPath || join(installDir, 'config', 'grape-S000171.toml');
-    const configId = req.body.configId;
-    
-    if (!configId) {
-      return res.status(400).json({ error: 'Configuration ID required' });
-    }
-    
-    // Verify file exists
-    if (!fs.existsSync(configFilePath)) {
-      return res.status(404).json({ 
-        error: 'Config file not found',
-        path: configFilePath 
-      });
-    }
-    
-    // Import channels
-    const imported = importChannelsFromConfig(configFilePath, configId);
-    
-    // Save to database
-    const channels = readJsonFile('channels.json');
-    
-    // Remove existing channels for this config
-    const filtered = channels.filter(c => c.configId !== configId);
-    
-    // Add imported channels
-    filtered.push(...imported.channels);
-    
-    writeJsonFile('channels.json', filtered);
-    
-    logConfigChange('CHANNELS_IMPORTED', req.user, configId, {
-      source: configFilePath,
-      count: imported.channels.length
-    });
-    
-    res.json({
-      success: true,
-      message: `Imported ${imported.channels.length} channels`,
-      channels: imported.channels
-    });
-    
-  } catch (error) {
-    console.error('Channel import failed:', error);
-    res.status(500).json({
-      error: 'Channel import failed',
-      details: error.message
-    });
-  }
-});
-
 // WWV Timing data endpoint
 app.get('/api/monitoring/wwv-timing', (req, res) => {
   const csvPath = join(installDir, 'logs', 'wwv_timing.csv');
   
   // Check if file exists
   if (!fs.existsSync(csvPath)) {
-    // Check if we're using V2 recorder with quality metrics
-    const v2StatusFiles = [
-      join(installDir, 'analytics', 'live_quality_status.json'),
-      '/var/lib/signal-recorder/analytics/live_quality_status.json',
-      '/tmp/live_quality_status.json'
-    ];
-    
-    const hasV2Status = v2StatusFiles.some(f => fs.existsSync(f));
-    
     return res.json({
       timeSeries: [],
       byFrequency: {},
       recent: [],
-      message: hasV2Status 
-        ? 'ℹ️ Using V2 Recorder: WWV timing data is available in the Quality tab. The V2 recorder tracks timing per-minute with enhanced accuracy.'
-        : 'No timing data yet. Waiting for WWV tone detections...'
+      message: 'No timing data yet. Waiting for WWV tone detections...'
     });
   }
   
@@ -2563,8 +2029,7 @@ function startServer() {
     console.log(`🚀 GRAPE Configuration UI Server running on http://localhost:${PORT}/`);
     console.log(`📊 Monitoring Dashboard available at http://localhost:${PORT}/monitoring`);
     console.log(`📁 Using JSON database in ./data/ directory`);
-    console.log(`🔐 Secure JWT authentication enabled`);
-    console.log(`👤 Login at http://localhost:${PORT}/ with your credentials`);
+    console.log(`👤 Default login: admin / admin`);
     console.log(`🔧 Enhanced monitoring with debugging and robust API handling`);
     console.log(`✅ JSON database implementation working!`);
     console.log(`🎵 WebSocket audio streaming enabled`);
