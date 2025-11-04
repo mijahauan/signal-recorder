@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Timing & Quality Dashboard - GRAPE Signal Recorder</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0a0e27;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #1e3a8a 0%, #312e81 100%);
+            padding: 20px 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+        
+        .header h1 {
+            color: #fff;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        
+        .live-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+        
+        .live-dot {
+            width: 10px;
+            height: 10px;
+            background: #10b981;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .time-snap-status {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+            border-left: 4px solid #10b981;
+        }
+        
+        .time-snap-status.not-established {
+            border-left-color: #f59e0b;
+        }
+        
+        .time-snap-header {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .time-snap-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        
+        .time-snap-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .time-snap-label {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+        }
+        
+        .time-snap-value {
+            font-size: 20px;
+            font-weight: 600;
+            color: #fff;
+        }
+        
+        .channel-table-container {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+            overflow-x: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        thead {
+            background: #0f172a;
+        }
+        
+        th {
+            padding: 12px;
+            text-align: left;
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+        
+        td {
+            padding: 12px;
+            border-top: 1px solid #334155;
+        }
+        
+        tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        
+        .grade-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        
+        .grade-A { background: #10b981; color: #fff; }
+        .grade-B { background: #3b82f6; color: #fff; }
+        .grade-C { background: #f59e0b; color: #fff; }
+        .grade-D { background: #ef4444; color: #fff; }
+        .grade-F { background: #dc2626; color: #fff; }
+        
+        .quality-distribution {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+        
+        .distribution-header {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+        }
+        
+        .distribution-bars {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .distribution-bar {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .bar-label {
+            width: 30px;
+            font-weight: 600;
+            font-size: 16px;
+        }
+        
+        .bar-container {
+            flex: 1;
+            background: #0f172a;
+            height: 30px;
+            border-radius: 5px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        .bar-fill {
+            height: 100%;
+            transition: width 0.5s ease;
+        }
+        
+        .bar-fill.grade-A { background: #10b981; }
+        .bar-fill.grade-B { background: #3b82f6; }
+        .bar-fill.grade-C { background: #f59e0b; }
+        .bar-fill.grade-D { background: #ef4444; }
+        .bar-fill.grade-F { background: #dc2626; }
+        
+        .bar-percent {
+            min-width: 60px;
+            text-align: right;
+            font-weight: 600;
+        }
+        
+        .alerts-container {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+        
+        .alerts-header {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .alert-item {
+            background: rgba(239, 68, 68, 0.1);
+            border-left: 3px solid #ef4444;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+        }
+        
+        .alert-time {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-bottom: 5px;
+        }
+        
+        .alert-message {
+            font-size: 14px;
+            color: #fca5a5;
+        }
+        
+        .no-alerts {
+            color: #10b981;
+            font-size: 14px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #94a3b8;
+        }
+        
+        .error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid #ef4444;
+            color: #fca5a5;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        
+        .station-info {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            border-left: 4px solid #3b82f6;
+        }
+        
+        .station-info-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .station-info-label {
+            font-size: 11px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+        
+        .station-info-value {
+            font-size: 16px;
+            color: #fff;
+            font-weight: 500;
+        }
+        
+        .refresh-countdown {
+            display: inline-block;
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <nav style="background: #1e3a8a; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h2 style="margin: 0; font-size: 20px; color: #fff;">📡 GRAPE Signal Recorder - Timing & Quality Dashboard</h2>
+        <div style="display: flex; gap: 15px; align-items: center;">
+            <span style="color: rgba(255,255,255,0.7); font-size: 14px;">Edit config: <code style="background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 3px;">config/*.toml</code></span>
+        </div>
+    </nav>
+
+    <div class="header">
+        <h1>⏱️ Timing & Quality Dashboard</h1>
+        <div class="live-indicator">
+            <span class="live-dot"></span>
+            <span>Live Monitoring</span>
+            <span class="refresh-countdown" id="countdown-timer">Next update in 60s</span>
+        </div>
+    </div>
+
+    <div id="station-info-container"></div>
+    <div id="dashboard-content">
+        <div class="loading">Loading quality data...</div>
+    </div>
+
+    <script>
+        let refreshCountdown = 60;
+        let countdownInterval = null;
+        
+        function startCountdown() {
+            refreshCountdown = 60;
+            if (countdownInterval) clearInterval(countdownInterval);
+            
+            countdownInterval = setInterval(() => {
+                refreshCountdown--;
+                const timer = document.getElementById('countdown-timer');
+                if (timer) {
+                    timer.textContent = `Next update in ${refreshCountdown}s`;
+                }
+                if (refreshCountdown <= 0) {
+                    clearInterval(countdownInterval);
+                }
+            }, 1000);
+        }
+        
+        async function fetchStationInfo() {
+            try {
+                const response = await fetch('/api/monitoring/station-info');
+                const data = await response.json();
+                
+                if (data.available) {
+                    renderStationInfo(data);
+                }
+            } catch (error) {
+                console.error('Failed to load station info:', error);
+            }
+        }
+        
+        function renderStationInfo(data) {
+            const container = document.getElementById('station-info-container');
+            container.innerHTML = `
+                <div class="station-info">
+                    <div class="station-info-item">
+                        <span class="station-info-label">Callsign</span>
+                        <span class="station-info-value">${data.station.callsign}</span>
+                    </div>
+                    <div class="station-info-item">
+                        <span class="station-info-label">Grid Square</span>
+                        <span class="station-info-value">${data.station.gridSquare}</span>
+                    </div>
+                    <div class="station-info-item">
+                        <span class="station-info-label">Station ID</span>
+                        <span class="station-info-value">${data.station.stationId}</span>
+                    </div>
+                    <div class="station-info-item">
+                        <span class="station-info-label">Instrument ID</span>
+                        <span class="station-info-value">${data.station.instrumentId}</span>
+                    </div>
+                    <div class="station-info-item">
+                        <span class="station-info-label">Server Uptime</span>
+                        <span class="station-info-value">${data.server.uptime}</span>
+                    </div>
+                    <div class="station-info-item">
+                        <span class="station-info-label">Description</span>
+                        <span class="station-info-value">${data.station.description || '--'}</span>
+                    </div>
+                </div>
+            `;
+        }
+        
+        async function fetchTimingQuality() {
+            try {
+                const response = await fetch('/api/monitoring/timing-quality');
+                const data = await response.json();
+                
+                if (!data.available) {
+                    document.getElementById('dashboard-content').innerHTML = `
+                        <div class="error">
+                            ⚠️ Quality data not available: ${data.message}
+                        </div>
+                    `;
+                    return;
+                }
+                
+                renderDashboard(data);
+            } catch (error) {
+                document.getElementById('dashboard-content').innerHTML = `
+                    <div class="error">
+                        ❌ Failed to load quality data: ${error.message}
+                    </div>
+                `;
+            }
+        }
+        
+        function renderDashboard(data) {
+            const container = document.getElementById('dashboard-content');
+            
+            // Time_snap status
+            const timeSnapHtml = renderTimeSnapStatus(data.timeSnap);
+            
+            // Channel table
+            const channelTableHtml = renderChannelTable(data.channels);
+            
+            // Quality distribution
+            const distributionHtml = renderQualityDistribution(data.overall);
+            
+            // Alerts
+            const alertsHtml = renderAlerts(data.alerts);
+            
+            container.innerHTML = `
+                ${timeSnapHtml}
+                ${channelTableHtml}
+                ${distributionHtml}
+                ${alertsHtml}
+            `;
+        }
+        
+        function renderTimeSnapStatus(timeSnap) {
+            if (!timeSnap.established) {
+                return `
+                    <div class="time-snap-status not-established">
+                        <div class="time-snap-header">
+                            ⏱️ System Timing Status
+                        </div>
+                        <div class="time-snap-grid">
+                            <div class="time-snap-item">
+                                <span class="time-snap-label">Status</span>
+                                <span class="time-snap-value" style="color: #f59e0b;">⚠️ NOT ESTABLISHED</span>
+                            </div>
+                            <div class="time-snap-item">
+                                <span class="time-snap-label">Message</span>
+                                <span class="time-snap-value" style="font-size: 14px;">${timeSnap.message}</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            const driftColor = Math.abs(timeSnap.drift) > 20 ? '#f59e0b' : 
+                              Math.abs(timeSnap.drift) > 10 ? '#3b82f6' : '#10b981';
+            
+            return `
+                <div class="time-snap-status">
+                    <div class="time-snap-header">
+                        ⏱️ System Timing Status
+                    </div>
+                    <div class="time-snap-grid">
+                        <div class="time-snap-item">
+                            <span class="time-snap-label">Status</span>
+                            <span class="time-snap-value" style="color: #10b981;">✅ ESTABLISHED</span>
+                        </div>
+                        <div class="time-snap-item">
+                            <span class="time-snap-label">Source</span>
+                            <span class="time-snap-value">${timeSnap.source}</span>
+                        </div>
+                        <div class="time-snap-item">
+                            <span class="time-snap-label">Current Drift</span>
+                            <span class="time-snap-value" style="color: ${driftColor};">
+                                ${timeSnap.drift >= 0 ? '+' : ''}${timeSnap.drift.toFixed(1)} ms
+                            </span>
+                        </div>
+                        <div class="time-snap-item">
+                            <span class="time-snap-label">Age</span>
+                            <span class="time-snap-value">${timeSnap.age} minutes</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderChannelTable(channels) {
+            const rows = Object.entries(channels).map(([name, data]) => {
+                const grade = data.latestGrade;
+                const gradeClass = grade === 'UNKNOWN' ? 'grade-C' : `grade-${grade}`;
+                const gradeDisplay = grade === 'UNKNOWN' ? 
+                    '<span style="opacity: 0.5;" title="Quality grading will appear after recorder writes CSV files">Collecting...</span>' :
+                    grade;
+                
+                const score = data.latestScore > 0 ? data.latestScore.toFixed(0) : '--';
+                
+                // Separate station detection info
+                const wwvInfo = data.wwvDetections > 0 ? 
+                    `${data.wwvDetections} (${data.wwvDetectionRate}%)` : '--';
+                const wwvhInfo = data.wwvhDetections > 0 ? 
+                    `${data.wwvhDetections} (${data.wwvhDetectionRate}%)` : '--';
+                const chuInfo = data.chuDetections > 0 ? 
+                    `${data.chuDetections} (${data.chuDetectionRate}%)` : '--';
+                    
+                const driftInfo = data.avgDrift !== null ? 
+                    `${data.avgDrift >= 0 ? '+' : ''}${data.avgDrift.toFixed(1)}ms` : '--';
+                
+                // Calculate total gaps and resequenced from recent minutes
+                const recentData = data.recentMinutes || [];
+                const totalGaps = recentData.reduce((sum, m) => sum + (parseInt(m.gaps) || 0), 0);
+                const totalReseq = recentData.reduce((sum, m) => sum + (m.resequenced || 0), 0);
+                
+                return `
+                    <tr>
+                        <td><strong>${name}</strong></td>
+                        <td><span class="grade-badge ${gradeClass}">${gradeDisplay}</span></td>
+                        <td style="text-align: center;">${score}</td>
+                        <td style="text-align: center;">${data.minutesInHour}/60</td>
+                        <td style="text-align: right;">${data.avgPacketLoss.toFixed(3)}</td>
+                        <td style="text-align: center;">${totalGaps}</td>
+                        <td style="text-align: center;">${totalReseq}</td>
+                        <td style="text-align: right;">${driftInfo}</td>
+                        <td style="text-align: center; font-size: 0.9em;">${wwvInfo}</td>
+                        <td style="text-align: center; font-size: 0.9em;">${wwvhInfo}</td>
+                        <td style="text-align: center; font-size: 0.9em;">${chuInfo}</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            return `
+                <div class="channel-table-container">
+                    <div class="distribution-header">📊 Channel Overview (Last Hour)</div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Channel</th>
+                                <th>Quality</th>
+                                <th>Score</th>
+                                <th>Minutes</th>
+                                <th>Loss %</th>
+                                <th>Gaps</th>
+                                <th>Reseq</th>
+                                <th>Drift</th>
+                                <th style="font-size: 0.85em;">WWV<br><small>1000Hz</small></th>
+                                <th style="font-size: 0.85em;">WWVH<br><small>1200Hz</small></th>
+                                <th style="font-size: 0.85em;">CHU<br><small>1000Hz</small></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+        
+        function renderQualityDistribution(overall) {
+            const grades = ['A', 'B', 'C', 'D', 'F'];
+            const bars = grades.map(grade => {
+                const percent = parseFloat(overall.gradePercentages[grade] || 0);
+                return `
+                    <div class="distribution-bar">
+                        <div class="bar-label">${grade}</div>
+                        <div class="bar-container">
+                            <div class="bar-fill grade-${grade}" style="width: ${percent}%"></div>
+                        </div>
+                        <div class="bar-percent">${percent.toFixed(1)}%</div>
+                    </div>
+                `;
+            }).join('');
+            
+            return `
+                <div class="quality-distribution">
+                    <div class="distribution-header">📈 Quality Distribution (Last 24h)</div>
+                    <div class="distribution-bars">
+                        ${bars}
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderAlerts(alerts) {
+            if (!alerts || alerts.length === 0) {
+                return `
+                    <div class="alerts-container">
+                        <div class="alerts-header">⚠️ Active Alerts</div>
+                        <div class="no-alerts">✅ No active alerts - All systems normal</div>
+                    </div>
+                `;
+            }
+            
+            const alertItems = alerts.map(alert => `
+                <div class="alert-item">
+                    <div class="alert-time">${alert.time} - ${alert.channel}</div>
+                    <div class="alert-message">${alert.alert}</div>
+                </div>
+            `).join('');
+            
+            return `
+                <div class="alerts-container">
+                    <div class="alerts-header">⚠️ Active Alerts (${alerts.length})</div>
+                    ${alertItems}
+                </div>
+            `;
+        }
+        
+        async function refreshAll() {
+            await Promise.all([
+                fetchStationInfo(),
+                fetchTimingQuality()
+            ]);
+            startCountdown();
+        }
+        
+        // Initial load
+        refreshAll();
+        
+        // Auto-refresh every 60 seconds
+        setInterval(refreshAll, 60000);
+    </script>
+</body>
+</html>
