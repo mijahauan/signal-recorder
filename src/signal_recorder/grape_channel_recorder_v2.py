@@ -147,26 +147,32 @@ class GRAPEChannelRecorderV2:
             from scipy import signal as scipy_signal
             fs_proc = 3000  # Processing sample rate after resampling
             
-            # WWV: 800ms of 1000 Hz (Fort Collins)
+            # WWV: 800ms of 1000 Hz (Fort Collins) - QUADRATURE TEMPLATES
             t_wwv = np.arange(0, 0.8, 1/fs_proc)
-            self.template_wwv = np.sin(2 * np.pi * 1000 * t_wwv)
-            self.template_wwv *= scipy_signal.windows.tukey(len(t_wwv), alpha=0.1)
+            wwv_window = scipy_signal.windows.tukey(len(t_wwv), alpha=0.1)
+            self.template_wwv_sin = np.sin(2 * np.pi * 1000 * t_wwv) * wwv_window
+            self.template_wwv_cos = np.cos(2 * np.pi * 1000 * t_wwv) * wwv_window
             # Normalize to unit energy for proper matched filtering
-            self.template_wwv /= np.linalg.norm(self.template_wwv)
+            self.template_wwv_sin /= np.linalg.norm(self.template_wwv_sin)
+            self.template_wwv_cos /= np.linalg.norm(self.template_wwv_cos)
             
-            # WWVH: 800ms of 1200 Hz (Hawaii)
+            # WWVH: 800ms of 1200 Hz (Hawaii) - QUADRATURE TEMPLATES
             t_wwvh = np.arange(0, 0.8, 1/fs_proc)
-            self.template_wwvh = np.sin(2 * np.pi * 1200 * t_wwvh)
-            self.template_wwvh *= scipy_signal.windows.tukey(len(t_wwvh), alpha=0.1)
+            wwvh_window = scipy_signal.windows.tukey(len(t_wwvh), alpha=0.1)
+            self.template_wwvh_sin = np.sin(2 * np.pi * 1200 * t_wwvh) * wwvh_window
+            self.template_wwvh_cos = np.cos(2 * np.pi * 1200 * t_wwvh) * wwvh_window
             # Normalize to unit energy for proper matched filtering
-            self.template_wwvh /= np.linalg.norm(self.template_wwvh)
+            self.template_wwvh_sin /= np.linalg.norm(self.template_wwvh_sin)
+            self.template_wwvh_cos /= np.linalg.norm(self.template_wwvh_cos)
             
-            # CHU: 500ms of 1000 Hz (Canada)
+            # CHU: 500ms of 1000 Hz (Canada) - QUADRATURE TEMPLATES
             t_chu = np.arange(0, 0.5, 1/fs_proc)
-            self.template_chu = np.sin(2 * np.pi * 1000 * t_chu)
-            self.template_chu *= scipy_signal.windows.tukey(len(t_chu), alpha=0.1)
+            chu_window = scipy_signal.windows.tukey(len(t_chu), alpha=0.1)
+            self.template_chu_sin = np.sin(2 * np.pi * 1000 * t_chu) * chu_window
+            self.template_chu_cos = np.cos(2 * np.pi * 1000 * t_chu) * chu_window
             # Normalize to unit energy for proper matched filtering
-            self.template_chu /= np.linalg.norm(self.template_chu)
+            self.template_chu_sin /= np.linalg.norm(self.template_chu_sin)
+            self.template_chu_cos /= np.linalg.norm(self.template_chu_cos)
             
             logger.info(f"{channel_name}: Matched filter templates created (WWV 1000Hz, WWVH 1200Hz, CHU 1000Hz)")
         
@@ -606,27 +612,35 @@ class GRAPEChannelRecorderV2:
         
         detections = []
         expected_pos_3k = int(8.0 * 3000)  # Expected at 8s into 16s window (minute boundary at :00)
-        stations = []  # (name, correlation, duration, frequency)
         
-        # TEMPORARY: Skip bandpass filtering to debug why correlation is zero
-        # The matched filter template itself provides frequency selectivity
+        # Define quadrature templates to correlate with
+        station_templates = []
         if is_chu_channel:
-            # CHU channel: Correlate directly
-            corr_chu = correlate(audio_3k, self.template_chu, mode='valid')
-            if len(corr_chu) == 0:
-                logger.debug(f"{self.channel_name}: Buffer too short for correlation")
-                return None
-            stations.append(('CHU', corr_chu, 0.5, 1000))
+            station_templates.append(('CHU', self.template_chu_sin, self.template_chu_cos, 0.5, 1000))
         else:
-            # WWV channel: Correlate directly with both templates
-            corr_wwv = correlate(audio_3k, self.template_wwv, mode='valid')
-            corr_wwvh = correlate(audio_3k, self.template_wwvh, mode='valid')
-            
-            if len(corr_wwv) == 0:
+            station_templates.append(('WWV', self.template_wwv_sin, self.template_wwv_cos, 0.8, 1000))
+            station_templates.append(('WWVH', self.template_wwvh_sin, self.template_wwvh_cos, 0.8, 1200))
+        
+        # Process each station with phase-invariant quadrature correlation
+        stations = []  # (name, correlation_magnitude, duration, frequency)
+        
+        for station_name, template_sin, template_cos, expected_dur, freq in station_templates:
+            # Perform quadrature correlation (phase-invariant)
+            try:
+                corr_sin = correlate(audio_3k, template_sin, mode='valid')
+                corr_cos = correlate(audio_3k, template_cos, mode='valid')
+            except ValueError:
                 logger.debug(f"{self.channel_name}: Buffer too short for correlation")
-                return None
-            stations.append(('WWV', corr_wwv, 0.8, 1000))
-            stations.append(('WWVH', corr_wwvh, 0.8, 1200))
+                continue
+            
+            if len(corr_sin) == 0 or len(corr_cos) == 0:
+                continue
+            
+            # Combine to get phase-invariant magnitude: sqrt(sin^2 + cos^2)
+            min_len = min(len(corr_sin), len(corr_cos))
+            correlation = np.sqrt(corr_sin[:min_len]**2 + corr_cos[:min_len]**2)
+            
+            stations.append((station_name, correlation, expected_dur, freq))
         
         # 4. Find peaks and apply noise-adaptive thresholds
         
