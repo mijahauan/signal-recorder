@@ -147,11 +147,23 @@ class MinuteQualityMetrics:
     rtp_jitter_std_ms: float
     rtp_jitter_max_ms: float
     
-    # WWV Timing (if WWV channel)
+    # WWV Timing (Fort Collins, 1000 Hz)
     wwv_tone_detected: Optional[bool] = None
     wwv_timing_error_ms: Optional[float] = None
     wwv_tone_snr_db: Optional[float] = None
     wwv_tone_duration_ms: Optional[float] = None
+    
+    # WWVH Timing (Hawaii, 1200 Hz) - on 2.5, 5, 10, 15 MHz
+    wwvh_tone_detected: Optional[bool] = None
+    wwvh_timing_error_ms: Optional[float] = None
+    wwvh_tone_snr_db: Optional[float] = None
+    wwvh_tone_duration_ms: Optional[float] = None
+    
+    # CHU Timing (Canada, 1000 Hz) - on 3.33, 7.85, 14.67 MHz
+    chu_tone_detected: Optional[bool] = None
+    chu_timing_error_ms: Optional[float] = None
+    chu_tone_snr_db: Optional[float] = None
+    chu_tone_duration_ms: Optional[float] = None
     
     # Time_snap Quality (KA9Q timing architecture)
     time_snap_established: bool = False
@@ -273,8 +285,19 @@ class MinuteQualityMetrics:
             'resequenced': self.packets_resequenced,
             'time_snap': self.time_snap_source,
             'drift_ms': f"{self.time_snap_drift_ms:.1f}" if self.time_snap_drift_ms is not None else "",
+            # WWV (Fort Collins, 1000 Hz)
             'wwv_detected': self.wwv_tone_detected,
             'wwv_error_ms': f"{self.wwv_timing_error_ms:.1f}" if self.wwv_timing_error_ms is not None else "",
+            'wwv_snr_db': f"{self.wwv_tone_snr_db:.1f}" if self.wwv_tone_snr_db is not None else "",
+            # WWVH (Hawaii, 1200 Hz)
+            'wwvh_detected': self.wwvh_tone_detected,
+            'wwvh_error_ms': f"{self.wwvh_timing_error_ms:.1f}" if self.wwvh_timing_error_ms is not None else "",
+            'wwvh_snr_db': f"{self.wwvh_tone_snr_db:.1f}" if self.wwvh_tone_snr_db is not None else "",
+            # CHU (Canada, 1000 Hz)
+            'chu_detected': self.chu_tone_detected,
+            'chu_error_ms': f"{self.chu_timing_error_ms:.1f}" if self.chu_timing_error_ms is not None else "",
+            'chu_snr_db': f"{self.chu_tone_snr_db:.1f}" if self.chu_tone_snr_db is not None else "",
+            # Other
             'signal_power_db': f"{self.signal_mean_power_db:.1f}",
             'alerts': "; ".join(self.alerts) if self.alerts else "",
             'notes': "; ".join(self.processing_notes) if self.processing_notes else ""
@@ -417,12 +440,30 @@ class QualityMetricsTracker:
         # Signal quality
         self.current_minute.signal_mean_power_db = signal_power_db
         
-        # WWV results (if applicable)
+        # WWV/WWVH/CHU results (if applicable)
+        # wwv_result can be a single detection dict or a list of detections
         if wwv_result:
-            self.current_minute.wwv_tone_detected = wwv_result.get('detected', False)
-            self.current_minute.wwv_timing_error_ms = wwv_result.get('timing_error_ms')
-            self.current_minute.wwv_tone_snr_db = wwv_result.get('snr_db')
-            self.current_minute.wwv_tone_duration_ms = wwv_result.get('duration_ms')
+            # Handle both single detection and list of detections
+            detections = wwv_result if isinstance(wwv_result, list) else [wwv_result]
+            
+            for detection in detections:
+                station = detection.get('station', 'WWV')  # Default to WWV for backward compat
+                
+                if station == 'WWV':
+                    self.current_minute.wwv_tone_detected = detection.get('detected', False)
+                    self.current_minute.wwv_timing_error_ms = detection.get('timing_error_ms')
+                    self.current_minute.wwv_tone_snr_db = detection.get('snr_db')
+                    self.current_minute.wwv_tone_duration_ms = detection.get('duration_ms')
+                elif station == 'WWVH':
+                    self.current_minute.wwvh_tone_detected = detection.get('detected', False)
+                    self.current_minute.wwvh_timing_error_ms = detection.get('timing_error_ms')
+                    self.current_minute.wwvh_tone_snr_db = detection.get('snr_db')
+                    self.current_minute.wwvh_tone_duration_ms = detection.get('duration_ms')
+                elif station == 'CHU':
+                    self.current_minute.chu_tone_detected = detection.get('detected', False)
+                    self.current_minute.chu_timing_error_ms = detection.get('timing_error_ms')
+                    self.current_minute.chu_tone_snr_db = detection.get('snr_db')
+                    self.current_minute.chu_tone_duration_ms = detection.get('duration_ms')
         
         # Time_snap quality (KA9Q timing architecture)
         self.current_minute.time_snap_established = time_snap_established

@@ -14,7 +14,7 @@ import logging
 import numpy as np
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, NamedTuple
+from typing import Optional, Dict, List, NamedTuple
 from collections import deque
 from scipy import signal as scipy_signal
 
@@ -140,11 +140,29 @@ class GRAPEChannelRecorderV2:
         self.last_wwv_detection = None
         self.wwv_detections_today = 0
         self.current_minute_wwv_drift_ms = None  # Drift for current minute
-        self.wwv_results_by_minute = {}  # minute_timestamp -> wwv_result (persist until finalized)
+        self.wwv_results_by_minute = {}  # minute_timestamp -> list of detections (WWV, WWVH, CHU)
         
-        # Predictive detection (after first successful detection)
-        self.wwv_reference_rtp = None  # RTP timestamp of first detected tone
-        self.wwv_reference_minute = None  # Minute timestamp of first detection
+        # Matched filter templates for tone detection (at 3 kHz processing rate)
+        if self.is_wwv_channel:
+            from scipy import signal as scipy_signal
+            fs_proc = 3000  # Processing sample rate after resampling
+            
+            # WWV: 800ms of 1000 Hz (Fort Collins)
+            t_wwv = np.arange(0, 0.8, 1/fs_proc)
+            self.template_wwv = np.sin(2 * np.pi * 1000 * t_wwv)
+            self.template_wwv *= scipy_signal.windows.tukey(len(t_wwv), alpha=0.1)
+            
+            # WWVH: 800ms of 1200 Hz (Hawaii)
+            t_wwvh = np.arange(0, 0.8, 1/fs_proc)
+            self.template_wwvh = np.sin(2 * np.pi * 1200 * t_wwvh)
+            self.template_wwvh *= scipy_signal.windows.tukey(len(t_wwvh), alpha=0.1)
+            
+            # CHU: 500ms of 1000 Hz (Canada)
+            t_chu = np.arange(0, 0.5, 1/fs_proc)
+            self.template_chu = np.sin(2 * np.pi * 1000 * t_chu)
+            self.template_chu *= scipy_signal.windows.tukey(len(t_chu), alpha=0.1)
+            
+            logger.info(f"{channel_name}: Matched filter templates created (WWV 1000Hz, WWVH 1200Hz, CHU 1000Hz)")
         
         # Resequencing statistics (for quality tracking)
         self.current_minute_resequenced = 0
@@ -511,12 +529,12 @@ class GRAPEChannelRecorderV2:
             minute_key = self.wwv_current_minute
             
             if minute_key in self.wwv_minute_buffer and len(self.wwv_minute_buffer[minute_key]) > 0:
-                # Process this minute's buffer
-                result = self._detect_wwv_in_buffer(minute_key)
+                # Process this minute's buffer (returns list of detections)
+                detections = self._detect_wwv_in_buffer(minute_key)
                 
-                # Save result for this minute (persist until finalized)
-                if result and result.get('detected'):
-                    self.wwv_results_by_minute[minute_key] = result
+                # Save all detections for this minute (WWV, WWVH, CHU may all be present)
+                if detections:
+                    self.wwv_results_by_minute[minute_key] = detections
                 
                 # Clean up processed buffer and old buffers
                 # Delete the buffer we just processed
@@ -534,12 +552,15 @@ class GRAPEChannelRecorderV2:
         
         return None
     
-    def _detect_wwv_in_buffer(self, minute_key: int) -> Optional[Dict]:
+    def _detect_wwv_in_buffer(self, minute_key: int) -> Optional[List[Dict]]:
         """
-        Detect WWV tone in buffered samples using post-processing approach
-        (same as diagnostic script - this is what works!)
+        Detect WWV/WWVH/CHU tones using matched filtering (cross-correlation)
+        
+        Returns list of detections (may contain WWV, WWVH, and/or CHU)
+        Each detection has: station, onset_rtp_timestamp, timing_error_ms, etc.
         """
         from scipy import signal as scipy_signal
+        from scipy.signal import correlate
         
         buffer_entries = self.wwv_minute_buffer[minute_key]
         if len(buffer_entries) == 0:
@@ -551,158 +572,130 @@ class GRAPEChannelRecorderV2:
         
         logger.info(f"{self.channel_name}: Processing WWV buffer: {len(all_iq):,} samples ({len(all_iq)/16000:.1f}s)")
         
-        # Use 8-second window centered on minute boundary for better discrimination
+        # Use 6-second window centered on minute boundary
         # Buffer is :55-:05 (10s), minute boundary at :00 (5s into buffer)
-        # Analyze :57-:03 = 6 seconds around the tone
-        # That's 2-8 seconds into the buffer
+        # Extract :57-:03 (6 seconds) for matched filtering
         buffer_duration = len(all_iq) / 16000
         
         if buffer_duration < 6.0:
             logger.warning(f"{self.channel_name}: Buffer too short ({buffer_duration:.1f}s < 6s)")
             return None
         
-        # Use 6-second window centered on minute boundary
-        # Buffer spans :55-:05 (10s), minute boundary at :00 (5s into buffer)
-        # Extract :57-:03 (6 seconds) for detection
-        # This is 2-8 seconds into the buffer
-        start_sample = min(int(2.0 * 16000), len(all_iq) - 96000)  # Start at 2s (:57)
-        end_sample = min(start_sample + 96000, len(all_iq))         # 6 seconds
+        start_sample_16k = min(int(2.0 * 16000), len(all_iq) - 96000)  # Start at 2s (:57)
+        end_sample_16k = min(start_sample_16k + 96000, len(all_iq))    # 6 seconds
+        detection_window = all_iq[start_sample_16k:end_sample_16k]
         
-        # Expected tone at 3s into 6s window (the :00 boundary)
-        expected_tone_sample = start_sample + int(3.0 * 16000)
+        # === Matched Filter Detection ===
         
-        detection_window = all_iq[start_sample:end_sample]
-        
-        logger.debug(f"{self.channel_name}: Detection window: {len(detection_window)/16000:.1f}s "
-                    f"({start_sample/16000:.1f}s to {end_sample/16000:.1f}s into buffer)")
-        
-        # === Same algorithm as diagnostic script ===
-        
-        # 1. AM demodulation
+        # 1. AM demodulation (AC-coupled)
         magnitude = np.abs(detection_window)
-        mag_dc = magnitude - np.mean(magnitude)
+        audio_signal = magnitude - np.mean(magnitude)
         
-        # 2. Resample to 3 kHz
-        resampled = scipy_signal.resample_poly(mag_dc, 3, 16)
+        # 2. Resample to 3 kHz for processing
+        audio_3k = scipy_signal.resample_poly(audio_signal, 3, 16)
         
-        # 3. Bandpass filter 950-1050 Hz
-        sos = scipy_signal.butter(5, [950, 1050], btype='band', fs=3000, output='sos')
-        filtered = scipy_signal.sosfiltfilt(sos, resampled)
+        # 3. Cross-correlate with appropriate templates based on channel
+        # WWV frequencies: 2.5, 5, 10, 15, 20, 25 MHz -> WWV + WWVH
+        # CHU frequencies: 3.33, 7.85, 14.67 MHz -> CHU only
+        is_chu_channel = 'CHU' in self.channel_name
         
-        # 4. Hilbert envelope
-        envelope = np.abs(scipy_signal.hilbert(filtered))
+        detections = []
+        expected_pos_3k = int(3.0 * 3000)  # Expected at 3s into 6s window (minute boundary)
+        stations = []  # (name, correlation, duration, frequency)
         
-        # 5. Normalize
-        max_env = np.max(envelope)
-        if max_env == 0:
-            logger.debug(f"{self.channel_name}: Zero envelope - no signal")
-            return None
+        if is_chu_channel:
+            # CHU channel: Only correlate with CHU template
+            corr_chu = correlate(audio_3k, self.template_chu, mode='valid')
+            if len(corr_chu) == 0:
+                logger.debug(f"{self.channel_name}: Buffer too short for correlation")
+                return None
+            stations.append(('CHU', corr_chu, 0.5, 1000))
+        else:
+            # WWV channel: Correlate with both WWV and WWVH templates
+            corr_wwv = correlate(audio_3k, self.template_wwv, mode='valid')
+            corr_wwvh = correlate(audio_3k, self.template_wwvh, mode='valid')
+            if len(corr_wwv) == 0:
+                logger.debug(f"{self.channel_name}: Buffer too short for correlation")
+                return None
+            stations.append(('WWV', corr_wwv, 0.8, 1000))
+            stations.append(('WWVH', corr_wwvh, 0.8, 1200))
         
-        normalized = envelope / max_env
+        # 4. Find peaks and apply noise-adaptive thresholds
         
-        # 6. Detect tone above threshold
-        threshold = 0.5
-        above_threshold = normalized > threshold
-        above_count = np.sum(above_threshold)
-        above_percent = (above_count / len(normalized)) * 100
-        
-        logger.info(f"{self.channel_name}: WWV analysis - max_env={max_env:.6f}, "
-                   f"above_thresh={above_count}/{len(normalized)} ({above_percent:.1f}%)")
-        
-        # 7. Apply binary threshold and find edges
-        binary_envelope = (normalized > threshold).astype(int)
-        rising_edges = np.where(np.diff(binary_envelope) == 1)[0]
-        falling_edges = np.where(np.diff(binary_envelope) == -1)[0]
-        
-        # 8. Measure pulse durations and find best candidate
-        # Expected position in resampled (3kHz) coordinates
-        expected_in_window_16k = expected_tone_sample - start_sample
-        expected_tone_position_3k = int(expected_in_window_16k * (3 / 16))
-        
-        valid_tones = []
-        all_durations = []
-        
-        for rise_idx in rising_edges:
-            # Find next falling edge
-            fall_candidates = falling_edges[falling_edges > rise_idx]
-            if len(fall_candidates) == 0:
-                continue
+        for station_name, correlation, expected_dur, freq in stations:
+            # Search for peak in ±500ms window around expected position
+            # This prevents false detections from noise peaks far from minute boundary
+            search_window = int(0.5 * 3000)  # ±500ms at 3kHz
+            search_start = max(0, expected_pos_3k - search_window)
+            search_end = min(len(correlation), expected_pos_3k + search_window)
             
-            fall_idx = fall_candidates[0]
-            duration_samples = fall_idx - rise_idx
-            duration_sec = duration_samples / 3000
-            all_durations.append(duration_sec)
+            if search_start >= search_end:
+                continue  # Window invalid
             
-            # WWV/CHU tone validation
-            # CHU: 0.5s nominal, but filtering/edge detection can make it measure 0.29-0.50s
-            # WWV: 0.8s nominal
-            # Allow 0.25-1.2s to catch weak/filtered CHU tones
-            if 0.25 <= duration_sec <= 1.2:
-                distance_from_expected = abs(rise_idx - expected_tone_position_3k)
-                valid_tones.append({
-                    'onset': rise_idx,
-                    'offset': fall_idx,
-                    'duration': duration_sec,
-                    'distance': distance_from_expected
-                })
+            # Find peak within search window
+            search_region = correlation[search_start:search_end]
+            local_peak_idx = np.argmax(search_region)
+            peak_idx = search_start + local_peak_idx
+            peak_val = correlation[peak_idx]
+            
+            # Noise-adaptive threshold: mean + 3*std over full correlation
+            # Balances sensitivity and false alarm rate
+            corr_mean = np.mean(correlation)
+            corr_std = np.std(correlation)
+            noise_floor = corr_mean + 3 * corr_std
+            
+            # Check if peak is significant
+            if peak_val > noise_floor:
+                # Calculate timing relative to expected position
+                timing_offset_samples = peak_idx - expected_pos_3k
+                timing_error_ms = (timing_offset_samples / 3000) * 1000
+                
+                # Convert to 16 kHz coordinates for RTP timestamp
+                onset_in_window_16k = int(peak_idx * (16000 / 3000))
+                onset_in_buffer_16k = start_sample_16k + onset_in_window_16k
+                onset_rtp_timestamp = (first_rtp_ts + onset_in_buffer_16k) & 0xFFFFFFFF
+                onset_utc_time = minute_key + (onset_in_buffer_16k / 16000)
+                
+                # Signal quality: peak relative to mean correlation
+                # Add robustness for very small values
+                if corr_mean > 0 and peak_val > corr_mean:
+                    snr_estimate = 20 * np.log10(peak_val / corr_mean)
+                else:
+                    snr_estimate = 0.0
+                
+                detection = {
+                    'detected': True,
+                    'station': station_name,
+                    'frequency_hz': freq,
+                    'timing_error_ms': timing_error_ms,
+                    'onset_rtp_timestamp': onset_rtp_timestamp,
+                    'onset_utc_time': onset_utc_time,
+                    'snr_db': snr_estimate,
+                    'duration_ms': expected_dur * 1000,
+                    'correlation_peak': float(peak_val),
+                    'correlation_snr': float(snr_estimate)
+                }
+                
+                detections.append(detection)
+                
+                logger.info(f"{self.channel_name}: ✅ {station_name} TONE DETECTED! "
+                           f"Freq: {freq}Hz, Duration: {expected_dur:.1f}s, "
+                           f"Timing error: {timing_error_ms:+.1f}ms, "
+                           f"SNR: {snr_estimate:.1f}dB, RTP: {onset_rtp_timestamp}")
         
-        if len(valid_tones) == 0:
-            # Log all found durations for debugging
-            if len(all_durations) > 0:
-                durations_str = ", ".join([f"{d:.3f}s" for d in all_durations[:5]])
-                logger.debug(f"{self.channel_name}: No valid tone (found: {durations_str})")
-            else:
-                logger.debug(f"{self.channel_name}: No pulses found")
+        # Return all detections found (may be WWV + WWVH on same frequency)
+        if len(detections) == 0:
+            logger.debug(f"{self.channel_name}: No tones above noise threshold")
             return None
-        
-        # Pick the tone closest to expected position (minute boundary at ~5s into buffer)
-        best_tone = min(valid_tones, key=lambda t: t['distance'])
-        best_onset_idx = best_tone['onset']
-        best_offset_idx = best_tone['offset']
-        best_duration = best_tone['duration']
-        
-        logger.debug(f"{self.channel_name}: Selected tone at position {best_onset_idx} "
-                    f"(distance from expected: {best_tone['distance']} samples = {best_tone['distance']/3:.1f}ms)")
-        
-        # 9. Calculate timing error
-        # Convert expected position from 16 kHz to 3 kHz resampled coordinates
-        expected_in_window_16k = expected_tone_sample - start_sample
-        expected_tone_position = int(expected_in_window_16k * (3 / 16))  # Convert 16kHz to 3kHz
-        timing_error_samples = best_onset_idx - expected_tone_position
-        timing_error_ms = (timing_error_samples / 3000) * 1000
-        
-        logger.debug(f"{self.channel_name}: Tone onset at sample {best_onset_idx} "
-                    f"(expected {expected_tone_position}), error: {timing_error_ms:+.1f}ms")
-        
-        # Calculate RTP timestamp of onset
-        # onset_idx is in 3 kHz resampled detection window, convert to 16 kHz
-        onset_in_window_16k = int(best_onset_idx * (16000 / 3000))
-        # Add the detection window offset (we started at :57, which is 2s into buffer)
-        onset_in_buffer_16k = start_sample + onset_in_window_16k
-        onset_rtp_timestamp = (first_rtp_ts + onset_in_buffer_16k) & 0xFFFFFFFF
-        
-        # Calculate UTC time (approximate for now, will be refined by time_snap)
-        onset_utc_time = minute_key + (onset_in_buffer_16k / 16000)
-        
-        logger.info(f"{self.channel_name}: ✅ WWV TONE DETECTED! "
-                   f"Duration: {best_duration:.3f}s, "
-                   f"Timing error: {timing_error_ms:+.1f} ms, "
-                   f"RTP ts: {onset_rtp_timestamp}")
-        
-        result = {
-            'detected': True,
-            'timing_error_ms': timing_error_ms,
-            'onset_rtp_timestamp': onset_rtp_timestamp,
-            'onset_utc_time': onset_utc_time,
-            'snr_db': max_env * 1000,  # Rough SNR estimate
-            'duration_ms': best_duration * 1000
-        }
         
         # Update stats
         self.last_wwv_detection = time.time()
-        self.wwv_detections_today += 1
+        self.wwv_detections_today += len(detections)
         
-        return result
+        # Sort by timing accuracy (closest to minute boundary)
+        detections.sort(key=lambda d: abs(d['timing_error_ms']))
+        
+        return detections
     
     def _process_wwv_tone_OLD(self, unix_time: float, iq_samples: np.ndarray, rtp_timestamp: int) -> Optional[Dict]:
         """
@@ -811,11 +804,43 @@ class GRAPEChannelRecorderV2:
         
         return None
     
-    def _finalize_minute(self, minute_time: datetime, file_path: Path, wwv_result: Optional[Dict]):
-        """Finalize quality metrics for completed minute"""
-        # Use WWV detection to establish/verify time_snap reference
-        if wwv_result and wwv_result.get('detected'):
-            self._process_wwv_time_snap(wwv_result)
+    def _finalize_minute(self, minute_time: datetime, file_path: Path, wwv_detections: Optional[List[Dict]]):
+        """Finalize quality metrics for completed minute
+        
+        Args:
+            wwv_detections: List of detections (WWV, WWVH, CHU), sorted by timing accuracy
+        """
+        # Process WWV detections for time_snap establishment/verification
+        # Strategy: Use WWV (Fort Collins) for time_snap, WWVH (Hawaii) for propagation study
+        if wwv_detections:
+            # Separate WWV from WWVH detections
+            wwv_only = [d for d in wwv_detections if d['station'] == 'WWV']
+            wwvh_only = [d for d in wwv_detections if d['station'] == 'WWVH']
+            chu_only = [d for d in wwv_detections if d['station'] == 'CHU']
+            
+            # Use WWV (or CHU if no WWV) for time_snap establishment
+            primary_detections = wwv_only if wwv_only else chu_only
+            if primary_detections:
+                self._process_wwv_time_snap(primary_detections[0])
+                logger.info(f"{self.channel_name}: ⏱️ Time_snap from {primary_detections[0]['station']} "
+                           f"(error: {primary_detections[0]['timing_error_ms']:+.1f}ms)")
+            
+            # Log WWVH for propagation analysis (don't use for time_snap)
+            if wwvh_only:
+                wwvh_det = wwvh_only[0]
+                logger.info(f"{self.channel_name}: 📡 WWVH propagation: "
+                           f"timing={wwvh_det['timing_error_ms']:+.1f}ms, "
+                           f"SNR={wwvh_det['snr_db']:.1f}dB")
+                
+                # If we have both WWV and WWVH, calculate differential delay
+                if wwv_only:
+                    diff_delay = wwv_only[0]['timing_error_ms'] - wwvh_det['timing_error_ms']
+                    logger.info(f"{self.channel_name}: 🌍 Differential propagation delay (WWV-WWVH): {diff_delay:+.1f}ms")
+            
+            # For quality metrics, pass ALL detections so they can be separated by station
+            wwv_result = wwv_detections
+        else:
+            wwv_result = None
         
         # Calculate signal power
         # TODO: Calculate from actual samples
