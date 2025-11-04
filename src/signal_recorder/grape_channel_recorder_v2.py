@@ -108,9 +108,12 @@ class GRAPEChannelRecorderV2:
         # Current minute tracking
         self.current_minute_start = None
         self.current_minute_samples = 0
-        self.previous_minute_samples = 0  # Track completed minute's samples
         self.current_minute_packets_rx = 0
         self.current_minute_packets_drop = 0
+        # Previous minute stats (captured before reset for quality metrics)
+        self.previous_minute_samples = 0
+        self.previous_minute_packets_rx = 0
+        self.previous_minute_packets_drop = 0
         
         # Per-packet timing for jitter calculation
         self.packet_arrival_times = deque(maxlen=100)
@@ -483,8 +486,10 @@ class GRAPEChannelRecorderV2:
                     self.samples_per_minute
                 )
             
-            # Save previous minute's sample count before reset
+            # Save previous minute's stats before reset (for quality metrics)
             self.previous_minute_samples = self.current_minute_samples
+            self.previous_minute_packets_rx = self.current_minute_packets_rx
+            self.previous_minute_packets_drop = self.current_minute_packets_drop
             
             self.current_minute_start = minute_boundary
             self.current_minute_samples = 0
@@ -906,10 +911,11 @@ class GRAPEChannelRecorderV2:
                 differential_delay_ms = wwv_only[0]['timing_error_ms'] - wwvh_only[0]['timing_error_ms']
         
         # Finalize minute in quality tracker with enhanced metrics
+        # Use previous_minute values which were captured when minute boundary was detected
         self.quality_tracker.finalize_minute(
-            actual_samples=self.previous_minute_samples,  # Use captured value from completed minute
-            packets_received=self.current_minute_packets_rx,
-            packets_dropped=self.current_minute_packets_drop,
+            actual_samples=self.previous_minute_samples,
+            packets_received=self.previous_minute_packets_rx,
+            packets_dropped=self.previous_minute_packets_drop,
             signal_power_db=signal_power_db,
             wwv_result=wwv_result,
             differential_delay_ms=differential_delay_ms,  # WWV-WWVH propagation difference
