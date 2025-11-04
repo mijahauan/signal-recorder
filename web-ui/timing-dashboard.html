@@ -416,8 +416,8 @@
         function renderDashboard(data) {
             const container = document.getElementById('dashboard-content');
             
-            // Time_snap status
-            const timeSnapHtml = renderTimeSnapStatus(data.timeSnap);
+            // Time_snap status (now includes multi-station summary)
+            const timeSnapHtml = renderTimeSnapStatus(data.timeSnap, data.channels);
             
             // Channel table
             const channelTableHtml = renderChannelTable(data.channels);
@@ -436,53 +436,78 @@
             `;
         }
         
-        function renderTimeSnapStatus(timeSnap) {
-            if (!timeSnap.established) {
-                return `
-                    <div class="time-snap-status not-established">
-                        <div class="time-snap-header">
-                            ⏱️ System Timing Status
-                        </div>
-                        <div class="time-snap-grid">
-                            <div class="time-snap-item">
-                                <span class="time-snap-label">Status</span>
-                                <span class="time-snap-value" style="color: #f59e0b;">⚠️ NOT ESTABLISHED</span>
-                            </div>
-                            <div class="time-snap-item">
-                                <span class="time-snap-label">Message</span>
-                                <span class="time-snap-value" style="font-size: 14px;">${timeSnap.message}</span>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }
+        function renderTimeSnapStatus(timeSnap, channels) {
+            // Calculate per-channel time_snap statistics
+            const channelList = Object.entries(channels || {});
+            const wwvChannels = channelList.filter(([name]) => name.startsWith('WWV'));
+            const chuChannels = channelList.filter(([name]) => name.startsWith('CHU'));
             
-            const driftColor = Math.abs(timeSnap.drift) > 20 ? '#f59e0b' : 
-                              Math.abs(timeSnap.drift) > 10 ? '#3b82f6' : '#10b981';
+            const wwvEstablished = wwvChannels.filter(([_, data]) => data.timeSnapEstablished).length;
+            const chuEstablished = chuChannels.filter(([_, data]) => data.timeSnapEstablished).length;
+            const totalEstablished = wwvEstablished + chuEstablished;
+            const totalChannels = wwvChannels.length + chuChannels.length;
+            
+            // Calculate total detections across all channels
+            const totalWwv = channelList.reduce((sum, [_, data]) => sum + (data.wwvDetections || 0), 0);
+            const totalWwvh = channelList.reduce((sum, [_, data]) => sum + (data.wwvhDetections || 0), 0);
+            const totalChu = channelList.reduce((sum, [_, data]) => sum + (data.chuDetections || 0), 0);
+            
+            // Calculate average drift across established channels
+            const drifts = channelList
+                .filter(([_, data]) => data.timeSnapEstablished && data.avgDrift !== null)
+                .map(([_, data]) => data.avgDrift);
+            const avgDrift = drifts.length > 0 ? 
+                drifts.reduce((sum, d) => sum + d, 0) / drifts.length : null;
+            
+            const statusColor = totalEstablished === 0 ? '#f59e0b' : '#10b981';
+            const driftColor = !avgDrift ? '#9ca3af' :
+                              Math.abs(avgDrift) > 20 ? '#f59e0b' : 
+                              Math.abs(avgDrift) > 10 ? '#3b82f6' : '#10b981';
             
             return `
                 <div class="time-snap-status">
                     <div class="time-snap-header">
-                        ⏱️ System Timing Status
+                        ⏱️ Multi-Station Detection Summary
                     </div>
                     <div class="time-snap-grid">
                         <div class="time-snap-item">
-                            <span class="time-snap-label">Status</span>
-                            <span class="time-snap-value" style="color: #10b981;">✅ ESTABLISHED</span>
-                        </div>
-                        <div class="time-snap-item">
-                            <span class="time-snap-label">Source</span>
-                            <span class="time-snap-value">${timeSnap.source}</span>
-                        </div>
-                        <div class="time-snap-item">
-                            <span class="time-snap-label">Current Drift</span>
-                            <span class="time-snap-value" style="color: ${driftColor};">
-                                ${timeSnap.drift >= 0 ? '+' : ''}${timeSnap.drift.toFixed(1)} ms
+                            <span class="time-snap-label">Time_Snap Status</span>
+                            <span class="time-snap-value" style="color: ${statusColor};">
+                                ${totalEstablished}/${totalChannels} channels
                             </span>
                         </div>
                         <div class="time-snap-item">
-                            <span class="time-snap-label">Age</span>
-                            <span class="time-snap-value">${timeSnap.age} minutes</span>
+                            <span class="time-snap-label">Avg Drift (all channels)</span>
+                            <span class="time-snap-value" style="color: ${driftColor};">
+                                ${avgDrift !== null ? `${avgDrift >= 0 ? '+' : ''}${avgDrift.toFixed(1)} ms` : '--'}
+                            </span>
+                        </div>
+                        <div class="time-snap-item">
+                            <span class="time-snap-label">WWV (Fort Collins)</span>
+                            <span class="time-snap-value" style="color: #10b981;">
+                                ${totalWwv} detections
+                            </span>
+                        </div>
+                        <div class="time-snap-item">
+                            <span class="time-snap-label">WWVH (Hawaii)</span>
+                            <span class="time-snap-value" style="color: #3b82f6;">
+                                ${totalWwvh} detections
+                            </span>
+                        </div>
+                        <div class="time-snap-item">
+                            <span class="time-snap-label">CHU (Canada)</span>
+                            <span class="time-snap-value" style="color: #8b5cf6;">
+                                ${totalChu} detections
+                            </span>
+                        </div>
+                        <div class="time-snap-item">
+                            <span class="time-snap-label">Propagation Paths</span>
+                            <span class="time-snap-value" style="font-size: 0.85em;">
+                                ${totalWwv > 0 && totalWwvh > 0 ? '✅ WWV+WWVH (differential delay)' : 
+                                  totalWwv > 0 ? 'WWV only' : 
+                                  totalWwvh > 0 ? 'WWVH only' : 
+                                  totalChu > 0 ? 'CHU only' : 'No detections'}
+                            </span>
                         </div>
                     </div>
                 </div>

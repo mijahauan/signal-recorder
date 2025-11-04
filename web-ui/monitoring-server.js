@@ -229,12 +229,17 @@ app.get('/api/monitoring/timing-quality', (req, res) => {
         alerts: latestRecord.alerts || null
       };
       
-      // Track time_snap status from WWV channels
-      // Both 'wwv_first' and 'wwv_verified' mean time_snap is established
+      // Track time_snap status per channel (WWV/CHU channels)
       const timeSnapValue = latestRecord.time_snap || '';
       const isEstablished = timeSnapValue.startsWith('wwv_');
       
-      if (channelName.startsWith('WWV') && isEstablished) {
+      // Store per-channel time_snap info
+      channelData[channelName].timeSnapEstablished = isEstablished;
+      channelData[channelName].timeSnapSource = timeSnapValue;
+      channelData[channelName].timeSnapAge = parseInt(latestRecord.time_snap_age_minutes || 0);
+      
+      // Keep old behavior for backward compatibility (pick "best" channel)
+      if ((channelName.startsWith('WWV') || channelName.startsWith('CHU')) && isEstablished) {
         if (!timeSnapStatus || (avgDrift && Math.abs(avgDrift) < Math.abs(timeSnapStatus.drift))) {
           timeSnapStatus = {
             established: true,
