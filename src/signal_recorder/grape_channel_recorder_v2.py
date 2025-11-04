@@ -547,8 +547,6 @@ class GRAPEChannelRecorderV2:
                 
                 # Reset current minute pointer (will be set again at next :55)
                 self.wwv_current_minute = None
-                
-                return result
         
         return None
     
@@ -638,11 +636,27 @@ class GRAPEChannelRecorderV2:
             peak_idx = search_start + local_peak_idx
             peak_val = correlation[peak_idx]
             
-            # Noise-adaptive threshold: mean + 3*std over full correlation
-            # Balances sensitivity and false alarm rate
-            corr_mean = np.mean(correlation)
-            corr_std = np.std(correlation)
-            noise_floor = corr_mean + 3 * corr_std
+            # Noise-adaptive threshold: Use noise from OUTSIDE the search window
+            # This avoids including the signal peak in noise estimation
+            noise_samples = np.concatenate([
+                correlation[:max(0, search_start - 100)],
+                correlation[min(len(correlation), search_end + 100):]
+            ])
+            if len(noise_samples) > 100:
+                noise_mean = np.mean(noise_samples)
+                noise_std = np.std(noise_samples)
+                noise_floor = noise_mean + 2.5 * noise_std  # Reduced from 3σ to 2.5σ
+            else:
+                # Fallback for short correlation
+                noise_mean = np.mean(correlation)
+                noise_std = np.std(correlation)
+                noise_floor = noise_mean + 2.5 * noise_std
+            
+            # Debug logging for threshold decisions
+            logger.debug(f"{self.channel_name}: {station_name} correlation - "
+                        f"peak={peak_val:.2f}, noise_floor={noise_floor:.2f} "
+                        f"(mean={noise_mean:.2f}, std={noise_std:.2f}), "
+                        f"ratio={peak_val/noise_floor:.2f}x")
             
             # Check if peak is significant
             if peak_val > noise_floor:
@@ -656,10 +670,10 @@ class GRAPEChannelRecorderV2:
                 onset_rtp_timestamp = (first_rtp_ts + onset_in_buffer_16k) & 0xFFFFFFFF
                 onset_utc_time = minute_key + (onset_in_buffer_16k / 16000)
                 
-                # Signal quality: peak relative to mean correlation
-                # Add robustness for very small values
-                if corr_mean > 0 and peak_val > corr_mean:
-                    snr_estimate = 20 * np.log10(peak_val / corr_mean)
+                # Signal quality: peak relative to noise floor
+                # Use the improved noise estimate we calculated above
+                if noise_mean > 0 and peak_val > noise_mean:
+                    snr_estimate = 20 * np.log10(peak_val / noise_mean)
                 else:
                     snr_estimate = 0.0
                 
