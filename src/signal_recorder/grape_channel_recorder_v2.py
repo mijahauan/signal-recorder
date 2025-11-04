@@ -125,10 +125,10 @@ class GRAPEChannelRecorderV2:
             # Instead of real-time streaming detection, buffer samples and post-process
             self.wwv_minute_buffer = {}  # minute_timestamp -> list of (rtp_ts, iq_samples)
             self.wwv_current_minute = None
-            self.wwv_buffer_start_second = 55  # Start buffering at :55 (10 second window)
-            self.wwv_buffer_end_second = 5     # Process at :05
+            self.wwv_buffer_start_second = 50  # Start buffering at :50 (20 second window)
+            self.wwv_buffer_end_second = 10    # Process at :10
             tone_type = "WWV/CHU" if "CHU" in channel_name else "WWV"
-            logger.info(f"{channel_name}: {tone_type} BUFFERED tone detection ENABLED (:55-:05 window, 10s)")
+            logger.info(f"{channel_name}: {tone_type} BUFFERED tone detection ENABLED (:50-:10 window, 20s)")
         
         # Statistics
         self.total_samples = 0
@@ -489,10 +489,10 @@ class GRAPEChannelRecorderV2:
     
     def _process_wwv_buffered(self, unix_time: float, iq_samples: np.ndarray, rtp_timestamp: int) -> Optional[Dict]:
         """
-        Buffered WWV detection: Collect samples from :58 to :03, then post-process
+        Buffered WWV detection: Collect samples from :50 to :10 (20s), then post-process
         
-        This uses the same algorithm as our diagnostic script which works perfectly.
-        Instead of real-time streaming detection, we buffer and batch-process.
+        Extended buffer window provides more context for matched filtering and
+        better noise estimation. Detection window is :54-:06 (12s) centered on :00.
         """
         from scipy import signal as scipy_signal
         
@@ -500,14 +500,14 @@ class GRAPEChannelRecorderV2:
         seconds_in_minute = dt.second + (dt.microsecond / 1e6)
         
         # Determine which minute's buffer these samples belong to
-        # Samples from :55-:59 belong to the NEXT minute
-        # Samples from :00-:05 belong to the CURRENT minute
+        # Samples from :50-:59 belong to the NEXT minute
+        # Samples from :00-:10 belong to the CURRENT minute
         if seconds_in_minute >= self.wwv_buffer_start_second:
-            # :55-:59 - buffer for NEXT minute
+            # :50-:59 - buffer for NEXT minute
             minute_boundary = (dt + timedelta(minutes=1)).replace(second=0, microsecond=0)
             should_buffer = True
         elif seconds_in_minute <= self.wwv_buffer_end_second:
-            # :00-:05 - buffer for CURRENT minute
+            # :00-:10 - buffer for CURRENT minute
             minute_boundary = dt.replace(second=0, microsecond=0)
             should_buffer = True
         else:
@@ -527,8 +527,8 @@ class GRAPEChannelRecorderV2:
             # Add samples to buffer
             self.wwv_minute_buffer[minute_key].append((rtp_timestamp, iq_samples.copy()))
         
-        # At :05 seconds, process the complete buffer (only once!)
-        if 5.0 <= seconds_in_minute <= 5.5:
+        # At :10 seconds, process the complete buffer (only once!)
+        if 10.0 <= seconds_in_minute <= 10.5:
             if self.wwv_current_minute is None:
                 # Already processed or buffer not created
                 return None
@@ -576,17 +576,17 @@ class GRAPEChannelRecorderV2:
         
         logger.info(f"{self.channel_name}: Processing WWV buffer: {len(all_iq):,} samples ({len(all_iq)/16000:.1f}s)")
         
-        # Use 6-second window centered on minute boundary
-        # Buffer is :55-:05 (10s), minute boundary at :00 (5s into buffer)
-        # Extract :57-:03 (6 seconds) for matched filtering
+        # Use 12-second window centered on minute boundary
+        # Buffer is :50-:10 (20s), minute boundary at :00 (10s into buffer)
+        # Extract :54-:06 (12 seconds) for matched filtering
         buffer_duration = len(all_iq) / 16000
         
-        if buffer_duration < 6.0:
-            logger.warning(f"{self.channel_name}: Buffer too short ({buffer_duration:.1f}s < 6s)")
+        if buffer_duration < 12.0:
+            logger.warning(f"{self.channel_name}: Buffer too short ({buffer_duration:.1f}s < 12s)")
             return None
         
-        start_sample_16k = min(int(2.0 * 16000), len(all_iq) - 96000)  # Start at 2s (:57)
-        end_sample_16k = min(start_sample_16k + 96000, len(all_iq))    # 6 seconds
+        start_sample_16k = min(int(4.0 * 16000), len(all_iq) - 192000)  # Start at 4s (:54)
+        end_sample_16k = min(start_sample_16k + 192000, len(all_iq))    # 12 seconds
         detection_window = all_iq[start_sample_16k:end_sample_16k]
         
         # === Matched Filter Detection ===
@@ -605,7 +605,7 @@ class GRAPEChannelRecorderV2:
         is_chu_channel = 'CHU' in self.channel_name
         
         detections = []
-        expected_pos_3k = int(3.0 * 3000)  # Expected at 3s into 6s window (minute boundary)
+        expected_pos_3k = int(6.0 * 3000)  # Expected at 6s into 12s window (minute boundary at :00)
         stations = []  # (name, correlation, duration, frequency)
         
         # TEMPORARY: Skip bandpass filtering to debug why correlation is zero
