@@ -194,7 +194,11 @@ app.get('/api/monitoring/timing-quality', (req, res) => {
       const avgDrift = drifts.length > 0 ? 
         drifts.reduce((sum, d) => sum + d, 0) / drifts.length : null;
       
+      // Count separate station detections
       const wwvDetections = recentRecords.filter(r => r.wwv_detected === 'True').length;
+      const wwvhDetections = recentRecords.filter(r => r.wwvh_detected === 'True').length;
+      const chuDetections = recentRecords.filter(r => r.chu_detected === 'True').length;
+      const totalDetections = wwvDetections + wwvhDetections + chuDetections;
       
       channelData[channelName] = {
         latestGrade: latestRecord.quality_grade || 'UNKNOWN',
@@ -204,7 +208,12 @@ app.get('/api/monitoring/timing-quality', (req, res) => {
         avgPacketLoss: avgLoss,
         avgDrift: avgDrift,
         wwvDetections: wwvDetections,
+        wwvhDetections: wwvhDetections,
+        chuDetections: chuDetections,
+        totalDetections: totalDetections,
         wwvDetectionRate: (wwvDetections / recentRecords.length * 100).toFixed(1),
+        wwvhDetectionRate: (wwvhDetections / recentRecords.length * 100).toFixed(1),
+        chuDetectionRate: (chuDetections / recentRecords.length * 100).toFixed(1),
         gradeCounts: gradeCounts,
         recentMinutes: recentRecords.slice(-10).map(r => ({
           time: r.minute_start,
