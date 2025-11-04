@@ -540,6 +540,10 @@
                     `${data.wwvhDetections} (${data.wwvhDetectionRate}%)` : '--';
                 const chuInfo = data.chuDetections > 0 ? 
                     `${data.chuDetections} (${data.chuDetectionRate}%)` : '--';
+                
+                // WWV-WWVH differential delay (propagation difference)
+                const diffInfo = data.avgDifferentialDelay !== null && data.avgDifferentialDelay !== undefined ?
+                    `${data.avgDifferentialDelay >= 0 ? '+' : ''}${data.avgDifferentialDelay.toFixed(1)}ms` : '--';
                     
                 const driftInfo = data.avgDrift !== null ? 
                     `${data.avgDrift >= 0 ? '+' : ''}${data.avgDrift.toFixed(1)}ms` : '--';
@@ -561,6 +565,7 @@
                         <td style="text-align: right;">${driftInfo}</td>
                         <td style="text-align: center; font-size: 0.9em;">${wwvInfo}</td>
                         <td style="text-align: center; font-size: 0.9em;">${wwvhInfo}</td>
+                        <td style="text-align: right; font-size: 0.9em;">${diffInfo}</td>
                         <td style="text-align: center; font-size: 0.9em;">${chuInfo}</td>
                     </tr>
                 `;
@@ -582,6 +587,7 @@
                                 <th>Drift</th>
                                 <th style="font-size: 0.85em;">WWV<br><small>1000Hz</small></th>
                                 <th style="font-size: 0.85em;">WWVH<br><small>1200Hz</small></th>
+                                <th style="font-size: 0.85em;">Diff<br><small>WWV-WWVH</small></th>
                                 <th style="font-size: 0.85em;">CHU<br><small>1000Hz</small></th>
                             </tr>
                         </thead>
