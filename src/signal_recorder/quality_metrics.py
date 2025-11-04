@@ -419,8 +419,12 @@ class QualityMetricsTracker:
         if not self.current_minute:
             return
         
-        # Update actual sample count
+        # Update actual sample count and recalculate completeness
         self.current_minute.actual_samples = actual_samples
+        if self.current_minute.expected_samples > 0:
+            self.current_minute.completeness_percent = (
+                actual_samples / self.current_minute.expected_samples * 100
+            )
         
         # RTP stats
         self.current_minute.packets_received = packets_received
