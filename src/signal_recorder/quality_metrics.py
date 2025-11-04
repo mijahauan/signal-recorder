@@ -165,6 +165,9 @@ class MinuteQualityMetrics:
     chu_tone_snr_db: Optional[float] = None
     chu_tone_duration_ms: Optional[float] = None
     
+    # Differential Propagation (WWV vs WWVH)
+    differential_delay_ms: Optional[float] = None  # WWV_timing - WWVH_timing (propagation difference)
+    
     # Time_snap Quality (KA9Q timing architecture)
     time_snap_established: bool = False
     time_snap_source: str = ""              # "wwv_first", "wwv_verified", "fallback"
@@ -196,70 +199,58 @@ class MinuteQualityMetrics:
     
     def calculate_quality_grade(self):
         """
-        Calculate quality grade based on KA9Q timing architecture priorities
+        Calculate quality grade based on data completeness and detection success
         
-        A (90-100): Perfect - No issues
-        B (80-89):  Good - Minor issues, data usable
-        C (70-79):  Fair - Some issues, data questionable
-        D (60-69):  Poor - Significant issues
-        F (<60):    Failed - Data unusable
+        A (95-100): Excellent - Complete data, tone detected, minimal drift
+        B (90-95):  Good - Complete data, may have minor issues
+        C (80-90):  Fair - Mostly complete, some packet loss or no detection
+        D (70-80):  Poor - Significant data loss
+        F (<70):    Failed - Data unusable
         """
         score = 100.0
         alerts = []
         
-        # 1. Sample Count Integrity (40 points) - MOST CRITICAL
+        # 1. Data Completeness (50 points) - MOST CRITICAL
         sample_error_pct = abs(100.0 - self.completeness_percent)
-        if sample_error_pct > 0.1:
-            score -= min(40, sample_error_pct * 400)  # Harsh penalty
-            alerts.append(f"Sample count error: {sample_error_pct:.3f}%")
+        if sample_error_pct > 0.5:
+            score -= min(50, sample_error_pct / 2)  # Lose 1 point per 1% missing
+            if sample_error_pct > 5:
+                alerts.append(f"Data incomplete: {sample_error_pct:.1f}% missing")
         
-        # 2. RTP Continuity (30 points)
-        if self.packet_loss_percent > 0.1:
-            score -= min(30, self.packet_loss_percent * 30)
-            alerts.append(f"Packet loss: {self.packet_loss_percent:.2f}%")
+        # 2. Packet Loss (20 points)
+        if self.packet_loss_percent > 0.5:
+            score -= min(20, self.packet_loss_percent * 4)
+            if self.packet_loss_percent > 1.0:
+                alerts.append(f"Packet loss: {self.packet_loss_percent:.1f}%")
         
-        if self.gaps_count > 0:
-            gap_penalty = min(15, self.gaps_count * 3)
-            score -= gap_penalty
-            if self.gaps_count > 5:
-                alerts.append(f"Multiple gaps: {self.gaps_count}")
+        # 3. WWV Detection Success (20 points) - WWV channels only
+        if self.wwv_tone_detected is False:
+            score -= 10
+            if not self.time_snap_established:
+                score -= 10
+                alerts.append("No WWV detection, no time_snap")
         
-        # 3. Time_snap Quality (20 points) - WWV channels only
+        # 4. Time_snap Drift (10 points) - if detected
         if self.time_snap_drift_ms is not None:
             drift_abs = abs(self.time_snap_drift_ms)
-            if drift_abs > 50:
-                score -= 20
-                alerts.append(f"Time_snap drift: {drift_abs:.1f}ms")
-            elif drift_abs > 20:
+            if drift_abs > 100:
                 score -= 10
-            elif drift_abs > 10:
+                alerts.append(f"Large drift: {drift_abs:.0f}ms")
+            elif drift_abs > 50:
                 score -= 5
-        elif self.wwv_tone_detected is not None and not self.wwv_tone_detected:
-            # Expected WWV but didn't detect
-            if not self.time_snap_established:
-                score -= 15
-                alerts.append("No time_snap and no WWV detection")
-        
-        # 4. Network Stability (10 points)
-        if self.max_resequencing_depth > 10:
-            score -= min(10, self.max_resequencing_depth / 3)
-            if self.max_resequencing_depth > 30:
-                alerts.append(f"High reordering: {self.max_resequencing_depth} packets")
         
         # Determine grade
         score = max(0, min(100, score))
-        if score >= 90:
+        if score >= 95:
             grade = "A"
-        elif score >= 80:
+        elif score >= 90:
             grade = "B"
-        elif score >= 70:
+        elif score >= 80:
             grade = "C"
-        elif score >= 60:
+        elif score >= 70:
             grade = "D"
         else:
             grade = "F"
-            if not alerts:
-                alerts.append("Multiple quality issues")
         
         self.quality_score = score
         self.quality_grade = grade
@@ -293,7 +284,7 @@ class MinuteQualityMetrics:
             'wwvh_detected': self.wwvh_tone_detected,
             'wwvh_error_ms': f"{self.wwvh_timing_error_ms:.1f}" if self.wwvh_timing_error_ms is not None else "",
             'wwvh_snr_db': f"{self.wwvh_tone_snr_db:.1f}" if self.wwvh_tone_snr_db is not None else "",
-            # CHU (Canada, 1000 Hz)
+            'differential_delay_ms': f"{self.differential_delay_ms:.1f}" if self.differential_delay_ms is not None else "",
             'chu_detected': self.chu_tone_detected,
             'chu_error_ms': f"{self.chu_timing_error_ms:.1f}" if self.chu_timing_error_ms is not None else "",
             'chu_snr_db': f"{self.chu_tone_snr_db:.1f}" if self.chu_tone_snr_db is not None else "",
@@ -417,8 +408,9 @@ class QualityMetricsTracker:
             )
             self.current_minute.gap_samples_filled += abs(disc.magnitude_samples)
     
-    def finalize_minute(self, packets_received: int, packets_dropped: int,
+    def finalize_minute(self, actual_samples: int, packets_received: int, packets_dropped: int,
                         signal_power_db: float, wwv_result: Optional[Dict] = None,
+                        differential_delay_ms: Optional[float] = None,
                         time_snap_established: bool = False, time_snap_source: str = "",
                         time_snap_drift_ms: Optional[float] = None, time_snap_age_minutes: Optional[int] = None,
                         packets_resequenced: int = 0, max_resequencing_depth: int = 0,
@@ -426,6 +418,9 @@ class QualityMetricsTracker:
         """Finalize current minute metrics with enhanced KA9Q timing data"""
         if not self.current_minute:
             return
+        
+        # Update actual sample count
+        self.current_minute.actual_samples = actual_samples
         
         # RTP stats
         self.current_minute.packets_received = packets_received
@@ -464,6 +459,9 @@ class QualityMetricsTracker:
                     self.current_minute.chu_timing_error_ms = detection.get('timing_error_ms')
                     self.current_minute.chu_tone_snr_db = detection.get('snr_db')
                     self.current_minute.chu_tone_duration_ms = detection.get('duration_ms')
+        
+        # WWV-WWVH differential propagation delay
+        self.current_minute.differential_delay_ms = differential_delay_ms
         
         # Time_snap quality (KA9Q timing architecture)
         self.current_minute.time_snap_established = time_snap_established

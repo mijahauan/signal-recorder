@@ -108,6 +108,7 @@ class GRAPEChannelRecorderV2:
         # Current minute tracking
         self.current_minute_start = None
         self.current_minute_samples = 0
+        self.previous_minute_samples = 0  # Track completed minute's samples
         self.current_minute_packets_rx = 0
         self.current_minute_packets_drop = 0
         
@@ -481,6 +482,9 @@ class GRAPEChannelRecorderV2:
                     minute_boundary.timestamp(),
                     self.samples_per_minute
                 )
+            
+            # Save previous minute's sample count before reset
+            self.previous_minute_samples = self.current_minute_samples
             
             self.current_minute_start = minute_boundary
             self.current_minute_samples = 0
@@ -874,9 +878,10 @@ class GRAPEChannelRecorderV2:
                            f"SNR={wwvh_det['snr_db']:.1f}dB")
                 
                 # If we have both WWV and WWVH, calculate differential delay
+                differential_delay_ms = None
                 if wwv_only:
-                    diff_delay = wwv_only[0]['timing_error_ms'] - wwvh_det['timing_error_ms']
-                    logger.info(f"{self.channel_name}: 🌍 Differential propagation delay (WWV-WWVH): {diff_delay:+.1f}ms")
+                    differential_delay_ms = wwv_only[0]['timing_error_ms'] - wwvh_det['timing_error_ms']
+                    logger.info(f"{self.channel_name}: 🌍 Differential propagation delay (WWV-WWVH): {differential_delay_ms:+.1f}ms")
             
             # For quality metrics, pass ALL detections so they can be separated by station
             wwv_result = wwv_detections
@@ -892,12 +897,22 @@ class GRAPEChannelRecorderV2:
         if self.time_snap_established and self.time_snap_utc:
             time_snap_age_minutes = int((minute_time.timestamp() - self.time_snap_utc) / 60)
         
+        # Calculate WWV-WWVH differential delay if both detected
+        differential_delay_ms = None
+        if wwv_detections:
+            wwv_only = [d for d in wwv_detections if d['station'] == 'WWV']
+            wwvh_only = [d for d in wwv_detections if d['station'] == 'WWVH']
+            if wwv_only and wwvh_only:
+                differential_delay_ms = wwv_only[0]['timing_error_ms'] - wwvh_only[0]['timing_error_ms']
+        
         # Finalize minute in quality tracker with enhanced metrics
         self.quality_tracker.finalize_minute(
+            actual_samples=self.previous_minute_samples,  # Use captured value from completed minute
             packets_received=self.current_minute_packets_rx,
             packets_dropped=self.current_minute_packets_drop,
             signal_power_db=signal_power_db,
             wwv_result=wwv_result,
+            differential_delay_ms=differential_delay_ms,  # WWV-WWVH propagation difference
             # New KA9Q timing metrics
             time_snap_established=self.time_snap_established,
             time_snap_source=self.time_snap_source or "",
@@ -924,7 +939,9 @@ class GRAPEChannelRecorderV2:
             latest = self.quality_tracker.minute_metrics[-1]
             grade_emoji = {"A": "✅", "B": "✓", "C": "⚠️", "D": "❌", "F": "🔴"}.get(latest.quality_grade, "?")
             logger.info(f"{self.channel_name}: Minute complete: {minute_time.strftime('%H:%M')} → {file_path.name} "
-                       f"[{grade_emoji} {latest.quality_grade}]")
+                       f"[{latest.completeness_percent:.1f}% complete, "
+                       f"WWV drift: {latest.time_snap_drift_ms:+.1f}ms]" if latest.time_snap_drift_ms is not None 
+                       else f"[{latest.completeness_percent:.1f}% complete]")
         else:
             logger.info(f"{self.channel_name}: Minute complete: {minute_time.strftime('%H:%M')} → {file_path.name}")
     
