@@ -200,6 +200,13 @@ app.get('/api/monitoring/timing-quality', (req, res) => {
       const chuDetections = recentRecords.filter(r => r.chu_detected === 'True').length;
       const totalDetections = wwvDetections + wwvhDetections + chuDetections;
       
+      // Calculate average differential delay (WWV-WWVH propagation difference)
+      const differentialDelays = recentRecords
+        .map(r => parseFloat(r.differential_delay_ms))
+        .filter(d => !isNaN(d));
+      const avgDifferentialDelay = differentialDelays.length > 0 ?
+        differentialDelays.reduce((sum, d) => sum + d, 0) / differentialDelays.length : null;
+      
       channelData[channelName] = {
         latestGrade: latestRecord.quality_grade || 'UNKNOWN',
         latestScore: parseFloat(latestRecord.quality_score || 0),
@@ -207,6 +214,7 @@ app.get('/api/monitoring/timing-quality', (req, res) => {
         sampleCompleteness: 100.0,
         avgPacketLoss: avgLoss,
         avgDrift: avgDrift,
+        avgDifferentialDelay: avgDifferentialDelay,
         wwvDetections: wwvDetections,
         wwvhDetections: wwvhDetections,
         chuDetections: chuDetections,

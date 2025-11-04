@@ -459,6 +459,13 @@
             const avgDrift = drifts.length > 0 ? 
                 drifts.reduce((sum, d) => sum + d, 0) / drifts.length : null;
             
+            // Calculate average differential delay (WWV-WWVH propagation difference)
+            const differentialDelays = channelList
+                .filter(([_, data]) => data.avgDifferentialDelay !== null && data.avgDifferentialDelay !== undefined)
+                .map(([_, data]) => data.avgDifferentialDelay);
+            const avgDifferentialDelay = differentialDelays.length > 0 ?
+                differentialDelays.reduce((sum, d) => sum + d, 0) / differentialDelays.length : null;
+            
             const statusColor = totalEstablished === 0 ? '#f59e0b' : '#10b981';
             const driftColor = !avgDrift ? '#9ca3af' :
                               Math.abs(avgDrift) > 20 ? '#f59e0b' : 
@@ -501,12 +508,14 @@
                             </span>
                         </div>
                         <div class="time-snap-item">
-                            <span class="time-snap-label">Propagation Paths</span>
+                            <span class="time-snap-label">WWV-WWVH Differential</span>
                             <span class="time-snap-value" style="font-size: 0.85em;">
-                                ${totalWwv > 0 && totalWwvh > 0 ? '✅ WWV+WWVH (differential delay)' : 
-                                  totalWwv > 0 ? 'WWV only' : 
-                                  totalWwvh > 0 ? 'WWVH only' : 
-                                  totalChu > 0 ? 'CHU only' : 'No detections'}
+                                ${avgDifferentialDelay !== null ? 
+                                    `${avgDifferentialDelay >= 0 ? '+' : ''}${avgDifferentialDelay.toFixed(1)} ms` :
+                                    totalWwv > 0 && totalWwvh > 0 ? '(calculating...)' :
+                                    totalWwv > 0 ? 'WWV only' : 
+                                    totalWwvh > 0 ? 'WWVH only' : 
+                                    totalChu > 0 ? 'CHU only' : 'No detections'}
                             </span>
                         </div>
                     </div>
