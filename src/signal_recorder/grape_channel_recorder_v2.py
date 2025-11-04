@@ -678,7 +678,9 @@ class GRAPEChannelRecorderV2:
                 onset_in_window_16k = int(peak_idx * (16000 / 3000))
                 onset_in_buffer_16k = start_sample_16k + onset_in_window_16k
                 onset_rtp_timestamp = (first_rtp_ts + onset_in_buffer_16k) & 0xFFFFFFFF
-                onset_utc_time = minute_key + (onset_in_buffer_16k / 16000)
+                # CRITICAL: Buffer starts at :45 (15s before minute_key), so subtract buffer start offset
+                buffer_start_offset = self.wwv_buffer_start_second
+                onset_utc_time = (minute_key - buffer_start_offset) + (onset_in_buffer_16k / 16000)
                 
                 # Signal quality: peak relative to noise floor
                 # Use the improved noise estimate we calculated above
