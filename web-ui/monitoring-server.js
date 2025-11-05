@@ -130,18 +130,28 @@ app.get('/api/monitoring/station-info', (req, res) => {
 app.get('/api/monitoring/timing-quality', (req, res) => {
   try {
     // Use config-defined data_root
-    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
-    const qualityDir = join(dataRoot, 'analytics', 'quality', today);
+    // Check both today and yesterday (UTC) to handle timezone mismatches
+    const now = new Date();
+    const today = now.toISOString().split('T')[0].replace(/-/g, '');
+    const yesterday = new Date(now - 24*60*60*1000).toISOString().split('T')[0].replace(/-/g, '');
     
-    console.log(`Looking for quality data in: ${qualityDir}`);
+    let qualityDir = join(dataRoot, 'analytics', 'quality', today);
+    
+    // Try today first, fall back to yesterday
+    if (!fs.existsSync(qualityDir)) {
+      qualityDir = join(dataRoot, 'analytics', 'quality', yesterday);
+      console.log(`Today's directory not found, trying yesterday: ${qualityDir}`);
+    }
     
     // Check if quality directory exists
     if (!fs.existsSync(qualityDir)) {
       return res.json({
         available: false,
-        message: `Quality data directory not found: ${qualityDir}`
+        message: `Quality data directory not found for today (${today}) or yesterday (${yesterday})`
       });
     }
+    
+    console.log(`Using quality data from: ${qualityDir}`);
     
     // Find CSV files
     const csvFiles = fs.readdirSync(qualityDir)
