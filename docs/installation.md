@@ -102,50 +102,76 @@ pnpm start
 # Alternative: npm
 # npm start
 
-# Access the interface
+# 3. Access the interface
 # URL: http://localhost:3000
 # Login: admin / admin
 
 # Create configuration through guided interface
-# Save directly to config/ directory
+# Save to config/grape-config.toml
 ```
 
 **Features:**
 - ✅ **Guided setup** with form validation
 - ✅ **Channel presets** for WWV/CHU frequencies
-- ✅ **Auto-generates** correct TOML format
+- ✅ **Auto-generates** correct TOML format (saves as `grape-config.toml`)
 - ✅ **Real-time validation** prevents configuration errors
 - ✅ **Save to config directory** with one click
 
-### 3.2 Manual Configuration (Advanced Users)
+### 3.2 Test vs Production Mode
+
+**IMPORTANT**: The configuration file (`config/grape-config.toml`) includes a mode flag to separate test and production data:
+
+```toml
+[recorder]
+mode = "test"  # or "production"
+test_data_root = "/tmp/grape-test"
+production_data_root = "/var/lib/signal-recorder"
+```
+
+**Mode Behavior:**
+
+| Mode | Data Location | Persistence | Use Case |
+|------|--------------|-------------|----------|
+| **test** | `/tmp/grape-test` | Temporary (cleared on reboot) | Initial setup, testing, debugging |
+| **production** | `/var/lib/signal-recorder` | Persistent | Operational data collection |
+
+**Recommendation**: Always start in test mode to verify your setup before switching to production.
+
+### 3.3 Manual Configuration (Advanced Users)
 
 For advanced users or those preferring direct editing:
 
 1. **Copy example configuration:**
    ```bash
-   cp config/grape-production.toml config/grape-your-station.toml
+   cp config/grape-production.toml config/grape-config.toml
    ```
 
 2. **Edit configuration:**
    ```bash
-   nano config/grape-your-station.toml
+   nano config/grape-config.toml
    ```
 
 3. **Key sections to update:**
    - **`[station]`**: Your callsign, grid square, station ID
+   - **`[recorder]`**: Set `mode = "test"` for initial testing
    - **`[ka9q]`**: ka9q-radio status address
    - **`[[recorder.channels]]`**: Channels to record (SSRC = frequency in Hz)
    - **`[uploader]`**: PSWS server settings (if participating)
 
 4. **Validate configuration:**
    ```bash
-   python3 -c "import toml; toml.load('config/grape-your-station.toml')"
+   python3 -c "import toml; toml.load('config/grape-config.toml')"
    ```
 
-### 3.3 Create Directories
+### 3.4 Create Directories
 
-Create the archive directory specified in the configuration:
+**For test mode** (automatic):
+```bash
+# Test mode creates /tmp/grape-test automatically
+# No setup required - data cleared on reboot
+```
 
+**For production mode** (required):
 ```bash
 # Create data directory
 sudo mkdir -p /var/lib/signal-recorder/data
@@ -167,10 +193,11 @@ Test if your configuration is valid:
 # Validate TOML syntax and format
 python3 -c "
 import toml
-config = toml.load('config/grape-your-station.toml')
+config = toml.load('config/grape-config.toml')
 print('✅ Configuration valid')
-print(f'Station: {config[\"station\"][\"callsign\"]}')
-print(f'Channels: {len(config.get(\"recorder\", {}).get(\"channels\", []))}')
+print(f'Station: {config["station"]["callsign"]}')
+print(f'Mode: {config.get("recorder", {}).get("mode", "not set")}')
+print(f'Channels: {len(config.get("recorder", {}).get("channels", []))}')
 "
 ```
 
@@ -193,14 +220,52 @@ for stream in streams:
 
 ### 4.3 Run Test Recording
 
-Run a short test to verify everything works:
+**Step 1: Verify test mode is set**
 
 ```bash
-# Test with your configuration
-python3 test_grape_recorder.py --config config/grape-your-station.toml
+# Ensure mode = "test" in config/grape-config.toml
+grep 'mode.*=' config/grape-config.toml
+# Should show: mode = "test"
+```
 
-# Monitor the logs
-tail -f /tmp/grape_recorder_test.log
+**Step 2: Run test recording**
+
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Start recorder in test mode
+signal-recorder daemon --config config/grape-config.toml
+
+# Monitor in another terminal
+tail -f /tmp/grape-test/logs/recorder_*.log
+```
+
+**Step 3: Verify test data**
+
+```bash
+# After 1-2 minutes, check data was created
+ls -lh /tmp/grape-test/data/
+
+# Check quality metrics
+ls -lh /tmp/grape-test/analytics/quality/
+```
+
+**Step 4: Switch to production** (when ready)
+
+```bash
+# Stop the test recorder (Ctrl+C)
+
+# Edit config
+nano config/grape-config.toml
+# Change: mode = "production"
+
+# Ensure production directories exist
+sudo mkdir -p /var/lib/signal-recorder
+sudo chown -R $USER:$USER /var/lib/signal-recorder
+
+# Start in production mode
+signal-recorder daemon --config config/grape-config.toml
 ```
 
 ## 5. Running as a Service
@@ -218,13 +283,15 @@ After=network-online.target
 User=$USER
 Group=$USER
 WorkingDirectory=/home/$USER/signal-recorder
-ExecStart=/home/$USER/signal-recorder/venv/bin/python3 test_grape_recorder.py --config config/grape-your-station.toml
+ExecStart=/home/$USER/signal-recorder/venv/bin/signal-recorder daemon --config config/grape-config.toml
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+**Note**: Ensure `mode = "production"` in `config/grape-config.toml` before running as a service.
 
 ### 5.2 Enable and Start Service
 

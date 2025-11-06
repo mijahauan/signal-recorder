@@ -59,19 +59,47 @@ The web UI guides you through:
 1. Station info (callsign, grid square, instrument)
 2. Channel selection (WWV/CHU presets available)
 3. PSWS upload credentials
-4. Export to `config/grape-<callsign>.toml`
+4. Export to `config/grape-config.toml`
 
 **Or edit TOML manually** (advanced users): see [Configuration Guide](docs/configuration.md)
 
+#### Test vs Production Mode
+
+The config file (`config/grape-config.toml`) includes a mode flag:
+
+```toml
+[recorder]
+mode = "test"  # or "production"
+test_data_root = "/tmp/grape-test"
+production_data_root = "/var/lib/signal-recorder"
+```
+
+- **Test mode** (default): Data stored in `/tmp/grape-test` (temporary, cleared on reboot)
+- **Production mode**: Data stored in `/var/lib/signal-recorder` (persistent)
+
 ### Running
 
-```bash
-# Start the recorder daemon
-signal-recorder daemon --config config/grape-<callsign>.toml
+**Test mode** (recommended for initial setup):
 
-# Or use the web UI to start/stop:
-http://localhost:3000
+```bash
+# Ensure config has: mode = "test"
+signal-recorder daemon --config config/grape-config.toml
+
+# Data goes to /tmp/grape-test (temporary)
+# Safe for testing - won't affect production data
 ```
+
+**Production mode** (for operational data collection):
+
+```bash
+# Edit config: mode = "production"
+signal-recorder daemon --config config/grape-config.toml
+
+# Data goes to /var/lib/signal-recorder (persistent)
+# Ensure proper permissions and disk space
+```
+
+**Or use the web UI** to start/stop: `http://localhost:3000`
 
 ### Monitoring
 
@@ -237,6 +265,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design rationale.
 
 ## Example Configuration
 
+**File**: `config/grape-config.toml`
+
 ```toml
 [station]
 callsign = "AC0G"
@@ -247,6 +277,9 @@ instrument_id = "RX888"
 status_address = "239.192.152.141"
 
 [recorder]
+mode = "test"  # or "production"
+test_data_root = "/tmp/grape-test"
+production_data_root = "/var/lib/signal-recorder"
 archive_dir = "/var/lib/signal-recorder/archive"
 
 [[recorder.channels]]
@@ -279,15 +312,17 @@ ssh_key_path = "~/.ssh/psws_key"
 ### Setup (one-time)
 1. Install ka9q-radio and configure for WWV/CHU
 2. Install GRAPE recorder and dependencies
-3. Use web UI to create configuration
-4. Set up PSWS SSH keys
-5. Test recording for 5 minutes
+3. Use web UI to create `config/grape-config.toml`
+4. **Test in test mode**: Set `mode = "test"`, run for 5 minutes, verify data in `/tmp/grape-test`
+5. **Switch to production**: Set `mode = "production"`, ensure `/var/lib/signal-recorder` permissions
+6. Set up PSWS SSH keys for uploads
 
-### Daily Operation
-1. Daemon runs continuously via systemd
+### Daily Operation (Production Mode)
+1. Daemon runs continuously via systemd with `mode = "production"`
 2. Web UI shows real-time health metrics
-3. Data auto-uploads to PSWS every 5 minutes
-4. Monitor for 🟢 healthy status
+3. Data persists in `/var/lib/signal-recorder`
+4. Data auto-uploads to PSWS every 5 minutes
+5. Monitor for 🟢 healthy status
 
 ### Maintenance
 1. Check web UI monitoring weekly

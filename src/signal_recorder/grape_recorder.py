@@ -217,6 +217,28 @@ class GRAPERecorderManager:
             # Start watchdog process
             watchdog_process = self._start_watchdog()
             
+            # Auto-create channels if configured
+            ka9q_config = self.config.get('ka9q', {})
+            auto_create = ka9q_config.get('auto_create_channels', False)
+            
+            if auto_create:
+                print("\n🔧 Auto-create channels enabled")
+                print("Checking and creating missing channels...")
+                try:
+                    success = self.create_channels()
+                    if success:
+                        print("✅ Channel creation complete")
+                        # Give radiod a moment to stabilize
+                        time.sleep(2)
+                    else:
+                        print("⚠️  Some channels may not have been created")
+                        print("   Continuing with existing channels...")
+                except Exception as e:
+                    print(f"❌ Error during auto-create: {e}")
+                    print("   Continuing with existing channels...")
+            else:
+                print("ℹ️  Auto-create channels disabled (set auto_create_channels = true to enable)")
+            
             from .grape_rtp_recorder import GRAPERecorderManager as RTPRecorderManager
             from .config_utils import PathResolver
             
