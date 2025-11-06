@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws';
 import helmet from 'helmet';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
+import toml from 'toml';
 
 // Security utilities
 import { hashPassword, verifyPassword, generateToken, verifyToken, ensureDefaultAdmin } from './utils/auth.js';
@@ -29,6 +30,26 @@ const __dirname = join(fileURLToPath(import.meta.url), '..');
 // Determine base paths based on environment
 const isProduction = process.env.NODE_ENV === 'production';
 const installDir = isProduction ? '/usr/local/lib/signal-recorder' : join(__dirname, '..');
+
+// Load config to determine data root based on mode
+let dataRoot = '/tmp/grape-test'; // Fallback default
+let recorderMode = 'test';
+try {
+  const configPath = join(installDir, 'config', 'grape-config.toml');
+  if (fs.existsSync(configPath)) {
+    const configContent = fs.readFileSync(configPath, 'utf8');
+    const config = toml.parse(configContent);
+    recorderMode = config.recorder?.mode || 'test';
+    if (recorderMode === 'production') {
+      dataRoot = config.recorder?.production_data_root || '/var/lib/signal-recorder';
+    } else {
+      dataRoot = config.recorder?.test_data_root || '/tmp/grape-test';
+    }
+    console.log(`📊 Web UI: Mode=${recorderMode}, Data root=${dataRoot}`);
+  }
+} catch (err) {
+  console.warn('⚠️  Could not load config, using defaults:', err.message);
+}
 
 // Use install directory (repository root or system installation) as base for all operations
 const venvPython = join(installDir, 'venv', 'bin', 'python');
@@ -426,23 +447,21 @@ except Exception as e:
 const radioProxy = new Ka9qRadioProxy();
 
 
-// Security middleware
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrcAttr: ["'unsafe-inline'"],  // Allow inline event handlers like onclick
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:"],
-      connectSrc: ["'self'", "ws:", "wss:"]
-    }
-  },
-  hsts: {
-    maxAge: 31536000,
-    includeSubDomains: true
-  }
-}));
+// Security middleware - DISABLED for HTTP access without SSL
+// TODO: Re-enable with proper config when SSL certificate is available
+// app.use(helmet({
+//   contentSecurityPolicy: {
+//     directives: {
+//       defaultSrc: ["'self'"],
+//       scriptSrc: ["'self'", "'unsafe-inline'"],
+//       scriptSrcAttr: ["'unsafe-inline'"],
+//       styleSrc: ["'self'", "'unsafe-inline'"],
+//       imgSrc: ["'self'", "data:"],
+//       connectSrc: ["'self'", "ws:", "wss:"]
+//     }
+//   },
+//   hsts: false
+// }));
 
 app.use(cors({
   origin: process.env.ALLOWED_ORIGINS || 'http://localhost:3000',
@@ -1951,11 +1970,10 @@ app.get('/api/monitoring/recording-stats', requireAuth, (req, res) => {
 // Live quality status endpoint (no auth for testing)
 app.get('/api/monitoring/live-quality', (req, res) => {
   try {
-    // Try multiple possible locations for live quality status
+    // Use data root from config (mode-aware)
     const possibleStatusFiles = [
-      join(installDir, 'analytics', 'live_quality_status.json'),  // Development
-      '/var/lib/signal-recorder/analytics/live_quality_status.json',  // Production
-      '/tmp/live_quality_status.json'  // Test fallback
+      join(dataRoot, 'analytics', 'live_quality_status.json'),  // Primary: from config mode
+      '/tmp/live_quality_status.json'  // Legacy fallback
     ];
     
     let statusFile = null;
@@ -2446,9 +2464,8 @@ app.get('/api/monitoring/wwv-timing', (req, res) => {
   if (!fs.existsSync(csvPath)) {
     // Check if we're using V2 recorder with quality metrics
     const v2StatusFiles = [
-      join(installDir, 'analytics', 'live_quality_status.json'),
-      '/var/lib/signal-recorder/analytics/live_quality_status.json',
-      '/tmp/live_quality_status.json'
+      join(dataRoot, 'analytics', 'live_quality_status.json'),  // From config mode
+      '/tmp/live_quality_status.json'  // Legacy fallback
     ];
     
     const hasV2Status = v2StatusFiles.some(f => fs.existsSync(f));
@@ -2546,6 +2563,9 @@ app.get(['/monitoring', '/monitoring.html'], (req, res) => {
   res.set('Expires', '0');
   res.sendFile(join(__dirname, 'monitoring.html'));
 });
+
+// Serve static files (HTML, CSS, JS) from web-ui directory
+app.use(express.static(__dirname));
 
 // Serve the HTML file for all other routes (fallback)
 app.get('*', (req, res) => {

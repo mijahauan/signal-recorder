@@ -29,6 +29,7 @@ except ImportError:
     logging.warning("digital_rf not available - Digital RF output will not work")
 
 from .grape_metadata import GRAPEMetadataGenerator
+from .grape_channel_recorder_v2 import GRAPEChannelRecorderV2
 
 logger = logging.getLogger(__name__)
 
@@ -1195,8 +1196,17 @@ class GRAPEChannelRecorder:
             # This is critical for PSWS compatibility
             start_global_index = int(start_time * 10)  # 10 Hz sample rate
             
-            # Create Digital RF writer directory
-            drf_dir = self.channel_dir
+            # Create date-specific Digital RF writer directory
+            # Structure: {base}/YYYYMMDD/CALLSIGN_GRID/INSTRUMENT/{channel_name}/
+            date_str = day_date.strftime('%Y%m%d')
+            callsign = self.station_config.get('callsign', 'UNKNOWN')
+            grid = self.station_config.get('grid_square', 'UNKNOWN')
+            instrument = self.station_config.get('instrument_id', 'UNKNOWN')
+            
+            # Build path with date
+            base_dir = self.channel_dir.parent.parent.parent  # Go up from channel to data root
+            drf_dir = base_dir / date_str / f"{callsign}_{grid}" / instrument / self.channel_name
+            drf_dir.mkdir(parents=True, exist_ok=True)
             
             # Generate UUID for this dataset
             import uuid
@@ -1272,7 +1282,7 @@ class GRAPERecorderManager:
         """
         self.config = config
         self.path_resolver = path_resolver
-        self.recorders: Dict[int, GRAPEChannelRecorder] = {}
+        self.recorders: Dict[int, GRAPEChannelRecorderV2] = {}
         self.rtp_receiver = None
         self.running = False
         
@@ -1377,20 +1387,27 @@ class GRAPERecorderManager:
             frequency_hz = channel['frequency_hz']
             channel_name = channel.get('description', f'FREQ_{frequency_hz/1e6:.3f}')
             
-            # Create recorder
-            recorder = GRAPEChannelRecorder(
+            # Check if WWV channel for tone detection
+            is_wwv = 'WWV' in channel_name or 'CHU' in channel_name
+            
+            # Setup analytics directory
+            if self.path_resolver:
+                analytics_dir = self.path_resolver.get_analytics_dir()
+            else:
+                analytics_dir = output_dir.parent / 'analytics'
+            analytics_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create V2 recorder (minute files + live quality tracking)
+            recorder = GRAPEChannelRecorderV2(
                 ssrc=ssrc,
                 channel_name=channel_name,
                 frequency_hz=frequency_hz,
-                output_dir=output_dir,
+                archive_dir=output_dir,
+                analytics_dir=analytics_dir,
                 station_config=station_config,
-                is_wwv_audio_channel=False,
+                is_wwv_channel=is_wwv,
                 path_resolver=self.path_resolver
             )
-            recorder.start_time = time.time()
-            recorder.packets_received = 0
-            recorder.packets_dropped = 0
-            recorder.samples_received = 0
             
             # Register with RTP receiver
             self.rtp_receiver.register_callback(ssrc, recorder.process_rtp_packet)
@@ -1468,9 +1485,18 @@ class GRAPERecorderManager:
             # Count files in output directory
             file_count = 0
             total_size_bytes = 0
+            output_dir_path = None
             try:
-                if rec.channel_dir.exists():
-                    for f in rec.channel_dir.rglob('*.h5'):
+                # V2 has file_writer.output_dir, V1 has channel_dir
+                if hasattr(rec, 'file_writer') and hasattr(rec.file_writer, 'output_dir'):
+                    output_dir_path = rec.file_writer.output_dir  # V2
+                    file_pattern = '*.npz'
+                elif hasattr(rec, 'channel_dir'):
+                    output_dir_path = rec.channel_dir  # V1
+                    file_pattern = '*.h5'
+                
+                if output_dir_path and output_dir_path.exists():
+                    for f in output_dir_path.rglob(file_pattern):
                         file_count += 1
                         total_size_bytes += f.stat().st_size
             except Exception as e:
@@ -1542,7 +1568,7 @@ class GRAPERecorderManager:
                 'samples_per_sec': round(samples_rate, 2),
                 
                 # Data output
-                'output_dir': str(rec.channel_dir),
+                'output_dir': str(output_dir_path) if output_dir_path else 'N/A',
                 'file_count': file_count,
                 'total_size_mb': round(total_size_mb, 2),
                 'data_rate_kbps': round(data_rate_kbps, 2),

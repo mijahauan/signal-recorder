@@ -49,5 +49,11 @@
         <p>Redirecting to Timing & Quality Dashboard...</p>
         <a href="/timing-dashboard.html">Click here if not redirected automatically</a>
     </div>
+    <script>
+        // Fallback JavaScript redirect if meta refresh fails
+        setTimeout(function() {
+            window.location.href = '/timing-dashboard.html';
+        }, 100);
+    </script>
 </body>
 </html>

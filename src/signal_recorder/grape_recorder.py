@@ -243,7 +243,11 @@ class GRAPERecorderManager:
             from .config_utils import PathResolver
             
             # Initialize path resolver for standardized paths
-            path_resolver = PathResolver(self.config, development_mode=False)
+            # Read mode from config: "test" or "production"
+            recorder_mode = self.config.get('recorder', {}).get('mode', 'production')
+            development_mode = (recorder_mode == 'test')
+            path_resolver = PathResolver(self.config, development_mode=development_mode)
+            print(f"🧪 Recorder mode: {recorder_mode} (development_mode={development_mode})")
             
             # Initialize RTP recorder manager with path resolver
             rtp_recorder = RTPRecorderManager(self.config, path_resolver=path_resolver)

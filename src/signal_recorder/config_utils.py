@@ -148,6 +148,15 @@ class PathResolver:
         # Support backward compatibility with old config
         recorder_config = self.config.get('recorder', {})
         
+        # NEW: Check for mode-specific data_root first
+        mode = recorder_config.get('mode', 'production')
+        if mode == 'test' and 'test_data_root' in recorder_config:
+            base_root = Path(recorder_config['test_data_root'])
+            return base_root / 'data'
+        elif mode == 'production' and 'production_data_root' in recorder_config:
+            base_root = Path(recorder_config['production_data_root'])
+            return base_root / 'data'
+        
         # Priority: recorder.archive_dir > recorder.data_dir > paths.data_dir > default
         if 'archive_dir' in recorder_config:
             return Path(recorder_config['archive_dir'])
@@ -159,6 +168,15 @@ class PathResolver:
     def get_analytics_dir(self) -> Path:
         """Get the analytics directory"""
         recorder_config = self.config.get('recorder', {})
+        
+        # NEW: Check for mode-specific data_root first
+        mode = recorder_config.get('mode', 'production')
+        if mode == 'test' and 'test_data_root' in recorder_config:
+            base_root = Path(recorder_config['test_data_root'])
+            return base_root / 'analytics'
+        elif mode == 'production' and 'production_data_root' in recorder_config:
+            base_root = Path(recorder_config['production_data_root'])
+            return base_root / 'analytics'
         
         # Check for explicit analytics_dir in recorder config
         if 'analytics_dir' in recorder_config:
