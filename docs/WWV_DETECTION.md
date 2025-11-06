@@ -118,47 +118,63 @@ Based on testing, envelope strength varies dramatically:
 
 ## Detection Threshold Tuning
 
-Current threshold: **0.12** (normalized correlation magnitude)
+**Current Method**: Adaptive noise-floor threshold (2.5σ above local noise)
 
-### Threshold Trade-offs
+### Adaptive Threshold Algorithm
 
-**Higher Threshold (e.g., 0.15-0.20)**
+Unlike a fixed threshold, the system uses **noise-adaptive detection** that automatically adjusts to varying noise conditions:
+
+1. **Noise Estimation**: Measures noise from regions OUTSIDE the expected signal window
+2. **Statistical Threshold**: `noise_floor = noise_mean + 2.5 × noise_std`
+3. **Detection Decision**: Signal detected if `peak_value > noise_floor`
+
+**Advantages**:
+- ✅ Adapts to varying propagation conditions
+- ✅ Reduces false positives in high-noise environments
+- ✅ Maintains sensitivity during quiet conditions
+- ✅ No manual threshold tuning required
+
+### Threshold Sensitivity Trade-offs
+
+**Higher Sigma Multiplier (e.g., 3.0-3.5σ)**
 - ✅ Fewer false positives
 - ❌ Misses weaker valid signals
-- Use when: High noise environment or strict timing requirements
+- Use when: Severe interference or strict timing requirements
 
-**Lower Threshold (e.g., 0.08-0.10)**
+**Lower Sigma Multiplier (e.g., 2.0-2.3σ)**
 - ✅ Detects weaker signals
-- ❌ More false positives from noise or interference
+- ❌ More false positives from noise spikes
 - Use when: Clean signal environment, want maximum sensitivity
 
 **Recommended Approach**: 
-- Start with 0.12 (current setting - empirically validated)
-- Collect data for several days
+- Start with 2.5σ (current setting - empirically validated)
+- Collect data for several days across all frequencies
 - Analyze detection rate vs. false positive rate per band
-- Adjust based on your signal environment and propagation conditions
+- Adjust sigma multiplier if needed based on your environment
 
-### Adjusting Threshold
+### Adjusting Threshold (Advanced)
 
-Edit `/home/mjh/git/signal-recorder/src/signal_recorder/grape_channel_recorder_v2.py`:
+To modify the sigma multiplier, edit `/home/mjh/git/signal-recorder/src/signal_recorder/grape_channel_recorder_v2.py` in the `_detect_wwv_in_buffer()` method:
 
 ```python
-# Line ~610 in _detect_wwv_in_buffer()
-DETECTION_THRESHOLD = 0.12  # Adjust this value (0.0-1.0)
+# Around line 681 and 686
+noise_floor = noise_mean + 2.5 * noise_std  # Change 2.5 to adjust sensitivity
 ```
 
-Lower values = more sensitive, higher values = more selective.
+Lower values (2.0-2.3) = more sensitive, higher values (2.8-3.5) = more selective.
 
-### Typical Correlation Values
+### Typical Correlation Peak Values
 
-| Signal Strength | Correlation Peak | Detection |
+With adaptive thresholding, correlation peak values relative to noise floor:
+
+| Signal Strength | Peak/Noise Ratio | Detection |
 |----------------|------------------|-----------|
-| Very Strong | 0.40 - 0.85 | ✅ Reliable |
-| Strong | 0.25 - 0.40 | ✅ Reliable |
-| Moderate | 0.15 - 0.25 | ✅ Usually |
-| Weak | 0.08 - 0.15 | ⚠️ Marginal |
-| Very Weak | 0.03 - 0.08 | ❌ Unreliable |
-| Noise | < 0.03 | ❌ No detection |
+| Very Strong | 5x - 20x | ✅ Reliable |
+| Strong | 3x - 5x | ✅ Reliable |
+| Moderate | 2.5x - 3x | ✅ Usually |
+| Weak | 2x - 2.5x | ⚠️ Marginal |
+| Very Weak | 1.5x - 2x | ❌ Unreliable |
+| Noise | < 1.5x | ❌ No detection |
 
 ## Monitoring Detection Performance
 

@@ -9,7 +9,7 @@ The GRAPE Digital RF Recorder is a direct RTP→Digital RF pipeline for recordin
 ### Data Flow
 
 ```
-ka9q-radio RTP Multicast (12 kHz IQ, float32)
+ka9q-radio RTP Multicast (16 kHz IQ, float32)
     ↓
 RTP Receiver (per-SSRC demultiplexing)
     ↓
@@ -17,7 +17,7 @@ IQ Sample Extraction
     ↓
 Anti-aliasing Filter (8th order Butterworth, 5 Hz cutoff)
     ↓
-Decimation (12 kHz → 10 Hz, factor of 1200)
+Decimation (16 kHz → 10 Hz, factor of 1600)
     ↓
 UTC-Aligned Daily Buffer (864,000 samples)
     ↓
@@ -42,7 +42,7 @@ Ready for PSWS Upload
 - Scipy-based anti-aliasing filter (8th order Butterworth)
 - Cutoff at Nyquist frequency of output rate (5 Hz)
 - Stateful filtering for continuous operation across packets
-- Decimation by factor of 1200 (12 kHz → 10 Hz)
+- Decimation by factor of 1600 (16 kHz → 10 Hz)
 
 #### 3. **DailyBuffer** (`grape_recorder.py`)
 - UTC-aligned 24-hour buffer (864,000 samples @ 10 Hz)

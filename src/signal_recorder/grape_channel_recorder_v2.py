@@ -41,7 +41,7 @@ class GRAPEChannelRecorderV2:
     Per-channel recorder with quality tracking and minute-file archive
     
     Key differences from V1:
-    - No real-time decimation (stores full 8 kHz)
+    - No real-time decimation (stores full 16 kHz IQ)
     - Writes 1-minute compressed files continuously
     - Comprehensive quality metrics
     - Decimation done offline in batch
