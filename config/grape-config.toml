@@ -33,17 +33,6 @@ recording_interval = 60
 continuous = true
 
 [[recorder.channels]]
-ssrc = 14670000
-frequency_hz = 14670000
-preset = "iq"
-sample_rate = 16000
-agc = 0
-gain = 0
-description = "CHU 14.67 MHz"
-enabled = true
-processor = "grape"
-
-[[recorder.channels]]
 ssrc = 2500000
 frequency_hz = 2500000
 preset = "iq"
@@ -142,47 +131,64 @@ description = "CHU 14.67 MHz"
 enabled = true
 processor = "grape"
 
-[processor]
-enabled = false
+# ============================================================================
+# OBSOLETE SECTIONS (V1 Legacy - Not Used by V2 Recorder)
+# ============================================================================
+# The V2 GRAPE recorder performs inline processing and Digital RF writing.
+# These settings are ignored. Kept for reference only.
 
-[processor.grape]
-process_time = "00:05"
-process_timezone = "UTC"
-expected_files_per_day = 1440
-max_gap_minutes = 5
-repair_gaps = true
-interpolate_max_minutes = 2
-output_sample_rate = 10
-output_format = "digital_rf"
+# [processor]
+# enabled = false
+
+# [processor.grape]
+# process_time = "00:05"
+# process_timezone = "UTC"
+# expected_files_per_day = 1440
+# max_gap_minutes = 5
+# repair_gaps = true
+# interpolate_max_minutes = 2
+# output_sample_rate = 10
+# output_format = "digital_rf"
+
+# ============================================================================
+# Upload Configuration (Not Yet Implemented)
+# ============================================================================
+# Upload functionality exists but needs configuration fixes before enabling.
+# See GRAPE_UPLOAD_IMPLEMENTATION.md for required changes:
+#   - Change protocol from "rsync" to "sftp"
+#   - Fix user, ssh_key, remote_base_path
+#   - Add trigger directory creation
 
 [uploader]
-enabled = false
-upload_enabled = false
-protocol = "rsync"
+enabled = false  # Set to true when PSWS account is verified and SSH key installed
+protocol = "sftp"  # PSWS requires SFTP
 upload_time = "00:30"
 upload_timezone = "UTC"
 max_retries = 5
 retry_delay_seconds = 300
 exponential_backoff = true
-queue_dir = "/home/mjh/grape-data/raw/upload_queue"
+# queue_dir is auto-managed based on mode (test vs production)
+# Test mode: /tmp/grape-test/upload
+# Production mode: /var/lib/signal-recorder/upload
 max_queue_size_gb = 100
 
-[uploader.rsync]
+[uploader.sftp]
 host = "pswsnetwork.eng.ua.edu"
 port = 22
-user = "your_username"
-ssh_key = "/home/wsprdaemon/.ssh/id_rsa_psws"
-remote_base_path = "/data/S000171"
-bandwidth_limit = 0
+user = "S000171"  # Station ID from [station.id]
+ssh_key = "/home/mjh/.ssh/id_ed25519"
+remote_base_path = "/"  # PSWS requires upload to home directory
+bandwidth_limit_kbps = 100  # 100 kbps per wsprdaemon
 verify_after_upload = true
 delete_after_upload = false
+create_trigger_directory = true  # CRITICAL: Signals PSWS to process data
 
 [logging]
 level = "INFO"
 console_output = true
 
 [monitoring]
-enable_metrics = false
+enable_metrics = true  # Enable real-time quality monitoring
 
 [web_ui]
 # Web-UI automatically reads from recorder.data_root

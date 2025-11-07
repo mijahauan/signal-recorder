@@ -170,176 +170,253 @@ class DiscontinuityTracker:
         logger.info(f"{self.channel_name}: Exported {len(self.discontinuities)} discontinuities to {output_path}")
 
 
-# ===== WWV/CHU Tone Detection =====
+# ===== Multi-Station Tone Detection =====
 
-class WWVToneDetector:
+class MultiStationToneDetector:
     """
-    Detect 1000 Hz tone at start of minute in WWV time signal broadcasts
+    Detect time signal tones from multiple stations using matched filtering
     
-    Per NIST: WWV (Fort Collins) broadcasts an 800ms 1000 Hz tone at second 0 of each minute.
-    WWVH (Hawaii) broadcasts 1200 Hz instead (not detected here - WWV closer to CONUS).
+    Stations:
+    - WWV (Fort Collins): 1000 Hz, 0.8s duration - PRIMARY for time_snap
+    - WWVH (Hawaii): 1200 Hz, 0.8s duration - Propagation analysis
+    - CHU (Canada): 1000 Hz, 0.5s duration - Alternate time_snap
     
-    This provides an independent timing reference beyond RTP timestamps for
-    verifying time synchronization and detecting clock drift.
+    Uses phase-invariant quadrature matched filtering for robust detection
+    in poor SNR conditions and with phase-shifted signals.
     """
     
-    def __init__(self, sample_rate=3000, is_pcm_audio=False):
+    def __init__(self, channel_name: str, sample_rate=3000):
         """
-        Initialize detector
+        Initialize multi-station tone detector
         
         Args:
-            sample_rate: Input sample rate (Hz), must be ≥ 2.0 kHz for 1000 Hz tone
-                        (default 3000 Hz provides good margin)
-            is_pcm_audio: If True, input is real PCM audio (skip AM demodulation)
+            channel_name: Channel name to determine which stations to detect
+            sample_rate: Processing sample rate (Hz), default 3000 Hz
         """
+        self.channel_name = channel_name
         self.sample_rate = sample_rate
-        self.is_pcm_audio = is_pcm_audio
+        self.is_chu_channel = 'CHU' in channel_name
         
-        # Design bandpass filter for 1000 Hz ± 50 Hz (WWV Fort Collins, not WWVH 1200 Hz)
-        self.sos = scipy_signal.butter(
-            N=4,
-            Wn=[950, 1050],
-            btype='band',
-            fs=sample_rate,
-            output='sos'
-        )
+        # Create matched filter templates (quadrature for phase-invariance)
+        self.templates = {}
         
-        # Detection parameters tuned for WWV 800ms 1000 Hz tone (per NIST spec)
-        self.envelope_threshold = 0.5  # Relative to normalized max envelope (50% - detect strong tone pulse)
-        self.min_tone_duration_sec = 0.5  # Expect 800ms ± propagation/processing delays (allow 0.5-1.2s)
-        self.max_tone_duration_sec = 1.2  # Allow margin for poor SNR or fading
+        if self.is_chu_channel:
+            # CHU frequencies: 3.33, 7.85, 14.67 MHz
+            # Only detect CHU 1000 Hz (0.5s)
+            self.templates['CHU'] = self._create_template(1000, 0.5)
+        else:
+            # WWV frequencies: 2.5, 5, 10, 15, 20, 25 MHz
+            # Detect BOTH WWV and WWVH
+            self.templates['WWV'] = self._create_template(1000, 0.8)
+            self.templates['WWVH'] = self._create_template(1200, 0.8)
         
-        # State
-        self.last_detection_time = 0
+        # State tracking
+        self.last_detections_by_minute = {}  # minute_boundary -> [detections]
         self.detection_count = 0
         
-    def detect_tone_onset(self, audio_samples, current_unix_time):
+        logger.info(f"{channel_name}: MultiStationToneDetector initialized - "
+                   f"stations={list(self.templates.keys())}")
+    
+    def _create_template(self, frequency_hz: float, duration_sec: float):
         """
-        Detect 1000 Hz WWV tone onset in audio sample buffer
+        Create quadrature matched filter templates (sin and cos)
         
         Args:
-            audio_samples: Audio samples - either real PCM or complex IQ (numpy array)
-            current_unix_time: Unix timestamp corresponding to first sample (wall clock or time_snap-corrected)
+            frequency_hz: Tone frequency (1000 or 1200 Hz)
+            duration_sec: Tone duration (0.5 or 0.8 seconds)
             
         Returns:
-            tuple: (detected: bool, onset_sample_idx: int or None, timing_error_ms: float or None)
-        
-        Note: current_unix_time may be approximate (from time.time()) before time_snap is established.
-              The detector uses it to find the nearest minute boundary, so small errors (~1s) are tolerable.
+            dict with 'sin', 'cos', 'frequency', 'duration'
         """
-        # Step 1: Get real audio signal
-        if self.is_pcm_audio:
-            # PCM is already real audio - use directly
-            audio = audio_samples.real if np.iscomplexobj(audio_samples) else audio_samples
+        from scipy import signal as scipy_signal
+        
+        t = np.arange(0, duration_sec, 1/self.sample_rate)
+        
+        # Apply Tukey window for smooth edges
+        window = scipy_signal.windows.tukey(len(t), alpha=0.1)
+        
+        # Create quadrature pair
+        template_sin = np.sin(2 * np.pi * frequency_hz * t) * window
+        template_cos = np.cos(2 * np.pi * frequency_hz * t) * window
+        
+        # Normalize to unit energy for proper matched filtering
+        template_sin /= np.linalg.norm(template_sin)
+        template_cos /= np.linalg.norm(template_cos)
+        
+        return {
+            'sin': template_sin,
+            'cos': template_cos,
+            'frequency': frequency_hz,
+            'duration': duration_sec
+        }
+    
+    def detect_tones(self, iq_samples: np.ndarray, current_unix_time: float):
+        """
+        Detect all applicable station tones in IQ samples
+        
+        Args:
+            iq_samples: Complex IQ samples at self.sample_rate
+            current_unix_time: UTC time for first sample
+            
+        Returns:
+            List[dict]: All detected tones, sorted by SNR (strongest first)
+            Each detection contains:
+            - station: 'WWV', 'WWVH', or 'CHU'
+            - frequency_hz: 1000 or 1200 Hz
+            - onset_sample_idx: Sample index of rising edge
+            - timing_error_ms: Error vs UTC :00.000
+            - snr_db: Signal-to-noise ratio estimate
+            - duration_sec: Expected tone duration
+            - correlation_peak: Peak correlation value
+        """
+        from scipy.signal import correlate
+        
+        # Get minute boundary for this buffer
+        minute_boundary = int(current_unix_time / 60) * 60
+        
+        # Check if we already detected this minute (prevent duplicates)
+        if minute_boundary in self.last_detections_by_minute:
+            # Already processed this minute
+            return []
+        
+        # Step 1: AM demodulation (extract envelope)
+        magnitude = np.abs(iq_samples)
+        audio_signal = magnitude - np.mean(magnitude)  # AC coupling
+        
+        detections = []
+        
+        # Step 2: Correlate with each station template
+        for station_name, template in self.templates.items():
+            detection = self._correlate_with_template(
+                audio_signal,
+                station_name,
+                template,
+                current_unix_time,
+                minute_boundary
+            )
+            
+            if detection:
+                detections.append(detection)
+        
+        # Sort by SNR (strongest signal first)
+        detections.sort(key=lambda d: d['snr_db'], reverse=True)
+        
+        # Cache detections for this minute
+        if detections:
+            self.last_detections_by_minute[minute_boundary] = detections
+            self.detection_count += len(detections)
+            
+            # Cleanup old minutes (keep last 10)
+            if len(self.last_detections_by_minute) > 10:
+                oldest_minute = min(self.last_detections_by_minute.keys())
+                del self.last_detections_by_minute[oldest_minute]
+        
+        return detections
+    
+    def _correlate_with_template(self, audio_signal: np.ndarray, station_name: str,
+                                 template: dict, current_unix_time: float,
+                                 minute_boundary: int):
+        """
+        Correlate audio signal with station template
+        
+        Returns:
+            dict with detection info, or None if no detection
+        """
+        from scipy.signal import correlate
+        
+        template_sin = template['sin']
+        template_cos = template['cos']
+        frequency = template['frequency']
+        duration = template['duration']
+        
+        # Perform quadrature correlation (phase-invariant)
+        try:
+            corr_sin = correlate(audio_signal, template_sin, mode='valid')
+            corr_cos = correlate(audio_signal, template_cos, mode='valid')
+        except ValueError:
+            # Buffer too short for correlation
+            return None
+        
+        if len(corr_sin) == 0 or len(corr_cos) == 0:
+            return None
+        
+        # Combine to get phase-invariant magnitude: sqrt(sin^2 + cos^2)
+        min_len = min(len(corr_sin), len(corr_cos))
+        correlation = np.sqrt(corr_sin[:min_len]**2 + corr_cos[:min_len]**2)
+        
+        # Expected position: tone should be at start of minute
+        # Account for buffer start time
+        buffer_offset_sec = current_unix_time - minute_boundary
+        expected_pos_samples = int(-buffer_offset_sec * self.sample_rate)
+        
+        # Search window: ±500ms around expected position
+        search_window = int(0.5 * self.sample_rate)
+        search_start = max(0, expected_pos_samples - search_window)
+        search_end = min(len(correlation), expected_pos_samples + search_window)
+        
+        if search_start >= search_end:
+            return None
+        
+        # Find peak within search window
+        search_region = correlation[search_start:search_end]
+        local_peak_idx = np.argmax(search_region)
+        peak_idx = search_start + local_peak_idx
+        peak_val = correlation[peak_idx]
+        
+        # Noise-adaptive threshold: Use noise from OUTSIDE the search window
+        noise_samples = np.concatenate([
+            correlation[:max(0, search_start - 100)],
+            correlation[min(len(correlation), search_end + 100):]
+        ])
+        
+        if len(noise_samples) > 100:
+            noise_mean = np.mean(noise_samples)
+            noise_std = np.std(noise_samples)
+            noise_floor = noise_mean + 2.5 * noise_std
         else:
-            # IQ samples - do AM demodulation (extract envelope)
-            audio = np.abs(audio_samples)
+            noise_mean = np.mean(correlation)
+            noise_std = np.std(correlation)
+            noise_floor = noise_mean + 2.5 * noise_std
         
-        # Remove DC component to get just the signal
-        audio_dc_removed = audio - np.mean(audio)
+        # Check if peak is significant
+        if peak_val <= noise_floor:
+            return None
         
-        # Step 2: Bandpass filter around 1000 Hz
-        filtered = scipy_signal.sosfiltfilt(self.sos, audio_dc_removed)
-        
-        # DEBUG: Check after filtering
-        if np.random.random() < 0.01:
-            logger.debug(f"WWV detector step 3: After 1000Hz filter min={np.min(filtered):.6f}, max={np.max(filtered):.6f}, has_nan={np.any(np.isnan(filtered))}")
-        
-        # 3. Envelope detection of the 1000 Hz component
-        analytic = scipy_signal.hilbert(filtered)
-        envelope = np.abs(analytic)
-        
-        # DEBUG: Check envelope
-        if np.random.random() < 0.01:
-            logger.debug(f"WWV detector step 4: Envelope min={np.min(envelope):.6f}, max={np.max(envelope):.6f}, has_nan={np.any(np.isnan(envelope))}")
-        
-        # Normalize envelope
-        max_envelope = np.max(envelope)
-        mean_envelope = np.mean(envelope)
-        std_envelope = np.std(envelope)
-        
-        if max_envelope > 0:
-            envelope = envelope / max_envelope
-        else:
-            logger.info(f"WWV detector: ❌ Zero max envelope - no signal")
-            return False, None, None
-        
-        # 3. Threshold detection
-        above_threshold = envelope > self.envelope_threshold
-        
-        # Log detection attempts at DEBUG level with signal statistics
-        above_count = np.sum(above_threshold)
-        snr_estimate = max_envelope / (mean_envelope + 1e-9) if mean_envelope > 0 else 0
-        
-        logger.debug(f"WWV detector: max_env={max_envelope:.6f}, mean={mean_envelope:.6f}, std={std_envelope:.6f}, "
-                    f"SNR~{snr_estimate:.1f}x, threshold={self.envelope_threshold:.2f}, "
-                    f"above={above_count}/{len(above_threshold)} ({above_count/len(above_threshold)*100:.1f}%)")
-        
-        # Find edges (transitions)
-        edges = np.diff(above_threshold.astype(int))
-        rising_edges = np.where(edges == 1)[0]
-        falling_edges = np.where(edges == -1)[0]
-        
-        if len(rising_edges) == 0 or len(falling_edges) == 0:
-            # No edges found
-            logger.debug(f"WWV detector: No edges found (rising={len(rising_edges)}, falling={len(falling_edges)})")
-            return False, None, None
-        
-        # Take first rising edge as onset candidate
-        onset_idx = rising_edges[0]
-        
-        # Find corresponding falling edge
-        offset_candidates = falling_edges[falling_edges > onset_idx]
-        if len(offset_candidates) == 0:
-            # Tone continues beyond buffer
-            return False, None, None
-        
-        offset_idx = offset_candidates[0]
-        
-        # 4. Validate tone duration
-        tone_duration_samples = offset_idx - onset_idx
-        tone_duration_sec = tone_duration_samples / self.sample_rate
-        
-        logger.debug(f"WWV detector: duration={tone_duration_sec:.3f}s, need {self.min_tone_duration_sec:.1f}-{self.max_tone_duration_sec:.1f}s")
-        
-        if tone_duration_sec < self.min_tone_duration_sec:
-            logger.debug(f"WWV detector: Rejected - too short ({tone_duration_sec:.3f}s)")
-            return False, None, None
-        
-        if tone_duration_sec > self.max_tone_duration_sec:
-            logger.debug(f"WWV detector: Rejected - too long ({tone_duration_sec:.3f}s)")
-            return False, None, None
-        
-        # 5. Calculate timing error
-        # Onset should occur at a minute boundary (0 seconds past the minute)
-        onset_time = current_unix_time + (onset_idx / self.sample_rate)
-        
-        # Get the minute boundary
-        minute_boundary = int(onset_time / 60) * 60
-        
-        # Check if we already detected in this minute (prevent duplicates)
-        if self.last_detection_time > 0:
-            last_minute = int(self.last_detection_time / 60) * 60
-            current_minute = minute_boundary
-            if last_minute == current_minute:
-                # Already detected this minute, skip
-                logger.debug(f"WWV detector: Skipping duplicate detection in same minute (last={self.last_detection_time:.1f}, current={onset_time:.1f})")
-                return False, None, None
-        
-        # Calculate error (how far from the minute boundary)
+        # Calculate timing relative to minute boundary
+        onset_sample_idx = peak_idx
+        onset_time = current_unix_time + (onset_sample_idx / self.sample_rate)
         timing_error_sec = onset_time - minute_boundary
         
-        # Handle case where onset is near the end of previous minute
+        # Handle wraparound
         if timing_error_sec > 30:
-            timing_error_sec -= 60  # It was actually late in previous minute
+            timing_error_sec -= 60
+        elif timing_error_sec < -30:
+            timing_error_sec += 60
         
         timing_error_ms = timing_error_sec * 1000
         
-        # Update state
-        self.last_detection_time = onset_time
-        self.detection_count += 1
+        # Calculate SNR
+        if noise_mean > 0 and peak_val > noise_mean:
+            snr_db = 20 * np.log10(peak_val / noise_mean)
+        else:
+            snr_db = 0.0
         
-        return True, onset_idx, timing_error_ms
+        detection = {
+            'station': station_name,
+            'frequency_hz': frequency,
+            'onset_sample_idx': onset_sample_idx,
+            'timing_error_ms': timing_error_ms,
+            'snr_db': snr_db,
+            'duration_sec': duration,
+            'correlation_peak': float(peak_val),
+            'onset_time': onset_time
+        }
+        
+        logger.info(f"{self.channel_name}: ✅ {station_name} DETECTED! "
+                   f"Freq: {frequency}Hz, Duration: {duration:.1f}s, "
+                   f"Timing error: {timing_error_ms:+.1f}ms, SNR: {snr_db:.1f}dB")
+        
+        return detection
 
 
 @dataclass
@@ -742,24 +819,39 @@ class GRAPEChannelRecorder:
         self.timing_drift_samples = []  # Track timing drift over time
         self.last_timing_report = None  # Last timing quality report time
         
+        # Performance metrics for status reporting
+        self.packets_received = 0
+        self.packets_dropped = 0
+        self.samples_received = 0
+        self.start_time = time.time()
+        self.last_packet_time = time.time()
+        
+        # Time_snap correction tracking
+        self.time_snap_corrections = []  # List of (time, error_ms, new_ref) tuples
+        self.last_time_snap_correction = None  # Unix time of last correction
+        self.time_snap_error_threshold_ms = 50.0  # Only correct if error > 50ms
+        self.time_snap_min_interval_sec = 600  # Don't correct more than once per 10 minutes
+        
         # Discontinuity tracking (Phase 1)
         self.discontinuity_tracker = DiscontinuityTracker(channel_name)
         
-        # WWV tone detection - USE PCM AUDIO CHANNELS ONLY for clean signal
-        # PCM is already AM-demodulated by radiod, giving clean 1000 Hz tone for timing
-        self.is_wwv_audio_channel = 'WWV' in channel_name.upper() and 'Audio' in channel_name
-        if self.is_wwv_audio_channel:
+        # Multi-station tone detection for WWV/CHU IQ channels
+        # Detects WWV (1000 Hz), WWVH (1200 Hz), and CHU (1000 Hz)
+        self.is_wwv_or_chu_channel = any(x in channel_name.upper() for x in ['WWV', 'CHU'])
+        if self.is_wwv_or_chu_channel:
             # Create 3 kHz resampler for tone detection (parallel to main 10 Hz path)
-            # Need at least 2.0 kHz for 1000 Hz tone (Nyquist), use 3 kHz for margin
-            # Input is 12 kHz PCM audio (real samples, already AM-demodulated)
-            self.tone_resampler = Resampler(input_rate=12000, output_rate=3000)
-            self.tone_detector = WWVToneDetector(sample_rate=3000, is_pcm_audio=True)
+            # Input is 8 kHz complex IQ (after RTP parsing)
+            self.tone_resampler = Resampler(input_rate=8000, output_rate=3000)
+            self.tone_detector = MultiStationToneDetector(channel_name=channel_name, sample_rate=3000)
             self.tone_accumulator = []  # Buffer for tone detection
             self.tone_accumulator_start_time = None  # Timestamp of first sample in accumulator
             self.tone_samples_per_check = 6000  # Check for tone every 2 seconds at 3 kHz
             self.wwv_detections = 0
-            self.wwv_timing_errors = []  # Track timing errors from WWV tone
-            logger.info(f"{channel_name}: WWV tone detection ENABLED on PCM Audio (1000 Hz, 800ms, 3 kHz sample rate)")
+            self.wwvh_detections = 0
+            self.chu_detections = 0
+            self.wwv_timing_errors = []  # Track timing errors from primary (WWV/CHU)
+            self.differential_delays = []  # Track WWV-WWVH differential delays
+            logger.info(f"{channel_name}: Multi-station tone detection ENABLED (WWV/WWVH/CHU, 3 kHz sample rate)")
         else:
             self.tone_detector = None
         
@@ -862,6 +954,75 @@ class GRAPEChannelRecorder:
                 
                 self.last_timing_report = system_time
     
+    def _apply_time_snap_correction(self, wwv_detection_time: float, timing_error_ms: float, tone_rtp_timestamp: int):
+        """
+        Apply KA9Q-style time_snap correction based on WWV tone timing.
+        
+        Updates the time reference (utc_aligned_start, rtp_start_timestamp) when WWV tone
+        indicates significant timing error.
+        
+        Args:
+            wwv_detection_time: Unix timestamp when tone was detected (current time reference)
+            timing_error_ms: Measured timing error in milliseconds (positive = late)
+            tone_rtp_timestamp: RTP timestamp at tone onset
+        
+        Returns:
+            bool: True if correction was applied
+        """
+        # Check if correction is warranted
+        if abs(timing_error_ms) < self.time_snap_error_threshold_ms:
+            # Error too small to correct
+            return False
+        
+        # Check if we've corrected recently (avoid oscillation)
+        if self.last_time_snap_correction is not None:
+            time_since_last = wwv_detection_time - self.last_time_snap_correction
+            if time_since_last < self.time_snap_min_interval_sec:
+                logger.debug(f"{self.channel_name}: Time_snap correction skipped - too soon since last "
+                           f"({time_since_last:.1f}s < {self.time_snap_min_interval_sec}s)")
+                return False
+        
+        # Calculate new time reference from WWV tone
+        # WWV tone should be at exact second 0 of minute
+        wwv_minute = int(wwv_detection_time / 60) * 60  # Floor to minute boundary
+        
+        # Apply correction to time reference
+        old_utc_start = self.utc_aligned_start
+        old_rtp_start = self.rtp_start_timestamp
+        
+        # New reference: WWV tone time is our new anchor
+        self.utc_aligned_start = wwv_minute
+        self.rtp_start_timestamp = tone_rtp_timestamp
+        
+        # Log correction
+        correction_record = (wwv_detection_time, timing_error_ms, wwv_minute)
+        self.time_snap_corrections.append(correction_record)
+        self.last_time_snap_correction = wwv_detection_time
+        
+        logger.warning(f"{self.channel_name}: ⚠️  TIME_SNAP CORRECTION APPLIED")
+        logger.warning(f"{self.channel_name}:    Timing error: {timing_error_ms:+.1f} ms")
+        logger.warning(f"{self.channel_name}:    Old reference: UTC {datetime.fromtimestamp(old_utc_start, timezone.utc).strftime('%H:%M:%S')}, RTP {old_rtp_start}")
+        logger.warning(f"{self.channel_name}:    New reference: UTC {datetime.fromtimestamp(wwv_minute, timezone.utc).strftime('%H:%M:%S')}, RTP {tone_rtp_timestamp}")
+        logger.warning(f"{self.channel_name}:    Total corrections: {len(self.time_snap_corrections)}")
+        
+        # Track as discontinuity
+        discontinuity = TimingDiscontinuity(
+            timestamp=wwv_detection_time,
+            sample_index=self.samples_received,
+            discontinuity_type=DiscontinuityType.TIME_SNAP_CORRECTION,
+            magnitude_samples=0,  # Time correction, not sample gap
+            magnitude_ms=timing_error_ms,
+            rtp_sequence_before=None,
+            rtp_sequence_after=None,
+            rtp_timestamp_before=old_rtp_start,
+            rtp_timestamp_after=tone_rtp_timestamp,
+            wwv_tone_detected=True,
+            explanation=f"Time_snap corrected by {timing_error_ms:+.1f}ms from WWV tone"
+        )
+        self.discontinuity_tracker.add_discontinuity(discontinuity)
+        
+        return True
+    
     def _log_wwv_timing(self, detection_time: float, timing_error_ms: float):
         """
         Log WWV timing data to CSV for analysis and graphing.
@@ -955,8 +1116,7 @@ class GRAPEChannelRecorder:
             return
         
         # Track packet metadata
-        self.packets_received = getattr(self, 'packets_received', 0) + 1
-        self.samples_received = getattr(self, 'samples_received', 0)
+        self.packets_received += 1
         self.last_packet_time = time.time()  # For freshness monitoring
         
         # Gap detection and filling (wsprdaemon-style)
@@ -964,7 +1124,7 @@ class GRAPEChannelRecorder:
             expected_seq = (self.last_sequence + 1) & 0xFFFF
             if header.sequence != expected_seq:
                 gap_packets = (header.sequence - expected_seq) & 0xFFFF
-                self.packets_dropped = getattr(self, 'packets_dropped', 0) + gap_packets
+                self.packets_dropped += gap_packets
                 
                 # Verify RTP timestamp jump is consistent with sequence gap
                 expected_rtp_ts = self.expected_rtp_timestamp
@@ -1132,26 +1292,84 @@ class GRAPEChannelRecorder:
                         logger.info(f"{self.channel_name}: Checking for WWV tone (buffer={len(tone_buffer)} samples @ 3 kHz, "
                                    f"time={buffer_start_time:.1f}, :mm.{int(seconds_in_minute):02d})")
                         
-                        # Detect WWV tone (use timestamp of FIRST sample in buffer)
-                        detected, onset_idx, timing_error_ms = self.tone_detector.detect_tone_onset(
+                        # Detect all station tones (WWV, WWVH, CHU)
+                        detections = self.tone_detector.detect_tones(
                             tone_buffer,
                             buffer_start_time
                         )
                         
-                        if detected:
-                            self.wwv_detections += 1
-                            self.wwv_timing_errors.append(timing_error_ms)
+                        if detections:
+                            # Separate detections by purpose
+                            wwv_only = [d for d in detections if d['station'] == 'WWV']
+                            wwvh_only = [d for d in detections if d['station'] == 'WWVH']
+                            chu_only = [d for d in detections if d['station'] == 'CHU']
                             
-                            # Keep only last 60 detections for statistics
-                            if len(self.wwv_timing_errors) > 60:
-                                self.wwv_timing_errors.pop(0)
+                            # Use WWV or CHU for time_snap (primary timing reference)
+                            primary_detections = wwv_only if wwv_only else chu_only
                             
-                            logger.info(f"{self.channel_name}: WWV tone detected! "
-                                       f"Timing error: {timing_error_ms:+.1f} ms "
-                                       f"(detection #{self.wwv_detections})")
+                            if primary_detections:
+                                primary = primary_detections[0]  # Strongest signal
+                                timing_error_ms = primary['timing_error_ms']
+                                onset_sample_idx = primary['onset_sample_idx']
+                                
+                                # Update detection counts
+                                if primary['station'] == 'WWV':
+                                    self.wwv_detections += 1
+                                else:
+                                    self.chu_detections += 1
+                                
+                                self.wwv_timing_errors.append(timing_error_ms)
+                                
+                                # Keep only last 60 detections for statistics
+                                if len(self.wwv_timing_errors) > 60:
+                                    self.wwv_timing_errors.pop(0)
+                                
+                                logger.info(f"{self.channel_name}: ⏱️ {primary['station']} tone detected! "
+                                           f"Timing error: {timing_error_ms:+.1f} ms, "
+                                           f"SNR: {primary['snr_db']:.1f} dB")
+                                
+                                # Calculate RTP timestamp at tone onset
+                                tone_onset_time = buffer_start_time + (onset_sample_idx / 3000.0)
+                                tone_onset_rtp = self.rtp_start_timestamp + int((tone_onset_time - self.utc_aligned_start) * self.rtp_sample_rate)
+                                
+                                # Apply KA9Q time_snap correction if warranted
+                                corrected = self._apply_time_snap_correction(
+                                    wwv_detection_time=tone_onset_time,
+                                    timing_error_ms=timing_error_ms,
+                                    tone_rtp_timestamp=tone_onset_rtp
+                                )
+                                
+                                if corrected:
+                                    logger.info(f"{self.channel_name}: 🔧 Time reference updated from {primary['station']} tone")
+                                
+                                # Log to CSV for analysis and graphing
+                                self._log_wwv_timing(unix_time, timing_error_ms)
                             
-                            # Log to CSV for analysis and graphing
-                            self._log_wwv_timing(unix_time, timing_error_ms)
+                            # Handle WWVH detection (propagation analysis)
+                            if wwvh_only:
+                                wwvh = wwvh_only[0]
+                                self.wwvh_detections += 1
+                                
+                                logger.info(f"{self.channel_name}: 📡 WWVH propagation: "
+                                           f"timing={wwvh['timing_error_ms']:+.1f}ms, "
+                                           f"SNR={wwvh['snr_db']:.1f}dB")
+                                
+                                # Calculate differential delay (WWV vs WWVH)
+                                if wwv_only:
+                                    differential_ms = wwv_only[0]['timing_error_ms'] - wwvh['timing_error_ms']
+                                    self.differential_delays.append(differential_ms)
+                                    
+                                    # Keep only last 60 measurements
+                                    if len(self.differential_delays) > 60:
+                                        self.differential_delays.pop(0)
+                                    
+                                    logger.info(f"{self.channel_name}: 📊 WWV-WWVH differential: {differential_ms:+.1f}ms "
+                                               f"(WWV: {wwv_only[0]['timing_error_ms']:+.1f}ms, "
+                                               f"WWVH: {wwvh['timing_error_ms']:+.1f}ms)")
+                            
+                            # Log all detections for this minute
+                            logger.debug(f"{self.channel_name}: Minute summary - "
+                                        f"WWV={len(wwv_only)}, WWVH={len(wwvh_only)}, CHU={len(chu_only)}")
                     else:
                         # Outside detection window - discard accumulated samples
                         self.tone_accumulator = []
@@ -1169,12 +1387,25 @@ class GRAPEChannelRecorder:
                 self._write_digital_rf(day_date, day_data)
             
             # Also write hourly (to avoid losing data if daemon crashes)
-            if HAS_DIGITAL_RF and self.daily_buffer.should_write_hourly(unix_time):
-                current_data = self.daily_buffer.get_current_data()
+            # DEBUG: Check write conditions
+            should_write = self.daily_buffer.should_write_hourly(unix_time)
+            current_data = self.daily_buffer.get_current_data()
+            
+            # DEBUG logging to diagnose why writes aren't happening
+            dt = datetime.fromtimestamp(unix_time, tz=timezone.utc)
+            if dt.minute == 1 and dt.second < 30:  # Only log during write window
+                logger.info(f"{self.channel_name}: DEBUG - HAS_DIGITAL_RF={HAS_DIGITAL_RF}, should_write={should_write}, has_data={current_data is not None}")
+                if current_data:
+                    day_date, day_data = current_data
+                    logger.info(f"{self.channel_name}: DEBUG - buffer has {len(day_data)} samples, {np.count_nonzero(~np.isnan(day_data))} non-NaN")
+            
+            if HAS_DIGITAL_RF and should_write:
                 if current_data:
                     day_date, day_data = current_data
                     logger.info(f"{self.channel_name}: Hourly write triggered")
                     self._write_digital_rf(day_date, day_data)
+                else:
+                    logger.warning(f"{self.channel_name}: Hourly write triggered but no data in buffer!")
                 
             # Track received samples
             self.samples_received += len(resampled)
@@ -1204,8 +1435,14 @@ class GRAPEChannelRecorder:
             instrument = self.station_config.get('instrument_id', 'UNKNOWN')
             
             # Build path with date
-            base_dir = self.channel_dir.parent.parent.parent  # Go up from channel to data root
-            drf_dir = base_dir / date_str / f"{callsign}_{grid}" / instrument / self.channel_name
+            # self.channel_dir is already the correct base (e.g., /tmp/grape-test/data/WWV_2.5_MHz)
+            # For Digital RF, we need: {data_root}/YYYYMMDD/CALLSIGN_GRID/INSTRUMENT/CHANNEL/
+            base_dir = self.channel_dir.parent  # Data root (e.g., /tmp/grape-test/data)
+            
+            # Sanitize channel name (replace spaces with underscores for filesystem)
+            safe_channel_name = self.channel_name.replace(' ', '_')
+            
+            drf_dir = base_dir / date_str / f"{callsign}_{grid}" / instrument / safe_channel_name
             drf_dir.mkdir(parents=True, exist_ok=True)
             
             # Generate UUID for this dataset
@@ -1220,13 +1457,13 @@ class GRAPEChannelRecorder:
             with drf.DigitalRFWriter(
                 str(drf_dir),
                 dtype=np.complex64,
-                subdir_cadence_secs=3600,      # 1 hour subdirectories (wsprdaemon uses 3600)
-                file_cadence_millisecs=1000,    # 1 second files (wsprdaemon uses 1000)
+                subdir_cadence_secs=86400,      # 24 hour subdirectories (PSWS requirement)
+                file_cadence_millisecs=3600000, # 1 hour files (PSWS requirement)
                 start_global_index=start_global_index,  # CRITICAL: Midnight UTC
                 sample_rate_numerator=10,
                 sample_rate_denominator=1,
                 uuid_str=dataset_uuid,
-                compression_level=6,            # wsprdaemon uses 6
+                compression_level=9,            # High compression for upload bandwidth
                 checksum=False,
                 is_complex=True,                # True for I/Q data
                 num_subchannels=1,
@@ -1250,16 +1487,17 @@ class GRAPEChannelRecorder:
                 'date': day_date.isoformat()
             }
             
-            # Write metadata using DigitalMetadataWriter
-            with drf.DigitalMetadataWriter(
+            # Write metadata using DigitalMetadataWriter (no context manager support)
+            metadata_writer = drf.DigitalMetadataWriter(
                 str(metadata_dir),
-                subdir_cadence_secs=3600,
-                file_cadence_secs=3600,
+                subdir_cadence_secs=86400,  # Match data: 24 hour subdirectories
+                file_cadence_secs=3600,     # 1 hour metadata files
                 sample_rate_numerator=10,
                 sample_rate_denominator=1,
                 file_name='metadata'
-            ) as metadata_writer:
-                metadata_writer.write(start_global_index, metadata)
+            )
+            metadata_writer.write(start_global_index, metadata)
+            metadata_writer.close()
             
             logger.info(f"{self.channel_name}: ✅ Digital RF write complete for {day_date}")
                        
@@ -1282,7 +1520,7 @@ class GRAPERecorderManager:
         """
         self.config = config
         self.path_resolver = path_resolver
-        self.recorders: Dict[int, GRAPEChannelRecorderV2] = {}
+        self.recorders: Dict[int, GRAPEChannelRecorder] = {}
         self.rtp_receiver = None
         self.running = False
         
@@ -1397,15 +1635,14 @@ class GRAPERecorderManager:
                 analytics_dir = output_dir.parent / 'analytics'
             analytics_dir.mkdir(parents=True, exist_ok=True)
             
-            # Create V2 recorder (minute files + live quality tracking)
-            recorder = GRAPEChannelRecorderV2(
+            # Create real-time Digital RF recorder (8 kHz → 10 Hz, hourly writes)
+            recorder = GRAPEChannelRecorder(
                 ssrc=ssrc,
                 channel_name=channel_name,
                 frequency_hz=frequency_hz,
-                archive_dir=output_dir,
-                analytics_dir=analytics_dir,
+                output_dir=output_dir,
                 station_config=station_config,
-                is_wwv_channel=is_wwv,
+                is_wwv_audio_channel=False,  # V2 doesn't support audio channels yet
                 path_resolver=self.path_resolver
             )
             
@@ -1594,7 +1831,7 @@ class GRAPERecorderManager:
                 disc_stats = rec.discontinuity_tracker.get_stats()
                 rec_status['discontinuities'] = disc_stats
             
-            # WWV timing validation stats
+            # Multi-station timing validation stats
             if hasattr(rec, 'tone_detector') and rec.tone_detector is not None:
                 wwv_timing_error_mean = 0.0
                 wwv_timing_error_std = 0.0
@@ -1608,21 +1845,44 @@ class GRAPERecorderManager:
                 
                 # Calculate expected detections (1 per minute if recording for >1 minute)
                 expected_detections = max(1, int(elapsed / 60))
-                detection_rate = (getattr(rec, 'wwv_detections', 0) / expected_detections) if expected_detections > 0 else 0.0
+                
+                # Primary timing station (WWV or CHU)
+                wwv_det = getattr(rec, 'wwv_detections', 0)
+                chu_det = getattr(rec, 'chu_detections', 0)
+                primary_det = wwv_det + chu_det
+                detection_rate = (primary_det / expected_detections) if expected_detections > 0 else 0.0
+                
+                # Determine which stations are active
+                stations_active = []
+                if wwv_det > 0:
+                    stations_active.append('WWV')
+                if chu_det > 0:
+                    stations_active.append('CHU')
+                if getattr(rec, 'wwvh_detections', 0) > 0:
+                    stations_active.append('WWVH')
+                
+                # Differential delay statistics (WWV vs WWVH)
+                differential_mean = 0.0
+                differential_std = 0.0
+                if hasattr(rec, 'differential_delays') and len(rec.differential_delays) > 0:
+                    diff_array = np.array(rec.differential_delays)
+                    differential_mean = float(np.mean(diff_array))
+                    differential_std = float(np.std(diff_array))
                 
                 rec_status['timing_validation'] = {
                     'enabled': True,
-                    'tone_type': 'wwv_1200hz',
-                    'tone_detections_total': getattr(rec, 'wwv_detections', 0),
-                    'tone_detections_expected': expected_detections,
+                    'stations_active': stations_active,
+                    'wwv_detections': wwv_det,
+                    'wwvh_detections': getattr(rec, 'wwvh_detections', 0),
+                    'chu_detections': chu_det,
+                    'total_detections': primary_det,
+                    'expected_detections': expected_detections,
                     'detection_rate': round(detection_rate, 2),
                     'timing_error_mean_ms': round(wwv_timing_error_mean, 2),
                     'timing_error_std_ms': round(wwv_timing_error_std, 2),
                     'timing_error_max_ms': round(wwv_timing_error_max, 2),
-                    'last_detection_time': datetime.fromtimestamp(
-                        getattr(rec.tone_detector, 'last_detection_time', 0),
-                        timezone.utc
-                    ).isoformat() if getattr(rec.tone_detector, 'last_detection_time', 0) > 0 else None,
+                    'wwv_wwvh_differential_mean_ms': round(differential_mean, 2),
+                    'wwv_wwvh_differential_std_ms': round(differential_std, 2),
                     'last_timing_error_ms': round(rec.wwv_timing_errors[-1], 2) if len(rec.wwv_timing_errors) > 0 else None
                 }
             

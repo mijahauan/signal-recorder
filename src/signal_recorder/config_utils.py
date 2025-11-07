@@ -148,12 +148,12 @@ class PathResolver:
         # Support backward compatibility with old config
         recorder_config = self.config.get('recorder', {})
         
-        # NEW: Check for mode-specific data_root first
-        mode = recorder_config.get('mode', 'production')
-        if mode == 'test' and 'test_data_root' in recorder_config:
+        # NEW: Use development_mode to determine which data_root to use
+        # This allows audit tools to test both modes regardless of config setting
+        if self.development_mode and 'test_data_root' in recorder_config:
             base_root = Path(recorder_config['test_data_root'])
             return base_root / 'data'
-        elif mode == 'production' and 'production_data_root' in recorder_config:
+        elif not self.development_mode and 'production_data_root' in recorder_config:
             base_root = Path(recorder_config['production_data_root'])
             return base_root / 'data'
         
@@ -169,12 +169,12 @@ class PathResolver:
         """Get the analytics directory"""
         recorder_config = self.config.get('recorder', {})
         
-        # NEW: Check for mode-specific data_root first
-        mode = recorder_config.get('mode', 'production')
-        if mode == 'test' and 'test_data_root' in recorder_config:
+        # NEW: Use development_mode to determine which data_root to use
+        # This allows audit tools to test both modes regardless of config setting
+        if self.development_mode and 'test_data_root' in recorder_config:
             base_root = Path(recorder_config['test_data_root'])
             return base_root / 'analytics'
-        elif mode == 'production' and 'production_data_root' in recorder_config:
+        elif not self.development_mode and 'production_data_root' in recorder_config:
             base_root = Path(recorder_config['production_data_root'])
             return base_root / 'analytics'
         
@@ -241,6 +241,7 @@ class PathResolver:
     def get_upload_state_dir(self) -> Path:
         """Get upload state directory"""
         uploader_config = self.config.get('uploader', {})
+        recorder_config = self.config.get('recorder', {})
         
         # Check for explicit queue_file (backward compat)
         if 'queue_file' in uploader_config:
@@ -250,6 +251,15 @@ class PathResolver:
         # Check for queue_dir (old config)
         if 'queue_dir' in uploader_config:
             return Path(uploader_config['queue_dir'])
+        
+        # NEW: Use mode-specific data_root for upload state
+        # This keeps upload queues separate for test vs production
+        if self.development_mode and 'test_data_root' in recorder_config:
+            base_root = Path(recorder_config['test_data_root'])
+            return base_root / 'upload'
+        elif not self.development_mode and 'production_data_root' in recorder_config:
+            base_root = Path(recorder_config['production_data_root'])
+            return base_root / 'upload'
         
         return self.get_path('upload_state_dir')
     
@@ -264,6 +274,16 @@ class PathResolver:
     
     def get_status_dir(self) -> Path:
         """Get runtime status directory"""
+        recorder_config = self.config.get('recorder', {})
+        
+        # Use mode-specific data_root for status files
+        if self.development_mode and 'test_data_root' in recorder_config:
+            base_root = Path(recorder_config['test_data_root'])
+            return base_root / 'status'
+        elif not self.development_mode and 'production_data_root' in recorder_config:
+            base_root = Path(recorder_config['production_data_root'])
+            return base_root / 'status'
+        
         return self.get_path('status_dir')
     
     def get_status_file(self) -> Path:
@@ -323,9 +343,18 @@ class PathResolver:
     def get_log_dir(self) -> Path:
         """Get log directory"""
         logging_config = self.config.get('logging', {})
+        recorder_config = self.config.get('recorder', {})
         
         if 'log_dir' in logging_config:
             return Path(logging_config['log_dir'])
+        
+        # Use mode-specific data_root for logs
+        if self.development_mode and 'test_data_root' in recorder_config:
+            base_root = Path(recorder_config['test_data_root'])
+            return base_root / 'logs'
+        elif not self.development_mode and 'production_data_root' in recorder_config:
+            base_root = Path(recorder_config['production_data_root'])
+            return base_root / 'logs'
         
         return self.get_path('log_dir')
     
