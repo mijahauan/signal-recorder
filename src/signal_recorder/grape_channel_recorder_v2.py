@@ -123,7 +123,9 @@ class GRAPEChannelRecorderV2:
         # WWV: 0.8s duration, CHU: 0.5s duration
         self.tone_detector = None
         if is_wwv_channel:
-            from .grape_rtp_recorder import WWVToneDetector, Resampler
+            from .grape_rtp_recorder import MultiStationToneDetector, Resampler
+            # Instantiate multi-station detector (3 kHz sample rate after resampling)
+            self.tone_detector = MultiStationToneDetector(channel_name=channel_name, sample_rate=3000)
             # Downsample to 3 kHz for tone detection (saves CPU)
             # Buffered WWV detection approach
             # Instead of real-time streaming detection, buffer samples and post-process
@@ -143,6 +145,13 @@ class GRAPEChannelRecorderV2:
         # WWV tracking
         self.last_wwv_detection = None
         self.wwv_detections_today = 0
+        # Separate counters for each station
+        self.wwv_detections = 0  # WWV (1000 Hz Fort Collins)
+        self.wwvh_detections = 0  # WWVH (1200 Hz Hawaii)
+        self.chu_detections = 0  # CHU (1000 Hz Canada)
+        # Timing error tracking (for status reporting)
+        self.wwv_timing_errors = []  # List of timing errors from primary stations (WWV/CHU)
+        self.differential_delays = []  # List of WWV-WWVH differential delays
         self.current_minute_wwv_drift_ms = None  # Drift for current minute
         self.wwv_results_by_minute = {}  # minute_timestamp -> list of detections (WWV, WWVH, CHU)
         
@@ -741,6 +750,27 @@ class GRAPEChannelRecorderV2:
         # Update stats
         self.last_wwv_detection = time.time()
         self.wwv_detections_today += len(detections)
+        
+        # Update per-station counters and track timing errors
+        wwv_timing = None
+        wwvh_timing = None
+        
+        for det in detections:
+            if det['station'] == 'WWV':
+                self.wwv_detections += 1
+                wwv_timing = det['timing_error_ms']
+                self.wwv_timing_errors.append(wwv_timing)
+            elif det['station'] == 'WWVH':
+                self.wwvh_detections += 1
+                wwvh_timing = det['timing_error_ms']
+            elif det['station'] == 'CHU':
+                self.chu_detections += 1
+                self.wwv_timing_errors.append(det['timing_error_ms'])
+        
+        # Calculate differential delay if we have both WWV and WWVH
+        if wwv_timing is not None and wwvh_timing is not None:
+            differential = wwv_timing - wwvh_timing
+            self.differential_delays.append(differential)
         
         # Sort by timing accuracy (closest to minute boundary)
         detections.sort(key=lambda d: abs(d['timing_error_ms']))
