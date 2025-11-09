@@ -10,6 +10,53 @@
 **Organization:** HamSCI (Ham Radio Science Citizen Investigation)  
 **Mission:** Record and archive high-precision WWV/CHU time-standard signals for ionospheric propagation research.
 
+---
+
+## CURRENT ARCHITECTURE (Nov 9, 2024)
+
+### Core/Analytics Split
+
+**Architectural Decision:** Separate battle-tested data acquisition from experimental analytics.
+
+```
+┌────────────────────────────────────┐
+│  CORE RECORDER (Phase 1 Complete) │  ← Minimal, rock-solid
+│  RTP → NPZ archives ONLY           │  ← Changes: <5/year
+│                                    │
+│  - Receives RTP packets            │
+│  - Resequences (out-of-order)     │
+│  - Detects & fills gaps            │
+│  - Writes NPZ with RTP timestamps  │
+│                                    │
+│  Status: ✅ Running in parallel    │
+│  PID: 1229736                      │
+│  Output: /tmp/grape-core-test/     │
+└────────────────────────────────────┘
+            ↓
+    NPZ Archives on Disk
+    (Complete scientific record)
+            ↓
+┌────────────────────────────────────┐
+│  ANALYTICS SERVICE (Phase 2)       │  ← Experimental, evolving
+│  NPZ → Derived products            │  ← Changes: >50/year
+│                                    │
+│  - Quality metrics                 │  ⏳ Pending
+│  - WWV tone detection              │
+│  - time_snap establishment         │
+│  - Decimation (16k → 10 Hz)        │
+│  - Digital RF writing              │
+│  - PSWS upload                     │
+└────────────────────────────────────┘
+```
+
+**Benefits:**
+- ✅ Zero data loss during analytics updates
+- ✅ Reprocess archives with improved algorithms
+- ✅ Independent testing without production risk
+- ✅ Flexible deployment options
+
+**Documentation:** See `CORE_ANALYTICS_SPLIT_DESIGN.md`
+
 **Core Goals:**
 - **Precision Timing:** Sub-millisecond timing accuracy using RTP timestamps as primary reference
 - **Data Quality:** Continuous monitoring of completeness, packet loss, and timing drift with full provenance
@@ -358,169 +405,6 @@ start() / stop()
 GRAPERecorderManager:
     # Main daemon - manages multiple channel recorders
     # Methods: start(), stop(), get_status()
-    # NEW (Nov 2024): Health monitoring and auto-recovery
-    # - Background thread monitors radiod liveness (30s interval)
-    # - Automatically recreates missing channels
-    # - Detects and logs SOURCE_UNAVAILABLE discontinuities
-    
-GRAPEChannelRecorder:
-    # Per-channel RTP → Digital RF pipeline
-    # Implements: RTP reception, resequencing, gap fill, tone detection
-    # NEW (Nov 2024): Session boundary tracking
-    # - Detects RECORDER_OFFLINE gaps on startup
-    # - Tracks health via _check_channel_health()
-    # Line ~800-1600
-    
-MultiStationToneDetector:
-    # WWV/WWVH/CHU discrimination using quadrature matched filtering
-    # Line ~175-800
-    # Critical: Sets use_for_time_snap flag correctly
-    # TODO: Extract to standalone module (next session)
-```
-
-### Health Monitoring (NEW - Nov 2024)
-
-**Modules:**
-- `radiod_health.py` - RadiodHealthChecker for liveness monitoring
-- `session_tracker.py` - SessionBoundaryTracker for offline gap detection
-
-**Integration:**
-```python
-RadiodHealthChecker:
-    # Monitors radiod status multicast
-    # Methods: is_radiod_alive(), verify_channel_exists(ssrc)
-    
-SessionBoundaryTracker:
-    # Detects recorder downtime on startup
-    # Reads last archive file timestamp
-    # Logs to session_boundaries.jsonl
-    # Method: check_for_offline_gap(current_time) -> Optional[Discontinuity]
-```
-
-**Auto-Recovery Flow:**
-1. Health monitor detects no packets for 60s → creates SOURCE_UNAVAILABLE discontinuity
-2. Verifies channel exists in radiod via `control` utility
-3. If missing: recreates channel via ChannelManager
-4. If exists: logs multicast routing issue warning
-
-### Web Interface
-
-**Location:** `web-ui/`
-
-**Backend:** `simple-server.js` (Express.js API server)
-
-```javascript
-// Configuration endpoints
-GET  /api/config                    // Get current config
-POST /api/config/save               // Save TOML config
-
-// Monitoring endpoints  
-GET  /api/monitoring/recording-stats // Live quality metrics (JSON)
-GET  /api/monitoring/daemon-logs     // Recent daemon logs
-
-// Channel management
-GET  /api/channels/discover          // Discover ka9q-radio channels
-POST /api/channels/create            // Create new channel via radiod
-```
-
-**Frontend:** `index.html` (configuration), `monitoring.html` (dashboard)
-
-### Configuration
-
-**Location:** `config/grape-config.toml`
-
-**Key Sections:**
-```toml
-[station]
-callsign = "AC0G"
-grid_square = "EM38ww"
-instrument_id = "RX888"
-
-[recorder]
-mode = "test" | "production"
-test_data_root = "/tmp/grape-test"
-production_data_root = "/var/lib/signal-recorder"
-
-[[recorder.channels]]
-ssrc = 2500000
-frequency_hz = 2500000
-description = "WWV 2.5 MHz"
-enabled = true
-
-[uploader]
-enabled = true
-protocol = "rsync"
-remote_host = "pswsnetwork.eng.ua.edu"
-```
-
-### Directory Structure
-
-```
-src/signal_recorder/
-├── interfaces/              # API definitions (Nov 2024)
-│   ├── data_models.py      # Shared data structures (UPDATED: new discontinuity types)
-│   ├── sample_provider.py  # Function 1 interface
-│   ├── archive.py          # Function 2 interface
-│   ├── tone_detection.py   # Function 3 interface
-│   ├── decimation.py       # Functions 4+5 interface
-│   └── upload.py           # Function 6 interface
-├── grape_rtp_recorder.py   # Main implementation (ACTIVE, health monitoring integrated)
-├── grape_channel_recorder_v2.py  # V2 (reference, not in use)
-├── digital_rf_writer.py    # Digital RF output
-├── minute_file_writer.py   # Archive writer
-├── radiod_health.py        # NEW: Radiod health checker
-├── session_tracker.py      # NEW: Offline gap detection
-├── uploader.py             # Upload manager (not integrated)
-├── quality_metrics.py      # Quality calculation (needs update for new gap categories)
-└── cli.py                  # Command-line interface
-
-web-ui/
-├── simple-server.js        # Node.js API server
-├── index.html              # Configuration UI
-└── monitoring.html         # Real-time dashboard
-```
-
----
-
-## 4. ⚡ Current Task & Git Context
-
-**Current Branch:** `main`  
-**Last Commit:** `7d0285d` - Health monitoring integration (Nov 9, 2024)
-
-**Recent Completion (Nov 9, 2024):**
-✅ Health monitoring and auto-recovery fully integrated
-- radiod_health.py and session_tracker.py modules created
-- Data models updated (SOURCE_UNAVAILABLE, RECORDER_OFFLINE types)
-- Quality grading removed (pure quantitative reporting)
-- Background health monitoring thread in GRAPERecorderManager
-- Automatic channel recreation after radiod restarts
-- Session boundary tracking for offline gaps
-
-**Next Session Tasks:**
-1. **Test health monitoring** (Test 1-3 in HEALTH_MONITORING_IMPLEMENTATION.md)
-   - Test offline gap detection (daemon stop/start)
-   - Test radiod restart recovery
-   - Test manual channel deletion recovery
-
-2. **Extract tone detector** to standalone module
-   - Move MultiStationToneDetector from grape_rtp_recorder.py
-   - Create interfaces/tone_detection.py implementation
-   - Update imports and references
-
-3. **Create adapter wrappers** for interface compliance:
-   - Function 2: ArchiveWriter adapter for MinuteFileWriter
-   - Function 4: Decimator adapter (if needed)
-   - Function 5: DigitalRFWriter adapter wrapper
-
-4. **Update quality_metrics.py** to use new gap categorization
-
-**Files Ready for Next Session:**
-- test-health-monitoring.sh (verification script)
-- HEALTH_MONITORING_IMPLEMENTATION.md (testing guide)
-- INTEGRATION_COMPLETE.md (implementation summary)
-
-**Known Issues:**
-- Upload integration still pending (Function 6)
 - quality_metrics.py still uses old grading system
 
 ---
