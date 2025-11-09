@@ -24,6 +24,14 @@ from .quality_metrics import (
 )
 from .live_quality_status import get_live_status
 
+# Digital RF writer (optional - may not be installed)
+try:
+    from .digital_rf_writer import DigitalRFWriter
+    DRF_AVAILABLE = True
+except ImportError:
+    DRF_AVAILABLE = False
+    DigitalRFWriter = None
+
 logger = logging.getLogger(__name__)
 
 # Resequencing queue entry
@@ -49,7 +57,7 @@ class GRAPEChannelRecorderV2:
     
     def __init__(self, ssrc: int, channel_name: str, frequency_hz: float,
                  archive_dir: Path, analytics_dir: Path, station_config: dict,
-                 is_wwv_channel: bool = False, path_resolver=None):
+                 is_wwv_channel: bool = False, path_resolver=None, upload_dir: Path = None):
         """
         Initialize channel recorder
         
@@ -62,6 +70,7 @@ class GRAPEChannelRecorderV2:
             station_config: Station metadata
             is_wwv_channel: True if WWV (enables tone detection)
             path_resolver: Optional PathResolver
+            upload_dir: Optional directory for Digital RF upload (None = disabled)
         """
         self.ssrc = ssrc
         self.channel_name = channel_name
@@ -83,6 +92,27 @@ class GRAPEChannelRecorderV2:
             sample_rate=self.sample_rate,
             station_config=station_config
         )
+        
+        # Digital RF writer for upload (optional)
+        self.drf_writer = None
+        if upload_dir and DRF_AVAILABLE:
+            try:
+                self.drf_writer = DigitalRFWriter(
+                    output_dir=upload_dir,
+                    channel_name=channel_name,
+                    frequency_hz=frequency_hz,
+                    input_sample_rate=self.sample_rate,
+                    output_sample_rate=10,  # 10 Hz for upload
+                    station_config=station_config
+                )
+                logger.info(f"{channel_name}: Digital RF upload ENABLED (10 Hz)")
+            except Exception as e:
+                logger.error(f"{channel_name}: Failed to initialize Digital RF writer: {e}")
+                self.drf_writer = None
+        elif upload_dir and not DRF_AVAILABLE:
+            logger.warning(f"{channel_name}: Upload dir specified but digital_rf not available")
+        else:
+            logger.info(f"{channel_name}: Digital RF upload DISABLED")
         
         # Quality metrics tracker
         quality_output = analytics_dir / "quality" / datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -353,8 +383,13 @@ class GRAPEChannelRecorderV2:
                 )
                 self.quality_tracker.add_discontinuity(discontinuity)
                 
-                # Add zeros to file writer and WWV detector
+                # Add zeros to file writer, DRF upload, and WWV detector
                 self.file_writer.add_samples(unix_time, zeros)
+                if self.drf_writer:
+                    try:
+                        self.drf_writer.add_samples(unix_time, zeros)
+                    except Exception as e:
+                        logger.error(f"{self.channel_name}: DRF write error (gap): {e}")
                 if self.is_wwv_channel:
                     # Buffer gap zeros for WWV detection
                     self._process_wwv_buffered(unix_time, zeros, self.expected_rtp_timestamp)
@@ -384,6 +419,13 @@ class GRAPEChannelRecorderV2:
                 minute_key = int(minute_time.timestamp())
                 finalize_wwv_result = self.wwv_results_by_minute.pop(minute_key, None)
                 self._finalize_minute(minute_time, file_path, finalize_wwv_result)
+            
+            # Add to Digital RF writer for upload
+            if self.drf_writer:
+                try:
+                    self.drf_writer.add_samples(unix_time, entry.samples)
+                except Exception as e:
+                    logger.error(f"{self.channel_name}: DRF write error: {e}")
             
             # Update totals and state
             self.total_samples += len(entry.samples)
@@ -1067,6 +1109,12 @@ class GRAPEChannelRecorderV2:
         """Finalize day - export quality metrics"""
         # Flush any remaining data
         self.file_writer.flush()
+        if self.drf_writer:
+            try:
+                self.drf_writer.flush()
+                logger.info(f"{self.channel_name}: Digital RF upload flushed")
+            except Exception as e:
+                logger.error(f"{self.channel_name}: DRF flush error: {e}")
         
         # Export metrics
         self.quality_tracker.export_minute_csv(date_str)

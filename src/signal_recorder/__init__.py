@@ -27,7 +27,6 @@ from .grape_recorder import GRAPERecorderManager as GRAPECLIManager
 # Channel management
 from .channel_manager import ChannelManager
 from ka9q import discover_channels, ChannelInfo, RadiodControl
-from .radiod_stream_manager import RadiodStreamManager, StreamInfo
 
 # Re-export ka9q functions for backward compatibility
 discover_channels_via_control = discover_channels  # Legacy alias
@@ -46,8 +45,6 @@ __all__ = [
     "discover_channels_via_control",
     "ChannelInfo",
     "RadiodControl",
-    "RadiodStreamManager",
-    "StreamInfo",
     # Upload
     "UploadManager",
     "SSHRsyncUpload",

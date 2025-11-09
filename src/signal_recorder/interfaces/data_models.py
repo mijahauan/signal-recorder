@@ -28,12 +28,19 @@ class DiscontinuityType(Enum):
     Types of discontinuities in the data stream.
     
     Every gap, jump, or correction is logged for scientific provenance.
+    
+    Categories:
+    - Network/Processing: GAP, OVERFLOW, UNDERFLOW (normal packet-level issues)
+    - System: RTP_RESET, SYNC_ADJUST (timing adjustments)
+    - Infrastructure: SOURCE_UNAVAILABLE, RECORDER_OFFLINE (systematic failures)
     """
-    GAP = "gap"                    # Missed RTP packets, samples lost
-    SYNC_ADJUST = "sync_adjust"    # Time_snap correction applied
-    RTP_RESET = "rtp_reset"        # RTP sequence/timestamp reset
-    OVERFLOW = "overflow"          # Buffer overflow, samples dropped
-    UNDERFLOW = "underflow"        # Buffer underflow, samples duplicated
+    GAP = "gap"                              # Missed RTP packets, samples lost
+    SYNC_ADJUST = "sync_adjust"              # Time_snap correction applied
+    RTP_RESET = "rtp_reset"                  # RTP sequence/timestamp reset
+    OVERFLOW = "overflow"                    # Buffer overflow, samples dropped
+    UNDERFLOW = "underflow"                  # Buffer underflow, samples duplicated
+    SOURCE_UNAVAILABLE = "source_unavailable"  # radiod down/channel missing
+    RECORDER_OFFLINE = "recorder_offline"    # signal-recorder daemon not running
 
 
 @dataclass(frozen=True)
@@ -159,10 +166,12 @@ class TimeSnapReference:
 @dataclass
 class QualityInfo:
     """
-    Quality metrics for a batch of samples.
+    Quantitative quality metrics for a batch of samples.
     
     Produced by Function 1 (quality/time_snap analysis) and consumed
     by all downstream functions for metadata embedding and monitoring.
+    
+    NO SUBJECTIVE GRADING: Reports what happened, scientists decide usability.
     
     Attributes:
         completeness_pct: Percentage of expected samples received (0-100)
@@ -173,8 +182,9 @@ class QualityInfo:
         time_snap_established: Whether time_snap reference is active
         time_snap_confidence: Confidence in current time_snap (0.0-1.0)
         discontinuities: List of all discontinuities in this batch
-        quality_grade: Letter grade (A/B/C/D/F) for overall quality
-        quality_score: Numeric quality score (0-100)
+        network_gap_ms: Total time lost to network/processing issues (GAP, OVERFLOW, UNDERFLOW)
+        source_failure_ms: Total time lost to radiod unavailability (SOURCE_UNAVAILABLE)
+        recorder_offline_ms: Total time recorder daemon was not running (RECORDER_OFFLINE)
     """
     completeness_pct: float
     gap_count: int
@@ -184,16 +194,45 @@ class QualityInfo:
     time_snap_established: bool
     time_snap_confidence: float
     discontinuities: List[Discontinuity] = field(default_factory=list)
-    quality_grade: str = 'F'  # A/B/C/D/F
-    quality_score: float = 0.0  # 0-100
-    
-    def is_high_quality(self) -> bool:
-        """Check if quality meets high standard (grade A or B)"""
-        return self.quality_grade in ['A', 'B']
+    network_gap_ms: float = 0.0
+    source_failure_ms: float = 0.0
+    recorder_offline_ms: float = 0.0
     
     def has_gaps(self) -> bool:
         """Check if any gaps present"""
         return self.gap_count > 0
+    
+    def get_gap_breakdown(self) -> Dict[str, Any]:
+        """Categorize gaps by type for analysis"""
+        network_gaps = []
+        source_failures = []
+        recorder_offline = []
+        
+        for disc in self.discontinuities:
+            if disc.discontinuity_type in [DiscontinuityType.GAP, DiscontinuityType.OVERFLOW, DiscontinuityType.UNDERFLOW]:
+                network_gaps.append(disc)
+            elif disc.discontinuity_type == DiscontinuityType.SOURCE_UNAVAILABLE:
+                source_failures.append(disc)
+            elif disc.discontinuity_type == DiscontinuityType.RECORDER_OFFLINE:
+                recorder_offline.append(disc)
+        
+        return {
+            'network': {
+                'count': len(network_gaps),
+                'total_ms': sum(d.magnitude_ms for d in network_gaps),
+                'gaps': [d.to_dict() for d in network_gaps]
+            },
+            'source_failure': {
+                'count': len(source_failures),
+                'total_ms': sum(d.magnitude_ms for d in source_failures),
+                'gaps': [d.to_dict() for d in source_failures]
+            },
+            'recorder_offline': {
+                'count': len(recorder_offline),
+                'total_ms': sum(d.magnitude_ms for d in recorder_offline),
+                'gaps': [d.to_dict() for d in recorder_offline]
+            }
+        }
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON/metadata"""
@@ -206,8 +245,10 @@ class QualityInfo:
             'time_snap_established': self.time_snap_established,
             'time_snap_confidence': self.time_snap_confidence,
             'discontinuities': [d.to_dict() for d in self.discontinuities],
-            'quality_grade': self.quality_grade,
-            'quality_score': self.quality_score,
+            'network_gap_ms': self.network_gap_ms,
+            'source_failure_ms': self.source_failure_ms,
+            'recorder_offline_ms': self.recorder_offline_ms,
+            'gap_breakdown': self.get_gap_breakdown(),
         }
 
 

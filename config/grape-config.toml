@@ -184,8 +184,9 @@ delete_after_upload = false
 create_trigger_directory = true  # CRITICAL: Signals PSWS to process data
 
 [logging]
-level = "INFO"
+level = "DEBUG"
 console_output = true
+file_output = true
 
 [monitoring]
 enable_metrics = true  # Enable real-time quality monitoring

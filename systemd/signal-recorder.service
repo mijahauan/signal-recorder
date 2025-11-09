@@ -26,10 +26,11 @@ Environment="CONFIG_FILE=/etc/signal-recorder/config.toml"
 ExecStart=/usr/local/bin/signal-recorder record --config ${CONFIG_FILE}
 
 # Restart policy
-Restart=on-failure
-RestartSec=30s
-StartLimitInterval=300s
-StartLimitBurst=5
+# Restart=on-failure      # Only restart on failure (testing/development)
+Restart=always            # Always restart (production - use this!)
+RestartSec=30s           # Wait 30 seconds before restarting
+StartLimitInterval=300s  # If it fails 5 times in 300s, stop trying
+StartLimitBurst=5        # Max 5 restart attempts in the interval
 
 # Resource limits
 # Adjust based on number of channels and available memory

@@ -30,6 +30,8 @@ except ImportError:
 
 from .grape_metadata import GRAPEMetadataGenerator
 from .grape_channel_recorder_v2 import GRAPEChannelRecorderV2
+from .radiod_health import RadiodHealthChecker
+from .session_tracker import SessionBoundaryTracker
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +44,13 @@ STATS_FILE = Path('/tmp/signal-recorder-stats.json')
 
 class DiscontinuityType(Enum):
     """Types of discontinuities in the data stream"""
-    GAP = "gap"                    # Missed packets, samples lost
-    SYNC_ADJUST = "sync_adjust"    # Time sync adjustment
-    RTP_RESET = "rtp_reset"        # RTP sequence/timestamp reset
-    OVERFLOW = "overflow"          # Buffer overflow, samples dropped
-    UNDERFLOW = "underflow"        # Buffer underflow, samples duplicated
+    GAP = "gap"                              # Missed packets, samples lost
+    SYNC_ADJUST = "sync_adjust"              # Time sync adjustment
+    RTP_RESET = "rtp_reset"                  # RTP sequence/timestamp reset
+    OVERFLOW = "overflow"                    # Buffer overflow, samples dropped
+    UNDERFLOW = "underflow"                  # Buffer underflow, samples duplicated
+    SOURCE_UNAVAILABLE = "source_unavailable"  # radiod down/channel missing
+    RECORDER_OFFLINE = "recorder_offline"    # signal-recorder daemon not running
 
 
 @dataclass
@@ -877,6 +881,40 @@ class GRAPEChannelRecorder:
         # Discontinuity tracking (Phase 1)
         self.discontinuity_tracker = DiscontinuityTracker(channel_name)
         
+        # Health monitoring - track packet reception for SOURCE_UNAVAILABLE detection
+        self._last_packet_time = time.time()
+        self._no_data_threshold_sec = 60  # Alert after 60s of silence
+        
+        # Session boundary tracking - detect RECORDER_OFFLINE gaps
+        if path_resolver:
+            archive_dir = path_resolver.get_data_dir()
+        else:
+            archive_dir = output_dir
+        self._session_tracker = SessionBoundaryTracker(
+            archive_dir=archive_dir,
+            channel_name=channel_name,
+            sample_rate=8000  # Complex IQ rate for gap calculation
+        )
+        
+        # Check for offline gap on startup
+        offline_gap = self._session_tracker.check_for_offline_gap(time.time())
+        if offline_gap:
+            # Convert session_tracker Discontinuity to TimingDiscontinuity
+            timing_disc = TimingDiscontinuity(
+                timestamp=offline_gap.timestamp,
+                sample_index=offline_gap.sample_index,
+                discontinuity_type=DiscontinuityType.RECORDER_OFFLINE,
+                magnitude_samples=offline_gap.magnitude_samples,
+                magnitude_ms=offline_gap.magnitude_ms,
+                rtp_sequence_before=None,
+                rtp_sequence_after=None,
+                rtp_timestamp_before=None,
+                rtp_timestamp_after=None,
+                wwv_tone_detected=False,
+                explanation=offline_gap.explanation
+            )
+            self.discontinuity_tracker.add_discontinuity(timing_disc)
+        
         # Multi-station tone detection for WWV/CHU IQ channels
         # Detects WWV (1000 Hz), WWVH (1200 Hz), and CHU (1000 Hz)
         self.is_wwv_or_chu_channel = any(x in channel_name.upper() for x in ['WWV', 'CHU'])
@@ -1150,6 +1188,48 @@ class GRAPEChannelRecorder:
             return True  # Normal processing
             
         return False
+    
+    def _check_channel_health(self) -> bool:
+        """
+        Check if channel is receiving data (for SOURCE_UNAVAILABLE detection).
+        
+        Returns:
+            True if channel is healthy, False if no data for too long
+        """
+        if self._last_packet_time is None:
+            return True  # Still starting up
+        
+        silence_duration = time.time() - self._last_packet_time
+        
+        if silence_duration > self._no_data_threshold_sec:
+            # Calculate gap magnitude
+            expected_samples = int(silence_duration * 8000)  # 8 kHz complex IQ
+            
+            # Create SOURCE_UNAVAILABLE discontinuity
+            discontinuity = TimingDiscontinuity(
+                timestamp=self._last_packet_time,
+                sample_index=self.samples_received,
+                discontinuity_type=DiscontinuityType.SOURCE_UNAVAILABLE,
+                magnitude_samples=expected_samples,
+                magnitude_ms=silence_duration * 1000,
+                rtp_sequence_before=self.last_sequence,
+                rtp_sequence_after=None,  # Unknown - source is down
+                rtp_timestamp_before=self.last_timestamp,
+                rtp_timestamp_after=None,
+                wwv_tone_detected=False,
+                explanation=(
+                    f"No RTP packets received for {silence_duration:.1f}s. "
+                    f"Likely cause: radiod restarted or channel {self.ssrc} deleted. "
+                    f"Estimated {expected_samples} samples lost."
+                )
+            )
+            
+            self.discontinuity_tracker.add_discontinuity(discontinuity)
+            logger.error(f"{self.channel_name}: SOURCE_UNAVAILABLE - {discontinuity.explanation}")
+            
+            return False
+        
+        return True
         
     def process_rtp_packet(self, header: RTPHeader, payload: bytes):
         """
@@ -1167,6 +1247,7 @@ class GRAPEChannelRecorder:
         # Track packet metadata
         self.packets_received += 1
         self.last_packet_time = time.time()  # For freshness monitoring
+        self._last_packet_time = self.last_packet_time  # For health monitoring
         
         # Gap detection and filling (wsprdaemon-style)
         if self.last_sequence is not None and self.expected_rtp_timestamp is not None:
@@ -1607,6 +1688,13 @@ class GRAPERecorderManager:
         self.rtp_receiver = None
         self.running = False
         
+        # Health monitoring
+        ka9q_config = config.get('ka9q', {})
+        status_address = ka9q_config.get('status_address', '239.192.152.141')
+        self._health_checker = RadiodHealthChecker(status_address)
+        self._recovery_thread = None
+        self._channel_configs = {}  # Store configs for recreation
+        
         # Set global stats file location
         global STATS_FILE
         if path_resolver:
@@ -1664,6 +1752,16 @@ class GRAPERecorderManager:
             output_dir = Path(recorder_config.get('archive_dir', '/tmp/grape-data'))
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"🔍 DEBUG: Output dir created: {output_dir}")
+        
+        # Setup upload directory for Digital RF (optional)
+        upload_dir = None
+        upload_config = recorder_config.get('upload_dir', None)
+        if upload_config:
+            upload_dir = Path(upload_config)
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Digital RF upload directory: {upload_dir}")
+        else:
+            logger.info("Digital RF upload disabled (no upload_dir configured)")
         
         # Ensure all channels exist in radiod before starting recording
         print("🔍 DEBUG: About to check radiod channels...")
@@ -1727,18 +1825,29 @@ class GRAPERecorderManager:
                 analytics_dir=analytics_dir,
                 station_config=station_config,
                 is_wwv_channel='WWV' in channel_name or 'CHU' in channel_name,
-                path_resolver=self.path_resolver
+                path_resolver=self.path_resolver,
+                upload_dir=upload_dir  # Digital RF upload (optional)
             )
             
             # Register with RTP receiver
             self.rtp_receiver.register_callback(ssrc, recorder.process_rtp_packet)
             
             self.recorders[ssrc] = recorder
+            
+            # Store channel config for potential recreation
+            self._channel_configs[ssrc] = channel
+            
             logger.info(f"Started recorder for {channel_name}")
             
         # Start RTP receiver
         self.rtp_receiver.start()
         self.running = True
+        
+        # Start health monitoring thread
+        self._recovery_thread = threading.Thread(target=self._health_monitor_loop, daemon=True)
+        self._recovery_thread.start()
+        logger.info("Health monitoring thread started")
+        
         logger.info(f"GRAPE recorder manager started with {len(self.recorders)} channels")
         
     def stop(self):
@@ -2000,3 +2109,97 @@ class GRAPERecorderManager:
             logger.error(f"Failed to write stats file: {e}")
         
         return status
+    
+    def _health_monitor_loop(self):
+        """
+        Background thread: Monitor channel health and recover from failures.
+        
+        Checks every 30 seconds for:
+        - Radiod liveness (status multicast active)
+        - Channel health (receiving packets)
+        - Channel existence in radiod
+        
+        Automatically recreates missing channels.
+        """
+        logger.info("Health monitoring loop starting...")
+        
+        while self.running:
+            try:
+                time.sleep(30)
+                
+                if not self.running:
+                    break
+                
+                # Check if radiod is alive
+                if not self._health_checker.is_radiod_alive(timeout_sec=3.0):
+                    logger.warning("Radiod appears down - waiting for restart")
+                    time.sleep(30)
+                    continue
+                
+                # Check each channel
+                for ssrc, recorder in self.recorders.items():
+                    if not recorder._check_channel_health():
+                        # Channel silent - verify it exists in radiod
+                        if not self._health_checker.verify_channel_exists(ssrc):
+                            logger.error(
+                                f"Channel {recorder.channel_name} (SSRC {ssrc}) "
+                                f"missing from radiod - attempting recreation"
+                            )
+                            self._recreate_channel(ssrc)
+                        else:
+                            logger.warning(
+                                f"Channel {recorder.channel_name} exists in radiod but no data - "
+                                f"possible multicast issue"
+                            )
+                
+            except Exception as e:
+                logger.error(f"Health monitoring error: {e}", exc_info=True)
+                time.sleep(30)
+        
+        logger.info("Health monitoring loop exiting")
+    
+    def _recreate_channel(self, ssrc: int):
+        """
+        Recreate a missing channel in radiod.
+        
+        Args:
+            ssrc: SSRC of the channel to recreate
+        """
+        if ssrc not in self._channel_configs:
+            logger.error(f"No config found for SSRC {ssrc} - cannot recreate")
+            return
+        
+        channel_config = self._channel_configs[ssrc]
+        
+        try:
+            from signal_recorder.channel_manager import ChannelManager
+            
+            ka9q_config = self.config.get('ka9q', {})
+            status_address = ka9q_config.get('status_address', '239.192.152.141')
+            
+            channel_manager = ChannelManager(status_address)
+            
+            # Build channel spec
+            channel_spec = {
+                'ssrc': channel_config['ssrc'],
+                'frequency_hz': channel_config['frequency_hz'],
+                'preset': channel_config.get('preset', 'iq'),
+                'sample_rate': channel_config.get('sample_rate', 16000),
+                'agc': channel_config.get('agc', 0),
+                'gain': channel_config.get('gain', 0),
+                'description': channel_config.get('description', '')
+            }
+            
+            success = channel_manager.ensure_channel_exists(channel_spec)
+            
+            if success:
+                logger.info(f"Successfully recreated channel {channel_config.get('description')} (SSRC {ssrc})")
+                
+                # Reset packet timer to avoid immediate re-trigger
+                if ssrc in self.recorders:
+                    self.recorders[ssrc]._last_packet_time = time.time()
+            else:
+                logger.error(f"Failed to recreate channel {channel_config.get('description')} (SSRC {ssrc})")
+                
+        except Exception as e:
+            logger.error(f"Channel recreation exception for SSRC {ssrc}: {e}", exc_info=True)
