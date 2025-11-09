@@ -77,12 +77,16 @@ ka9q-radio RTP (16 kHz IQ) → Resequencing → time_snap → Gap Fill → Fork 
 - **Sample rate:** Input 16 kHz IQ → Output 10 Hz IQ (factor of 1600)
 - **Why 10 Hz?** Sufficient for <100ms timing precision, reduces data 1600x, matches HamSCI expectations
 
-**4. Data Quality & Provenance**
+**4. Data Quality & Provenance (Updated Nov 2024)**
 
-- **Every discontinuity MUST be logged:** Gap, sync adjustment, RTP reset, buffer overflow
-- **Quality grades:** A (≥99%), B (95-99%), C (90-95%), D (85-90%), F (<85%)
+- **Every discontinuity MUST be logged:** Gap, sync adjustment, RTP reset, buffer overflow, source unavailable, recorder offline
+- **Quantitative gap reporting ONLY:** No subjective quality grades - report raw ms by category:
+  - Network gaps (packet loss, overflow, underflow)
+  - Source failures (radiod down/channel missing)
+  - Recorder offline (daemon stopped)
 - **Embedded metadata:** Quality info in archive files AND Digital RF metadata
 - **No silent corrections:** All timing adjustments logged with explanation
+- **Health monitoring:** Automatic detection and recovery from radiod restarts
 
 **5. Configuration & Testing**
 
@@ -192,21 +196,37 @@ TimeSnapReference(
 # Method: calculate_sample_time(rtp_timestamp) -> float
 ```
 
-**Discontinuity Record:**
+**Discontinuity Record (Updated Nov 2024):**
 ```python
 Discontinuity(
     timestamp: float,
     sample_index: int,
-    discontinuity_type: DiscontinuityType,  # GAP, RTP_RESET, SYNC_ADJUST
+    discontinuity_type: DiscontinuityType,  # GAP, RTP_RESET, SYNC_ADJUST, 
+                                             # SOURCE_UNAVAILABLE, RECORDER_OFFLINE,
+                                             # OVERFLOW, UNDERFLOW
     magnitude_samples: int,     # +gap, -overlap
     magnitude_ms: float,
-    rtp_sequence_before: int,
-    rtp_sequence_after: int,
-    rtp_timestamp_before: int,
-    rtp_timestamp_after: int,
+    rtp_sequence_before: Optional[int],
+    rtp_sequence_after: Optional[int],
+    rtp_timestamp_before: Optional[int],
+    rtp_timestamp_after: Optional[int],
     wwv_related: bool,
     explanation: str            # Human-readable cause
 )
+```
+
+**Quality Info (Quantitative Only):**
+```python
+QualityInfo(
+    total_samples: int,
+    discontinuity_count: int,
+    network_gap_ms: float,       # Packet loss, overflow, underflow
+    source_failure_ms: float,    # Radiod down/channel missing  
+    recorder_offline_ms: float,  # Daemon stopped
+    rtp_drift_ppm: float,
+    completeness_pct: float
+)
+# Method: get_gap_breakdown() -> Dict[str, float]
 ```
 
 **Tone Detection:**
@@ -330,25 +350,58 @@ start() / stop()
 
 ### Main Recorder Implementation
 
-**Location:** `src/signal_recorder/grape_rtp_recorder.py` (94,231 lines)
+**Location:** `src/signal_recorder/grape_rtp_recorder.py` (~2200 lines)
 
 **Key Classes:**
 
 ```python
-GRAPERTPRecorder:
+GRAPERecorderManager:
     # Main daemon - manages multiple channel recorders
     # Methods: start(), stop(), get_status()
+    # NEW (Nov 2024): Health monitoring and auto-recovery
+    # - Background thread monitors radiod liveness (30s interval)
+    # - Automatically recreates missing channels
+    # - Detects and logs SOURCE_UNAVAILABLE discontinuities
     
 GRAPEChannelRecorder:
     # Per-channel RTP → Digital RF pipeline
     # Implements: RTP reception, resequencing, gap fill, tone detection
-    # Line ~450-1400
+    # NEW (Nov 2024): Session boundary tracking
+    # - Detects RECORDER_OFFLINE gaps on startup
+    # - Tracks health via _check_channel_health()
+    # Line ~800-1600
     
 MultiStationToneDetector:
     # WWV/WWVH/CHU discrimination using quadrature matched filtering
-    # Line ~175-419
+    # Line ~175-800
     # Critical: Sets use_for_time_snap flag correctly
+    # TODO: Extract to standalone module (next session)
 ```
+
+### Health Monitoring (NEW - Nov 2024)
+
+**Modules:**
+- `radiod_health.py` - RadiodHealthChecker for liveness monitoring
+- `session_tracker.py` - SessionBoundaryTracker for offline gap detection
+
+**Integration:**
+```python
+RadiodHealthChecker:
+    # Monitors radiod status multicast
+    # Methods: is_radiod_alive(), verify_channel_exists(ssrc)
+    
+SessionBoundaryTracker:
+    # Detects recorder downtime on startup
+    # Reads last archive file timestamp
+    # Logs to session_boundaries.jsonl
+    # Method: check_for_offline_gap(current_time) -> Optional[Discontinuity]
+```
+
+**Auto-Recovery Flow:**
+1. Health monitor detects no packets for 60s → creates SOURCE_UNAVAILABLE discontinuity
+2. Verifies channel exists in radiod via `control` utility
+3. If missing: recreates channel via ChannelManager
+4. If exists: logs multicast routing issue warning
 
 ### Web Interface
 
@@ -404,19 +457,21 @@ remote_host = "pswsnetwork.eng.ua.edu"
 
 ```
 src/signal_recorder/
-├── interfaces/              # API definitions (NEW - Nov 2024)
-│   ├── data_models.py      # Shared data structures
+├── interfaces/              # API definitions (Nov 2024)
+│   ├── data_models.py      # Shared data structures (UPDATED: new discontinuity types)
 │   ├── sample_provider.py  # Function 1 interface
 │   ├── archive.py          # Function 2 interface
 │   ├── tone_detection.py   # Function 3 interface
 │   ├── decimation.py       # Functions 4+5 interface
 │   └── upload.py           # Function 6 interface
-├── grape_rtp_recorder.py   # Main V1 implementation (ACTIVE)
+├── grape_rtp_recorder.py   # Main implementation (ACTIVE, health monitoring integrated)
 ├── grape_channel_recorder_v2.py  # V2 (reference, not in use)
 ├── digital_rf_writer.py    # Digital RF output
 ├── minute_file_writer.py   # Archive writer
+├── radiod_health.py        # NEW: Radiod health checker
+├── session_tracker.py      # NEW: Offline gap detection
 ├── uploader.py             # Upload manager (not integrated)
-├── quality_metrics.py      # Quality calculation
+├── quality_metrics.py      # Quality calculation (needs update for new gap categories)
 └── cli.py                  # Command-line interface
 
 web-ui/
@@ -430,29 +485,43 @@ web-ui/
 ## 4. ⚡ Current Task & Git Context
 
 **Current Branch:** `main`  
-**Task Goal:** [UPDATE THIS SECTION AT START OF EACH SESSION]
+**Last Commit:** `7d0285d` - Health monitoring integration (Nov 9, 2024)
 
-**Example Task Entry:**
-```
-Current Branch: feat/upload-integration
-Task Goal: Wire up Function 6 (UploadManager) into the daemon
+**Recent Completion (Nov 9, 2024):**
+✅ Health monitoring and auto-recovery fully integrated
+- radiod_health.py and session_tracker.py modules created
+- Data models updated (SOURCE_UNAVAILABLE, RECORDER_OFFLINE types)
+- Quality grading removed (pure quantitative reporting)
+- Background health monitoring thread in GRAPERecorderManager
+- Automatic channel recreation after radiod restarts
+- Session boundary tracking for offline gaps
 
-Key Steps:
-1. Create UploadQueue adapter for UploadManager
-2. Instantiate in GRAPERTPRecorder at startup
-3. Connect to DigitalRFWriter completion callback
-4. Start background upload worker
-5. Test with actual Digital RF files
+**Next Session Tasks:**
+1. **Test health monitoring** (Test 1-3 in HEALTH_MONITORING_IMPLEMENTATION.md)
+   - Test offline gap detection (daemon stop/start)
+   - Test radiod restart recovery
+   - Test manual channel deletion recovery
 
-Files to Modify:
-- src/signal_recorder/grape_rtp_recorder.py (add upload integration)
-- src/signal_recorder/uploader.py (verify adapter compatibility)
-```
+2. **Extract tone detector** to standalone module
+   - Move MultiStationToneDetector from grape_rtp_recorder.py
+   - Create interfaces/tone_detection.py implementation
+   - Update imports and references
 
-**Session Notes:**
-- [Add any session-specific context here]
-- [E.g., "Working around line 850 in grape_rtp_recorder.py"]
-- [E.g., "Bug: Upload fails with permission error - need to check SSH keys"]
+3. **Create adapter wrappers** for interface compliance:
+   - Function 2: ArchiveWriter adapter for MinuteFileWriter
+   - Function 4: Decimator adapter (if needed)
+   - Function 5: DigitalRFWriter adapter wrapper
+
+4. **Update quality_metrics.py** to use new gap categorization
+
+**Files Ready for Next Session:**
+- test-health-monitoring.sh (verification script)
+- HEALTH_MONITORING_IMPLEMENTATION.md (testing guide)
+- INTEGRATION_COMPLETE.md (implementation summary)
+
+**Known Issues:**
+- Upload integration still pending (Function 6)
+- quality_metrics.py still uses old grading system
 
 ---
 
@@ -494,6 +563,11 @@ Files to Modify:
 - `docs/GRAPE_DIGITAL_RF_RECORDER.md` - Digital RF output specification
 - `docs/TIMING_ARCHITECTURE_V2.md` - KA9Q timing implementation
 
+**Health Monitoring (NEW - Nov 2024):**
+- `HEALTH_MONITORING_IMPLEMENTATION.md` - Implementation guide and testing procedures
+- `INTEGRATION_COMPLETE.md` - Complete integration summary
+- `test-health-monitoring.sh` - Automated verification script
+
 **Operations:**
 - `INSTALLATION.md` - Setup & deployment
 - `README.md` - Quick start guide
@@ -501,6 +575,6 @@ Files to Modify:
 
 ---
 
-**Last Updated:** 2024-11-08  
+**Last Updated:** 2024-11-09  
 **Maintained By:** Michael Hauan (AC0G)  
-**AI Context Version:** 1.0
+**AI Context Version:** 1.1 (Health Monitoring Integration)
