@@ -20,8 +20,9 @@ __version__ = "1.0.0"
 __author__ = "GRAPE Signal Recorder Project"
 
 # Core GRAPE components
-from .grape_rtp_recorder import GRAPERecorderManager, GRAPEChannelRecorder
+from .grape_rtp_recorder import GRAPERecorderManager
 from .grape_metadata import GRAPEMetadataGenerator
+# Note: GRAPEChannelRecorder V1 archived - use GRAPEChannelRecorderV2 from grape_channel_recorder_v2 if needed
 from .grape_recorder import GRAPERecorderManager as GRAPECLIManager
 
 # Channel management
@@ -37,7 +38,6 @@ from .uploader import UploadManager, SSHRsyncUpload
 __all__ = [
     # Core GRAPE
     "GRAPERecorderManager",
-    "GRAPEChannelRecorder", 
     "GRAPEMetadataGenerator",
     "GRAPECLIManager",
     # Channel management

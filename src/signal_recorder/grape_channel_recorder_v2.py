@@ -19,9 +19,8 @@ from collections import deque
 from scipy import signal as scipy_signal
 
 from .minute_file_writer import MinuteFileWriter
-from .quality_metrics import (
-    QualityMetricsTracker, TimingDiscontinuity, DiscontinuityType
-)
+from .quality_metrics import QualityMetricsTracker
+from .interfaces.data_models import Discontinuity, DiscontinuityType
 from .live_quality_status import get_live_status
 
 # Digital RF writer (optional - may not be installed)
@@ -368,7 +367,7 @@ class GRAPEChannelRecorderV2:
                 unix_time = self._calculate_sample_time(self.expected_rtp_timestamp)
                 
                 # Record discontinuity
-                discontinuity = TimingDiscontinuity(
+                discontinuity = Discontinuity(
                     timestamp=unix_time,
                     sample_index=self.total_samples,
                     discontinuity_type=DiscontinuityType.GAP,
@@ -378,7 +377,7 @@ class GRAPEChannelRecorderV2:
                     rtp_sequence_after=entry.sequence,
                     rtp_timestamp_before=self.expected_rtp_timestamp,
                     rtp_timestamp_after=entry.timestamp,
-                    wwv_tone_detected=False,
+                    wwv_related=False,
                     explanation=f"RTP timestamp jump: {gap_samples} samples filled with zeros"
                 )
                 self.quality_tracker.add_discontinuity(discontinuity)
@@ -1012,10 +1011,9 @@ class GRAPEChannelRecorderV2:
         date_str = minute_time.strftime('%Y%m%d')
         self.quality_tracker.export_minute_csv(date_str)
         
-        # Log completion with quality grade
+        # Log completion with quantitative metrics (no subjective grade)
         if self.quality_tracker.minute_metrics:
             latest = self.quality_tracker.minute_metrics[-1]
-            grade_emoji = {"A": "✅", "B": "✓", "C": "⚠️", "D": "❌", "F": "🔴"}.get(latest.quality_grade, "?")
             logger.info(f"{self.channel_name}: Minute complete: {minute_time.strftime('%H:%M')} → {file_path.name} "
                        f"[{latest.completeness_percent:.1f}% complete, "
                        f"WWV drift: {latest.time_snap_drift_ms:+.1f}ms]" if latest.time_snap_drift_ms is not None 

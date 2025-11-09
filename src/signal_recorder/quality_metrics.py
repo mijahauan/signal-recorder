@@ -4,6 +4,9 @@ Quality Metrics and Tracking for GRAPE Data
 
 Comprehensive tracking of data quality, timing accuracy, and gaps
 for scientific provenance and validation.
+
+Updated Nov 2024: Pure quantitative reporting with gap categorization.
+No subjective quality grades - scientists decide data usability.
 """
 
 import csv
@@ -14,38 +17,35 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Dict
-from enum import Enum
+
+from .interfaces.data_models import Discontinuity, DiscontinuityType
 
 logger = logging.getLogger(__name__)
 
 
 def format_quality_summary(minute: 'MinuteQualityMetrics') -> str:
     """
-    Format minute quality metrics for console/web display
-    Focuses on KA9Q timing architecture priorities
-    """
-    grade_emoji = {
-        "A": "✅",
-        "B": "✓",
-        "C": "⚠️",
-        "D": "❌",
-        "F": "🔴",
-        "UNKNOWN": "?"
-    }
+    Format minute quality metrics for console/web display.
     
+    Quantitative reporting only - no subjective quality grades.
+    Shows gap breakdown by category (network, source_failure, recorder_offline).
+    """
     lines = []
     lines.append(f"\n{'='*60}")
     lines.append(f"Minute: {minute.minute_start_str}")
-    lines.append(f"Quality: {grade_emoji.get(minute.quality_grade, '?')} {minute.quality_grade} ({minute.quality_score:.1f}/100)")
-    
-    if minute.alerts:
-        lines.append(f"\n🚨 ALERTS:")
-        for alert in minute.alerts:
-            lines.append(f"   {alert}")
+    lines.append(f"Completeness: {minute.completeness_percent:.2f}%")
     
     lines.append(f"\n📊 Sample Integrity:")
-    lines.append(f"   Samples: {minute.actual_samples:,}/{minute.expected_samples:,} ({minute.completeness_percent:.2f}%)")
-    if minute.gap_samples_filled > 0:
+    lines.append(f"   Samples: {minute.actual_samples:,}/{minute.expected_samples:,}")
+    
+    if minute.gaps_count > 0:
+        lines.append(f"\n⚠️  Gap Breakdown (Total: {minute.total_gap_duration_ms:.1f} ms):")
+        if minute.network_gap_ms > 0:
+            lines.append(f"   Network/Processing: {minute.network_gap_ms:.1f} ms (packet loss, overflow, underflow)")
+        if minute.source_failure_ms > 0:
+            lines.append(f"   Source Unavailable: {minute.source_failure_ms:.1f} ms (radiod down/channel missing)")
+        if minute.recorder_offline_ms > 0:
+            lines.append(f"   Recorder Offline: {minute.recorder_offline_ms:.1f} ms (daemon stopped)")
         lines.append(f"   Gaps filled: {minute.gap_samples_filled:,} samples ({minute.gaps_count} events)")
     
     lines.append(f"\n📡 RTP Continuity:")
@@ -78,42 +78,10 @@ def format_quality_summary(minute: 'MinuteQualityMetrics') -> str:
     return "\n".join(lines)
 
 
-class DiscontinuityType(Enum):
-    """Types of timing discontinuities"""
-    GAP = "gap"                    # Missing packets/samples
-    OVERLAP = "overlap"            # Duplicate or overlapping data
-    SYNC_ADJUST = "sync_adjust"    # Timing correction applied
-    RTP_RESET = "rtp_reset"        # RTP sequence/timestamp reset
-
-
-@dataclass
-class TimingDiscontinuity:
-    """
-    Record of a timing discontinuity in the data stream
-    
-    Every gap, jump, or correction is logged for scientific provenance.
-    """
-    timestamp: float  # Unix time when discontinuity was detected
-    sample_index: int  # Sample number in output stream where discontinuity occurs
-    discontinuity_type: DiscontinuityType
-    magnitude_samples: int  # Positive = gap/forward jump, negative = overlap/backward jump
-    magnitude_ms: float  # Time equivalent in milliseconds
-    
-    # RTP packet info
-    rtp_sequence_before: Optional[int]
-    rtp_sequence_after: Optional[int]
-    rtp_timestamp_before: Optional[int]
-    rtp_timestamp_after: Optional[int]
-    
-    # Validation
-    wwv_tone_detected: bool  # Was this related to WWV tone detection?
-    explanation: str  # Human-readable description
-    
-    def to_dict(self):
-        """Convert to dictionary for JSON serialization"""
-        d = asdict(self)
-        d['discontinuity_type'] = self.discontinuity_type.value
-        return d
+# Note: Discontinuity and DiscontinuityType are now imported from data_models.py
+# This provides unified data structures across all modules with the full set of
+# discontinuity types: GAP, SYNC_ADJUST, RTP_RESET, OVERFLOW, UNDERFLOW,
+# SOURCE_UNAVAILABLE, RECORDER_OFFLINE
 
 
 @dataclass
@@ -136,16 +104,19 @@ class MinuteQualityMetrics:
     packet_loss_percent: float
     sequence_resets: int              # RTP sequence discontinuities
     
-    # Gaps & Discontinuities
+    # Gaps & Discontinuities (categorized by type)
     gaps_count: int
     total_gap_duration_ms: float
     largest_gap_ms: float
     gap_samples_filled: int           # Silence/zeros inserted
+    network_gap_ms: float = 0.0       # Packet loss, overflow, underflow
+    source_failure_ms: float = 0.0    # Radiod down/channel missing
+    recorder_offline_ms: float = 0.0  # Daemon stopped
     
     # Timing Quality
-    rtp_jitter_mean_ms: float         # Inter-packet arrival jitter
-    rtp_jitter_std_ms: float
-    rtp_jitter_max_ms: float
+    rtp_jitter_mean_ms: float = 0.0         # Inter-packet arrival jitter
+    rtp_jitter_std_ms: float = 0.0
+    rtp_jitter_max_ms: float = 0.0
     
     # WWV Timing (Fort Collins, 1000 Hz)
     wwv_tone_detected: Optional[bool] = None
@@ -185,86 +156,38 @@ class MinuteQualityMetrics:
     signal_rms: float = 0.0
     clipping_detected: bool = False
     
-    # Quality Grade & Alerts
-    quality_grade: str = "UNKNOWN"          # A, B, C, D, F
-    quality_score: float = 0.0              # 0-100
-    alerts: List[str] = field(default_factory=list)  # Critical issues
-    
     # Processing
     processing_notes: List[str] = field(default_factory=list)
     
+    # Discontinuity tracking (full provenance)
+    discontinuities: List[Discontinuity] = field(default_factory=list)
+    
     def to_dict(self):
         """Convert to dictionary"""
-        return asdict(self)
+        d = asdict(self)
+        # Convert Discontinuity objects to dicts for JSON serialization
+        d['discontinuities'] = [disc.to_dict() for disc in self.discontinuities]
+        return d
     
-    def calculate_quality_grade(self):
+    def get_gap_breakdown(self) -> Dict[str, float]:
         """
-        Calculate quality grade based on data completeness and detection success
+        Get gap breakdown by category.
         
-        A (95-100): Excellent - Complete data, tone detected, minimal drift
-        B (90-95):  Good - Complete data, may have minor issues
-        C (80-90):  Fair - Mostly complete, some packet loss or no detection
-        D (70-80):  Poor - Significant data loss
-        F (<70):    Failed - Data unusable
+        Returns:
+            Dictionary with network_ms, source_failure_ms, recorder_offline_ms
         """
-        score = 100.0
-        alerts = []
-        
-        # 1. Data Completeness (50 points) - MOST CRITICAL
-        sample_error_pct = abs(100.0 - self.completeness_percent)
-        if sample_error_pct > 0.5:
-            score -= min(50, sample_error_pct / 2)  # Lose 1 point per 1% missing
-            if sample_error_pct > 5:
-                alerts.append(f"Data incomplete: {sample_error_pct:.1f}% missing")
-        
-        # 2. Packet Loss (20 points)
-        if self.packet_loss_percent > 0.5:
-            score -= min(20, self.packet_loss_percent * 4)
-            if self.packet_loss_percent > 1.0:
-                alerts.append(f"Packet loss: {self.packet_loss_percent:.1f}%")
-        
-        # 3. WWV Detection Success (20 points) - WWV channels only
-        if self.wwv_tone_detected is False:
-            score -= 10
-            if not self.time_snap_established:
-                score -= 10
-                alerts.append("No WWV detection, no time_snap")
-        
-        # 4. Time_snap Drift (10 points) - if detected
-        if self.time_snap_drift_ms is not None:
-            drift_abs = abs(self.time_snap_drift_ms)
-            if drift_abs > 100:
-                score -= 10
-                alerts.append(f"Large drift: {drift_abs:.0f}ms")
-            elif drift_abs > 50:
-                score -= 5
-        
-        # Determine grade
-        score = max(0, min(100, score))
-        if score >= 95:
-            grade = "A"
-        elif score >= 90:
-            grade = "B"
-        elif score >= 80:
-            grade = "C"
-        elif score >= 70:
-            grade = "D"
-        else:
-            grade = "F"
-        
-        self.quality_score = score
-        self.quality_grade = grade
-        self.alerts = alerts
-        
-        return grade, score, alerts
+        return {
+            'network_ms': self.network_gap_ms,
+            'source_failure_ms': self.source_failure_ms,
+            'recorder_offline_ms': self.recorder_offline_ms,
+            'total_ms': self.total_gap_duration_ms,
+        }
     
     def to_csv_row(self):
         """Convert to CSV row (flatten complex fields)"""
         return {
             'timestamp_utc': self.minute_timestamp_utc,
             'minute_start': self.minute_start_str,
-            'quality_grade': self.quality_grade,
-            'quality_score': f"{self.quality_score:.1f}",
             'samples': self.actual_samples,
             'completeness_pct': f"{self.completeness_percent:.2f}",
             'packets_rx': self.packets_received,
@@ -272,6 +195,9 @@ class MinuteQualityMetrics:
             'packet_loss_pct': f"{self.packet_loss_percent:.3f}",
             'gaps': self.gaps_count,
             'gap_duration_ms': f"{self.total_gap_duration_ms:.1f}",
+            'network_gap_ms': f"{self.network_gap_ms:.1f}",
+            'source_failure_ms': f"{self.source_failure_ms:.1f}",
+            'recorder_offline_ms': f"{self.recorder_offline_ms:.1f}",
             'rtp_jitter_ms': f"{self.rtp_jitter_mean_ms:.2f}",
             'resequenced': self.packets_resequenced,
             'time_snap': self.time_snap_source,
@@ -290,7 +216,6 @@ class MinuteQualityMetrics:
             'chu_snr_db': f"{self.chu_tone_snr_db:.1f}" if self.chu_tone_snr_db is not None else "",
             # Other
             'signal_power_db': f"{self.signal_mean_power_db:.1f}",
-            'alerts': "; ".join(self.alerts) if self.alerts else "",
             'notes': "; ".join(self.processing_notes) if self.processing_notes else ""
         }
 
@@ -357,8 +282,8 @@ class QualityMetricsTracker:
         self.current_minute: Optional[MinuteQualityMetrics] = None
         self.minute_metrics: List[MinuteQualityMetrics] = []
         
-        # Discontinuities
-        self.discontinuities: List[TimingDiscontinuity] = []
+        # Discontinuities (now using unified Discontinuity from data_models)
+        self.discontinuities: List[Discontinuity] = []
         
         logger.info(f"{channel_name}: Quality metrics tracker initialized, output: {output_dir}")
     
@@ -395,18 +320,32 @@ class QualityMetricsTracker:
                 actual_samples / self.current_minute.expected_samples * 100
             )
     
-    def add_discontinuity(self, disc: TimingDiscontinuity):
-        """Record a discontinuity"""
+    def add_discontinuity(self, disc: Discontinuity):
+        """Record a discontinuity with type-based categorization"""
         self.discontinuities.append(disc)
         
-        if self.current_minute and disc.discontinuity_type == DiscontinuityType.GAP:
-            self.current_minute.gaps_count += 1
-            self.current_minute.total_gap_duration_ms += disc.magnitude_ms
-            self.current_minute.largest_gap_ms = max(
-                self.current_minute.largest_gap_ms, 
-                disc.magnitude_ms
-            )
-            self.current_minute.gap_samples_filled += abs(disc.magnitude_samples)
+        if not self.current_minute:
+            return
+        
+        # Add to current minute's discontinuity list
+        self.current_minute.discontinuities.append(disc)
+        
+        # Update counts and categorize by type
+        self.current_minute.gaps_count += 1
+        self.current_minute.total_gap_duration_ms += abs(disc.magnitude_ms)
+        self.current_minute.largest_gap_ms = max(
+            self.current_minute.largest_gap_ms, 
+            abs(disc.magnitude_ms)
+        )
+        self.current_minute.gap_samples_filled += abs(disc.magnitude_samples)
+        
+        # Categorize by discontinuity type
+        if disc.discontinuity_type in [DiscontinuityType.GAP, DiscontinuityType.OVERFLOW, DiscontinuityType.UNDERFLOW]:
+            self.current_minute.network_gap_ms += abs(disc.magnitude_ms)
+        elif disc.discontinuity_type == DiscontinuityType.SOURCE_UNAVAILABLE:
+            self.current_minute.source_failure_ms += abs(disc.magnitude_ms)
+        elif disc.discontinuity_type == DiscontinuityType.RECORDER_OFFLINE:
+            self.current_minute.recorder_offline_ms += abs(disc.magnitude_ms)
     
     def finalize_minute(self, actual_samples: int, packets_received: int, packets_dropped: int,
                         signal_power_db: float, wwv_result: Optional[Dict] = None,
@@ -478,10 +417,7 @@ class QualityMetricsTracker:
         self.current_minute.max_resequencing_depth = max_resequencing_depth
         self.current_minute.resequencing_buffer_utilization = resequencing_buffer_utilization
         
-        # Calculate quality grade
-        self.current_minute.calculate_quality_grade()
-        
-        # Add to list
+        # Add to list (no quality grading - pure quantitative reporting)
         self.minute_metrics.append(self.current_minute)
         self.current_minute = None
     
@@ -533,7 +469,7 @@ class QualityMetricsTracker:
                     'rtp_seq_after': disc.rtp_sequence_after,
                     'rtp_ts_before': disc.rtp_timestamp_before,
                     'rtp_ts_after': disc.rtp_timestamp_after,
-                    'wwv_validated': disc.wwv_tone_detected,
+                    'wwv_related': disc.wwv_related,
                     'explanation': disc.explanation
                 })
         
