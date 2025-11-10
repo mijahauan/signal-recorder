@@ -10,53 +10,6 @@
 **Organization:** HamSCI (Ham Radio Science Citizen Investigation)  
 **Mission:** Record and archive high-precision WWV/CHU time-standard signals for ionospheric propagation research.
 
----
-
-## CURRENT ARCHITECTURE (Nov 9, 2024)
-
-### Core/Analytics Split
-
-**Architectural Decision:** Separate battle-tested data acquisition from experimental analytics.
-
-```
-┌────────────────────────────────────┐
-│  CORE RECORDER (Phase 1 Complete) │  ← Minimal, rock-solid
-│  RTP → NPZ archives ONLY           │  ← Changes: <5/year
-│                                    │
-│  - Receives RTP packets            │
-│  - Resequences (out-of-order)     │
-│  - Detects & fills gaps            │
-│  - Writes NPZ with RTP timestamps  │
-│                                    │
-│  Status: ✅ Running in parallel    │
-│  PID: 1229736                      │
-│  Output: /tmp/grape-core-test/     │
-└────────────────────────────────────┘
-            ↓
-    NPZ Archives on Disk
-    (Complete scientific record)
-            ↓
-┌────────────────────────────────────┐
-│  ANALYTICS SERVICE (Phase 2)       │  ← Experimental, evolving
-│  NPZ → Derived products            │  ← Changes: >50/year
-│                                    │
-│  - Quality metrics                 │  ⏳ Pending
-│  - WWV tone detection              │
-│  - time_snap establishment         │
-│  - Decimation (16k → 10 Hz)        │
-│  - Digital RF writing              │
-│  - PSWS upload                     │
-└────────────────────────────────────┘
-```
-
-**Benefits:**
-- ✅ Zero data loss during analytics updates
-- ✅ Reprocess archives with improved algorithms
-- ✅ Independent testing without production risk
-- ✅ Flexible deployment options
-
-**Documentation:** See `CORE_ANALYTICS_SPLIT_DESIGN.md`
-
 **Core Goals:**
 - **Precision Timing:** Sub-millisecond timing accuracy using RTP timestamps as primary reference
 - **Data Quality:** Continuous monitoring of completeness, packet loss, and timing drift with full provenance
@@ -405,7 +358,45 @@ start() / stop()
 GRAPERecorderManager:
     # Main daemon - manages multiple channel recorders
     # Methods: start(), stop(), get_status()
-- quality_metrics.py still uses old grading system
+```
+
+---
+
+## 4. ⚡ Current Task & Git Context
+
+**Current Branch:** `main`  
+**Last Session:** November 9, 2024
+
+**Current Architecture Status:**
+- ✅ **Phase 1 Complete:** Core Recorder (RTP → NPZ only)
+  - Implementation: `core_recorder.py`, `core_npz_writer.py`, `packet_resequencer.py`
+  - Status: Running successfully in parallel (PID 1229736)
+  - Output: `/tmp/grape-core-test/`
+  - NPZ format: Enhanced with RTP timestamps for time reconstruction
+  - Documentation: `CORE_ANALYTICS_SPLIT_DESIGN.md`
+
+**Next Priority Task: Phase 2 - Analytics Service**
+
+**Task Goal:** Create separate analytics service that reads NPZ archives and generates derived products.
+
+**Key Steps:**
+1. Create `analytics_service.py` that watches for new NPZ files
+2. Implement quality metrics calculation from NPZ data
+3. Implement WWV tone detection → time_snap establishment
+4. Implement decimation (16k → 10 Hz Digital RF)
+5. Integrate upload to PSWS
+6. Test in parallel with current system
+7. Validate identical outputs before cutover
+
+**Alternative Tasks (Lower Priority):**
+- Task 2: Extract tone detector to standalone module (will be part of analytics)
+- Task 3: Create adapter wrappers for interface compliance (may be superseded)
+
+**Key Files for Next Session:**
+- `src/signal_recorder/core_npz_writer.py` - NPZ format reference
+- `src/signal_recorder/quality_metrics.py` - Current quality metrics (to extract)
+- `src/signal_recorder/grape_channel_recorder_v2.py` - Current tone detection (to extract)
+- `CORE_ANALYTICS_SPLIT_DESIGN.md` - Complete architecture design
 
 ---
 
