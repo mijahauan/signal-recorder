@@ -50,7 +50,12 @@ class DigitalRFWriter:
             frequency_hz: Center frequency
             input_sample_rate: Input IQ sample rate (16 kHz)
             output_sample_rate: Output decimated rate (10 Hz)
-            station_config: Station metadata (callsign, grid, etc.)
+            station_config: Station metadata dict with keys:
+                - callsign: Station callsign
+                - grid_square: Maidenhead grid square
+                - receiver_name: Receiver identifier
+                - psws_station_id: PSWS station ID
+                - psws_instrument_id: PSWS instrument number
         """
         if not DRF_AVAILABLE:
             raise ImportError("digital_rf package required for upload functionality")
@@ -103,15 +108,25 @@ class DigitalRFWriter:
         if self.drf_writer:
             return  # Already created for this day
         
-        # Build PSWS-compatible directory structure
-        # {base}/YYYYMMDD/CALLSIGN_GRID/INSTRUMENT/CHANNEL/
+        # Build PSWS-compatible directory structure (matches wsprdaemon wav2grape.py)
+        # {base}/YYYYMMDD/CALLSIGN_GRID/RECEIVER@STATION_ID_INSTRUMENT_ID/OBS{timestamp}/CHANNEL/
         date_str = day_date.strftime('%Y%m%d')
         callsign = self.station_config.get('callsign', 'UNKNOWN')
         grid = self.station_config.get('grid_square', 'UNKNOWN')
-        instrument = self.station_config.get('instrument_id', 'UNKNOWN')
+        receiver_name = self.station_config.get('receiver_name', 'GRAPE')
+        psws_station_id = self.station_config.get('psws_station_id', 'UNKNOWN')
+        psws_instrument_id = self.station_config.get('psws_instrument_id', '1')
         safe_channel_name = self.channel_name.replace(' ', '_')
         
-        drf_dir = self.output_dir / date_str / f"{callsign}_{grid}" / instrument / safe_channel_name
+        # Build receiver_info: RECEIVER@STATION_ID_INSTRUMENT_ID
+        receiver_info = f"{receiver_name}@{psws_station_id}_{psws_instrument_id}"
+        
+        # Build OBS timestamp subdirectory (format: OBS2024-11-09T19-00)
+        obs_timestamp = dt.strftime('OBS%Y-%m-%dT%H-%M')
+        
+        # Full path matching wsprdaemon
+        drf_dir = (self.output_dir / date_str / f"{callsign}_{grid}" / 
+                   receiver_info / obs_timestamp / safe_channel_name)
         drf_dir.mkdir(parents=True, exist_ok=True)
         
         # Calculate start_global_index (samples since Unix epoch at output rate)
@@ -153,11 +168,11 @@ class DigitalRFWriter:
             file_name='metadata'
         )
         
-        # Write initial metadata
+        # Write initial metadata (matches wsprdaemon metadata format)
         metadata = {
             'callsign': callsign,
             'grid_square': grid,
-            'receiver_name': instrument,
+            'receiver_name': receiver_name,
             'center_frequencies': np.array([self.frequency_hz], dtype=np.float64),
             'uuid_str': self.dataset_uuid,
             'sample_rate': float(self.output_sample_rate),

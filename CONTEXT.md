@@ -365,38 +365,62 @@ GRAPERecorderManager:
 ## 4. ⚡ Current Task & Git Context
 
 **Current Branch:** `main`  
-**Last Session:** November 9, 2024
+**Last Session:** November 9, 2024 (Evening)
 
 **Current Architecture Status:**
 - ✅ **Phase 1 Complete:** Core Recorder (RTP → NPZ only)
   - Implementation: `core_recorder.py`, `core_npz_writer.py`, `packet_resequencer.py`
   - Status: Running successfully in parallel (PID 1229736)
-  - Output: `/tmp/grape-core-test/`
+  - Output: `/tmp/grape-core-test/` (312+ NPZ files)
   - NPZ format: Enhanced with RTP timestamps for time reconstruction
   - Documentation: `CORE_ANALYTICS_SPLIT_DESIGN.md`
 
-**Next Priority Task: Phase 2 - Analytics Service**
+- ✅ **Phase 2 Complete:** Analytics Service (NPZ → Derived Products)
+  - ✅ **Phase 2A - Digital RF Integration** (Nov 9, 2024)
+    - Tone detector extracted: `src/signal_recorder/tone_detector.py` (558 lines)
+    - Analytics service: `src/signal_recorder/analytics_service.py` (752 lines)
+    - Digital RF writer integrated: 16 kHz → 10 Hz decimation working
+    - Quality metadata embedded in Digital RF parallel channel
+    - Integration tested: All tests pass with real WWV data
+    - Documentation: `DIGITAL_RF_INTEGRATION_COMPLETE.md`
+  
+  - ✅ **Phase 2B - PSWS Compatibility** (Nov 9, 2024)
+    - Directory structure verified against wsprdaemon format
+    - PSWS-compatible paths: `YYYYMMDD/CALLSIGN_GRID/RECEIVER@STATION_ID_INSTRUMENT_ID/OBS{timestamp}/CHANNEL/`
+    - Station config extended: `psws_station_id`, `psws_instrument_id`, `receiver_name`
+    - Format compatibility verified: complex64 vs float32 2-channel both valid
+    - Documentation: `PSWS_COMPATIBILITY_UPDATE.md`
+  
+  - ⏳ **Phase 2C - Upload Integration** (Next after web-ui)
+    - Module exists: `uploader.py`
+    - Needs: Wire to analytics service, implement rsync/sftp, trigger directories
+  
+  - Documentation: 
+    - `ANALYTICS_SERVICE_IMPLEMENTATION.md` - Implementation guide
+    - `SESSION_SUMMARY_NOV9_2024_ANALYTICS.md` - Session summary
 
-**Task Goal:** Create separate analytics service that reads NPZ archives and generates derived products.
+**Next Priority Task: Web UI Testing & Refinement**
 
-**Key Steps:**
-1. Create `analytics_service.py` that watches for new NPZ files
-2. Implement quality metrics calculation from NPZ data
-3. Implement WWV tone detection → time_snap establishment
-4. Implement decimation (16k → 10 Hz Digital RF)
-5. Integrate upload to PSWS
-6. Test in parallel with current system
-7. Validate identical outputs before cutover
+**Task Goal:** Test and refine the web-ui for system maintenance and data visualization.
 
-**Alternative Tasks (Lower Priority):**
-- Task 2: Extract tone detector to standalone module (will be part of analytics)
-- Task 3: Create adapter wrappers for interface compliance (may be superseded)
+**Key Areas:**
+1. System status monitoring (core recorder, analytics service)
+2. Configuration management (station config, channels)
+3. Data quality visualization (completeness, gaps, tone detections)
+4. Upload status tracking (Digital RF files, PSWS uploads)
+5. Log viewing and diagnostics
+6. User experience improvements
+
+**Current Working State:**
+- Core recorder: Running independently, stable
+- Analytics service: Fully functional, PSWS-compatible output
+- Digital RF output: 10 Hz IQ + quality metadata
+- Web UI: Exists but needs testing against new architecture
 
 **Key Files for Next Session:**
-- `src/signal_recorder/core_npz_writer.py` - NPZ format reference
-- `src/signal_recorder/quality_metrics.py` - Current quality metrics (to extract)
-- `src/signal_recorder/grape_channel_recorder_v2.py` - Current tone detection (to extract)
-- `CORE_ANALYTICS_SPLIT_DESIGN.md` - Complete architecture design
+- `web-ui/` - Existing web interface
+- `src/signal_recorder/analytics_service.py` - Status API endpoints needed
+- Integration points between services and UI
 
 ---
 
@@ -438,10 +462,24 @@ GRAPERecorderManager:
 - `docs/GRAPE_DIGITAL_RF_RECORDER.md` - Digital RF output specification
 - `docs/TIMING_ARCHITECTURE_V2.md` - KA9Q timing implementation
 
-**Health Monitoring (NEW - Nov 2024):**
+**Health Monitoring (Nov 2024):**
 - `HEALTH_MONITORING_IMPLEMENTATION.md` - Implementation guide and testing procedures
 - `INTEGRATION_COMPLETE.md` - Complete integration summary
 - `test-health-monitoring.sh` - Automated verification script
+
+**Analytics Service (Nov 9, 2024):**
+- `ANALYTICS_SERVICE_IMPLEMENTATION.md` - Complete implementation guide
+- `SESSION_SUMMARY_NOV9_2024_ANALYTICS.md` - Session summary and next steps
+- `src/signal_recorder/tone_detector.py` - Standalone tone detector module
+- `src/signal_recorder/analytics_service.py` - NPZ processing pipeline
+- `test-analytics-service.py` - Integration test suite
+
+**Digital RF & PSWS Integration (Nov 9, 2024):**
+- `DIGITAL_RF_INTEGRATION_COMPLETE.md` - Phase 2A implementation summary
+- `PSWS_COMPATIBILITY_UPDATE.md` - Phase 2B wsprdaemon format verification
+- `src/signal_recorder/digital_rf_writer.py` - PSWS-compatible Digital RF writer
+- `test-drf-integration.py` - Digital RF end-to-end test
+- `test-psws-format.py` - Directory structure validation
 
 **Operations:**
 - `INSTALLATION.md` - Setup & deployment
@@ -450,6 +488,6 @@ GRAPERecorderManager:
 
 ---
 
-**Last Updated:** 2024-11-09  
+**Last Updated:** 2024-11-09 Evening  
 **Maintained By:** Michael Hauan (AC0G)  
-**AI Context Version:** 1.1 (Health Monitoring Integration)
+**AI Context Version:** 1.3 (Digital RF + PSWS Integration Complete)
