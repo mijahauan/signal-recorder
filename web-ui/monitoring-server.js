@@ -250,69 +250,182 @@ async function getRecentErrors(limit = 10) {
   }
 }
 
+/**
+ * Read Core Recorder status from JSON file (V2 Architecture)
+ */
+async function getCoreRecorderStatus() {
+  try {
+    const statusFile = join(dataRoot, 'status', 'core-recorder-status.json');
+    if (!fs.existsSync(statusFile)) {
+      return { running: false, error: 'Status file not found' };
+    }
+    
+    // Check file age (stale if > 30 seconds old)
+    const stats = fs.statSync(statusFile);
+    const ageSeconds = (Date.now() - stats.mtimeMs) / 1000;
+    
+    const content = fs.readFileSync(statusFile, 'utf8');
+    const status = JSON.parse(content);
+    
+    return {
+      running: ageSeconds < 30,
+      stale: ageSeconds >= 30,
+      age_seconds: ageSeconds,
+      ...status
+    };
+  } catch (error) {
+    console.error('Failed to read core recorder status:', error);
+    return { running: false, error: error.message };
+  }
+}
+
+/**
+ * Read Analytics Service status from JSON files (V2 Architecture - per channel)
+ */
+async function getAnalyticsServiceStatus() {
+  try {
+    // V2 analytics writes per-channel status files
+    const analyticsDir = join(dataRoot, 'analytics');
+    if (!fs.existsSync(analyticsDir)) {
+      return { running: false, error: 'Analytics directory not found' };
+    }
+    
+    // Aggregate status from all channel directories
+    const channelDirs = fs.readdirSync(analyticsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name);
+    
+    const aggregated = {
+      running: false,
+      channels: {},
+      overall: {
+        channels_processing: 0,
+        total_npz_processed: 0,
+        pending_npz_files: 0
+      },
+      uptime_seconds: 0
+    };
+    
+    let newestAge = Infinity;
+    
+    for (const channelDir of channelDirs) {
+      const statusFile = join(analyticsDir, channelDir, 'status', 'analytics-service-status.json');
+      if (!fs.existsSync(statusFile)) continue;
+      
+      try {
+        // Check file age
+        const stats = fs.statSync(statusFile);
+        const ageSeconds = (Date.now() - stats.mtimeMs) / 1000;
+        if (ageSeconds < newestAge) newestAge = ageSeconds;
+        
+        const content = fs.readFileSync(statusFile, 'utf8');
+        const status = JSON.parse(content);
+        
+        // Merge channel data
+        if (status.channels) {
+          Object.assign(aggregated.channels, status.channels);
+        }
+        
+        // Aggregate overall stats
+        if (status.overall) {
+          aggregated.overall.channels_processing += status.overall.channels_processing || 0;
+          aggregated.overall.total_npz_processed += status.overall.total_npz_processed || 0;
+          aggregated.overall.pending_npz_files += status.overall.pending_npz_files || 0;
+        }
+        
+        // Use max uptime
+        if (status.uptime_seconds > aggregated.uptime_seconds) {
+          aggregated.uptime_seconds = status.uptime_seconds;
+        }
+      } catch (err) {
+        console.error(`Failed to read ${statusFile}:`, err);
+      }
+    }
+    
+    // Consider running if we have any recent status files
+    aggregated.running = newestAge < 30 && Object.keys(aggregated.channels).length > 0;
+    aggregated.stale = newestAge >= 30;
+    aggregated.age_seconds = newestAge;
+    
+    return aggregated;
+  } catch (error) {
+    console.error('Failed to read analytics service status:', error);
+    return { running: false, error: error.message };
+  }
+}
+
 // ============================================================================
 // API v1 ENDPOINTS (New versioned API)
 // ============================================================================
 
 /**
- * System status - comprehensive health check
+ * System status - comprehensive health check (V2 Dual-Service Architecture)
  */
 app.get('/api/v1/system/status', async (req, res) => {
   try {
-    const recorderStatus = await getRecorderStatus();
-    const channelStatus = await getChannelStatus();
-    const timeSnapStatus = await getTimeSnapStatus();
+    const coreStatus = await getCoreRecorderStatus();
+    const analyticsStatus = await getAnalyticsServiceStatus();
     const diskUsage = await getDiskUsage(dataRoot);
     const recentErrors = await getRecentErrors(5);
     
-    // Calculate overall quality grade from recent data
-    let overallGrade = 'UNKNOWN';
-    try {
-      const now = new Date();
-      const today = now.toISOString().split('T')[0].replace(/-/g, '');
-      const qualityDir = join(dataRoot, 'analytics', 'quality', today);
-      
-      if (fs.existsSync(qualityDir)) {
-        const csvFiles = fs.readdirSync(qualityDir)
-          .filter(f => f.endsWith('.csv') && f.includes('minute_quality'));
-        
-        if (csvFiles.length > 0) {
-          const grades = [];
-          for (const csvFile of csvFiles) {
-            const csvPath = join(qualityDir, csvFile);
-            const csvContent = fs.readFileSync(csvPath, 'utf8');
-            const records = parse(csvContent, { columns: true, skip_empty_lines: true });
-            const recentRecords = records.slice(-10); // Last 10 minutes
-            grades.push(...recentRecords.map(r => r.quality_grade).filter(g => g && g !== ''));
-          }
-          
-          if (grades.length > 0) {
-            // Calculate weighted average grade
-            const gradeValues = { A: 4, B: 3, C: 2, D: 1, F: 0 };
-            const avgValue = grades.reduce((sum, g) => sum + (gradeValues[g] || 0), 0) / grades.length;
-            overallGrade = avgValue >= 3.5 ? 'A' : avgValue >= 2.5 ? 'B' : avgValue >= 1.5 ? 'C' : avgValue >= 0.5 ? 'D' : 'F';
-          }
+    // Aggregate time_snap from analytics service (first channel with time_snap)
+    let timeSnapStatus = { established: false };
+    if (analyticsStatus.running && analyticsStatus.channels) {
+      for (const [channelName, channelData] of Object.entries(analyticsStatus.channels)) {
+        if (channelData.time_snap && channelData.time_snap.established) {
+          timeSnapStatus = {
+            established: true,
+            source: channelData.time_snap.station,
+            channel: channelName,
+            confidence: channelData.time_snap.confidence,
+            age_minutes: channelData.time_snap.age_minutes
+          };
+          break;
         }
       }
-    } catch (error) {
-      console.error('Error calculating overall grade:', error);
+    }
+    
+    // Calculate overall completeness from core recorder
+    let overallCompleteness = 0;
+    if (coreStatus.running && coreStatus.overall) {
+      const total = coreStatus.overall.total_packets_received || 0;
+      const gaps = coreStatus.overall.total_gaps_detected || 0;
+      overallCompleteness = total > 0 ? ((total - gaps) / total * 100).toFixed(1) : 0;
     }
     
     res.json({
       timestamp: new Date().toISOString(),
-      recorder: recorderStatus,
+      services: {
+        core_recorder: {
+          running: coreStatus.running,
+          stale: coreStatus.stale,
+          uptime_seconds: coreStatus.uptime_seconds || 0,
+          channels_active: coreStatus.overall?.channels_active || 0,
+          channels_total: coreStatus.overall?.channels_total || 0,
+          npz_files_written: coreStatus.overall?.total_npz_written || 0,
+          packets_received: coreStatus.overall?.total_packets_received || 0,
+          gaps_detected: coreStatus.overall?.total_gaps_detected || 0
+        },
+        analytics_service: {
+          running: analyticsStatus.running,
+          stale: analyticsStatus.stale,
+          uptime_seconds: analyticsStatus.uptime_seconds || 0,
+          npz_processed: analyticsStatus.overall?.total_npz_processed || 0,
+          pending_files: analyticsStatus.overall?.pending_npz_files || 0
+        }
+      },
       radiod: {
-        connected: recorderStatus.running,
+        connected: coreStatus.running,
         status_address: config.ka9q?.status_address || 'unknown'
       },
-      channels: channelStatus,
+      channels: coreStatus.channels || {},
       time_snap: timeSnapStatus,
       quality: {
-        overall_grade: overallGrade,
-        period: 'last 10 minutes'
+        overall_completeness_pct: parseFloat(overallCompleteness),
+        period: 'current'
       },
       data_paths: {
-        archive: join(dataRoot, 'data'),
+        archive: join(dataRoot, 'archives'),
         analytics: join(dataRoot, 'analytics'),
         upload: config.recorder?.upload_dir || null
       },
@@ -447,12 +560,115 @@ app.get('/api/monitoring/station-info', async (req, res) => {
 
 /**
  * Timing & Quality Dashboard API
- * Returns comprehensive quality metrics based on KA9Q timing architecture
+ * Returns comprehensive quality metrics - V2 Architecture compatible
  */
-app.get('/api/monitoring/timing-quality', (req, res) => {
+app.get('/api/monitoring/timing-quality', async (req, res) => {
   try {
-    // Use config-defined data_root
-    // Check both today and yesterday (UTC) to handle timezone mismatches
+    // Try V2 status files first
+    const coreStatus = await getCoreRecorderStatus();
+    const analyticsStatus = await getAnalyticsServiceStatus();
+    
+    if (coreStatus.running) {
+      // V2 Architecture: Return data from status JSON files
+      const channelData = {};
+      let timeSnapStatus = null;
+      
+      // Get data from core recorder status
+      if (coreStatus.channels) {
+        for (const [ssrc, channelInfo] of Object.entries(coreStatus.channels)) {
+          const channelName = channelInfo.channel_name;
+          const totalSamples = channelInfo.packets_received * 320;
+          const gapSamples = channelInfo.total_gap_samples || 0;
+          const completeness = totalSamples > 0 ? ((totalSamples - gapSamples) / totalSamples * 100) : 100;
+          const packetLoss = totalSamples > 0 ? (gapSamples / totalSamples * 100) : 0;
+          
+          channelData[channelName] = {
+            latestGrade: 'UNKNOWN',  // V2 doesn't use grades
+            latestScore: completeness,  // Keep as number, dashboard will format
+            minutesInHour: 60,
+            sampleCompleteness: completeness,
+            avgPacketLoss: packetLoss,
+            avgDrift: null,
+            wwvDetections: 0,
+            wwvhDetections: 0,
+            chuDetections: 0,
+            totalDetections: 0,
+            npzFilesWritten: channelInfo.npz_files_written || 0,
+            packetsReceived: channelInfo.packets_received || 0,
+            gapsDetected: channelInfo.gaps_detected || 0,
+            status: channelInfo.status || 'unknown',
+            lastPacketTime: channelInfo.last_packet_time || null
+          };
+        }
+      }
+      
+      // Add analytics data if available
+      if (analyticsStatus.running && analyticsStatus.channels) {
+        for (const [channelName, analyticsInfo] of Object.entries(analyticsStatus.channels)) {
+          if (!channelData[channelName]) {
+            channelData[channelName] = {};
+          }
+          
+          // Merge analytics data
+          Object.assign(channelData[channelName], {
+            wwvDetections: analyticsInfo.tone_detections?.wwv || 0,
+            wwvhDetections: analyticsInfo.tone_detections?.wwvh || 0,
+            chuDetections: analyticsInfo.tone_detections?.chu || 0,
+            totalDetections: analyticsInfo.tone_detections?.total || 0,
+            npzProcessed: analyticsInfo.npz_files_processed || 0,
+            lastCompleteness: analyticsInfo.quality_metrics?.last_completeness_pct || 0,
+            lastPacketLoss: analyticsInfo.quality_metrics?.last_packet_loss_pct || 0,
+            digitalRfSamples: analyticsInfo.digital_rf?.samples_written || 0,
+            timeSnapEstablished: analyticsInfo.time_snap?.established || false,
+            timeSnapSource: analyticsInfo.time_snap?.station || null,
+            timeSnapAge: analyticsInfo.time_snap?.age_minutes || 0
+          });
+          
+          // Track time_snap status
+          if (analyticsInfo.time_snap && analyticsInfo.time_snap.established) {
+            if (!timeSnapStatus) {
+              timeSnapStatus = {
+                established: true,
+                source: channelName,
+                station: analyticsInfo.time_snap.station,
+                confidence: analyticsInfo.time_snap.confidence,
+                age: analyticsInfo.time_snap.age_minutes,
+                status: analyticsInfo.time_snap.source
+              };
+            }
+          }
+        }
+      }
+      
+      // Add detection rates
+      for (const [channelName, data] of Object.entries(channelData)) {
+        data.wwvDetectionRate = data.wwvDetections || 0;
+        data.wwvhDetectionRate = data.wwvhDetections || 0;
+        data.chuDetectionRate = data.chuDetections || 0;
+        data.recentMinutes = [];  // V2 doesn't have minute-by-minute history yet
+        data.avgDifferentialDelay = null;  // Not yet implemented
+      }
+      
+      return res.json({
+        available: true,
+        source: 'v2_status_files',
+        channels: channelData,  // Frontend expects 'channels', not 'channelData'
+        timeSnap: timeSnapStatus,  // Frontend expects 'timeSnap', not 'timeSnapStatus'
+        overall: {
+          gradePercentages: { A: 0, B: 0, C: 0, D: 100, F: 0 },  // V2 doesn't use grades
+          summary: {
+            channels_active: coreStatus.overall?.channels_active || 0,
+            channels_total: coreStatus.overall?.channels_total || 0,
+            npz_written: coreStatus.overall?.total_npz_written || 0,
+            packets_received: coreStatus.overall?.total_packets_received || 0,
+            npz_processed: analyticsStatus.overall?.total_npz_processed || 0
+          }
+        },
+        alerts: []  // No alerts yet in V2
+      });
+    }
+    
+    // Fallback to V1 CSV files if V2 status not available
     const now = new Date();
     const today = now.toISOString().split('T')[0].replace(/-/g, '');
     const yesterday = new Date(now - 24*60*60*1000).toISOString().split('T')[0].replace(/-/g, '');
@@ -469,7 +685,7 @@ app.get('/api/monitoring/timing-quality', (req, res) => {
     if (!fs.existsSync(qualityDir)) {
       return res.json({
         available: false,
-        message: `Quality data directory not found for today (${today}) or yesterday (${yesterday})`
+        message: `Quality data directory not found for today (${today}) or yesterday (${yesterday}). V2 status files also not available.`
       });
     }
     

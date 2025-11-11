@@ -416,89 +416,143 @@
         function renderDashboard(data) {
             const container = document.getElementById('dashboard-content');
             
-            // Time_snap status (now includes multi-station summary)
-            const timeSnapHtml = renderTimeSnapStatus(data.timeSnap, data.channels);
+            // System Status
+            const systemStatusHtml = renderSystemStatus(data.overall);
+            
+            // Analytics Summary (WWV/WWVH discrimination)
+            const analyticsHtml = renderAnalyticsSummary(data.channels);
             
             // Channel table
             const channelTableHtml = renderChannelTable(data.channels);
-            
-            // Quality distribution
-            const distributionHtml = renderQualityDistribution(data.overall);
             
             // Alerts
             const alertsHtml = renderAlerts(data.alerts);
             
             container.innerHTML = `
-                ${timeSnapHtml}
+                ${systemStatusHtml}
+                ${analyticsHtml}
                 ${channelTableHtml}
-                ${distributionHtml}
                 ${alertsHtml}
             `;
         }
         
-        function renderTimeSnapStatus(timeSnap, channels) {
-            // Calculate per-channel time_snap statistics
-            const channelList = Object.entries(channels || {});
-            const wwvChannels = channelList.filter(([name]) => name.startsWith('WWV'));
-            const chuChannels = channelList.filter(([name]) => name.startsWith('CHU'));
-            
-            const wwvEstablished = wwvChannels.filter(([_, data]) => data.timeSnapEstablished).length;
-            const chuEstablished = chuChannels.filter(([_, data]) => data.timeSnapEstablished).length;
-            const totalEstablished = wwvEstablished + chuEstablished;
-            const totalChannels = wwvChannels.length + chuChannels.length;
-            
-            // Calculate total detections across all channels
-            const totalWwv = channelList.reduce((sum, [_, data]) => sum + (data.wwvDetections || 0), 0);
-            const totalWwvh = channelList.reduce((sum, [_, data]) => sum + (data.wwvhDetections || 0), 0);
-            const totalChu = channelList.reduce((sum, [_, data]) => sum + (data.chuDetections || 0), 0);
-            
-            // Calculate average drift across established channels
-            const drifts = channelList
-                .filter(([_, data]) => data.timeSnapEstablished && data.avgDrift !== null)
-                .map(([_, data]) => data.avgDrift);
-            const avgDrift = drifts.length > 0 ? 
-                drifts.reduce((sum, d) => sum + d, 0) / drifts.length : null;
-            
-            const statusColor = totalEstablished === 0 ? '#f59e0b' : '#10b981';
-            const driftColor = !avgDrift ? '#9ca3af' :
-                              Math.abs(avgDrift) > 20 ? '#f59e0b' : 
-                              Math.abs(avgDrift) > 10 ? '#3b82f6' : '#10b981';
+        function renderSystemStatus(overall) {
+            const summary = overall.summary || {};
+            const channelsActive = summary.channels_active || 0;
+            const channelsTotal = summary.channels_total || 0;
+            const allChannelsActive = channelsActive === channelsTotal && channelsTotal > 0;
             
             return `
                 <div class="time-snap-status">
-                    <div class="time-snap-header">
-                        ⏱️ Multi-Station Detection Summary
-                    </div>
+                    <div class="time-snap-header">🖥️ System Status</div>
                     <div class="time-snap-grid">
                         <div class="time-snap-item">
-                            <span class="time-snap-label">Time_Snap Status</span>
-                            <span class="time-snap-value" style="color: ${statusColor};">
-                                ${totalEstablished}/${totalChannels} channels
+                            <span class="time-snap-label">Core Recorder</span>
+                            <span class="time-snap-value" style="color: ${allChannelsActive ? '#10b981' : '#f59e0b'};">
+                                ${channelsActive}/${channelsTotal} Channels Active
                             </span>
                         </div>
                         <div class="time-snap-item">
-                            <span class="time-snap-label">Avg Drift (all channels)</span>
-                            <span class="time-snap-value" style="color: ${driftColor};">
-                                ${avgDrift !== null ? `${avgDrift >= 0 ? '+' : ''}${avgDrift.toFixed(1)} ms` : '--'}
-                            </span>
-                        </div>
-                        <div class="time-snap-item">
-                            <span class="time-snap-label">WWV (Fort Collins)</span>
-                            <span class="time-snap-value" style="color: #10b981;">
-                                ${totalWwv} detections
-                            </span>
-                        </div>
-                        <div class="time-snap-item">
-                            <span class="time-snap-label">WWVH (Hawaii)</span>
+                            <span class="time-snap-label">NPZ Archives Written</span>
                             <span class="time-snap-value" style="color: #3b82f6;">
-                                ${totalWwvh} detections
+                                ${(summary.npz_written || 0).toLocaleString()} files
                             </span>
                         </div>
                         <div class="time-snap-item">
-                            <span class="time-snap-label">CHU (Canada)</span>
+                            <span class="time-snap-label">RTP Packets Received</span>
                             <span class="time-snap-value" style="color: #8b5cf6;">
-                                ${totalChu} detections
+                                ${(summary.packets_received || 0).toLocaleString()}
                             </span>
+                        </div>
+                        <div class="time-snap-item">
+                            <span class="time-snap-label">Analytics Processing</span>
+                            <span class="time-snap-value" style="color: ${summary.npz_processed > 0 ? '#10b981' : '#f59e0b'};">
+                                ${summary.npz_processed > 0 ? `${summary.npz_processed} processed` : 'Pending'}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderAnalyticsSummary(channels) {
+            const channelList = Object.entries(channels || {});
+            const wwvChannels = channelList.filter(([name]) => name.startsWith('WWV'));
+            
+            // Calculate WWV vs WWVH detections across all WWV channels
+            const totalWwv = channelList.reduce((sum, [_, data]) => sum + (data.wwvDetections || 0), 0);
+            const totalWwvh = channelList.reduce((sum, [_, data]) => sum + (data.wwvhDetections || 0), 0);
+            const totalChu = channelList.reduce((sum, [_, data]) => sum + (data.chuDetections || 0), 0);
+            const totalDetections = totalWwv + totalWwvh + totalChu;
+            
+            // Calculate average completeness
+            const completenessValues = channelList
+                .map(([_, data]) => data.sampleCompleteness || 0)
+                .filter(v => v > 0);
+            const avgCompleteness = completenessValues.length > 0 ?
+                completenessValues.reduce((sum, v) => sum + v, 0) / completenessValues.length : 0;
+            
+            // Calculate total packet loss
+            const totalPackets = channelList.reduce((sum, [_, data]) => sum + (data.packetsReceived || 0), 0);
+            const totalGaps = channelList.reduce((sum, [_, data]) => sum + (data.gapsDetected || 0), 0);
+            
+            // WWV/WWVH discrimination ratio
+            const wwvRatio = totalWwv + totalWwvh > 0 ? (totalWwv / (totalWwv + totalWwvh) * 100) : 0;
+            const wwvhRatio = 100 - wwvRatio;
+            
+            return `
+                <div class="quality-distribution">
+                    <div class="distribution-header">📊 Data Quality & Analytics</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px;">
+                        <div>
+                            <div style="font-size: 16px; font-weight: 600; margin-bottom: 15px; color: #e0e0e0;">
+                                📡 Signal Quality
+                            </div>
+                            <div class="time-snap-grid">
+                                <div class="time-snap-item">
+                                    <span class="time-snap-label">Avg Completeness</span>
+                                    <span class="time-snap-value" style="color: ${avgCompleteness >= 99 ? '#10b981' : '#f59e0b'};">
+                                        ${avgCompleteness.toFixed(2)}%
+                                    </span>
+                                </div>
+                                <div class="time-snap-item">
+                                    <span class="time-snap-label">Total Gaps Detected</span>
+                                    <span class="time-snap-value" style="color: ${totalGaps === 0 ? '#10b981' : '#f59e0b'};">
+                                        ${totalGaps}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size: 16px; font-weight: 600; margin-bottom: 15px; color: #e0e0e0;">
+                                🎯 WWV/WWVH Discrimination
+                            </div>
+                            <div class="time-snap-grid">
+                                <div class="time-snap-item">
+                                    <span class="time-snap-label">WWV (Fort Collins)</span>
+                                    <span class="time-snap-value" style="color: #10b981;">
+                                        ${totalWwv} (${wwvRatio.toFixed(0)}%)
+                                    </span>
+                                </div>
+                                <div class="time-snap-item">
+                                    <span class="time-snap-label">WWVH (Hawaii)</span>
+                                    <span class="time-snap-value" style="color: #3b82f6;">
+                                        ${totalWwvh} (${wwvhRatio.toFixed(0)}%)
+                                    </span>
+                                </div>
+                                <div class="time-snap-item">
+                                    <span class="time-snap-label">CHU (Canada)</span>
+                                    <span class="time-snap-value" style="color: #8b5cf6;">
+                                        ${totalChu} detections
+                                    </span>
+                                </div>
+                                <div class="time-snap-item">
+                                    <span class="time-snap-label">Total Detections</span>
+                                    <span class="time-snap-value" style="color: #e0e0e0;">
+                                        ${totalDetections}
+                                    </span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -507,101 +561,79 @@
         
         function renderChannelTable(channels) {
             const rows = Object.entries(channels).map(([name, data]) => {
-                const grade = data.latestGrade;
-                const gradeClass = grade === 'UNKNOWN' ? 'grade-C' : `grade-${grade}`;
-                const gradeDisplay = grade === 'UNKNOWN' ? 
-                    '<span style="opacity: 0.5;" title="Quality grading will appear after recorder writes CSV files">Collecting...</span>' :
-                    grade;
+                // V2 Architecture: Show recording status instead of quality grade
+                const status = data.status || 'unknown';
+                const statusClass = status === 'recording' ? 'grade-A' : 
+                                   status === 'idle' ? 'grade-C' : 'grade-D';
+                const statusIcon = status === 'recording' ? '🔴' : '⏸️';
                 
-                const score = data.latestScore > 0 ? data.latestScore.toFixed(0) : '--';
+                const completeness = data.sampleCompleteness ? data.sampleCompleteness.toFixed(2) : '--';
+                const npzFiles = data.npzFilesWritten || 0;
+                const packets = data.packetsReceived || 0;
+                const gaps = data.gapsDetected || 0;
+                const loss = data.avgPacketLoss ? data.avgPacketLoss.toFixed(4) : '0.0000';
                 
-                // Separate station detection info
-                const wwvInfo = data.wwvDetections > 0 ? 
-                    `${data.wwvDetections} (${data.wwvDetectionRate}%)` : '--';
-                const wwvhInfo = data.wwvhDetections > 0 ? 
-                    `${data.wwvhDetections} (${data.wwvhDetectionRate}%)` : '--';
-                const chuInfo = data.chuDetections > 0 ? 
-                    `${data.chuDetections} (${data.chuDetectionRate}%)` : '--';
+                // Format last packet time
+                let lastPacket = '--';
+                if (data.lastPacketTime) {
+                    const d = new Date(data.lastPacketTime);
+                    const now = new Date();
+                    const ageSeconds = Math.floor((now - d) / 1000);
+                    if (ageSeconds < 60) {
+                        lastPacket = `${ageSeconds}s ago`;
+                    } else if (ageSeconds < 3600) {
+                        lastPacket = `${Math.floor(ageSeconds/60)}m ago`;
+                    } else {
+                        lastPacket = d.toLocaleTimeString();
+                    }
+                }
                 
-                // WWV-WWVH differential delay (propagation difference)
-                const diffInfo = data.avgDifferentialDelay !== null && data.avgDifferentialDelay !== undefined ?
-                    `${data.avgDifferentialDelay >= 0 ? '+' : ''}${data.avgDifferentialDelay.toFixed(1)}ms` : '--';
-                    
-                const driftInfo = data.avgDrift !== null ? 
-                    `${data.avgDrift >= 0 ? '+' : ''}${data.avgDrift.toFixed(1)}ms` : '--';
-                
-                // Calculate total gaps and resequenced from recent minutes
-                const recentData = data.recentMinutes || [];
-                const totalGaps = recentData.reduce((sum, m) => sum + (parseInt(m.gaps) || 0), 0);
-                const totalReseq = recentData.reduce((sum, m) => sum + (m.resequenced || 0), 0);
+                // Analytics data (if available)
+                const npzProcessed = data.npzProcessed || '--';
+                const wwvDetections = data.wwvDetections || '--';
+                const drfSamples = data.digitalRfSamples ? 
+                    (data.digitalRfSamples / 1e6).toFixed(1) + 'M' : '--';
                 
                 return `
                     <tr>
                         <td><strong>${name}</strong></td>
-                        <td><span class="grade-badge ${gradeClass}">${gradeDisplay}</span></td>
-                        <td style="text-align: center;">${score}</td>
-                        <td style="text-align: center;">${data.minutesInHour}/60</td>
-                        <td style="text-align: right;">${data.avgPacketLoss.toFixed(3)}</td>
-                        <td style="text-align: center;">${totalGaps}</td>
-                        <td style="text-align: center;">${totalReseq}</td>
-                        <td style="text-align: right;">${driftInfo}</td>
-                        <td style="text-align: center; font-size: 0.9em;">${wwvInfo}</td>
-                        <td style="text-align: center; font-size: 0.9em;">${wwvhInfo}</td>
-                        <td style="text-align: right; font-size: 0.9em;">${diffInfo}</td>
-                        <td style="text-align: center; font-size: 0.9em;">${chuInfo}</td>
+                        <td><span class="grade-badge ${statusClass}">${statusIcon} ${status}</span></td>
+                        <td style="text-align: right;">${completeness}%</td>
+                        <td style="text-align: right;">${loss}%</td>
+                        <td style="text-align: center;">${gaps}</td>
+                        <td style="text-align: right;">${npzFiles}</td>
+                        <td style="text-align: right;">${packets.toLocaleString()}</td>
+                        <td style="text-align: center; font-size: 0.9em;">${lastPacket}</td>
+                        <td style="text-align: center;">${npzProcessed}</td>
+                        <td style="text-align: center;">${wwvDetections}</td>
+                        <td style="text-align: center;">${drfSamples}</td>
                     </tr>
                 `;
             }).join('');
             
             return `
                 <div class="channel-table-container">
-                    <div class="distribution-header">📊 Channel Overview (Last Hour)</div>
+                    <div class="distribution-header">📊 V2 Core Recorder Status (Real-Time)</div>
                     <table>
                         <thead>
                             <tr>
                                 <th>Channel</th>
-                                <th>Quality</th>
-                                <th>Score</th>
-                                <th>Minutes</th>
-                                <th>Loss %</th>
+                                <th>Status</th>
+                                <th>Complete%</th>
+                                <th>Loss%</th>
                                 <th>Gaps</th>
-                                <th>Reseq</th>
-                                <th>Drift</th>
-                                <th style="font-size: 0.85em;">WWV<br><small>1000Hz</small></th>
-                                <th style="font-size: 0.85em;">WWVH<br><small>1200Hz</small></th>
-                                <th style="font-size: 0.85em;">Diff<br><small>WWV-WWVH</small></th>
-                                <th style="font-size: 0.85em;">CHU<br><small>1000Hz</small></th>
+                                <th>NPZ Files</th>
+                                <th>Packets Rx</th>
+                                <th>Last Packet</th>
+                                <th style="font-size: 0.85em;">NPZ<br><small>Processed</small></th>
+                                <th style="font-size: 0.85em;">WWV<br><small>Detections</small></th>
+                                <th style="font-size: 0.85em;">DRF<br><small>Samples</small></th>
                             </tr>
                         </thead>
                         <tbody>
                             ${rows}
                         </tbody>
                     </table>
-                </div>
-            `;
-        }
-        
-        function renderQualityDistribution(overall) {
-            const grades = ['A', 'B', 'C', 'D', 'F'];
-            const bars = grades.map(grade => {
-                const percent = parseFloat(overall.gradePercentages[grade] || 0);
-                return `
-                    <div class="distribution-bar">
-                        <div class="bar-label">${grade}</div>
-                        <div class="bar-container">
-                            <div class="bar-fill grade-${grade}" style="width: ${percent}%"></div>
-                        </div>
-                        <div class="bar-percent">${percent.toFixed(1)}%</div>
-                    </div>
-                `;
-            }).join('');
-            
-            return `
-                <div class="quality-distribution">
-                    <div class="distribution-header">📈 Quality Distribution (Last 24h)</div>
-                    <div class="distribution-bars">
-                        ${bars}
-                    </div>
                 </div>
             `;
         }

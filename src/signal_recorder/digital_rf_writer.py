@@ -206,21 +206,26 @@ class DigitalRFWriter:
         
         # Add to buffer
         self.sample_buffer.extend(samples)
-        self.buffer_timestamps.append(timestamp)
+        # Store the base timestamp for this batch
+        if not self.buffer_timestamps:
+            self.buffer_timestamps.append(timestamp)
         
         # Process when we have enough samples for decimation
         # Need at least 1 second of data (16000 samples) for clean decimation
         min_samples = self.input_sample_rate
+        samples_processed = 0
         
         while len(self.sample_buffer) >= min_samples:
             # Extract chunk for decimation
             chunk = np.array(list(self.sample_buffer)[:min_samples], dtype=np.complex64)
-            chunk_timestamp = self.buffer_timestamps[0]
+            # Calculate timestamp for this chunk based on samples already processed
+            base_timestamp = self.buffer_timestamps[0] if self.buffer_timestamps else timestamp
+            chunk_timestamp = base_timestamp + (samples_processed / self.input_sample_rate)
             
             # Remove from buffer
             for _ in range(min_samples):
                 self.sample_buffer.popleft()
-            self.buffer_timestamps.popleft()
+            samples_processed += min_samples
             
             # Decimate
             try:
@@ -240,6 +245,10 @@ class DigitalRFWriter:
                 
             except Exception as e:
                 logger.error(f"{self.channel_name}: Decimation/write error: {e}", exc_info=True)
+        
+        # Clear timestamp if buffer is now empty
+        if len(self.sample_buffer) == 0:
+            self.buffer_timestamps.clear()
     
     def flush(self):
         """
