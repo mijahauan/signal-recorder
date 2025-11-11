@@ -365,62 +365,124 @@ GRAPERecorderManager:
 ## 4. ⚡ Current Task & Git Context
 
 **Current Branch:** `main`  
-**Last Session:** November 9, 2024 (Evening)
+**Last Session:** November 10, 2024 (Evening)  
+**Last Commit:** `b8a792f` - Web UI V2 Integration Complete
 
 **Current Architecture Status:**
-- ✅ **Phase 1 Complete:** Core Recorder (RTP → NPZ only)
-  - Implementation: `core_recorder.py`, `core_npz_writer.py`, `packet_resequencer.py`
-  - Status: Running successfully in parallel (PID 1229736)
-  - Output: `/tmp/grape-core-test/` (312+ NPZ files)
-  - NPZ format: Enhanced with RTP timestamps for time reconstruction
-  - Documentation: `CORE_ANALYTICS_SPLIT_DESIGN.md`
 
-- ✅ **Phase 2 Complete:** Analytics Service (NPZ → Derived Products)
-  - ✅ **Phase 2A - Digital RF Integration** (Nov 9, 2024)
-    - Tone detector extracted: `src/signal_recorder/tone_detector.py` (558 lines)
-    - Analytics service: `src/signal_recorder/analytics_service.py` (752 lines)
-    - Digital RF writer integrated: 16 kHz → 10 Hz decimation working
-    - Quality metadata embedded in Digital RF parallel channel
-    - Integration tested: All tests pass with real WWV data
-    - Documentation: `DIGITAL_RF_INTEGRATION_COMPLETE.md`
-  
-  - ✅ **Phase 2B - PSWS Compatibility** (Nov 9, 2024)
-    - Directory structure verified against wsprdaemon format
-    - PSWS-compatible paths: `YYYYMMDD/CALLSIGN_GRID/RECEIVER@STATION_ID_INSTRUMENT_ID/OBS{timestamp}/CHANNEL/`
-    - Station config extended: `psws_station_id`, `psws_instrument_id`, `receiver_name`
-    - Format compatibility verified: complex64 vs float32 2-channel both valid
-    - Documentation: `PSWS_COMPATIBILITY_UPDATE.md`
-  
-  - ⏳ **Phase 2C - Upload Integration** (Next after web-ui)
-    - Module exists: `uploader.py`
-    - Needs: Wire to analytics service, implement rsync/sftp, trigger directories
-  
-  - Documentation: 
-    - `ANALYTICS_SERVICE_IMPLEMENTATION.md` - Implementation guide
-    - `SESSION_SUMMARY_NOV9_2024_ANALYTICS.md` - Session summary
+### ✅ **V2 Dual-Service Architecture - OPERATIONAL**
 
-**Next Priority Task: Web UI Testing & Refinement**
+**Phase 1: Core Recorder (RTP → NPZ Archives)**
+- Implementation: `core_recorder.py`, `core_npz_writer.py`, `packet_resequencer.py`
+- Status: ✅ Running successfully (9 channels: 6 WWV + 3 CHU)
+- Output: `/tmp/grape-test/archives/{channel}/` (270+ NPZ files per channel)
+- NPZ format: IQ samples + RTP timestamps + gap metadata
+- Status file: `/tmp/grape-test/status/core-recorder-status.json` (updates every 10s)
+- Documentation: `CORE_ANALYTICS_SPLIT_DESIGN.md`
 
-**Task Goal:** Test and refine the web-ui for system maintenance and data visualization.
+**Phase 2: Analytics Service (NPZ → Derived Products)**
+- ✅ **Phase 2A - Digital RF Integration** (Nov 9, 2024)
+  - Tone detector: `src/signal_recorder/tone_detector.py` (558 lines)
+  - Analytics service: `src/signal_recorder/analytics_service.py` (752 lines)
+  - Digital RF writer: 16 kHz → 10 Hz decimation working
+  - Quality metrics: Completeness, packet loss, gap tracking
+  - Status: ✅ 9 services running (one per channel)
+  - Output: `/tmp/grape-test/analytics/{channel}/`
+  - Status files: Per-channel in `{channel}/status/analytics-service-status.json` (updates every 10s)
+  - Documentation: `DIGITAL_RF_INTEGRATION_COMPLETE.md`
 
-**Key Areas:**
-1. System status monitoring (core recorder, analytics service)
-2. Configuration management (station config, channels)
-3. Data quality visualization (completeness, gaps, tone detections)
-4. Upload status tracking (Digital RF files, PSWS uploads)
-5. Log viewing and diagnostics
-6. User experience improvements
+- ✅ **Phase 2B - PSWS Compatibility** (Nov 9, 2024)
+  - PSWS directory structure: `YYYYMMDD/CALLSIGN_GRID/RECEIVER@STATION_ID_INSTRUMENT_ID/OBS{timestamp}/CHANNEL/`
+  - Station metadata: psws_station_id, psws_instrument_id, receiver_name
+  - Format verified: complex64 compatible with wsprdaemon expectations
+  - Documentation: `PSWS_COMPATIBILITY_UPDATE.md`
 
-**Current Working State:**
-- Core recorder: Running independently, stable
-- Analytics service: Fully functional, PSWS-compatible output
-- Digital RF output: 10 Hz IQ + quality metadata
-- Web UI: Exists but needs testing against new architecture
+- ✅ **Phase 2C - Web UI Integration** (Nov 10, 2024)
+  - Monitoring server: Reads V2 JSON status files from both services
+  - Dashboard: Displays dual-service metrics with per-channel data
+  - Bug fix: DigitalRFWriter buffer timestamp IndexError resolved
+  - Status: ✅ Real-time display at http://localhost:3000
+  - Documentation: `WEB_UI_V2_INTEGRATION_SESSION.md`
 
-**Key Files for Next Session:**
-- `web-ui/` - Existing web interface
-- `src/signal_recorder/analytics_service.py` - Status API endpoints needed
-- Integration points between services and UI
+- ⏳ **Phase 2D - Upload Integration** (Next priority)
+  - Module exists: `uploader.py`
+  - Needs: Wire to analytics service, implement rsync/sftp, trigger on directory completion
+
+### **Current System Metrics** (Nov 10, 2024 19:45 UTC)
+
+**Core Recorder:**
+- 9/9 channels active (recording)
+- 270+ NPZ files written per channel
+- 600,000+ RTP packets received
+- 0 gaps detected (100% completeness)
+- 0 packet loss
+
+**Analytics Services:**
+- 9/9 services running and processing
+- 57+ NPZ files processed per channel
+- Quality metrics: 99.67% completeness, 0.17% packet loss
+- Tone detections: 0 (expected - weak signals or propagation conditions)
+- Digital RF output: Writing successfully
+
+**Web UI:**
+- Dashboard displaying V2 data
+- System status: Core + Analytics health
+- Data quality: Completeness, gaps, packet loss
+- Analytics: WWV/WWVH discrimination ready for propagation analysis
+- Channel table: Per-channel real-time metrics
+
+---
+
+## 📌 **Next Session Task: Web UI Information Architecture**
+
+**Task Goal:** Define comprehensive information display requirements for web UI monitoring and data visualization.
+
+**Objective:** Create a clear specification document that defines:
+
+### 1. **System-Level Monitoring Requirements**
+   - What operational metrics indicate system health?
+   - How to represent dual-service status (core + analytics)?
+   - What alerts/warnings are critical for operator intervention?
+   - How to display uptime, resource usage, error states?
+
+### 2. **Per-Channel Data Characterization**
+   - What metrics characterize signal quality for each channel?
+   - How to present completeness, packet loss, gap statistics?
+   - What time windows are relevant (real-time, hourly, daily)?
+   - How to display tone detection results (WWV/WWVH/CHU)?
+
+### 3. **Scientific Data Quality Reporting**
+   - How to present WWV/WWVH discrimination for propagation studies?
+   - What time_snap accuracy metrics are useful?
+   - How to visualize discontinuities and their impact?
+   - What metadata aids data provenance (timestamps, RTP info)?
+
+### 4. **Operational Visibility Needs**
+   - What log information is most useful for troubleshooting?
+   - How to display Digital RF output status and upload queue?
+   - What configuration parameters should be visible/editable?
+   - How to represent historical trends vs real-time status?
+
+### 5. **User Experience & Navigation**
+   - What information hierarchy makes sense for operators?
+   - Which views are most frequently accessed?
+   - What alerts/notifications need immediate visibility?
+   - How to balance detail vs overview?
+
+**Deliverable:** A specification document (`WEB_UI_INFORMATION_SPEC.md`) that defines:
+- Information categories and priorities
+- Data refresh rates and time windows
+- Visualization types (tables, charts, status indicators)
+- Alert thresholds and notification requirements
+- Navigation structure and page hierarchy
+
+**Current Working Files:**
+- `web-ui/timing-dashboard.html` - Current dashboard implementation
+- `web-ui/monitoring-server.js` - API backend serving V2 status data
+- Status JSON files - Core recorder and per-channel analytics status
+- Existing dashboard provides foundation for refinement
+
+**Context:** The V2 architecture is operational with real data flowing. This session focuses on defining WHAT information to display and HOW to organize it effectively for scientific monitoring and system operations.
 
 ---
 
@@ -481,13 +543,20 @@ GRAPERecorderManager:
 - `test-drf-integration.py` - Digital RF end-to-end test
 - `test-psws-format.py` - Directory structure validation
 
+**Web UI V2 Integration (Nov 10, 2024):**
+- `WEB_UI_V2_INTEGRATION_SESSION.md` - Phase 2C implementation summary
+- `web-ui/monitoring-server.js` - V2 status aggregation and API endpoints
+- `web-ui/timing-dashboard.html` - V2 dashboard with dual-service metrics
+- Bug fix: DigitalRFWriter buffer timestamp tracking
+
 **Operations:**
 - `INSTALLATION.md` - Setup & deployment
 - `README.md` - Quick start guide
+- `STARTUP_GUIDE.md` - Dual-service startup procedures
 - `web-ui/README.md` - Web interface guide
 
 ---
 
-**Last Updated:** 2024-11-09 Evening  
+**Last Updated:** 2024-11-10 Evening  
 **Maintained By:** Michael Hauan (AC0G)  
-**AI Context Version:** 1.3 (Digital RF + PSWS Integration Complete)
+**AI Context Version:** 1.4 (V2 Dual-Service Architecture Operational)
