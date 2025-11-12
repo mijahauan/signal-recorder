@@ -130,8 +130,29 @@ def main():
                 parse_errors[error] += 1
                 continue
             
-            # Extract IQ payload (float32 interleaved I/Q)
-            payload = data[rtp['header_len']:]
+            # --- FIX: Handle RTP padding ---
+            # RFC 3550: padding length is in the LAST BYTE OF THE PACKET
+            if rtp['padding'] == 1:
+                if len(data) < rtp['header_len'] + 1:
+                    parse_errors["Padding bit set but packet too short"] += 1
+                    continue
+                # Last byte of entire packet indicates number of padding bytes (including itself)
+                padding_bytes = data[-1]
+                # RFC 3550: padding count must be >= 1 (counts itself)
+                if padding_bytes < 1:
+                    parse_errors["Invalid padding count (must be >= 1)"] += 1
+                    continue
+                payload_len = len(data) - rtp['header_len']
+                if padding_bytes > payload_len:
+                    parse_errors["Padding count exceeds payload length"] += 1
+                    continue
+                # Extract payload without padding
+                payload = data[rtp['header_len']:-padding_bytes]
+            else:
+                # No padding - extract full payload
+                payload = data[rtp['header_len']:]
+            # --- END FIX ---
+            
             if len(payload) % 8 != 0:
                 continue
             
@@ -173,7 +194,7 @@ def main():
                 by_ssrc[ssrc]['total'] += 1
             
             # Progress
-            if total_packets % 1000 == 0:
+            if total_packets > 0 and total_packets % 1000 == 0:
                 elapsed = (datetime.now() - start_time).total_seconds()
                 rate = total_packets / elapsed if elapsed > 0 else 0
                 print(f"Progress: {total_packets} packets, {corrupt_packets} corrupt ({100*corrupt_packets/total_packets:.3f}%), {rate:.0f} pkt/s", end='\r')
@@ -188,7 +209,10 @@ def main():
     print("\n\n=== SUMMARY ===")
     print(f"Duration: {(datetime.now() - start_time).total_seconds():.1f} seconds")
     print(f"Total packets: {total_packets}")
-    print(f"Corrupt packets: {corrupt_packets} ({100*corrupt_packets/total_packets:.3f}%)")
+    if total_packets > 0:
+        print(f"Corrupt packets: {corrupt_packets} ({100*corrupt_packets/total_packets:.3f}%)")
+    else:
+        print(f"Corrupt packets: {corrupt_packets} (no packets received)")
     
     if parse_errors:
         print("\n=== PARSE ERRORS ===")
