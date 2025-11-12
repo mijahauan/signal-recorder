@@ -75,6 +75,228 @@ const serverStartTime = Date.now();
 // ============================================================================
 
 /**
+ * Get available data range by scanning NPZ files
+ */
+async function getAvailableDataRange() {
+  const archivesDir = join(dataRoot, 'archives');
+  
+  if (!fs.existsSync(archivesDir)) {
+    const now = Date.now() / 1000;
+    return { oldest: now, newest: now };
+  }
+  
+  let oldestTimestamp = Infinity;
+  let newestTimestamp = 0;
+  
+  try {
+    // Scan all channel directories
+    const channelDirs = fs.readdirSync(archivesDir, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => join(archivesDir, d.name));
+    
+    for (const channelDir of channelDirs) {
+      if (!fs.existsSync(channelDir)) continue;
+      
+      const npzFiles = fs.readdirSync(channelDir)
+        .filter(f => f.endsWith('.npz'))
+        .map(f => join(channelDir, f));
+      
+      for (const npzFile of npzFiles) {
+        try {
+          // Extract timestamp from filename: YYYYMMDDTHHMMSSZ_freq_iq.npz
+          const basename = npzFile.split('/').pop();
+          const match = basename.match(/(\d{8}T\d{6})Z/);
+          
+          if (match) {
+            const timestamp = match[1];
+            // Parse: 20241111T112400
+            const year = parseInt(timestamp.substr(0, 4));
+            const month = parseInt(timestamp.substr(4, 2)) - 1;
+            const day = parseInt(timestamp.substr(6, 2));
+            const hour = parseInt(timestamp.substr(9, 2));
+            const minute = parseInt(timestamp.substr(11, 2));
+            const second = parseInt(timestamp.substr(13, 2));
+            
+            const date = new Date(Date.UTC(year, month, day, hour, minute, second));
+            const unixTime = date.getTime() / 1000;
+            
+            if (unixTime < oldestTimestamp) oldestTimestamp = unixTime;
+            if (unixTime > newestTimestamp) newestTimestamp = unixTime;
+          }
+        } catch (err) {
+          // Skip files we can't parse
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error scanning NPZ files:', error);
+  }
+  
+  // If no files found, return current time
+  if (oldestTimestamp === Infinity || newestTimestamp === 0) {
+    const now = Date.now() / 1000;
+    return { oldest: now, newest: now };
+  }
+  
+  return {
+    oldest: oldestTimestamp,
+    newest: newestTimestamp
+  };
+}
+
+/**
+ * Calculate continuity metrics and detect gaps
+ */
+async function calculateContinuity(startTime, endTime) {
+  const archivesDir = join(dataRoot, 'archives');
+  const gaps = [];
+  
+  if (!fs.existsSync(archivesDir)) {
+    return {
+      metrics: {
+        uptime_pct: 0,
+        capture_seconds: 0,
+        downtime_seconds: endTime - startTime,
+        gap_count: 1
+      },
+      gaps: [{
+        start: new Date(startTime * 1000).toISOString(),
+        end: new Date(endTime * 1000).toISOString(),
+        duration_seconds: endTime - startTime,
+        cause: 'no_data_available',
+        channels_affected: 0,
+        severity: 'critical'
+      }]
+    };
+  }
+  
+  try {
+    // Get all NPZ files across all channels in time range
+    const allTimestamps = new Set();
+    const channelDirs = fs.readdirSync(archivesDir, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => join(archivesDir, d.name));
+    
+    const totalChannels = channelDirs.length;
+    
+    for (const channelDir of channelDirs) {
+      if (!fs.existsSync(channelDir)) continue;
+      
+      const npzFiles = fs.readdirSync(channelDir)
+        .filter(f => f.endsWith('.npz'));
+      
+      for (const npzFile of npzFiles) {
+        try {
+          const match = npzFile.match(/(\d{8}T\d{6})Z/);
+          if (match) {
+            const timestamp = match[1];
+            const year = parseInt(timestamp.substr(0, 4));
+            const month = parseInt(timestamp.substr(4, 2)) - 1;
+            const day = parseInt(timestamp.substr(6, 2));
+            const hour = parseInt(timestamp.substr(9, 2));
+            const minute = parseInt(timestamp.substr(11, 2));
+            const second = parseInt(timestamp.substr(13, 2));
+            
+            const date = new Date(Date.UTC(year, month, day, hour, minute, second));
+            const unixTime = date.getTime() / 1000;
+            
+            if (unixTime >= startTime && unixTime <= endTime) {
+              allTimestamps.add(unixTime);
+            }
+          }
+        } catch (err) {
+          // Skip files we can't parse
+        }
+      }
+    }
+    
+    // Sort timestamps to detect gaps
+    const sortedTimestamps = Array.from(allTimestamps).sort((a, b) => a - b);
+    
+    if (sortedTimestamps.length === 0) {
+      // No data in range
+      return {
+        metrics: {
+          uptime_pct: 0,
+          capture_seconds: 0,
+          downtime_seconds: endTime - startTime,
+          gap_count: 1
+        },
+        gaps: [{
+          start: new Date(startTime * 1000).toISOString(),
+          end: new Date(endTime * 1000).toISOString(),
+          duration_seconds: endTime - startTime,
+          cause: 'no_data_in_range',
+          channels_affected: totalChannels,
+          severity: 'critical'
+        }]
+      };
+    }
+    
+    // Detect gaps (expect files every 60 seconds)
+    const expectedInterval = 60; // 1 minute per NPZ file
+    const gapThreshold = 120; // Consider >2 minutes a gap
+    
+    for (let i = 1; i < sortedTimestamps.length; i++) {
+      const gap = sortedTimestamps[i] - sortedTimestamps[i - 1];
+      
+      if (gap > gapThreshold) {
+        const gapDuration = gap - expectedInterval;
+        gaps.push({
+          start: new Date((sortedTimestamps[i - 1] + expectedInterval) * 1000).toISOString(),
+          end: new Date(sortedTimestamps[i] * 1000).toISOString(),
+          duration_seconds: gapDuration,
+          cause: determineCause(gapDuration),
+          channels_affected: totalChannels,
+          severity: gapDuration > 600 ? 'critical' : (gapDuration > 60 ? 'warning' : 'minor')
+        });
+      }
+    }
+    
+    // Calculate metrics
+    const totalDuration = endTime - startTime;
+    const totalGapDuration = gaps.reduce((sum, g) => sum + g.duration_seconds, 0);
+    const captureDuration = totalDuration - totalGapDuration;
+    
+    return {
+      metrics: {
+        uptime_pct: (captureDuration / totalDuration) * 100,
+        capture_seconds: captureDuration,
+        downtime_seconds: totalGapDuration,
+        gap_count: gaps.length
+      },
+      gaps: gaps.slice(0, 50) // Limit to 50 most recent gaps
+    };
+  } catch (error) {
+    console.error('Error calculating continuity:', error);
+    return {
+      metrics: {
+        uptime_pct: 0,
+        capture_seconds: 0,
+        downtime_seconds: endTime - startTime,
+        gap_count: 0
+      },
+      gaps: []
+    };
+  }
+}
+
+/**
+ * Determine likely cause of gap based on duration
+ */
+function determineCause(durationSeconds) {
+  if (durationSeconds < 120) {
+    return 'network_packet_loss';
+  } else if (durationSeconds < 600) {
+    return 'brief_interruption';
+  } else if (durationSeconds < 3600) {
+    return 'service_restart';
+  } else {
+    return 'extended_outage';
+  }
+}
+
+/**
  * Get disk usage for a path
  */
 async function getDiskUsage(path) {
@@ -495,6 +717,275 @@ app.get('/api/v1/system/errors', async (req, res) => {
     console.error('Failed to get errors:', error);
     res.status(500).json({
       error: 'Failed to get errors',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * Data capture continuity - system-wide gap analysis
+ */
+app.get('/api/v1/system/continuity', async (req, res) => {
+  try {
+    const startParam = req.query.start;
+    const endParam = req.query.end;
+    
+    // Get available data range from NPZ files
+    const dataRange = await getAvailableDataRange();
+    
+    // Parse time range parameters
+    let startTime, endTime;
+    const now = Date.now() / 1000;
+    
+    if (startParam && endParam) {
+      // Custom range
+      startTime = parseInt(startParam);
+      endTime = parseInt(endParam);
+    } else if (startParam === 'all') {
+      // All available data
+      startTime = dataRange.oldest;
+      endTime = dataRange.newest;
+    } else {
+      // Quick pick ranges (default: 24 hours)
+      const range = req.query.range || '24h';
+      endTime = now;
+      
+      switch (range) {
+        case '24h':
+          startTime = now - 86400;
+          break;
+        case '7d':
+          startTime = now - 604800;
+          break;
+        case '30d':
+          startTime = now - 2592000;
+          break;
+        default:
+          startTime = now - 86400;
+      }
+    }
+    
+    // Constrain to available data
+    startTime = Math.max(startTime, dataRange.oldest);
+    endTime = Math.min(endTime, dataRange.newest);
+    
+    // Calculate continuity metrics
+    const continuity = await calculateContinuity(startTime, endTime);
+    
+    res.json({
+      range: {
+        start: new Date(startTime * 1000).toISOString(),
+        end: new Date(endTime * 1000).toISOString(),
+        duration_seconds: endTime - startTime
+      },
+      available_data: {
+        oldest_npz: new Date(dataRange.oldest * 1000).toISOString(),
+        newest_npz: new Date(dataRange.newest * 1000).toISOString(),
+        total_duration_seconds: dataRange.newest - dataRange.oldest
+      },
+      continuity: continuity.metrics,
+      gap_events: continuity.gaps
+    });
+  } catch (error) {
+    console.error('Failed to get continuity:', error);
+    res.status(500).json({
+      error: 'Failed to get continuity',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * Get discrimination time-series data for a channel and date
+ */
+app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) => {
+  try {
+    const { channelName, date } = req.params;
+    
+    // Map channel names to their actual directory names
+    // (Directory names come from archive dirs which use underscores differently)
+    const dirMap = {
+      'WWV 2.5 MHz': 'WWV_25_MHz',
+      'WWV 5 MHz': 'WWV_5_MHz',
+      'WWV 10 MHz': 'WWV_10_MHz',
+      'WWV 15 MHz': 'WWV_15_MHz'
+    };
+    
+    const channelDirName = dirMap[channelName] || channelName.replace(/ /g, '_');
+    const fileChannelName = channelName.replace(/ /g, '_');
+    const fileName = `${fileChannelName}_discrimination_${date}.csv`;
+    const filePath = join(dataRoot, 'analytics', channelDirName, 'discrimination', fileName);
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.json({
+        date: date,
+        channel: channelName,
+        data: [],
+        message: 'No data for this date'
+      });
+    }
+    
+    // Read CSV file
+    const csvContent = fs.readFileSync(filePath, 'utf8');
+    const lines = csvContent.trim().split('\n');
+    
+    // Parse CSV (skip header)
+    const data = [];
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(',');
+      if (parts.length >= 10) {
+        data.push({
+          timestamp_utc: parts[0],
+          minute_timestamp: parseInt(parts[1]),
+          wwv_detected: parts[2] === '1',
+          wwvh_detected: parts[3] === '1',
+          wwv_snr_db: parseFloat(parts[4]),
+          wwvh_snr_db: parseFloat(parts[5]),
+          power_ratio_db: parseFloat(parts[6]),
+          differential_delay_ms: parts[7] !== '' ? parseFloat(parts[7]) : null,
+          dominant_station: parts[8],
+          confidence: parts[9]
+        });
+      }
+    }
+    
+    res.json({
+      date: date,
+      channel: channelName,
+      data: data,
+      count: data.length
+    });
+  } catch (error) {
+    console.error('Failed to get discrimination data:', error);
+    res.status(500).json({
+      error: 'Failed to get discrimination data',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * Get available Digital RF data for spectrogram generation
+ */
+app.get('/api/v1/channels/:channelName/spectrogram/:date', async (req, res) => {
+  try {
+    const { channelName, date } = req.params;
+    
+    // For now, return placeholder - actual spectrogram generation 
+    // would require Python/scipy processing of Digital RF HDF5 files
+    res.json({
+      date: date,
+      channel: channelName,
+      message: 'Spectrogram generation requires backend processing',
+      suggestion: 'Consider pre-generating daily spectrograms during analytics processing'
+    });
+  } catch (error) {
+    console.error('Failed to get spectrogram data:', error);
+    res.status(500).json({
+      error: 'Failed to get spectrogram data',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * Channel details - comprehensive per-channel metrics
+ */
+app.get('/api/v1/channels/details', async (req, res) => {
+  try {
+    const coreStatus = await getCoreRecorderStatus();
+    const analyticsStatus = await getAnalyticsServiceStatus();
+    
+    const channels = [];
+    
+    // Iterate through core recorder channels
+    if (coreStatus.channels) {
+      for (const [ssrc, coreChannel] of Object.entries(coreStatus.channels)) {
+        const channelName = coreChannel.channel_name;
+        
+        // Find corresponding analytics data
+        let analyticsChannel = null;
+        if (analyticsStatus.channels) {
+          analyticsChannel = analyticsStatus.channels[channelName];
+        }
+        
+        // Calculate packet loss rate
+        const packetLossRate = coreChannel.packets_received > 0
+          ? (coreChannel.gaps_detected / coreChannel.packets_received * 100)
+          : 0;
+        
+        // Time snap status
+        let timeSnapStatus = {
+          established: false,
+          source: null,
+          confidence: 0,
+          age_minutes: null
+        };
+        
+        if (analyticsChannel && analyticsChannel.time_snap) {
+          timeSnapStatus = {
+            established: analyticsChannel.time_snap.established,
+            source: analyticsChannel.time_snap.station || analyticsChannel.time_snap.source,
+            confidence: analyticsChannel.time_snap.confidence || 0,
+            age_minutes: analyticsChannel.time_snap.age_minutes || null
+          };
+        }
+        
+        // WWV/H time difference from discrimination
+        let wwvhTimeDiff = null;
+        const isWWVChannel = channelName.includes('WWV') && !channelName.includes('WWVH');
+        if (isWWVChannel && analyticsChannel && analyticsChannel.wwvh_discrimination) {
+          const disc = analyticsChannel.wwvh_discrimination;
+          if (disc.enabled) {
+            // Use latest measurement if available, otherwise use mean
+            if (disc.latest && disc.latest.differential_delay_ms !== null && disc.latest.differential_delay_ms !== undefined) {
+              wwvhTimeDiff = disc.latest.differential_delay_ms;
+            } else if (disc.mean_differential_delay_ms !== null && disc.mean_differential_delay_ms !== undefined) {
+              wwvhTimeDiff = disc.mean_differential_delay_ms;
+            }
+          }
+        }
+        
+        channels.push({
+          ssrc: ssrc,
+          channel_name: channelName,
+          frequency_hz: coreChannel.frequency_hz,
+          rtp_stream: {
+            status: coreChannel.status,
+            active: coreChannel.status === 'recording',
+            packets_received: coreChannel.packets_received,
+            last_packet_time: coreChannel.last_packet_time
+          },
+          time_snap: timeSnapStatus,
+          packet_loss_rate: packetLossRate,
+          wwvh_time_diff_ms: wwvhTimeDiff,
+          quality: analyticsChannel ? {
+            completeness_pct: analyticsChannel.quality_metrics?.last_completeness_pct || null,
+            packet_loss_pct: analyticsChannel.quality_metrics?.last_packet_loss_pct || null
+          } : null,
+          tone_detections: analyticsChannel ? analyticsChannel.tone_detections : null,
+          digital_rf: analyticsChannel ? {
+            samples_written: analyticsChannel.digital_rf?.samples_written || 0,
+            files_written: analyticsChannel.digital_rf?.files_written || 0
+          } : null
+        });
+      }
+    }
+    
+    res.json({
+      timestamp: new Date().toISOString(),
+      channels: channels,
+      summary: {
+        total_channels: channels.length,
+        active_channels: channels.filter(c => c.rtp_stream.active).length,
+        time_snap_established: channels.filter(c => c.time_snap.established).length
+      }
+    });
+  } catch (error) {
+    console.error('Failed to get channel details:', error);
+    res.status(500).json({
+      error: 'Failed to get channel details',
       details: error.message
     });
   }

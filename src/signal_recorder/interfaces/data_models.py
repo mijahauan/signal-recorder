@@ -335,6 +335,7 @@ class ToneDetectionResult:
         use_for_time_snap: True for WWV/CHU (timing), False for WWVH (propagation)
         correlation_peak: Peak correlation value from matched filter
         noise_floor: Estimated noise floor during detection
+        tone_power_db: Power of detected tone relative to noise floor (dB) - for discrimination
     """
     station: StationType
     frequency_hz: float
@@ -346,6 +347,7 @@ class ToneDetectionResult:
     use_for_time_snap: bool
     correlation_peak: float
     noise_floor: float
+    tone_power_db: Optional[float] = None
     
     def is_wwv_or_chu(self) -> bool:
         """Check if this is a timing reference station (not WWVH)"""
@@ -372,6 +374,7 @@ class ToneDetectionResult:
             'use_for_time_snap': self.use_for_time_snap,
             'correlation_peak': self.correlation_peak,
             'noise_floor': self.noise_floor,
+            'tone_power_db': self.tone_power_db,
         }
 
 

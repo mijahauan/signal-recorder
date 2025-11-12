@@ -192,8 +192,6 @@ class PacketResequencer:
         - Negative = backward jump (ignore)
         - Positive = forward gap (fill with zeros)
         """
-        self.gaps_detected += 1
-        
         # KA9Q technique: signed 32-bit difference handles wraps naturally
         # Python doesn't have fixed-width int types, so simulate with masking
         ts_diff = (next_pkt.timestamp - self.next_expected_ts) & 0xFFFFFFFF
@@ -213,6 +211,9 @@ class PacketResequencer:
                     f"Ignoring (likely out-of-order or restart)."
                 )
             ts_gap = 0
+        else:
+            # Only count as gap if there's actual missing samples
+            self.gaps_detected += 1
         
         # Sanity check: cap absurdly large gaps
         if ts_gap > self.MAX_GAP_SAMPLES:

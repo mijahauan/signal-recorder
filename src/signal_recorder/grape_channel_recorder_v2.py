@@ -151,10 +151,14 @@ class GRAPEChannelRecorderV2:
         # Both WWV and CHU broadcast 1000 Hz tones at minute boundaries
         # WWV: 0.8s duration, CHU: 0.5s duration
         self.tone_detector = None
+        self.wwvh_discriminator = None
         if is_wwv_channel:
             from .grape_rtp_recorder import MultiStationToneDetector, Resampler
             # Instantiate multi-station detector (3 kHz sample rate after resampling)
             self.tone_detector = MultiStationToneDetector(channel_name=channel_name, sample_rate=3000)
+            # Instantiate WWV/WWVH discriminator for improved discrimination
+            from .wwvh_discrimination import WWVHDiscriminator
+            self.wwvh_discriminator = WWVHDiscriminator(channel_name=channel_name)
             # Downsample to 3 kHz for tone detection (saves CPU)
             # Buffered WWV detection approach
             # Instead of real-time streaming detection, buffer samples and post-process
@@ -164,6 +168,7 @@ class GRAPEChannelRecorderV2:
             self.wwv_buffer_end_second = 15    # Process at :15
             tone_type = "WWV/CHU" if "CHU" in channel_name else "WWV"
             logger.info(f"{channel_name}: {tone_type} BUFFERED tone detection ENABLED (:45-:15 window, 30s)")
+            logger.info(f"{channel_name}: WWV/WWVH discrimination ENABLED")
         
         # Statistics
         self.total_samples = 0
@@ -183,6 +188,8 @@ class GRAPEChannelRecorderV2:
         self.differential_delays = []  # List of WWV-WWVH differential delays
         self.current_minute_wwv_drift_ms = None  # Drift for current minute
         self.wwv_results_by_minute = {}  # minute_timestamp -> list of detections (WWV, WWVH, CHU)
+        self.discrimination_results = {}  # minute_timestamp -> DiscriminationResult
+        self.pending_440hz_analysis = set()  # minute_timestamp -> set of minutes needing 440 Hz analysis
         
         # Matched filter templates for tone detection (at 3 kHz processing rate)
         if self.is_wwv_channel:
@@ -606,6 +613,52 @@ class GRAPEChannelRecorderV2:
                 # Save all detections for this minute (WWV, WWVH, CHU may all be present)
                 if detections:
                     self.wwv_results_by_minute[minute_key] = detections
+                    
+                    # Run discrimination analysis if discriminator is enabled
+                    if self.wwvh_discriminator:
+                        # Convert detections to ToneDetectionResult format for discriminator
+                        from .interfaces.data_models import ToneDetectionResult, StationType
+                        tone_results = []
+                        for det in detections:
+                            station_type = StationType[det['station']]
+                            tone_results.append(ToneDetectionResult(
+                                station=station_type,
+                                frequency_hz=det['frequency_hz'],
+                                duration_sec=det['duration_ms'] / 1000.0,
+                                timestamp_utc=det['onset_utc_time'],
+                                timing_error_ms=det['timing_error_ms'],
+                                snr_db=det['snr_db'],
+                                confidence=det.get('correlation_peak', 0.0) / det.get('noise_floor', 1.0) if det.get('noise_floor', 0) > 0 else 0.0,
+                                use_for_time_snap=station_type in [StationType.WWV, StationType.CHU],
+                                correlation_peak=det.get('correlation_peak', 0.0),
+                                noise_floor=det.get('noise_floor', 0.0),
+                                tone_power_db=det.get('tone_power_db', det.get('snr_db'))
+                            ))
+                        
+                        # Compute discrimination
+                        discrimination = self.wwvh_discriminator.compute_discrimination(
+                            tone_results,
+                            minute_key
+                        )
+                        
+                        if discrimination:
+                            # Store discrimination result for later use
+                            if not hasattr(self, 'discrimination_results'):
+                                self.discrimination_results = {}
+                            self.discrimination_results[minute_key] = discrimination
+                            
+                            logger.info(f"{self.channel_name}: Discrimination result - "
+                                       f"Power ratio: {discrimination.power_ratio_db:+.1f}dB, "
+                                       f"Delay: {discrimination.differential_delay_ms:+.1f}ms, "
+                                       f"Dominant: {discrimination.dominant_station}, "
+                                       f"Confidence: {discrimination.confidence}")
+                            
+                            # For 440 Hz analysis, we need full minute samples
+                            # This will be done when the minute file is finalized
+                            # Store the minute key for later 440 Hz analysis
+                            if not hasattr(self, 'pending_440hz_analysis'):
+                                self.pending_440hz_analysis = set()
+                            self.pending_440hz_analysis.add(minute_key)
                 
                 # Clean up processed buffer and old buffers
                 # Delete the buffer we just processed
@@ -763,6 +816,45 @@ class GRAPEChannelRecorderV2:
                 else:
                     snr_estimate = 0.0
                 
+                # Calculate actual tone power using FFT on the detected tone segment
+                # Extract the tone segment from the audio signal
+                tone_start_idx_3k = max(0, peak_idx - int(0.1 * 3000))  # Start slightly before peak
+                tone_end_idx_3k = min(len(audio_3k), peak_idx + int(expected_dur * 3000))
+                tone_segment = audio_3k[tone_start_idx_3k:tone_end_idx_3k]
+                
+                tone_power_db = None
+                if len(tone_segment) > int(0.1 * 3000):  # Need at least 100ms
+                    from scipy.fft import rfft, rfftfreq
+                    windowed = tone_segment * scipy_signal.windows.hann(len(tone_segment))
+                    fft_result = rfft(windowed)
+                    freqs = rfftfreq(len(windowed), 1/3000)
+                    
+                    # Find bin closest to target frequency
+                    freq_idx = np.argmin(np.abs(freqs - freq))
+                    power_at_freq = np.abs(fft_result[freq_idx])**2
+                    
+                    # Measure noise floor in nearby bins (excluding the tone)
+                    noise_low = max(0, freq_idx - int(50.0 * len(windowed) / 3000))
+                    noise_high = min(len(fft_result), freq_idx + int(50.0 * len(windowed) / 3000))
+                    exclude_low = max(0, freq_idx - int(10.0 * len(windowed) / 3000))
+                    exclude_high = min(len(fft_result), freq_idx + int(10.0 * len(windowed) / 3000))
+                    
+                    noise_bins = np.concatenate([
+                        np.arange(noise_low, exclude_low),
+                        np.arange(exclude_high, noise_high)
+                    ])
+                    
+                    if len(noise_bins) > 10:
+                        noise_power = np.mean(np.abs(fft_result[noise_bins])**2)
+                    else:
+                        noise_power = np.mean(np.abs(fft_result)**2)
+                    
+                    # Calculate power relative to noise floor
+                    if noise_power > 0:
+                        tone_power_db = 10 * np.log10(power_at_freq / noise_power)
+                    else:
+                        tone_power_db = snr_estimate  # Fallback to SNR estimate
+                
                 detection = {
                     'detected': True,
                     'station': station_name,
@@ -773,7 +865,9 @@ class GRAPEChannelRecorderV2:
                     'snr_db': snr_estimate,
                     'duration_ms': expected_dur * 1000,
                     'correlation_peak': float(peak_val),
-                    'correlation_snr': float(snr_estimate)
+                    'correlation_snr': float(snr_estimate),
+                    'noise_floor': float(noise_floor),
+                    'tone_power_db': tone_power_db if tone_power_db is not None else snr_estimate
                 }
                 
                 detections.append(detection)
@@ -1100,6 +1194,19 @@ class GRAPEChannelRecorderV2:
             'sample_rate': self.sample_rate,
             'minutes_written': self.file_writer.minutes_written,
         }
+        
+        # Add WWV/WWVH discrimination statistics if available
+        if hasattr(self, 'wwvh_discriminator') and self.wwvh_discriminator:
+            discrimination_stats = self.wwvh_discriminator.get_statistics()
+            if discrimination_stats['count'] > 0:
+                stats['wwvh_discrimination'] = {
+                    'measurement_count': discrimination_stats['count'],
+                    'mean_power_ratio_db': discrimination_stats['mean_power_ratio_db'],
+                    'mean_differential_delay_ms': discrimination_stats['mean_differential_delay_ms'],
+                    'wwv_dominant_pct': (discrimination_stats['wwv_dominant_count'] / discrimination_stats['count'] * 100),
+                    'wwvh_dominant_pct': (discrimination_stats['wwvh_dominant_count'] / discrimination_stats['count'] * 100),
+                    'balanced_pct': (discrimination_stats['balanced_count'] / discrimination_stats['count'] * 100)
+                }
         
         return stats
     

@@ -74,6 +74,7 @@ class CoreNPZWriter:
         # Statistics
         self.minutes_written = 0
         self.total_samples_written = 0
+        self.last_file_written = None
         
         logger.info(f"{channel_name}: CoreNPZWriter initialized")
         logger.info(f"{channel_name}: Sample rate: {sample_rate} Hz, SSRC: {ssrc}")
@@ -162,14 +163,10 @@ class CoreNPZWriter:
         # Convert to numpy array
         data = np.array(self.current_minute_samples, dtype=np.complex64)
         
-        # Create directory structure: YYYYMMDD/CALLSIGN_GRID/INSTRUMENT/CHANNEL/
-        date_str = self.current_minute_timestamp.strftime("%Y%m%d")
-        callsign = self.station_config.get('callsign', 'UNKNOWN')
-        grid = self.station_config.get('grid_square', 'UNKNOWN')
-        instrument = self.station_config.get('instrument_id', 'UNKNOWN')
-        
-        dir_path = (self.output_dir / date_str / f"{callsign}_{grid}" / 
-                    instrument / self.channel_name.replace(' ', '_'))
+        # Create directory structure: archives/CHANNEL/
+        # Simple structure for dual-service architecture compatibility
+        channel_dir = self.channel_name.replace(' ', '_').replace('.', '')
+        dir_path = self.output_dir / 'archives' / channel_dir
         dir_path.mkdir(parents=True, exist_ok=True)
         
         # Filename: YYYYMMDDTHHmmSSZ_FREQ_iq.npz
@@ -219,6 +216,7 @@ class CoreNPZWriter:
         # Update statistics
         self.minutes_written += 1
         self.total_samples_written += len(data)
+        self.last_file_written = file_path  # Track for status reporting
         
         # Log completion
         file_size_mb = file_path.stat().st_size / (1024 * 1024)

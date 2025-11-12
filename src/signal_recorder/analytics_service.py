@@ -18,6 +18,7 @@ Design Philosophy:
 import numpy as np
 import logging
 import time
+import os
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Tuple
@@ -28,6 +29,7 @@ import json
 
 from .tone_detector import MultiStationToneDetector
 from .digital_rf_writer import DigitalRFWriter
+from .wwvh_discrimination import WWVHDiscriminator, DiscriminationResult
 from .interfaces.data_models import (
     TimeSnapReference, 
     QualityInfo, 
@@ -193,6 +195,12 @@ class AnalyticsService:
             sample_rate=3000  # Internal processing rate
         )
         
+        # WWV/H discriminator (for channels that see both WWV and WWVH)
+        self.wwvh_discriminator: Optional[WWVHDiscriminator] = None
+        if self._is_wwv_wwvh_channel(channel_name):
+            self.wwvh_discriminator = WWVHDiscriminator(channel_name=channel_name)
+            logger.info("✅ WWVHDiscriminator initialized for dual-station channel")
+        
         # Digital RF writer (16 kHz → 10 Hz decimation + HDF5 output)
         self.drf_writer: Optional[DigitalRFWriter] = None
         try:
@@ -211,6 +219,41 @@ class AnalyticsService:
         
         # Running flag
         self.running = False
+        
+        # Status tracking
+        self.start_time = time.time()
+        self.status_file = self.output_dir / 'status' / 'analytics-service-status.json'
+        self.status_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Discrimination tracking
+        self.latest_discrimination: Optional[DiscriminationResult] = None
+        
+        # Cross-file buffering for tone detection
+        # Store tail of previous file to span minute boundaries
+        self.previous_file_tail: Optional[np.ndarray] = None  # Last 30s of previous file (16 kHz IQ)
+        self.previous_file_rtp_end: Optional[int] = None  # RTP timestamp at end of previous file
+        
+        # Rolling buffer for tone detection (need ~30 seconds of context)
+        # Store resampled (3 kHz) samples to prepend to new archives
+        self.tone_detection_buffer: Optional[np.ndarray] = None
+        self.buffer_max_samples = int(30 * 3000)  # 30 seconds at 3 kHz
+        self.discrimination_log_dir = self.output_dir / 'discrimination'
+        self.discrimination_log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Per-channel statistics
+        self.stats = {
+            'last_processed_file': None,
+            'last_processed_time': None,
+            'drf_samples_written': 0,
+            'drf_files_written': 0,
+            'wwv_detections': 0,
+            'wwvh_detections': 0,
+            'chu_detections': 0,
+            'total_detections': 0,
+            'last_detection_time': None,
+            'last_completeness_pct': 0.0,
+            'last_packet_loss_pct': 0.0
+        }
         
         logger.info(f"AnalyticsService initialized for {channel_name}")
         logger.info(f"Archive dir: {self.archive_dir}")
@@ -257,6 +300,107 @@ class AnalyticsService:
                     json.dump(self.state.to_dict(), f, indent=2)
             except Exception as e:
                 logger.warning(f"Failed to save state: {e}")
+    
+    def _get_discrimination_status(self) -> Optional[Dict]:
+        """Get WWV/H discrimination status for status file"""
+        if not self.wwvh_discriminator:
+            return None
+        
+        # Get statistics from discriminator
+        stats = self.wwvh_discriminator.get_statistics()
+        
+        if stats['count'] == 0:
+            return {
+                'enabled': True,
+                'measurements': 0,
+                'latest': None
+            }
+        
+        # Include latest measurement if available
+        latest_dict = None
+        if self.latest_discrimination:
+            latest_dict = self.latest_discrimination.to_dict()
+        
+        return {
+            'enabled': True,
+            'measurements': stats['count'],
+            'mean_power_ratio_db': stats['mean_power_ratio_db'],
+            'mean_differential_delay_ms': stats['mean_differential_delay_ms'],
+            'wwv_dominant_pct': (stats['wwv_dominant_count'] / stats['count'] * 100) if stats['count'] > 0 else 0,
+            'wwvh_dominant_pct': (stats['wwvh_dominant_count'] / stats['count'] * 100) if stats['count'] > 0 else 0,
+            'balanced_pct': (stats['balanced_count'] / stats['count'] * 100) if stats['count'] > 0 else 0,
+            'latest': latest_dict
+        }
+    
+    def _write_status(self):
+        """Write current status to JSON file for web-ui monitoring"""
+        try:
+            # Calculate time_snap age if established
+            time_snap_dict = None
+            if self.state.time_snap:
+                age_minutes = int((time.time() - self.state.time_snap.established_at) / 60)
+                time_snap_dict = {
+                    'established': True,
+                    'source': self.state.time_snap.source,
+                    'station': self.state.time_snap.station,
+                    'rtp_timestamp': self.state.time_snap.rtp_timestamp,
+                    'utc_timestamp': self.state.time_snap.utc_timestamp,
+                    'confidence': self.state.time_snap.confidence,
+                    'age_minutes': age_minutes
+                }
+            
+            # Calculate pending files
+            pending_files = len(self.discover_new_files())
+            
+            status = {
+                'service': 'analytics_service',
+                'version': '1.0',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'uptime_seconds': int(time.time() - self.start_time),
+                'pid': os.getpid(),
+                'channels': {
+                    self.channel_name: {
+                        'channel_name': self.channel_name,
+                        'frequency_hz': self.frequency_hz,
+                        'npz_files_processed': self.state.files_processed,
+                        'last_processed_file': str(self.state.last_processed_file.name) if self.state.last_processed_file else None,
+                        'last_processed_time': datetime.fromtimestamp(self.state.last_processed_time, timezone.utc).isoformat() if self.state.last_processed_time else None,
+                        'time_snap': time_snap_dict,
+                        'tone_detections': {
+                            'wwv': self.stats['wwv_detections'],
+                            'wwvh': self.stats['wwvh_detections'],
+                            'chu': self.stats['chu_detections'],
+                            'total': self.stats['total_detections'],
+                            'last_detection_time': self.stats['last_detection_time']
+                        },
+                        'digital_rf': {
+                            'samples_written': self.stats['drf_samples_written'],
+                            'files_written': self.stats['drf_files_written'],
+                            'last_write_time': self.stats['last_processed_time'],
+                            'output_dir': str(self.drf_dir)
+                        },
+                        'quality_metrics': {
+                            'last_completeness_pct': self.stats['last_completeness_pct'],
+                            'last_packet_loss_pct': self.stats['last_packet_loss_pct']
+                        },
+                        'wwvh_discrimination': self._get_discrimination_status()
+                    }
+                },
+                'overall': {
+                    'channels_processing': 1,
+                    'total_npz_processed': self.state.files_processed,
+                    'pending_npz_files': pending_files
+                }
+            }
+            
+            # Write atomically
+            temp_file = self.status_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump(status, f, indent=2)
+            temp_file.replace(self.status_file)
+            
+        except Exception as e:
+            logger.error(f"Failed to write status file: {e}")
     
     def discover_new_files(self) -> List[Path]:
         """
@@ -324,13 +468,33 @@ class AnalyticsService:
                 if detections:
                     updated = self._update_time_snap(detections, archive)
                     results['time_snap_updated'] = updated
+                    
+                    # Update detection stats
+                    for det in detections:
+                        if det.station == StationType.WWV:
+                            self.stats['wwv_detections'] += 1
+                        elif det.station == StationType.WWVH:
+                            self.stats['wwvh_detections'] += 1
+                        elif det.station == StationType.CHU:
+                            self.stats['chu_detections'] += 1
+                    self.stats['total_detections'] = len(self.state.detection_history)
+                    self.stats['last_detection_time'] = datetime.now(timezone.utc).isoformat()
             
             # Step 3: Decimation and Digital RF output (if time_snap available)
             if self.state.time_snap:
                 decimated_count = self._decimate_and_write_drf(archive, quality)
                 results['decimated_samples'] = decimated_count
+                self.stats['drf_samples_written'] += decimated_count
+                if decimated_count > 0:
+                    self.stats['drf_files_written'] += 1
             else:
                 logger.debug("Skipping Digital RF - time_snap not yet established")
+            
+            # Update quality stats
+            self.stats['last_completeness_pct'] = quality.completeness_pct
+            self.stats['last_packet_loss_pct'] = quality.packet_loss_pct
+            self.stats['last_processed_file'] = str(archive.file_path.name)
+            self.stats['last_processed_time'] = datetime.now(timezone.utc).isoformat()
             
             # Step 4: Write discontinuity log
             self._write_discontinuity_log(archive, quality)
@@ -400,16 +564,48 @@ class AnalyticsService:
         """
         Run WWV/CHU/WWVH tone detection on archive
         
+        Combines tail of previous file with head of current file to create
+        a buffer spanning the minute boundary where WWV/CHU tones occur.
+        
         Args:
             archive: Loaded NPZ archive
             
         Returns:
             List of detected tones
         """
+        logger.info(f"⏱️ _detect_tones called for {archive.file_path.name}")
+        
+        # Create detection buffer spanning minute boundary
+        # Tone occurs AT the boundary between files
+        if self.previous_file_tail is not None:
+            # Combine: tail of previous (30s) + head of current (30s)
+            # This creates a 60s buffer with the minute boundary in the middle
+            current_head_samples = 30 * archive.sample_rate  # 30 seconds
+            current_head = archive.iq_samples[:current_head_samples]
+            
+            # Concatenate
+            combined_iq = np.concatenate([self.previous_file_tail, current_head])
+            
+            # RTP timestamp of the combined buffer start (from previous file tail)
+            buffer_rtp_start = self.previous_file_rtp_end - len(self.previous_file_tail)
+            
+            logger.info(f"Cross-file buffer: {len(self.previous_file_tail)} (prev) + {len(current_head)} (curr) = {len(combined_iq)} samples")
+        else:
+            # First file - just use current file
+            # Tone detection may fail, but that's OK for the first file
+            combined_iq = archive.iq_samples
+            buffer_rtp_start = archive.rtp_timestamp
+            logger.info(f"First file - using full archive ({len(combined_iq)} samples), tone detection may not work")
+        
+        # Store tail of current file for next iteration (last 30 seconds)
+        tail_samples = 30 * archive.sample_rate
+        self.previous_file_tail = archive.iq_samples[-tail_samples:]
+        self.previous_file_rtp_end = archive.rtp_timestamp + len(archive.iq_samples)
+        
         # Resample 16 kHz → 3 kHz for tone detection
         try:
             resampled = scipy_signal.resample_poly(
-                archive.iq_samples,
+                combined_iq,
                 up=3,
                 down=16,
                 axis=0
@@ -418,13 +614,36 @@ class AnalyticsService:
             logger.error(f"Resampling failed: {e}")
             return []
         
-        # Calculate UTC timestamp for first sample
-        utc_timestamp = archive.calculate_utc_timestamp(self.state.time_snap)
+        detection_buffer = resampled
         
-        # Run tone detection
+        # Calculate UTC timestamp for the buffer
+        # The buffer spans from previous file tail to current file head
+        # Minute boundary (where tone occurs) should be at the MIDDLE of this buffer
+        if self.state.time_snap:
+            # Use time_snap to calculate precise UTC of buffer start
+            buffer_start_utc = self.state.time_snap.calculate_sample_time(buffer_rtp_start)
+        else:
+            # No time_snap yet - use wall-clock timestamp from NPZ file
+            # If we have previous file, buffer starts 30s before current file
+            if self.previous_file_rtp_end is not None:
+                buffer_start_utc = archive.unix_timestamp - 30.0
+            else:
+                # First file - buffer starts at file start
+                buffer_start_utc = archive.unix_timestamp
+            logger.info(f"Using NPZ wall-clock timestamp for initial tone detection: {buffer_start_utc:.2f}")
+        
+        # CRITICAL: Tone detector expects timestamp to find minute boundary IN the buffer
+        # Use middle of buffer (where the minute boundary should be)
+        buffer_duration_sec = len(detection_buffer) / 3000  # 3 kHz sample rate
+        buffer_middle_utc = buffer_start_utc + (buffer_duration_sec / 2)
+        
+        # Run tone detection on combined buffer
+        logger.info(f"Tone detection: buffer_len={len(detection_buffer)} samples ({buffer_duration_sec:.1f}s), "
+                    f"buffer_start={buffer_start_utc:.2f}, buffer_middle={buffer_middle_utc:.2f}")
+        
         detections = self.tone_detector.process_samples(
-            timestamp=utc_timestamp,
-            samples=resampled,
+            timestamp=buffer_middle_utc,  # Use middle of buffer for proper minute boundary detection
+            samples=detection_buffer,
             rtp_timestamp=archive.rtp_timestamp
         )
         
@@ -433,6 +652,30 @@ class AnalyticsService:
             for det in detections:
                 logger.info(f"  {det.station.value}: {det.timing_error_ms:+.1f}ms, "
                            f"SNR={det.snr_db:.1f}dB, use_for_time_snap={det.use_for_time_snap}")
+        
+        # Run WWV/H discrimination if this is a dual-station channel
+        if self.wwvh_discriminator:
+            # Get minute timestamp (for the archive being processed, not buffer start)
+            archive_utc = archive.calculate_utc_timestamp(self.state.time_snap)
+            minute_timestamp = int(archive_utc / 60) * 60
+            
+            # Run discrimination (ALWAYS returns a result - uses noise floor when needed)
+            discrimination = self.wwvh_discriminator.compute_discrimination(
+                detections=detections,
+                minute_timestamp=minute_timestamp
+            )
+            
+            # Store latest result
+            self.latest_discrimination = discrimination
+            
+            # Log to daily file for historical retrieval
+            self._log_discrimination(discrimination)
+            
+            # Log if both detected (detailed logging in discriminator)
+            if discrimination.wwv_detected and discrimination.wwvh_detected:
+                logger.info(f"Discrimination: Power ratio={discrimination.power_ratio_db:+.1f}dB, "
+                           f"Delay={discrimination.differential_delay_ms:+.1f}ms, "
+                           f"Dominant={discrimination.dominant_station}")
         
         return detections or []
     
@@ -619,7 +862,53 @@ class AnalyticsService:
     def _is_tone_detection_channel(self, channel_name: str) -> bool:
         """Check if channel should have tone detection"""
         tone_keywords = ['WWV', 'CHU', 'WWVH']
-        return any(kw in channel_name.upper() for kw in tone_keywords)
+        result = any(kw in channel_name.upper() for kw in tone_keywords)
+        logger.info(f"🔍 Tone detection check for '{channel_name}': {result}")
+        return result
+    
+    def _is_wwv_wwvh_channel(self, channel_name: str) -> bool:
+        """
+        Check if channel can receive both WWV and WWVH
+        
+        WWV and WWVH share frequencies: 2.5, 5, 10, 15 MHz
+        """
+        freq_mhz = self.frequency_hz / 1e6
+        shared_freqs = [2.5, 5.0, 10.0, 15.0]
+        return any(abs(freq_mhz - f) < 0.1 for f in shared_freqs)
+    
+    def _log_discrimination(self, result: 'DiscriminationResult'):
+        """
+        Log discrimination result to daily CSV file
+        
+        Format: timestamp, wwv_detected, wwvh_detected, wwv_snr_db, wwvh_snr_db,
+                power_ratio_db, differential_delay_ms, dominant_station, confidence
+        """
+        try:
+            # Get date for filename
+            dt = datetime.fromtimestamp(result.minute_timestamp, timezone.utc)
+            date_str = dt.strftime('%Y%m%d')
+            
+            # Create daily log file
+            log_file = self.discrimination_log_dir / f'{self.channel_name.replace(" ", "_")}_discrimination_{date_str}.csv'
+            
+            # Write header if new file
+            write_header = not log_file.exists()
+            
+            with open(log_file, 'a') as f:
+                if write_header:
+                    f.write('timestamp_utc,minute_timestamp,wwv_detected,wwvh_detected,'
+                           'wwv_snr_db,wwvh_snr_db,power_ratio_db,differential_delay_ms,'
+                           'dominant_station,confidence\n')
+                
+                # Format data
+                f.write(f'{dt.isoformat()},{result.minute_timestamp},'
+                       f'{int(result.wwv_detected)},{int(result.wwvh_detected)},'
+                       f'{result.wwv_power_db:.2f},{result.wwvh_power_db:.2f},'
+                       f'{result.power_ratio_db:.2f},{result.differential_delay_ms if result.differential_delay_ms is not None else ""},'
+                       f'{result.dominant_station},{result.confidence}\n')
+                       
+        except Exception as e:
+            logger.warning(f"Failed to log discrimination: {e}")
     
     def run(self, poll_interval: float = 10.0):
         """
@@ -628,65 +917,81 @@ class AnalyticsService:
         Args:
             poll_interval: Seconds between directory scans
         """
+        logger.info("Analytics service started")
         self.running = True
-        logger.info(f"Analytics service starting (poll interval: {poll_interval}s)")
         
-        while self.running:
-            try:
-                # Discover new files
-                new_files = self.discover_new_files()
-                
-                # Process each file
-                for file_path in new_files:
-                    try:
-                        logger.info(f"Processing: {file_path.name}")
-                        
-                        # Load archive
-                        archive = NPZArchive.load(file_path)
-                        
-                        # Process through analytics pipeline
-                        results = self.process_archive(archive)
-                        
-                        # Update state
-                        self.state.last_processed_file = file_path
-                        self.state.last_processed_time = file_path.stat().st_mtime
-                        self.state.files_processed += 1
-                        
-                        # Save state periodically
-                        if self.state.files_processed % 10 == 0:
-                            self._save_state()
-                        
-                        logger.info(f"Processed: {file_path.name} "
-                                   f"(completeness={results['quality_metrics']['completeness_pct']:.1f}%, "
-                                   f"detections={len(results['tone_detections'])})")
-                        
-                    except Exception as e:
-                        logger.error(f"Failed to process {file_path}: {e}", exc_info=True)
-                        # Continue to next file
-                
-                # Save state after batch
-                if new_files:
-                    self._save_state()
-                
-                # Sleep until next poll
-                time.sleep(poll_interval)
-                
-            except KeyboardInterrupt:
-                logger.info("Shutting down on keyboard interrupt")
-                self.running = False
-            except Exception as e:
-                logger.error(f"Error in main loop: {e}", exc_info=True)
-                time.sleep(poll_interval)
+        # Write initial status
+        self._write_status()
         
-        # Final state save
-        self._save_state()
+        last_status_time = 0
+        try:
+            while self.running:
+                try:
+                    # Discover new files
+                    new_files = self.discover_new_files()
+                    
+                    if not new_files:
+                        logger.debug("No new files to process")
+                    
+                    # Process each new file
+                    for file_path in new_files:
+                        if not self.running:
+                            break
+                        
+                        try:
+                            # Load NPZ archive
+                            archive = NPZArchive.load(file_path)
+                            
+                            # Process through full pipeline
+                            results = self.process_archive(archive)
+                            
+                            # Update state
+                            self.state.last_processed_file = file_path
+                            self.state.last_processed_time = file_path.stat().st_mtime
+                            self.state.files_processed += 1
+                            
+                            # Save state periodically
+                            if self.state.files_processed % 10 == 0:
+                                self._save_state()
+                            
+                            logger.info(f"Processed: {file_path.name} "
+                                       f"(completeness={results['quality_metrics']['completeness_pct']:.1f}%, "
+                                       f"detections={len(results['tone_detections'])})")
+                            
+                        except Exception as e:
+                            logger.error(f"Failed to process {file_path}: {e}", exc_info=True)
+                            # Continue to next file
+                    
+                    # Save state after batch
+                    if new_files:
+                        self._save_state()
+                    
+                    # Write status periodically (every 10 seconds)
+                    now = time.time()
+                    if now - last_status_time >= 10:
+                        self._write_status()
+                        last_status_time = now
+                    
+                    # Sleep until next poll
+                    time.sleep(poll_interval)
+                
+                except KeyboardInterrupt:
+                    logger.info("Shutting down on keyboard interrupt")
+                    self.running = False
+                except Exception as e:
+                    logger.error(f"Error in main loop: {e}", exc_info=True)
+                    time.sleep(poll_interval)
         
-        # Flush Digital RF buffers
-        if self.drf_writer:
-            logger.info("Flushing Digital RF buffers...")
-            self.drf_writer.flush()
-        
-        logger.info("Analytics service stopped")
+        finally:
+            # Final state save
+            self._save_state()
+            
+            # Flush Digital RF buffers
+            if self.drf_writer:
+                logger.info("Flushing Digital RF buffers...")
+                self.drf_writer.flush()
+            
+            logger.info("Analytics service stopped")
     
     def stop(self):
         """Stop the analytics service"""

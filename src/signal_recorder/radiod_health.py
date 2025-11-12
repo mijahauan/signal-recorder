@@ -5,12 +5,11 @@ Detects when radiod restarts or channels disappear and automatically
 recreates missing channels to ensure continuous data collection.
 """
 
-import socket
-import subprocess
 import logging
 import time
 from typing import Optional, Dict
 from datetime import datetime
+from ka9q import discover_channels
 
 logger = logging.getLogger(__name__)
 
@@ -38,80 +37,49 @@ class RadiodHealthChecker:
     
     def is_radiod_alive(self, timeout_sec: float = 5.0) -> bool:
         """
-        Check if radiod is responsive by listening for status multicast packets.
+        Check if radiod is responsive by attempting to discover channels.
         
         Args:
-            timeout_sec: How long to wait for a status packet
+            timeout_sec: How long to wait for discovery
             
         Returns:
-            True if radiod is broadcasting status, False otherwise
+            True if radiod is responding, False otherwise
         """
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.settimeout(timeout_sec)
+            # Use ka9q discover_channels - works with mDNS hostnames and multicast addresses
+            channels = discover_channels(self.status_address)
             
-            # Bind to status port
-            sock.bind(('', self.status_port))
-            
-            # Join multicast group
-            mreq = socket.inet_aton(self.status_address) + socket.inet_aton('0.0.0.0')
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-            
-            # Try to receive one packet
-            data, addr = sock.recv(1024)
-            sock.close()
-            
-            self.logger.debug(f"Radiod alive - received status packet from {addr}")
+            # If we got any response (even empty channel list), radiod is alive
+            self.logger.debug(f"Radiod alive - discovered {len(channels)} channels")
             return True
             
-        except socket.timeout:
-            self.logger.warning(f"Radiod timeout - no status packets received in {timeout_sec}s")
-            return False
         except Exception as e:
-            self.logger.error(f"Radiod health check failed: {e}")
+            self.logger.warning(f"Radiod discovery failed: {e}")
             return False
     
     def verify_channel_exists(self, ssrc: int, timeout_sec: float = 5.0) -> bool:
         """
-        Verify a specific channel exists in radiod using the control utility.
+        Verify a specific channel exists in radiod by discovering channels.
         
         Args:
             ssrc: RTP SSRC identifier for the channel
-            timeout_sec: Timeout for control command
+            timeout_sec: Timeout for discovery
             
         Returns:
             True if channel exists, False otherwise
         """
         try:
-            result = subprocess.run(
-                ['control', '-v', self.status_address],
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec
-            )
+            # Use ka9q discover_channels to get all channels
+            channels = discover_channels(self.status_address)
             
-            if result.returncode != 0:
-                self.logger.error(f"Control command failed: {result.stderr}")
+            # Check if our SSRC is in the discovered channels
+            if ssrc in channels:
+                self.logger.debug(f"Channel {ssrc:x} found in radiod")
+                return True
+            else:
+                self.logger.warning(f"Channel {ssrc:x} not found in radiod (have {len(channels)} channels)")
                 return False
             
-            # Parse output for SSRC
-            # control -v output format: lines like "SSRC 2500000: WWV 2.5 MHz"
-            ssrc_str = str(ssrc)
-            for line in result.stdout.split('\n'):
-                if ssrc_str in line:
-                    self.logger.debug(f"Channel {ssrc} found in radiod")
-                    return True
-            
-            self.logger.warning(f"Channel {ssrc} not found in radiod output")
-            return False
-            
-        except subprocess.TimeoutExpired:
-            self.logger.error(f"Control command timed out after {timeout_sec}s")
-            return False
-        except FileNotFoundError:
-            self.logger.error("'control' utility not found - is ka9q-radio installed?")
-            return False
         except Exception as e:
             self.logger.error(f"Channel verification failed: {e}")
             return False

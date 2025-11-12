@@ -265,20 +265,31 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         min_len = min(len(corr_sin), len(corr_cos))
         correlation = np.sqrt(corr_sin[:min_len]**2 + corr_cos[:min_len]**2)
         
-        # Expected position: tone should be at start of minute
-        buffer_offset_sec = current_unix_time - minute_boundary
-        expected_pos_samples = int(-buffer_offset_sec * self.sample_rate)
+        # Expected position: tone is at minute_boundary
+        # current_unix_time is the timestamp at the MIDDLE of the buffer
+        # Calculate how far the buffer START is from the minute boundary
+        buffer_len_sec = len(audio_signal) / self.sample_rate
+        buffer_start_time = current_unix_time - (buffer_len_sec / 2)
+        
+        # Tone position in buffer (samples from start)
+        # If buffer starts AT boundary: tone is at position 0
+        # If buffer starts BEFORE boundary: tone is positive offset into buffer
+        tone_offset_from_start = minute_boundary - buffer_start_time
+        expected_pos_samples = int(tone_offset_from_start * self.sample_rate)
         
         # Search window: ±500ms around expected position
         search_window = int(0.5 * self.sample_rate)
         search_start = max(0, expected_pos_samples - search_window)
         search_end = min(len(correlation), expected_pos_samples + search_window)
         
-        logger.debug(f"{station_type.value} @ {frequency}Hz: corr_len={len(correlation)}, "
-                    f"expected_pos={expected_pos_samples}, search_window=[{search_start}:{search_end}]")
+        logger.info(f"{station_type.value} @ {frequency}Hz: current_unix_time={current_unix_time:.2f}, "
+                    f"minute_boundary={minute_boundary}, buffer_start={buffer_start_time:.2f}, "
+                    f"tone_offset={tone_offset_from_start:.2f}s, expected_pos={expected_pos_samples}, "
+                    f"corr_len={len(correlation)}, search_window=[{search_start}:{search_end}]")
         
         if search_start >= search_end:
-            logger.warning(f"{station_type.value} @ {frequency}Hz: Invalid search window!")
+            logger.warning(f"{station_type.value} @ {frequency}Hz: Invalid search window! "
+                          f"expected_pos={expected_pos_samples}, buffer_offset={buffer_offset_sec:.2f}s")
             return None
         
         # Find peak within search window
@@ -321,10 +332,50 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         else:
             snr_db = 0.0
         
+        # Calculate actual tone power using FFT on the detected tone segment
+        # Extract the tone segment (0.8s for WWV/WWVH, 0.5s for CHU)
+        tone_start_idx = max(0, onset_sample_idx)
+        tone_end_idx = min(len(audio_signal), tone_start_idx + int(duration * self.sample_rate))
+        tone_segment = audio_signal[tone_start_idx:tone_end_idx]
+        
+        tone_power_db = None
+        if len(tone_segment) > int(0.1 * self.sample_rate):  # Need at least 100ms
+            # Use FFT to measure power at the specific frequency
+            from scipy.fft import rfft, rfftfreq
+            windowed = tone_segment * scipy_signal.windows.hann(len(tone_segment))
+            fft_result = rfft(windowed)
+            freqs = rfftfreq(len(windowed), 1/self.sample_rate)
+            
+            # Find bin closest to target frequency
+            freq_idx = np.argmin(np.abs(freqs - frequency))
+            power_at_freq = np.abs(fft_result[freq_idx])**2
+            
+            # Measure noise floor in nearby bins (excluding the tone)
+            noise_low = max(0, freq_idx - int(50.0 * len(windowed) / self.sample_rate))
+            noise_high = min(len(fft_result), freq_idx + int(50.0 * len(windowed) / self.sample_rate))
+            exclude_low = max(0, freq_idx - int(10.0 * len(windowed) / self.sample_rate))
+            exclude_high = min(len(fft_result), freq_idx + int(10.0 * len(windowed) / self.sample_rate))
+            
+            noise_bins = np.concatenate([
+                np.arange(noise_low, exclude_low),
+                np.arange(exclude_high, noise_high)
+            ])
+            
+            if len(noise_bins) > 10:
+                noise_power = np.mean(np.abs(fft_result[noise_bins])**2)
+            else:
+                noise_power = np.mean(np.abs(fft_result)**2)
+            
+            # Calculate power relative to noise floor
+            if noise_power > 0:
+                tone_power_db = 10 * np.log10(power_at_freq / noise_power)
+            else:
+                tone_power_db = snr_db  # Fallback to SNR estimate
+        
         # Diagnostic logging BEFORE threshold check
         logger.debug(f"{station_type.value} @ {frequency}Hz: peak={peak_val:.2f}, "
                     f"noise_floor={noise_floor:.2f}, SNR={snr_db:.1f}dB, "
-                    f"timing_err={timing_error_ms:+.1f}ms")
+                    f"tone_power={tone_power_db:.1f}dB, timing_err={timing_error_ms:+.1f}ms")
         
         # Check if peak is significant
         if peak_val <= noise_floor:
@@ -349,7 +400,8 @@ class MultiStationToneDetector(IMultiStationToneDetector):
             confidence=confidence,
             use_for_time_snap=use_for_time_snap,
             correlation_peak=float(peak_val),
-            noise_floor=float(noise_floor)
+            noise_floor=float(noise_floor),
+            tone_power_db=tone_power_db
         )
         
         logger.info(f"{self.channel_name}: ✅ {station_type.value} DETECTED! "

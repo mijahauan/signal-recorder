@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GRAPE Signal Recorder - Channels</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0e27;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1e3a8a 0%, #312e81 100%);
+            padding: 20px 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: #fff;
+            font-size: 28px;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 15px;
+        }
+
+        .nav-link {
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            color: #e0e0e0;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .nav-link:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .nav-link.active {
+            background: rgba(16, 185, 129, 0.2);
+            border-color: #10b981;
+            color: #10b981;
+        }
+
+        /* Tab Navigation */
+        .tabs-container {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 0;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .tab-nav {
+            display: flex;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .tab-button {
+            flex: 1;
+            padding: 20px;
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-bottom: 3px solid transparent;
+        }
+
+        .tab-button:hover {
+            background: rgba(255, 255, 255, 0.05);
+            color: #e0e0e0;
+        }
+
+        .tab-button.active {
+            color: #10b981;
+            border-bottom-color: #10b981;
+            background: rgba(16, 185, 129, 0.05);
+        }
+
+        .tab-content {
+            display: none;
+            padding: 30px;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Channel Status Table */
+        .channel-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .channel-table thead {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .channel-table th {
+            padding: 15px;
+            text-align: left;
+            font-size: 13px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-weight: 600;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .channel-table td {
+            padding: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            font-size: 14px;
+        }
+
+        .channel-table tbody tr:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 500;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .status-dot.green {
+            background: #10b981;
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+        }
+
+        .status-dot.red {
+            background: #ef4444;
+            box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+        }
+
+        .status-dot.yellow {
+            background: #f59e0b;
+            box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+        }
+
+        .channel-name {
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .metric-value {
+            font-family: monospace;
+            color: #e0e0e0;
+        }
+
+        .metric-good {
+            color: #10b981;
+        }
+
+        .metric-warning {
+            color: #f59e0b;
+        }
+
+        .metric-bad {
+            color: #ef4444;
+        }
+
+        /* Day Selector */
+        .day-selector {
+            margin-bottom: 20px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .day-selector label {
+            font-size: 14px;
+            color: #94a3b8;
+            font-weight: 500;
+        }
+
+        .day-selector input[type="date"] {
+            padding: 10px 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            color: #e0e0e0;
+            font-size: 14px;
+        }
+
+        .day-selector button {
+            padding: 10px 20px;
+            background: #8b5cf6;
+            border: none;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .day-selector button:hover {
+            background: #7c3aed;
+        }
+
+        .placeholder {
+            padding: 60px 20px;
+            text-align: center;
+            color: #94a3b8;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            border: 2px dashed rgba(255, 255, 255, 0.1);
+        }
+
+        .placeholder h3 {
+            font-size: 18px;
+            margin-bottom: 10px;
+            color: #e0e0e0;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #94a3b8;
+            font-size: 16px;
+        }
+
+        .error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid #ef4444;
+            color: #fca5a5;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📡 GRAPE Signal Recorder</h1>
+        <div class="nav-links">
+            <a href="/" class="nav-link">System Status</a>
+            <a href="/channels.html" class="nav-link active">Channels</a>
+        </div>
+    </div>
+
+    <div class="tabs-container">
+        <div class="tab-nav">
+            <button class="tab-button active" onclick="switchTab('status', event)">
+                📊 Channel Status
+            </button>
+            <button class="tab-button" onclick="switchTab('carrier', event)">
+                📈 Carrier Data
+            </button>
+            <button class="tab-button" onclick="switchTab('discrimination', event)">
+                🎯 WWV/H Discrimination
+            </button>
+        </div>
+
+        <!-- Tab 1: Channel Status -->
+        <div id="tab-status" class="tab-content active">
+            <div id="status-table-container">
+                <div class="loading">Loading channel data...</div>
+            </div>
+        </div>
+
+        <!-- Tab 2: Carrier Data -->
+        <div id="tab-carrier" class="tab-content">
+            <div class="day-selector">
+                <label>Select Date:</label>
+                <input type="date" id="carrier-date" value="">
+                <button onclick="loadCarrierData()">Load Data</button>
+            </div>
+            <div id="carrier-container">
+                <div class="placeholder">
+                    <h3>📈 Carrier Data Spectrograms</h3>
+                    <p>Select a date and click "Load Data" to view stacked spectrograms</p>
+                    <p style="margin-top: 10px; font-size: 13px;">Displays 10 Hz Digital RF data per channel</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab 3: WWV/H Discrimination -->
+        <div id="tab-discrimination" class="tab-content">
+            <div class="day-selector">
+                <label>Select Date:</label>
+                <input type="date" id="discrimination-date" value="">
+                <button onclick="loadDiscriminationData()">Load Data</button>
+            </div>
+            <div id="discrimination-container">
+                <div class="placeholder">
+                    <h3>🎯 WWV/H Tone Discrimination</h3>
+                    <p>Select a date and click "Load Data" to view tone SNR comparison</p>
+                    <p style="margin-top: 10px; font-size: 13px;">
+                        WWV tones (1000 Hz) in green<br>
+                        WWVH tones (1200 Hz) in red
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tab switching
+        function switchTab(tabName, event) {
+            console.log('Switching to tab:', tabName);
+            
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Remove active class from all buttons
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab
+            const selectedTab = document.getElementById('tab-' + tabName);
+            if (selectedTab) {
+                selectedTab.classList.add('active');
+                console.log('Activated tab:', tabName);
+            } else {
+                console.error('Tab not found:', 'tab-' + tabName);
+            }
+            
+            // Activate clicked button
+            if (event && event.target) {
+                event.target.classList.add('active');
+            }
+        }
+        
+        // Set default dates to today
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('carrier-date').value = today;
+        document.getElementById('discrimination-date').value = today;
+
+        // Load channel status data
+        async function loadChannelStatus() {
+            try {
+                const response = await fetch('/api/v1/channels/details');
+                const data = await response.json();
+                renderChannelTable(data);
+            } catch (error) {
+                document.getElementById('status-table-container').innerHTML = `
+                    <div class="error">
+                        ❌ Failed to load channel data: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function renderChannelTable(data) {
+            const container = document.getElementById('status-table-container');
+            
+            if (!data.channels || data.channels.length === 0) {
+                container.innerHTML = '<div class="placeholder"><h3>No channels found</h3></div>';
+                return;
+            }
+
+            // Build table rows
+            let rows = '';
+            for (const channel of data.channels) {
+                // RTP stream status
+                const rtpStatus = channel.rtp_stream.active ? 'green' : 'red';
+                const rtpText = channel.rtp_stream.active ? 'Active' : 'Inactive';
+
+                // Time snap status
+                let timeSnapStatus, timeSnapText;
+                if (channel.time_snap.established) {
+                    timeSnapStatus = 'green';
+                    timeSnapText = `${channel.time_snap.source} (${channel.time_snap.confidence.toFixed(2)})`;
+                } else {
+                    timeSnapStatus = 'red';
+                    timeSnapText = 'Not Synced';
+                }
+
+                // Packet loss rate
+                const packetLoss = channel.packet_loss_rate.toFixed(4);
+                const lossClass = parseFloat(packetLoss) > 1 ? 'metric-bad' : 
+                                 parseFloat(packetLoss) > 0.1 ? 'metric-warning' : 'metric-good';
+
+                // WWV/H time difference - only for WWV channels (2.5, 5, 10, 15 MHz)
+                const isWWVChannel = channel.channel_name.includes('WWV') && 
+                                    !channel.channel_name.includes('WWVH') &&
+                                    (channel.frequency_hz === 2500000 || 
+                                     channel.frequency_hz === 5000000 ||
+                                     channel.frequency_hz === 10000000 ||
+                                     channel.frequency_hz === 15000000);
+                
+                let wwvhDiff = '-';
+                if (isWWVChannel) {
+                    if (channel.wwvh_time_diff_ms !== null) {
+                        wwvhDiff = `${channel.wwvh_time_diff_ms.toFixed(1)} ms`;
+                    } else {
+                        wwvhDiff = 'No data';
+                    }
+                }
+
+                rows += `
+                    <tr>
+                        <td class="channel-name">${channel.channel_name}</td>
+                        <td>
+                            <div class="status-indicator">
+                                <div class="status-dot ${rtpStatus}"></div>
+                                ${rtpText}
+                            </div>
+                        </td>
+                        <td>
+                            <div class="status-indicator">
+                                <div class="status-dot ${timeSnapStatus}"></div>
+                                ${timeSnapText}
+                            </div>
+                        </td>
+                        <td class="metric-value ${lossClass}">${packetLoss}%</td>
+                        <td class="metric-value">${wwvhDiff}</td>
+                    </tr>
+                `;
+            }
+
+            container.innerHTML = `
+                <table class="channel-table">
+                    <thead>
+                        <tr>
+                            <th>Channel</th>
+                            <th>RTP Stream</th>
+                            <th>Time Snap Sync</th>
+                            <th>Packet Loss Rate</th>
+                            <th>WWV/H Δ Time</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        // Tab 2: Carrier Data (Spectrograms)
+        function loadCarrierData() {
+            const date = document.getElementById('carrier-date').value;
+            document.getElementById('carrier-container').innerHTML = `
+                <div class="placeholder">
+                    <h3>🔄 Spectrogram Generation</h3>
+                    <p>Feature coming soon - requires processing Digital RF HDF5 files</p>
+                    <p style="margin-top: 10px; font-size: 13px;">
+                        Will display stacked spectrograms showing 10 Hz carrier data for all channels
+                    </p>
+                </div>
+            `;
+        }
+
+        // Tab 3: WWV/H Discrimination
+        async function loadDiscriminationData() {
+            const date = document.getElementById('discrimination-date').value;
+            const dateStr = date.replace(/-/g, ''); // Convert YYYY-MM-DD to YYYYMMDD
+            
+            console.log('Loading discrimination data for date:', date, 'dateStr:', dateStr);
+            
+            document.getElementById('discrimination-container').innerHTML = `
+                <div class="loading">Loading discrimination data for ${date}...</div>
+            `;
+            
+            try {
+                // Fetch data for all WWV channels (2.5, 5, 10, 15 MHz)
+                const channels = ['WWV 2.5 MHz', 'WWV 5 MHz', 'WWV 10 MHz', 'WWV 15 MHz'];
+                console.log('Fetching data for channels:', channels);
+                
+                const promises = channels.map(ch => {
+                    const url = `/api/v1/channels/${encodeURIComponent(ch)}/discrimination/${dateStr}`;
+                    console.log('Fetching:', url);
+                    return fetch(url)
+                        .then(r => {
+                            console.log('Response for', ch, ':', r.status);
+                            return r.json();
+                        })
+                        .then(data => {
+                            console.log('Data for', ch, ':', data.count || data.data?.length || 0, 'points');
+                            return data;
+                        });
+                });
+                
+                const results = await Promise.all(promises);
+                console.log('All results received:', results.length);
+                
+                // Check if we have any data
+                const hasData = results.some(r => r.data && r.data.length > 0);
+                
+                if (!hasData) {
+                    document.getElementById('discrimination-container').innerHTML = `
+                        <div class="placeholder">
+                            <h3>📊 No Discrimination Data</h3>
+                            <p>No WWV/WWVH discrimination data available for ${date}</p>
+                            <p style="margin-top: 10px; font-size: 13px;">
+                                Data will appear once both WWV and WWVH tones are detected
+                            </p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // Create separate plot containers for each channel
+                const plotsHtml = results.map((result, idx) => {
+                    if (!result.data || result.data.length === 0) return '';
+                    return `
+                        <div style="margin-bottom: 30px;">
+                            <h3 style="color: #e0e0e0; margin-bottom: 15px;">${result.channel}</h3>
+                            <div id="discrimination-plot-${idx}" style="width: 100%; height: 400px;"></div>
+                        </div>
+                    `;
+                }).join('');
+                
+                document.getElementById('discrimination-container').innerHTML = `
+                    ${plotsHtml}
+                    <div style="margin-top: 20px; padding: 20px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+                        <h4 style="color: #e0e0e0; margin-bottom: 10px;">About WWV/WWVH Discrimination</h4>
+                        <p style="color: #94a3b8; font-size: 14px; line-height: 1.6;">
+                            <strong style="color: #10b981;">WWV (1000 Hz, solid line)</strong>: Fort Collins, CO - Used for time_snap timing reference<br>
+                            <strong style="color: #ef4444;">WWVH (1200 Hz, dashed line)</strong>: Kauai, HI - Propagation study<br>
+                            <strong>Differential Delay</strong>: Time difference between WWV and WWVH arrivals (ionospheric path)<br>
+                            <strong>Gaps</strong>: One or both tones not detected - normal for ionospheric research!
+                        </p>
+                    </div>
+                `;
+                
+                // Check if Plotly is loaded
+                if (typeof Plotly === 'undefined') {
+                    console.error('Plotly is not loaded!');
+                    document.getElementById('discrimination-container').innerHTML = `
+                        <div class="error">❌ Plotly library failed to load. Check internet connection.</div>
+                    `;
+                    return;
+                }
+                
+                // Create full day time range (00:00-23:59:59 UTC for selected date)
+                const dayStart = new Date(date + 'T00:00:00Z');
+                const dayEnd = new Date(date + 'T23:59:59Z');
+                console.log('Full day range:', dayStart.toISOString(), 'to', dayEnd.toISOString());
+                
+                // Create individual plots for each channel
+                console.log('Creating plots for', results.length, 'channels');
+                results.forEach((result, idx) => {
+                    if (!result.data || result.data.length === 0) {
+                        console.log(`Skipping ${result.channel} - no data`);
+                        return;
+                    }
+                    
+                    console.log(`Creating plot for ${result.channel} with ${result.data.length} points`);
+                    const timestamps = result.data.map(d => new Date(d.timestamp_utc));
+                    const wwvSnr = result.data.map(d => d.wwv_detected ? d.wwv_snr_db : null);
+                    const wwvhSnr = result.data.map(d => d.wwvh_detected ? d.wwvh_snr_db : null);
+                    const diffDelay = result.data.map(d => d.differential_delay_ms);
+                    
+                    const traces = [
+                        {
+                            x: timestamps,
+                            y: wwvSnr,
+                            name: 'WWV SNR',
+                            mode: 'lines+markers',
+                            line: { color: '#10b981', width: 2 },
+                            marker: { size: 4 },
+                            connectgaps: false,
+                            hovertemplate: 'WWV SNR: %{y:.1f} dB<br>%{x}<extra></extra>'
+                        },
+                        {
+                            x: timestamps,
+                            y: wwvhSnr,
+                            name: 'WWVH SNR',
+                            mode: 'lines+markers',
+                            line: { color: '#ef4444', width: 2, dash: 'dash' },
+                            marker: { size: 4, symbol: 'square' },
+                            connectgaps: false,
+                            hovertemplate: 'WWVH SNR: %{y:.1f} dB<br>%{x}<extra></extra>'
+                        }
+                    ];
+                    
+                    const layout = {
+                        xaxis: {
+                            title: 'Time (UTC)',
+                            gridcolor: 'rgba(255,255,255,0.1)',
+                            color: '#94a3b8',
+                            showgrid: true,
+                            range: [dayStart, dayEnd],  // Force full day range
+                            type: 'date'
+                        },
+                        yaxis: {
+                            title: 'SNR (dB)',
+                            gridcolor: 'rgba(255,255,255,0.1)',
+                            color: '#94a3b8',
+                            showgrid: true
+                        },
+                        plot_bgcolor: 'rgba(0,0,0,0.2)',
+                        paper_bgcolor: 'transparent',
+                        font: { color: '#e0e0e0' },
+                        legend: {
+                            bgcolor: 'rgba(0,0,0,0.3)',
+                            bordercolor: 'rgba(255,255,255,0.1)',
+                            borderwidth: 1,
+                            x: 0.01,
+                            y: 0.99
+                        },
+                        margin: { t: 20, b: 60, l: 60, r: 20 },
+                        hovermode: 'x unified'
+                    };
+                    
+                    Plotly.newPlot(`discrimination-plot-${idx}`, traces, layout, {responsive: true});
+                    console.log(`Plot created for ${result.channel} at discrimination-plot-${idx}`);
+                });
+                
+                console.log('All plots created successfully');
+                
+            } catch (error) {
+                console.error('Error loading discrimination data:', error);
+                document.getElementById('discrimination-container').innerHTML = `
+                    <div class="error">
+                        ❌ Failed to load discrimination data: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Initial load
+        loadChannelStatus();
+
+        // Auto-refresh every 10 seconds
+        setInterval(loadChannelStatus, 10000);
+    </script>
+</body>
+</html>

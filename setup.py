@@ -38,6 +38,7 @@ setup(
         "soundfile>=0.12.0",
         "digital_rf>=2.6.0",
         "zeroconf>=0.132.0",  # For mDNS discovery
+        "ka9q @ git+https://github.com/mijahauan/ka9q-python.git@v2.1.0",  # ka9q-radio control library
     ],
     extras_require={
         "dev": [

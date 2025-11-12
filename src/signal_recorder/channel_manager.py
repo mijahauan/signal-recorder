@@ -69,10 +69,11 @@ class ChannelManager:
                 f"description='{description}'"
             )
             
-            logger.info(f"About to call self.control.create_and_configure_channel()...")
+            logger.info(f"About to call self.control.create_channel()...")
             
-            # Use radiod_control to create and configure
-            self.control.create_and_configure_channel(
+            # Use radiod_control to create and configure channel (new ka9q-python API)
+            # create_channel() now takes all parameters in one call
+            self.control.create_channel(
                 ssrc=ssrc,
                 frequency_hz=frequency_hz,
                 preset=preset,
@@ -81,7 +82,7 @@ class ChannelManager:
                 gain=gain
             )
             
-            logger.info(f"create_and_configure_channel() returned, waiting 0.5s...")
+            logger.info(f"Channel creation complete, waiting 0.5s...")
             
             # Wait for radiod to process
             time.sleep(0.5)
@@ -186,9 +187,10 @@ class ChannelManager:
             ssrc = channel_spec['ssrc']
             logger.info(f"Updating channel {ssrc}")
             
-            # Send update commands (same as create, but channel already exists)
+            # Update channel using create_channel (new ka9q-python API)
+            # Note: create_channel updates if channel already exists
             try:
-                self.control.create_and_configure_channel(
+                self.control.create_channel(
                     ssrc=ssrc,
                     frequency_hz=channel_spec['frequency_hz'],
                     preset=channel_spec.get('preset', 'iq'),
