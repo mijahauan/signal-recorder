@@ -62,20 +62,34 @@ def find_npz_files_for_date(archive_dir: Path, date_str: str) -> List[Path]:
     return npz_files
 
 
-def read_npz_day(npz_files: List[Path]) -> Optional[Tuple[np.ndarray, np.ndarray, int]]:
+def read_npz_day(npz_files: List[Path], date_str: str) -> Optional[Tuple[np.ndarray, np.ndarray, int]]:
     """
-    Read and concatenate NPZ files for a full day
+    Read and concatenate NPZ files for a full day with 24-hour coverage
     
     Args:
         npz_files: List of NPZ file paths (sorted chronologically)
+        date_str: Date string in YYYYMMDD format
         
     Returns:
-        Tuple of (timestamps, iq_samples, sample_rate) or None if error
+        Tuple of (timestamps, iq_samples, sample_rate) with full 24-hour coverage
     """
     if not npz_files:
         logger.warning("No NPZ files to read")
         return None
     
+    # Parse date to get day boundaries (00:00:00 to 23:59:59 UTC)
+    year = int(date_str[:4])
+    month = int(date_str[4:6])
+    day = int(date_str[6:8])
+    day_start = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1) - timedelta(microseconds=1)
+    
+    day_start_unix = day_start.timestamp()
+    day_end_unix = day_end.timestamp()
+    
+    logger.info(f"Creating 24-hour spectrogram: {day_start.isoformat()} to {day_end.isoformat()}")
+    
+    # Read and concatenate data directly (memory efficient)
     all_timestamps = []
     all_samples = []
     sample_rate = None
@@ -85,12 +99,10 @@ def read_npz_day(npz_files: List[Path]) -> Optional[Tuple[np.ndarray, np.ndarray
     for i, npz_file in enumerate(npz_files):
         try:
             with np.load(npz_file) as data:
-                # NPZ format from core_npz_writer: iq, unix_timestamp, sample_rate, etc.
                 iq = data['iq']
                 file_unix_ts = float(data['unix_timestamp'])
                 file_sample_rate = int(data['sample_rate'])
                 
-                # Get sample rate from metadata
                 if sample_rate is None:
                     sample_rate = file_sample_rate
                 elif sample_rate != file_sample_rate:
@@ -100,8 +112,10 @@ def read_npz_day(npz_files: List[Path]) -> Optional[Tuple[np.ndarray, np.ndarray
                 num_samples = len(iq)
                 file_timestamps = file_unix_ts + np.arange(num_samples) / sample_rate
                 
-                all_timestamps.append(file_timestamps)
-                all_samples.append(iq)
+                # Only include samples within the target day
+                mask = (file_timestamps >= day_start_unix) & (file_timestamps <= day_end_unix)
+                all_timestamps.append(file_timestamps[mask])
+                all_samples.append(iq[mask])
                 
             if (i + 1) % 100 == 0:
                 logger.info(f"  Progress: {i+1}/{len(npz_files)} files")
@@ -118,7 +132,20 @@ def read_npz_day(npz_files: List[Path]) -> Optional[Tuple[np.ndarray, np.ndarray
     timestamps = np.concatenate(all_timestamps)
     iq_samples = np.concatenate(all_samples)
     
-    logger.info(f"✅ Read {len(iq_samples)} samples ({len(timestamps)/3600:.1f} hours)")
+    # Check coverage
+    if len(timestamps) > 0:
+        data_start = datetime.fromtimestamp(timestamps[0], tz=timezone.utc)
+        data_end = datetime.fromtimestamp(timestamps[-1], tz=timezone.utc)
+        duration_hours = (timestamps[-1] - timestamps[0]) / 3600
+        coverage_pct = 100.0 * len(timestamps) / (sample_rate * 86400)  # Expected samples in 24h
+        
+        logger.info(f"✅ Read {len(iq_samples)} samples ({duration_hours:.1f} hours, {coverage_pct:.1f}% of day)")
+        logger.info(f"   Data range: {data_start.isoformat()} to {data_end.isoformat()}")
+        logger.info(f"   Day range: {day_start.isoformat()} to {day_end.isoformat()}")
+    else:
+        logger.error("No timestamps in data")
+        return None
+    
     logger.info(f"   Sample rate: {sample_rate} Hz")
     
     return timestamps, iq_samples, sample_rate
@@ -128,7 +155,7 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
                         sample_rate: float, output_path: Path,
                         channel_name: str, date_str: str):
     """
-    Generate spectrogram PNG from IQ samples
+    Generate spectrogram PNG from IQ samples with 24-hour x-axis
     
     Args:
         timestamps: Unix timestamps for each sample
@@ -136,10 +163,17 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         sample_rate: Sample rate in Hz
         output_path: Path to save PNG
         channel_name: Channel name for title
-        date_str: Date string for title
+        date_str: Date string for title (YYYY-MM-DD format)
     """
     try:
         logger.info(f"Generating spectrogram for {len(iq_samples)} samples...")
+        
+        # Parse date for 24-hour range
+        year = int(date_str.split('-')[0])
+        month = int(date_str.split('-')[1])
+        day = int(date_str.split('-')[2])
+        day_start = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
+        day_end = datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
         
         # Spectrogram parameters for 16 kHz data
         # With 16 kHz sample rate, we can see ±8 kHz around carrier
@@ -186,6 +220,9 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         ax.set_xlabel('Time (UTC)', fontsize=12)
         ax.set_title(f'{channel_name} - {date_str} - Carrier Spectrogram (16 kHz IQ)', 
                     fontsize=14, fontweight='bold')
+        
+        # Force 24-hour x-axis range (00:00-23:59 UTC)
+        ax.set_xlim(day_start, day_end)
         
         # Format x-axis as time
         ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
@@ -253,14 +290,17 @@ def main():
     if args.channel:
         channels = [args.channel]
     else:
-        # Process all WWV channels (skip CHU for now)
+        # Process all WWV and CHU channels
         channels = [
             'WWV_2.5_MHz',
             'WWV_5_MHz',
             'WWV_10_MHz',
             'WWV_15_MHz',
             'WWV_20_MHz',
-            'WWV_25_MHz'
+            'WWV_25_MHz',
+            'CHU_3.33_MHz',
+            'CHU_7.85_MHz',
+            'CHU_14.67_MHz'
         ]
     
     success_count = 0
@@ -283,8 +323,8 @@ def main():
                 logger.warning(f"Skipping {channel_name} - no NPZ files for {date_str}")
                 continue
             
-            # Read data
-            result = read_npz_day(npz_files)
+            # Read data with 24-hour coverage
+            result = read_npz_day(npz_files, date_str)
             if result is None:
                 logger.warning(f"Skipping {channel_name} - read failed")
                 continue

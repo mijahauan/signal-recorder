@@ -92,8 +92,8 @@ echo "▶️  Step 2: Starting Analytics Services..."
 # WWV Channels (6)
 for freq_mhz in 2.5 5 10 15 20 25; do
     freq_hz=$(echo "$freq_mhz * 1000000" | bc | cut -d. -f1)
-    # Match core recorder naming: "WWV 2.5 MHz" -> "WWV_25_MHz" (remove dots)
-    channel_dir=$(echo "WWV_${freq_mhz}_MHz" | sed 's/\.//g')
+    # Match core recorder naming: "WWV 2.5 MHz" -> "WWV_2.5_MHz" (preserve dots)
+    channel_dir="WWV_${freq_mhz}_MHz"
     
     echo "   Starting: WWV ${freq_mhz} MHz..."
     
@@ -122,8 +122,8 @@ chu_freqs_hz=(3330000 7850000 14670000)
 for i in 0 1 2; do
     freq_mhz=${chu_freqs[$i]}
     freq_hz=${chu_freqs_hz[$i]}
-    # Match core recorder naming: "CHU 3.33 MHz" -> "CHU_333_MHz" (remove dots)
-    channel_dir=$(echo "CHU_${freq_mhz}_MHz" | sed 's/\.//g')
+    # Match core recorder naming: "CHU 3.33 MHz" -> "CHU_3.33_MHz" (preserve dots)
+    channel_dir="CHU_${freq_mhz}_MHz"
     
     echo "   Starting: CHU ${freq_mhz} MHz..."
     

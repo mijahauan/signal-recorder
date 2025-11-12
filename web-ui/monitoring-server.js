@@ -803,9 +803,9 @@ app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) =
     const { channelName, date } = req.params;
     
     // Map channel names to their actual directory names
-    // (Directory names come from archive dirs which use underscores differently)
+    // (Directory names preserve dots: WWV 2.5 MHz -> WWV_2.5_MHz)
     const dirMap = {
-      'WWV 2.5 MHz': 'WWV_25_MHz',
+      'WWV 2.5 MHz': 'WWV_2.5_MHz',
       'WWV 5 MHz': 'WWV_5_MHz',
       'WWV 10 MHz': 'WWV_10_MHz',
       'WWV 15 MHz': 'WWV_15_MHz'
@@ -835,8 +835,14 @@ app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) =
     for (let i = 1; i < lines.length; i++) {
       const parts = lines[i].split(',');
       if (parts.length >= 10) {
+        // Normalize timestamp to use 'Z' suffix instead of '+00:00' for UTC
+        let timestamp = parts[0].trim();
+        if (timestamp.endsWith('+00:00')) {
+          timestamp = timestamp.replace('+00:00', 'Z');
+        }
+        
         data.push({
-          timestamp_utc: parts[0],
+          timestamp_utc: timestamp,
           minute_timestamp: parseInt(parts[1]),
           wwv_detected: parts[2] === '1',
           wwvh_detected: parts[3] === '1',
@@ -872,7 +878,7 @@ app.get('/api/v1/channels/:channelName/spectrogram/:date', async (req, res) => {
   try {
     const { channelName, date } = req.params;
     
-    // Map channel names to their directory names
+    // Map channel names to their directory names (preserve dots)
     const channelMap = {
       'WWV 2.5 MHz': 'WWV_2.5_MHz',
       'WWV 5 MHz': 'WWV_5_MHz',
@@ -880,9 +886,9 @@ app.get('/api/v1/channels/:channelName/spectrogram/:date', async (req, res) => {
       'WWV 15 MHz': 'WWV_15_MHz',
       'WWV 20 MHz': 'WWV_20_MHz',
       'WWV 25 MHz': 'WWV_25_MHz',
-      'CHU 3.33 MHz': 'CHU_333_MHz',
-      'CHU 7.85 MHz': 'CHU_785_MHz',
-      'CHU 14.67 MHz': 'CHU_1467_MHz'
+      'CHU 3.33 MHz': 'CHU_3.33_MHz',
+      'CHU 7.85 MHz': 'CHU_7.85_MHz',
+      'CHU 14.67 MHz': 'CHU_14.67_MHz'
     };
     
     const channelDirName = channelMap[channelName] || channelName.replace(/ /g, '_');

@@ -641,10 +641,27 @@
                     }
                     
                     console.log(`Creating plot for ${result.channel} with ${result.data.length} points`);
-                    const timestamps = result.data.map(d => new Date(d.timestamp_utc));
-                    const wwvSnr = result.data.map(d => d.wwv_detected ? d.wwv_snr_db : null);
-                    const wwvhSnr = result.data.map(d => d.wwvh_detected ? d.wwvh_snr_db : null);
-                    const diffDelay = result.data.map(d => d.differential_delay_ms);
+                    
+                    // Filter data to only include points within selected date (00:00-23:59 UTC)
+                    const filteredData = result.data.filter(d => {
+                        const ts = new Date(d.timestamp_utc);
+                        return ts >= dayStart && ts <= dayEnd;
+                    });
+                    
+                    console.log(`Filtered to ${filteredData.length} points within ${date} (00:00-23:59 UTC)`);
+                    
+                    // Convert ISO timestamps to milliseconds for Plotly (preserves UTC)
+                    // But adjust for local timezone offset to display as UTC
+                    const timestamps = filteredData.map(d => {
+                        const utcDate = new Date(d.timestamp_utc);
+                        // Plotly displays in local time, so ADD offset to make it show UTC values
+                        // getTimezoneOffset() returns positive minutes for UTC-X timezones
+                        return new Date(utcDate.getTime() + utcDate.getTimezoneOffset() * 60000);
+                    });
+                    
+                    const wwvSnr = filteredData.map(d => d.wwv_detected ? d.wwv_snr_db : null);
+                    const wwvhSnr = filteredData.map(d => d.wwvh_detected ? d.wwvh_snr_db : null);
+                    const diffDelay = filteredData.map(d => d.differential_delay_ms);
                     
                     const traces = [
                         {
@@ -655,7 +672,7 @@
                             line: { color: '#10b981', width: 2 },
                             marker: { size: 4 },
                             connectgaps: false,
-                            hovertemplate: 'WWV SNR: %{y:.1f} dB<br>%{x}<extra></extra>'
+                            hovertemplate: 'WWV SNR: %{y:.1f} dB<br>%{x|%Y-%m-%d %H:%M:%S} UTC<extra></extra>'
                         },
                         {
                             x: timestamps,
@@ -665,9 +682,13 @@
                             line: { color: '#ef4444', width: 2, dash: 'dash' },
                             marker: { size: 4, symbol: 'square' },
                             connectgaps: false,
-                            hovertemplate: 'WWVH SNR: %{y:.1f} dB<br>%{x}<extra></extra>'
+                            hovertemplate: 'WWVH SNR: %{y:.1f} dB<br>%{x|%Y-%m-%d %H:%M:%S} UTC<extra></extra>'
                         }
                     ];
+                    
+                    // Apply same timezone offset to range bounds so they display as UTC
+                    const rangeStart = new Date(dayStart.getTime() + dayStart.getTimezoneOffset() * 60000);
+                    const rangeEnd = new Date(dayEnd.getTime() + dayEnd.getTimezoneOffset() * 60000);
                     
                     const layout = {
                         xaxis: {
@@ -675,8 +696,12 @@
                             gridcolor: 'rgba(255,255,255,0.1)',
                             color: '#94a3b8',
                             showgrid: true,
-                            range: [dayStart, dayEnd],  // Force full day range
-                            type: 'date'
+                            range: [rangeStart, rangeEnd],  // Force full 24-hour range (displayed as 00:00-23:59 UTC)
+                            autorange: false,  // Disable auto-range
+                            type: 'date',
+                            fixedrange: false,  // Allow zoom/pan
+                            tickformat: '%H:%M',  // Show time (will display as UTC due to offset)
+                            hoverformat: '%Y-%m-%d %H:%M:%S'  // Time format for hover
                         },
                         yaxis: {
                             title: 'SNR (dB)',
@@ -698,7 +723,13 @@
                         hovermode: 'x unified'
                     };
                     
-                    Plotly.newPlot(`discrimination-plot-${idx}`, traces, layout, {responsive: true});
+                    const config = {
+                        responsive: true,
+                        displayModeBar: true,
+                        displaylogo: false
+                    };
+                    
+                    Plotly.newPlot(`discrimination-plot-${idx}`, traces, layout, config);
                     console.log(`Plot created for ${result.channel} at discrimination-plot-${idx}`);
                 });
                 

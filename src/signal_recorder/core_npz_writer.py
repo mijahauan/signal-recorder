@@ -165,7 +165,8 @@ class CoreNPZWriter:
         
         # Create directory structure: archives/CHANNEL/
         # Simple structure for dual-service architecture compatibility
-        channel_dir = self.channel_name.replace(' ', '_').replace('.', '')
+        # Preserve dots in channel names (WWV 2.5 MHz -> WWV_2.5_MHz)
+        channel_dir = self.channel_name.replace(' ', '_')
         dir_path = self.output_dir / 'archives' / channel_dir
         dir_path.mkdir(parents=True, exist_ok=True)
         
