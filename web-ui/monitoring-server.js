@@ -866,24 +866,49 @@ app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) =
 });
 
 /**
- * Get available Digital RF data for spectrogram generation
+ * Get spectrogram image for a channel and date
  */
 app.get('/api/v1/channels/:channelName/spectrogram/:date', async (req, res) => {
   try {
     const { channelName, date } = req.params;
     
-    // For now, return placeholder - actual spectrogram generation 
-    // would require Python/scipy processing of Digital RF HDF5 files
-    res.json({
-      date: date,
-      channel: channelName,
-      message: 'Spectrogram generation requires backend processing',
-      suggestion: 'Consider pre-generating daily spectrograms during analytics processing'
-    });
+    // Map channel names to their directory names
+    const channelMap = {
+      'WWV 2.5 MHz': 'WWV_2.5_MHz',
+      'WWV 5 MHz': 'WWV_5_MHz',
+      'WWV 10 MHz': 'WWV_10_MHz',
+      'WWV 15 MHz': 'WWV_15_MHz',
+      'WWV 20 MHz': 'WWV_20_MHz',
+      'WWV 25 MHz': 'WWV_25_MHz',
+      'CHU 3.33 MHz': 'CHU_333_MHz',
+      'CHU 7.85 MHz': 'CHU_785_MHz',
+      'CHU 14.67 MHz': 'CHU_1467_MHz'
+    };
+    
+    const channelDirName = channelMap[channelName] || channelName.replace(/ /g, '_');
+    
+    // Build path to spectrogram PNG
+    // Format: spectrograms/YYYYMMDD/CHANNEL_YYYYMMDD_spectrogram.png
+    const spectrogramPath = join(dataRoot, 'spectrograms', date, 
+                                 `${channelDirName}_${date}_spectrogram.png`);
+    
+    // Check if file exists
+    if (!fs.existsSync(spectrogramPath)) {
+      return res.status(404).json({
+        error: 'Spectrogram not found',
+        message: `No spectrogram available for ${channelName} on ${date}`,
+        path: spectrogramPath,
+        suggestion: 'Run: python3 scripts/generate_spectrograms.py --date ' + date
+      });
+    }
+    
+    // Serve the PNG file
+    res.sendFile(spectrogramPath);
+    
   } catch (error) {
-    console.error('Failed to get spectrogram data:', error);
+    console.error('Failed to get spectrogram:', error);
     res.status(500).json({
-      error: 'Failed to get spectrogram data',
+      error: 'Failed to get spectrogram',
       details: error.message
     });
   }

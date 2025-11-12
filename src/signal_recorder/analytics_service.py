@@ -133,14 +133,21 @@ class ProcessingState:
     time_snap_history: List[TimeSnapReference] = field(default_factory=list)
     detection_history: List[ToneDetectionResult] = field(default_factory=list)
     
+    # Limits for history to prevent state file bloat
+    MAX_TIME_SNAP_HISTORY = 20
+    MAX_DETECTION_HISTORY = 50
+    
     def to_dict(self) -> Dict:
-        """Serialize state for persistence"""
+        """Serialize state for persistence (limit history size)"""
+        # Keep only recent history to prevent massive state files
+        time_snap_slice = self.time_snap_history[-self.MAX_TIME_SNAP_HISTORY:] if self.time_snap_history else []
+        
         return {
             'last_processed_file': str(self.last_processed_file) if self.last_processed_file else None,
             'last_processed_time': self.last_processed_time,
             'files_processed': self.files_processed,
             'time_snap': self.time_snap.to_dict() if self.time_snap else None,
-            'time_snap_history': [ts.to_dict() for ts in self.time_snap_history],
+            'time_snap_history': [ts.to_dict() for ts in time_snap_slice],
             'detection_count': len(self.detection_history)
         }
 
