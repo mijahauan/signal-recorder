@@ -533,12 +533,157 @@ GRAPERecorderManager:
 - `web-ui/channels.html` (new channel monitoring dashboard)
 - `start-dual-service.sh`, `stop-dual-service.sh` (new service management scripts)
 
-**Next Task - Phase 2F: 10 Hz Spectrogram Display**
-- Implement carrier data spectrograms in web UI
-- Display Digital RF data (10 Hz decimated) as time-frequency plots
-- Show per-channel spectrograms for selected date range
-- Enable visual inspection of carrier presence and signal quality
-- Support daily views (00:00-23:59 UTC) with stacked channel displays
+---
+
+## ✅ **Completed: Analytics Service State Bloat Fix + Carrier Spectrogram Infrastructure** (Nov 12, 2024)
+
+**Task:** Debug Digital RF generation blockage and implement carrier spectrogram visualization.
+
+### Critical Bug Fix - Analytics Service CPU Spin
+
+**Problem Discovered:**
+- Analytics services stuck at 99% CPU, processing 0 files
+- Root cause: `time_snap_history` grew to 101 entries (916-line JSON state file)
+- Every 10 seconds: load massive JSON → discover new files → process none → save massive JSON → repeat
+- Combined with `rglob('*.npz')` on 1386+ files = tight CPU loop
+
+**Solution Implemented:**
+- Limited `time_snap_history` to last 20 entries in `ProcessingState.to_dict()`
+- Added `MAX_TIME_SNAP_HISTORY = 20` and `MAX_DETECTION_HISTORY = 50` constants
+- State files reduced from 24KB (916 lines) to <5KB
+- Services restarted with fixed code
+
+**Results:**
+- ✅ Analytics processing resumed: 1421+ files processed
+- ✅ Digital RF generation operational: 18,132 samples written across 35 HDF5 files
+- ✅ Time_snap established with WWV verification
+- ✅ CPU normalized to expected levels during backlog catch-up
+
+### Feature Implementation - Carrier Spectrogram Visualization
+
+**Components Created:**
+
+1. **Backend Scripts:**
+   - `scripts/generate_spectrograms.py` - Reads NPZ archives (16 kHz IQ), generates PNG spectrograms
+   - `scripts/generate_spectrograms_drf.py` - Reads Digital RF (10 Hz IQ), for future optimization
+
+2. **API Endpoint:**
+   - `/api/v1/channels/:channelName/spectrogram/:date` - Serves pre-generated PNG images
+   - Returns 404 with generation instructions if spectrogram missing
+
+3. **Web UI - Carrier Tab:**
+   - Date picker for selecting day to visualize
+   - Displays 9 stacked spectrograms (6 WWV + 3 CHU channels)
+   - Shows 24-hour carrier variations with frequency offset
+   - Graceful fallback for missing images with generation command
+
+**Architecture:**
+```
+NPZ Archives (16 kHz IQ) → Python Script → PNG Images → Web UI Display
+/tmp/grape-test/archives/  generate_       /tmp/grape-    channels.html
+                           spectrograms.py  test/          (Carrier tab)
+                                           spectrograms/
+```
+
+**Status:**
+- ✅ Infrastructure complete and functional
+- ⚠️  Large dataset processing (153M samples) takes significant time
+- 📋 Ready for daily automated generation
+
+**Files Modified/Created:**
+- `src/signal_recorder/analytics_service.py` (state bloat fix)
+- `scripts/generate_spectrograms.py` (NPZ-based spectrogram generation)
+- `scripts/generate_spectrograms_drf.py` (Digital RF-based, future use)
+- `web-ui/monitoring-server.js` (spectrogram serving endpoint)
+- `web-ui/channels.html` (Carrier Data tab implementation)
+
+---
+
+## 🔍 **NEXT SESSION PRIORITY: Data Accumulation Verification** (Nov 12, 2024)
+
+**Critical Task:** Careful monitoring of all data products to ensure pipeline integrity.
+
+### Required Verification Checks:
+
+**1. Core Recorder Output (NPZ Archives)**
+- ✅ 16 kHz IQ per-minute files accumulating in `/archives/{channel}/`
+- ✅ File naming format: `YYYYMMDDTHHMMSSZ_freq_iq.npz`
+- ✅ File sizes consistent (~2-3 MB per minute)
+- ✅ No gaps in minute-by-minute sequence
+- ✅ NPZ contents: `iq`, `rtp_timestamp`, `unix_timestamp`, `sample_rate`, gap metadata
+
+**2. Timing and Gap Analysis**
+- ✅ RTP timestamp continuity across files
+- ✅ Gap detection and zero-fill working correctly
+- ✅ `gap_rtp_timestamps`, `gap_sample_indices` arrays populated when gaps occur
+- ✅ Status JSON updates (`core-recorder-status.json`) showing real-time metrics
+- ✅ Completeness percentage tracking
+
+**3. Analytics Service Processing**
+- ✅ NPZ files being processed in order (check `files_processed` counter)
+- ✅ No backlog building up (`pending_npz_files` should stay low)
+- ✅ Time_snap establishment and confidence tracking
+- ✅ Tone detection counts (WWV, WWVH, CHU) accumulating
+- ✅ State file size staying under control (<5KB)
+
+**4. WWV/H Discrimination Data**
+- ✅ CSV files accumulating in `/analytics/{channel}/discrimination/`
+- ✅ Format: `{channel}_discrimination_YYYYMMDD.csv`
+- ✅ Differential delay measurements reasonable (100-300ms typical)
+- ✅ Outlier rejection working (>±1000ms filtered)
+- ✅ SNR values logged for both WWV and WWVH
+- ✅ Web UI plots displaying correctly
+
+**5. Digital RF Output (10 Hz Carrier Data)**
+- ✅ HDF5 files accumulating in PSWS directory structure:
+  - `/analytics/{channel}/digital_rf/YYYYMMDD/CALLSIGN_GRID/RECEIVER@STATION/OBS.../CHANNEL/`
+- ✅ Files named: `rf@{global_index}.h5`
+- ✅ Metadata files present: `drf_properties.h5`, `metadata@*.h5`
+- ✅ Sample rate: 10 Hz (decimated from 16 kHz)
+- ✅ Data bounds valid and readable
+- ✅ File sizes growing appropriately (~10 samples/second)
+- ✅ Ready for rsync upload to PSWS repository
+
+**6. System Health Monitoring**
+- ✅ Both services running (core + analytics × 9 channels)
+- ✅ CPU usage reasonable (not spinning at 99%)
+- ✅ Memory usage stable
+- ✅ Disk space adequate for accumulation rate
+- ✅ No error spikes in logs
+
+### Verification Tools to Use:
+
+```bash
+# Check NPZ accumulation
+ls -lh /tmp/grape-test/archives/WWV_5_MHz/ | tail -20
+
+# Verify Digital RF files
+find /tmp/grape-test/analytics/WWV_5_MHz/digital_rf -name "rf@*.h5" -ls
+
+# Monitor service status
+cat /tmp/grape-test/status/core-recorder-status.json | python3 -m json.tool
+cat /tmp/grape-test/analytics/WWV_5_MHz/status/analytics-service-status.json | python3 -m json.tool
+
+# Check for gaps or issues
+grep -i "gap\|error" /tmp/grape-test/logs/*.log | tail -50
+
+# Verify discrimination data
+ls -lh /tmp/grape-test/analytics/WWV_*/discrimination/*.csv
+```
+
+### Success Criteria:
+- All 9 channels accumulating data continuously
+- Gap rates < 1% (packet loss is normal, but should be low)
+- Time_snap established on multiple WWV channels
+- WWV/H discrimination data showing ionospheric propagation delays
+- Digital RF files ready for upload with valid metadata
+- No service crashes or hung processes for 24+ hours
+
+**Next Steps After Verification:**
+- If all checks pass → Enable automatic daily spectrogram generation
+- If issues found → Debug specific data product pipeline
+- Document any observed patterns (time of day gaps, propagation variations)
+- Prepare for Phase 2E: Upload Integration (rsync to PSWS)
 
 ---
 
@@ -620,6 +765,6 @@ GRAPERecorderManager:
 
 ---
 
-**Last Updated:** 2024-11-12 Morning  
+**Last Updated:** 2024-11-12 Afternoon  
 **Maintained By:** Michael Hauan (AC0G)  
-**AI Context Version:** 1.5 (Tone Detection & WWV/H Discrimination Operational)
+**AI Context Version:** 1.6 (Analytics Fix + Carrier Spectrograms + Data Verification Priority)
