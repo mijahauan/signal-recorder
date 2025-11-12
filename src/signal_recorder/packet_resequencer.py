@@ -48,6 +48,10 @@ class PacketResequencer:
     Key principle: Sample count integrity > real-time delivery
     """
     
+    # Maximum gap to fill: 60 seconds at 16 kHz = 960,000 samples
+    # Gaps larger than this indicate stream restart or corruption
+    MAX_GAP_SAMPLES = 960_000
+    
     def __init__(self, buffer_size: int = 64, samples_per_packet: int = 320):
         """
         Initialize resequencer
@@ -151,14 +155,16 @@ class PacketResequencer:
         gap_samples = None
         
         if next_pkt.timestamp != self.next_expected_ts:
-            # RTP timestamp jump - gap detected!
+            # RTP timestamp jump - check if it's a forward gap
             gap_info = self._detect_gap(next_pkt)
-            gap_samples = self._create_gap_fill(gap_info)
-            logger.warning(
-                f"Gap detected: {gap_info.gap_samples} samples "
-                f"({gap_info.gap_packets} packets), "
-                f"ts {self.next_expected_ts} -> {next_pkt.timestamp}"
-            )
+            # Only create gap fill and log if there's actually a gap to fill
+            if gap_info.gap_samples > 0:
+                gap_samples = self._create_gap_fill(gap_info)
+                logger.warning(
+                    f"Gap detected: {gap_info.gap_samples} samples "
+                    f"({gap_info.gap_packets} packets), "
+                    f"ts {self.next_expected_ts} -> {next_pkt.timestamp}"
+                )
         
         # Remove from buffer
         self.buffer.remove(next_pkt)
@@ -178,15 +184,42 @@ class PacketResequencer:
             return next_pkt.samples, None
     
     def _detect_gap(self, next_pkt: RTPPacket) -> GapInfo:
-        """Detect and characterize gap"""
+        """
+        Detect and characterize gap using KA9Q technique.
+        
+        Uses signed 32-bit arithmetic (Phil Karn's pcmrecord.c approach):
+        - Cast timestamp difference to int32 to handle wraps naturally
+        - Negative = backward jump (ignore)
+        - Positive = forward gap (fill with zeros)
+        """
         self.gaps_detected += 1
         
-        # Calculate gap in RTP timestamp units (samples)
-        ts_gap = next_pkt.timestamp - self.next_expected_ts
+        # KA9Q technique: signed 32-bit difference handles wraps naturally
+        # Python doesn't have fixed-width int types, so simulate with masking
+        ts_diff = (next_pkt.timestamp - self.next_expected_ts) & 0xFFFFFFFF
         
-        # Handle timestamp wrap (32-bit)
-        if ts_gap < 0:
-            ts_gap += 2**32
+        # Convert to signed int32 range: treat values > 2^31 as negative
+        if ts_diff >= 0x80000000:
+            ts_gap = ts_diff - 0x100000000  # Make negative
+        else:
+            ts_gap = ts_diff
+        
+        # Only fill forward gaps (positive jumps)
+        if ts_gap <= 0:
+            if ts_gap < 0:
+                logger.debug(
+                    f"Backward timestamp jump: {ts_gap} samples "
+                    f"(expected_ts={self.next_expected_ts}, actual_ts={next_pkt.timestamp}). "
+                    f"Ignoring (likely out-of-order or restart)."
+                )
+            ts_gap = 0
+        
+        # Sanity check: cap absurdly large gaps
+        if ts_gap > self.MAX_GAP_SAMPLES:
+            logger.error(
+                f"Absurd forward gap: {ts_gap} samples. Capping at {self.MAX_GAP_SAMPLES}."
+            )
+            ts_gap = self.MAX_GAP_SAMPLES
         
         # Estimate packets lost
         packets_lost = ts_gap // self.samples_per_packet
@@ -215,18 +248,44 @@ class PacketResequencer:
         # Get earliest packet by sequence (accounting for wrap)
         earliest_pkt = min(self.buffer, key=lambda p: self._seq_distance(self.next_expected_seq, p.sequence))
         
+        # KA9Q technique: signed 32-bit difference
+        ts_diff = (earliest_pkt.timestamp - self.next_expected_ts) & 0xFFFFFFFF
+        if ts_diff >= 0x80000000:
+            ts_gap = ts_diff - 0x100000000  # Make negative
+        else:
+            ts_gap = ts_diff
+        
+        # Only fill forward gaps
+        if ts_gap <= 0:
+            if ts_gap < 0:
+                logger.warning(f"Backward jump in lost packet recovery: {ts_gap} samples. Ignoring.")
+            ts_gap = 0
+        
+        # Sanity check: cap absurdly large gaps
+        if ts_gap > self.MAX_GAP_SAMPLES:
+            logger.error(f"Absurd gap in lost packet recovery: {ts_gap} samples. Capping at {self.MAX_GAP_SAMPLES}.")
+            ts_gap = self.MAX_GAP_SAMPLES
+        
         # Create gap info
         gap_info = GapInfo(
             expected_timestamp=self.next_expected_ts,
             actual_timestamp=earliest_pkt.timestamp,
-            gap_samples=earliest_pkt.timestamp - self.next_expected_ts,
+            gap_samples=ts_gap,
             gap_packets=(earliest_pkt.sequence - self.next_expected_seq) & 0xFFFF,
             prev_sequence=(self.next_expected_seq - 1) & 0xFFFF,
             curr_sequence=earliest_pkt.sequence
         )
         
-        # Create gap fill
-        gap_samples = self._create_gap_fill(gap_info)
+        # Only create gap fill if there's actually a gap
+        if ts_gap > 0:
+            gap_samples = self._create_gap_fill(gap_info)
+            logger.warning(
+                f"Lost packet recovery: skipped to seq={earliest_pkt.sequence}, "
+                f"gap={gap_info.gap_samples} samples"
+            )
+            output = np.concatenate([gap_samples, earliest_pkt.samples])
+        else:
+            output = earliest_pkt.samples
         
         # Remove packet from buffer
         self.buffer.remove(earliest_pkt)
@@ -239,13 +298,6 @@ class PacketResequencer:
         
         self.packets_resequenced += 1
         
-        logger.warning(
-            f"Lost packet recovery: skipped to seq={earliest_pkt.sequence}, "
-            f"gap={gap_info.gap_samples} samples"
-        )
-        
-        # Return gap fill + packet
-        output = np.concatenate([gap_samples, earliest_pkt.samples])
         return output, gap_info
     
     def _seq_distance(self, from_seq: int, to_seq: int) -> int:
@@ -267,7 +319,8 @@ class PacketResequencer:
             
             if pkt.timestamp != self.next_expected_ts:
                 gap_info = self._detect_gap(pkt)
-                gap_samples = self._create_gap_fill(gap_info)
+                if gap_info.gap_samples > 0:
+                    gap_samples = self._create_gap_fill(gap_info)
             
             # Update state
             self.next_expected_ts = pkt.timestamp + self.samples_per_packet
