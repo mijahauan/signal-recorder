@@ -365,8 +365,8 @@ GRAPERecorderManager:
 ## 4. ⚡ Current Task & Git Context
 
 **Current Branch:** `main`  
-**Last Session:** November 10, 2024 (Evening)  
-**Last Commit:** `b8a792f` - Web UI V2 Integration Complete
+**Last Session:** November 12, 2024 (Morning)  
+**Last Commit:** `c07f59a` - Fix tone detection and WWV/H discrimination for V2 dual-service architecture
 
 **Current Architecture Status:**
 
@@ -404,7 +404,17 @@ GRAPERecorderManager:
   - Status: ✅ Real-time display at http://localhost:3000
   - Documentation: `WEB_UI_V2_INTEGRATION_SESSION.md`
 
-- ⏳ **Phase 2D - Upload Integration** (Next priority)
+- ✅ **Phase 2D - Tone Detection & WWV/H Discrimination** (Nov 12, 2024)
+  - Cross-file buffering: Combines tail of previous file + head of current file to span minute boundaries
+  - Tone detection working: WWV/WWVH/CHU tones detected at :00.0 minute boundaries
+  - Time-snap establishment: 57% confidence from WWV tones
+  - WWV/H discrimination: Differential delay measurements with outlier rejection (>±1000ms)
+  - Typical delays: 100-300ms (ionospheric propagation)
+  - Web UI: Displays WWV/H Δ Time in channel status table
+  - Status: ✅ 3 WWV + 4 WWVH detections observed, 203ms mean differential delay
+  - Documentation: Commit message `c07f59a`
+
+- ⏳ **Phase 2E - Upload Integration** (Future priority)
   - Module exists: `uploader.py`
   - Needs: Wire to analytics service, implement rsync/sftp, trigger on directory completion
 
@@ -419,17 +429,20 @@ GRAPERecorderManager:
 
 **Analytics Services:**
 - 9/9 services running and processing
-- 57+ NPZ files processed per channel
-- Quality metrics: 99.67% completeness, 0.17% packet loss
-- Tone detections: 0 (expected - weak signals or propagation conditions)
-- Digital RF output: Writing successfully
+- 1,370+ NPZ files processed per channel (cross-file buffering enabled)
+- Quality metrics: 99.2% completeness, 0.8% packet loss
+- Tone detections: WWV (3), WWVH (4), CHU (varies by propagation)
+- Time-snap: Established at 57% confidence from WWV
+- WWV/H discrimination: 18 measurements, 203ms mean differential delay
+- Digital RF output: Writing successfully with outlier rejection
 
 **Web UI:**
 - Dashboard displaying V2 data
 - System status: Core + Analytics health
 - Data quality: Completeness, gaps, packet loss
-- Analytics: WWV/WWVH discrimination ready for propagation analysis
-- Channel table: Per-channel real-time metrics
+- Channel Status tab: Real-time metrics with WWV/H Δ Time column
+- WWV/H Discrimination tab: Daily plots (00:00-23:59 UTC) with SNR comparison
+- Channel table: Per-channel real-time metrics including tone detections
 
 ---
 
@@ -478,11 +491,54 @@ GRAPERecorderManager:
 
 **Status:** Specification complete - Ready for Phase 2 implementation (enhanced monitoring)
 
-**Next Priority - Phase 2D: Upload Integration**
-- Wire uploader to analytics service
-- Implement rsync/sftp to PSWS
-- Trigger on Digital RF directory completion
-- Display upload queue status in UI
+---
+
+## ✅ **Completed: Tone Detection & WWV/H Discrimination** (Nov 12, 2024)
+
+**Task:** Fix tone detection to work with 60-second NPZ files and implement WWV/WWVH discrimination analysis.
+
+**Problem Solved:**
+- Tone occurs AT minute boundary (between NPZ files, not within single file)
+- Analytics was processing each file in isolation, missing boundary tones
+- Differential delay showing outliers (~20 seconds) from bad timing measurements
+
+**Solution Implemented:**
+
+### Cross-File Buffering for Tone Detection
+- Store last 30 seconds of previous NPZ file (16 kHz IQ samples)
+- Combine with first 30 seconds of current file
+- Creates 60-second buffer spanning minute boundary
+- Tone at :00.0 is now in MIDDLE of detection buffer
+- Properly calculates expected tone position relative to buffer start
+
+**Key Changes:**
+1. `analytics_service.py`: Add `previous_file_tail` and `previous_file_rtp_end` tracking
+2. `tone_detector.py`: Fix timestamp calculation for expected tone position
+3. `wwvh_discrimination.py`: Add outlier rejection (>±1000ms = detection error)
+4. `monitoring-server.js`: Use mean differential delay when latest is null
+5. `start-dual-service.sh` / `stop-dual-service.sh`: Fix python3 command, add service lifecycle management
+
+**Results:**
+- ✅ Tone detection working: 3 WWV + 4 WWVH detections
+- ✅ Time-snap established: 57% confidence
+- ✅ Differential delay: 203ms mean (WWV 5 MHz)
+- ✅ Outlier rejection: Prevents crazy values from corrupting statistics
+- ✅ Web UI displaying: WWV/H Δ Time column + discrimination plots
+
+**Files Modified:**
+- `src/signal_recorder/analytics_service.py` (cross-file buffering)
+- `src/signal_recorder/tone_detector.py` (timestamp calculation fix)
+- `src/signal_recorder/wwvh_discrimination.py` (outlier rejection)
+- `web-ui/monitoring-server.js` (discrimination data display)
+- `web-ui/channels.html` (new channel monitoring dashboard)
+- `start-dual-service.sh`, `stop-dual-service.sh` (new service management scripts)
+
+**Next Task - Phase 2F: 10 Hz Spectrogram Display**
+- Implement carrier data spectrograms in web UI
+- Display Digital RF data (10 Hz decimated) as time-frequency plots
+- Show per-channel spectrograms for selected date range
+- Enable visual inspection of carrier presence and signal quality
+- Support daily views (00:00-23:59 UTC) with stacked channel displays
 
 ---
 
@@ -564,6 +620,6 @@ GRAPERecorderManager:
 
 ---
 
-**Last Updated:** 2024-11-10 Evening  
+**Last Updated:** 2024-11-12 Morning  
 **Maintained By:** Michael Hauan (AC0G)  
-**AI Context Version:** 1.4 (V2 Dual-Service Architecture Operational)
+**AI Context Version:** 1.5 (Tone Detection & WWV/H Discrimination Operational)
