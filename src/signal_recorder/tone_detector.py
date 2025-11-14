@@ -289,7 +289,7 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         
         if search_start >= search_end:
             logger.warning(f"{station_type.value} @ {frequency}Hz: Invalid search window! "
-                          f"expected_pos={expected_pos_samples}, buffer_offset={buffer_offset_sec:.2f}s")
+                          f"expected_pos={expected_pos_samples}, tone_offset={tone_offset_from_start:.2f}s")
             return None
         
         # Find peak within search window

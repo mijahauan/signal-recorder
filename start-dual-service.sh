@@ -47,6 +47,31 @@ echo "   Data root: $DATA_ROOT"
 echo "   Station: $CALLSIGN ($GRID)"
 echo ""
 
+# ============================================================================
+# Check System Timing
+# ============================================================================
+echo "🕐 Checking system timing..."
+
+if timedatectl status 2>/dev/null | grep -q "System clock synchronized: yes"; then
+    echo "   ✅ NTP synchronized"
+    echo "   Cold start will use NTP_SYNCED quality (±10ms)"
+else
+    echo ""
+    echo "   ⚠️  WARNING: NTP NOT synchronized"
+    echo "   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "   Cold start will use WALL_CLOCK quality (±seconds)"
+    echo ""
+    echo "   Timing will improve when:"
+    echo "   • NTP sync is established, OR"
+    echo "   • WWV/CHU tone detected (→ GPS_LOCKED quality)"
+    echo ""
+    echo "   Data will still be recorded with quality annotations."
+    echo "   Low-quality segments can be reprocessed later."
+    echo "   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+fi
+echo ""
+
 # Stop any existing instances
 echo "🛑 Stopping existing instances..."
 pkill -f core_recorder 2>/dev/null || true

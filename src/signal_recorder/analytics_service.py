@@ -6,19 +6,21 @@ Watches for new NPZ files from core recorder and generates:
 1. Quality metrics (completeness, gaps, packet loss)
 2. WWV/CHU/WWVH tone detection → time_snap establishment
 3. Discontinuity logs (scientific provenance)
-4. Decimated Digital RF (10 Hz)
+4. Decimated Digital RF (10 Hz) with timing quality annotations
 5. Upload queue management
 
 Design Philosophy:
 - Independent from core recorder (can restart without data loss)
 - Reprocessable (can rerun with improved algorithms)
 - Crash-tolerant (systemd restarts, aggressive retry)
+- Always upload with quality annotations (no gaps in data)
 """
 
 import numpy as np
 import logging
 import time
 import os
+import subprocess
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Tuple
@@ -26,6 +28,7 @@ from dataclasses import dataclass, field
 from collections import deque
 from scipy import signal as scipy_signal
 import json
+from enum import Enum
 
 from .tone_detector import MultiStationToneDetector
 from .digital_rf_writer import DigitalRFWriter
@@ -40,6 +43,33 @@ from .interfaces.data_models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class TimingQuality(Enum):
+    """
+    Quality levels for timestamp accuracy in Digital RF data
+    
+    Used to annotate each data segment with timing confidence,
+    enabling scientists to filter/reprocess based on requirements.
+    """
+    GPS_LOCKED = "gps_locked"      # WWV/CHU tone within last 5 minutes - ±1ms accuracy
+    NTP_SYNCED = "ntp_synced"      # System clock NTP-synchronized - ±10ms accuracy  
+    WALL_CLOCK = "wall_clock"      # System clock unsynchronized - ±seconds accuracy
+    INTERPOLATED = "interpolated"  # Between valid time_snaps - degrades with age
+
+
+@dataclass
+class TimingAnnotation:
+    """
+    Metadata about timing quality for a data segment
+    """
+    quality: TimingQuality
+    utc_timestamp: float
+    time_snap_age_seconds: Optional[float] = None  # Age of time_snap if used
+    ntp_offset_ms: Optional[float] = None          # NTP offset if checked
+    sample_count_error: int = 0                     # Expected vs actual samples
+    reprocessing_recommended: bool = False
+    notes: str = ""
 
 
 @dataclass
@@ -109,15 +139,20 @@ class NPZArchive:
         Calculate UTC timestamp for first sample using time_snap reference
         
         Args:
-            time_snap: Current time_snap reference, or None to use wall clock
+            time_snap: Current time_snap reference for RTP→UTC conversion
             
         Returns:
             UTC timestamp (seconds since epoch)
+            
+        Note:
+            Falls back to wall clock (unix_timestamp) if time_snap not available.
+            This allows cold start operation before WWV/CHU tone detection.
         """
         if time_snap:
+            # Use precise RTP-to-UTC conversion
             return time_snap.calculate_sample_time(self.rtp_timestamp)
         else:
-            # Fall back to wall clock (approximate)
+            # Fall back to wall clock (approximate, will be marked as low quality)
             return self.unix_timestamp
 
 
@@ -285,13 +320,17 @@ class AnalyticsService:
                 # Restore time_snap if available
                 if state_data.get('time_snap'):
                     ts = state_data['time_snap']
+                    # Convert station string back to enum
+                    station_value = ts['station']
+                    station = StationType(station_value) if isinstance(station_value, str) else station_value
+                    
                     self.state.time_snap = TimeSnapReference(
                         rtp_timestamp=ts['rtp_timestamp'],
                         utc_timestamp=ts['utc_timestamp'],
                         sample_rate=ts['sample_rate'],
                         source=ts['source'],
                         confidence=ts['confidence'],
-                        station=ts['station'],
+                        station=station,
                         established_at=ts['established_at']
                     )
                 
@@ -349,7 +388,7 @@ class AnalyticsService:
                 time_snap_dict = {
                     'established': True,
                     'source': self.state.time_snap.source,
-                    'station': self.state.time_snap.station,
+                    'station': self.state.time_snap.station.value,  # Convert enum to string
                     'rtp_timestamp': self.state.time_snap.rtp_timestamp,
                     'utc_timestamp': self.state.time_snap.utc_timestamp,
                     'confidence': self.state.time_snap.confidence,
@@ -457,9 +496,19 @@ class AnalyticsService:
             results['quality_metrics'] = quality.to_dict()
             self._write_quality_metrics(archive, quality)
             
-            # Step 2: Tone detection (if applicable)
+            # Step 2: Calculate timing product ONCE for all consumers
+            timing = self._get_timing_annotation(archive)
+            results['timing_quality'] = timing.quality.value
+            results['timing_annotation'] = {
+                'quality': timing.quality.value,
+                'time_snap_age_seconds': timing.time_snap_age_seconds,
+                'ntp_offset_ms': timing.ntp_offset_ms,
+                'reprocessing_recommended': timing.reprocessing_recommended
+            }
+            
+            # Step 3: Tone detection (if applicable) - uses timing product
             if self._is_tone_detection_channel(archive.channel_name):
-                detections = self._detect_tones(archive)
+                detections = self._detect_tones(archive, timing)
                 results['tone_detections'] = [
                     {
                         'station': det.station.value,
@@ -487,15 +536,14 @@ class AnalyticsService:
                     self.stats['total_detections'] = len(self.state.detection_history)
                     self.stats['last_detection_time'] = datetime.now(timezone.utc).isoformat()
             
-            # Step 3: Decimation and Digital RF output (if time_snap available)
-            if self.state.time_snap:
-                decimated_count = self._decimate_and_write_drf(archive, quality)
-                results['decimated_samples'] = decimated_count
-                self.stats['drf_samples_written'] += decimated_count
-                if decimated_count > 0:
-                    self.stats['drf_files_written'] += 1
-            else:
-                logger.debug("Skipping Digital RF - time_snap not yet established")
+            # Step 4: Decimation and Digital RF output - uses same timing product
+            decimated_count = self._decimate_and_write_drf(archive, quality, timing)
+            
+            results['decimated_samples'] = decimated_count
+            
+            self.stats['drf_samples_written'] += decimated_count
+            if decimated_count > 0:
+                self.stats['drf_files_written'] += 1
             
             # Update quality stats
             self.stats['last_completeness_pct'] = quality.completeness_pct
@@ -503,7 +551,7 @@ class AnalyticsService:
             self.stats['last_processed_file'] = str(archive.file_path.name)
             self.stats['last_processed_time'] = datetime.now(timezone.utc).isoformat()
             
-            # Step 4: Write discontinuity log
+            # Step 5: Write discontinuity log
             self._write_discontinuity_log(archive, quality)
             
         except Exception as e:
@@ -567,15 +615,16 @@ class AnalyticsService:
         
         return quality
     
-    def _detect_tones(self, archive: NPZArchive) -> List[ToneDetectionResult]:
+    def _detect_tones(self, archive: NPZArchive, timing: TimingAnnotation) -> List[ToneDetectionResult]:
         """
-        Run WWV/CHU/WWVH tone detection on archive
+        Run WWV/CHU/WWVH tone detection on archive using provided timing product
         
         Combines tail of previous file with head of current file to create
         a buffer spanning the minute boundary where WWV/CHU tones occur.
         
         Args:
             archive: Loaded NPZ archive
+            timing: Timing annotation with UTC timestamp and quality level
             
         Returns:
             List of detected tones
@@ -623,21 +672,19 @@ class AnalyticsService:
         
         detection_buffer = resampled
         
-        # Calculate UTC timestamp for the buffer
+        # Calculate UTC timestamp for the buffer using provided timing product
         # The buffer spans from previous file tail to current file head
         # Minute boundary (where tone occurs) should be at the MIDDLE of this buffer
-        if self.state.time_snap:
-            # Use time_snap to calculate precise UTC of buffer start
-            buffer_start_utc = self.state.time_snap.calculate_sample_time(buffer_rtp_start)
+        
+        # Archive UTC is from timing product (may be GPS_LOCKED, NTP_SYNCED, or WALL_CLOCK)
+        archive_utc = timing.utc_timestamp
+        
+        # If we have previous file, buffer starts 30s before current file
+        if self.previous_file_rtp_end is not None:
+            buffer_start_utc = archive_utc - 30.0
         else:
-            # No time_snap yet - use wall-clock timestamp from NPZ file
-            # If we have previous file, buffer starts 30s before current file
-            if self.previous_file_rtp_end is not None:
-                buffer_start_utc = archive.unix_timestamp - 30.0
-            else:
-                # First file - buffer starts at file start
-                buffer_start_utc = archive.unix_timestamp
-            logger.info(f"Using NPZ wall-clock timestamp for initial tone detection: {buffer_start_utc:.2f}")
+            # First file - buffer starts at file start
+            buffer_start_utc = archive_utc
         
         # CRITICAL: Tone detector expects timestamp to find minute boundary IN the buffer
         # Use middle of buffer (where the minute boundary should be)
@@ -662,9 +709,8 @@ class AnalyticsService:
         
         # Run WWV/H discrimination if this is a dual-station channel
         if self.wwvh_discriminator:
-            # Get minute timestamp (for the archive being processed, not buffer start)
-            archive_utc = archive.calculate_utc_timestamp(self.state.time_snap)
-            minute_timestamp = int(archive_utc / 60) * 60
+            # Get minute timestamp from timing product
+            minute_timestamp = int(timing.utc_timestamp / 60) * 60
             
             # Run discrimination (ALWAYS returns a result - uses noise floor when needed)
             discrimination = self.wwvh_discriminator.compute_discrimination(
@@ -729,7 +775,7 @@ class AnalyticsService:
             sample_rate=archive.sample_rate,
             source=f"{best.station.value.lower()}_verified",
             confidence=best.confidence,
-            station=best.station.value,
+            station=best.station,  # Pass enum, not string
             established_at=time.time()
         )
         
@@ -752,15 +798,159 @@ class AnalyticsService:
                    f"{best.station.value}, confidence={best.confidence:.2f}, "
                    f"timing_error={best.timing_error_ms:+.1f}ms")
         
+        # If this is the FIRST time_snap (transitioning from None), log milestone
+        if not old_time_snap:
+            logger.info("✅ TIME_SNAP ESTABLISHED - GPS-accurate timestamps now available")
+            logger.info("   Timing quality upgraded from NTP/wall-clock to GPS-locked (±1ms)")
+            logger.info("   Earlier data uploaded with lower quality can be reprocessed if needed")
+        
         return True
     
-    def _decimate_and_write_drf(self, archive: NPZArchive, quality: QualityInfo) -> int:
+    def _validate_ntp_sync(self) -> Tuple[bool, Optional[float]]:
         """
-        Decimate samples and write to Digital RF format
+        Check if system clock is NTP-synchronized with acceptable quality
+        
+        Returns:
+            (is_synced, offset_ms): True if good sync, and offset in milliseconds
+        """
+        try:
+            # Try ntpq first (ntpd)
+            result = subprocess.run(
+                ['ntpq', '-c', 'rv'],
+                capture_output=True, text=True, timeout=2
+            )
+            
+            if result.returncode == 0:
+                offset_ms = None
+                stratum = None
+                
+                for line in result.stdout.split(','):
+                    if 'offset=' in line:
+                        offset_ms = float(line.split('offset=')[1].strip())
+                    if 'stratum=' in line:
+                        stratum = int(line.split('stratum=')[1].strip())
+                
+                if offset_ms is not None and stratum is not None:
+                    if abs(offset_ms) > 100:  # >100ms offset is poor
+                        logger.warning(f"NTP offset too large: {offset_ms:.1f}ms")
+                        return False, offset_ms
+                    if stratum > 4:  # Stratum 5+ is questionable
+                        logger.warning(f"NTP stratum too high: {stratum}")
+                        return False, offset_ms
+                    
+                    logger.debug(f"NTP sync good: offset={offset_ms:.1f}ms, stratum={stratum}")
+                    return True, offset_ms
+            
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        
+        try:
+            # Try chronyc (chrony)
+            result = subprocess.run(
+                ['chronyc', 'tracking'],
+                capture_output=True, text=True, timeout=2
+            )
+            
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'System time' in line:
+                        # Parse: "System time     : 0.000123456 seconds slow of NTP time"
+                        parts = line.split(':')[1].strip().split()
+                        offset_sec = float(parts[0])
+                        offset_ms = offset_sec * 1000
+                        
+                        if abs(offset_ms) > 100:
+                            logger.warning(f"Chrony offset too large: {offset_ms:.1f}ms")
+                            return False, offset_ms
+                        
+                        logger.debug(f"Chrony sync good: offset={offset_ms:.1f}ms")
+                        return True, offset_ms
+                        
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        
+        logger.debug("No NTP sync detected (ntpq/chronyc not available)")
+        return False, None
+    
+    def _get_timing_annotation(self, archive: 'NPZArchive') -> TimingAnnotation:
+        """
+        Determine timing quality for this archive and create annotation
+        
+        Hierarchy:
+        1. time_snap from WWV/CHU tone (best: ±1ms)
+        2. NTP-synchronized system clock (good: ±10ms)
+        3. Unsynchronized wall clock (acceptable: ±seconds, mark for reprocessing)
+        
+        Always returns an annotation - never skips upload.
+        
+        Returns:
+            TimingAnnotation with quality level and metadata
+        """
+        current_time = time.time()
+        
+        # Check if we have a recent time_snap
+        time_snap = self.state.time_snap  # Capture reference to avoid race conditions
+        if time_snap:
+            try:
+                # Calculate age of time_snap
+                time_snap_age = current_time - time_snap.utc_timestamp
+                utc_timestamp = archive.calculate_utc_timestamp(time_snap)
+                
+                if time_snap_age < 300:  # < 5 minutes
+                    return TimingAnnotation(
+                        quality=TimingQuality.GPS_LOCKED,
+                        utc_timestamp=utc_timestamp,
+                        time_snap_age_seconds=time_snap_age,
+                        reprocessing_recommended=False,
+                        notes=f"WWV/CHU time_snap from {time_snap.station.value}"
+                    )
+                elif time_snap_age < 3600:  # < 1 hour - interpolated
+                    return TimingAnnotation(
+                        quality=TimingQuality.INTERPOLATED,
+                        utc_timestamp=utc_timestamp,
+                        time_snap_age_seconds=time_snap_age,
+                        reprocessing_recommended=True,
+                        notes=f"Interpolated from {time_snap_age/60:.1f} min old time_snap"
+                    )
+            except (ValueError, AttributeError) as e:
+                logger.warning(f"Error using time_snap for timing annotation: {e}, falling back to NTP/wall clock")
+                # Fall through to NTP/wall clock check
+        
+        # No recent time_snap - check NTP
+        ntp_synced, ntp_offset = self._validate_ntp_sync()
+        
+        # Use wall clock timestamp (will be from archive.calculate_utc_timestamp(None))
+        utc_timestamp = archive.calculate_utc_timestamp(None)
+        
+        if ntp_synced:
+            return TimingAnnotation(
+                quality=TimingQuality.NTP_SYNCED,
+                utc_timestamp=utc_timestamp,
+                ntp_offset_ms=ntp_offset,
+                reprocessing_recommended=False,
+                notes="System clock NTP-synchronized"
+            )
+        
+        # Fallback: Unsynchronized wall clock (mark for reprocessing)
+        return TimingAnnotation(
+            quality=TimingQuality.WALL_CLOCK,
+            utc_timestamp=utc_timestamp,
+            reprocessing_recommended=True,
+            notes="Wall clock only - reprocessing recommended when time_snap available"
+        )
+    
+    def _decimate_and_write_drf(self, archive: NPZArchive, quality: QualityInfo, 
+                                timing: TimingAnnotation) -> int:
+        """
+        Decimate samples and write to Digital RF format with timing quality annotation
+        
+        Always uploads data regardless of timing quality. Quality is recorded in metadata
+        to enable selective reprocessing and filtering by scientists.
         
         Args:
             archive: Source archive
-            quality: Quality metrics
+            quality: Quality metrics  
+            timing: Timing annotation with quality level and UTC timestamp
             
         Returns:
             Number of decimated samples written
@@ -770,15 +960,25 @@ class AnalyticsService:
             return 0
         
         try:
-            # Calculate UTC timestamp using time_snap reference
-            utc_timestamp = archive.calculate_utc_timestamp(self.state.time_snap)
+            # Use UTC timestamp from timing annotation (may be from time_snap or NTP)
+            utc_timestamp = timing.utc_timestamp
+            
+            # Log timing quality for awareness
+            if timing.quality == TimingQuality.GPS_LOCKED:
+                logger.debug(f"Writing with GPS-locked timing: {timing.notes}")
+            elif timing.quality == TimingQuality.INTERPOLATED:
+                logger.info(f"⚠️  Writing with interpolated timing: {timing.notes}")
+            elif timing.quality == TimingQuality.NTP_SYNCED:
+                logger.debug(f"Writing with NTP-synced timing (offset: {timing.ntp_offset_ms:.1f}ms)")
+            elif timing.quality == TimingQuality.WALL_CLOCK:
+                logger.warning(f"⚠️  Writing with wall clock timing - reprocessing recommended")
             
             # Add samples to writer (handles decimation internally)
             # Writer will buffer and decimate in 1-second chunks
             self.drf_writer.add_samples(utc_timestamp, archive.iq_samples)
             
-            # Write quality metadata to parallel channel
-            self._write_quality_metadata_to_drf(utc_timestamp, quality)
+            # Write quality metadata with timing annotation to parallel channel
+            self._write_quality_metadata_to_drf(utc_timestamp, quality, timing)
             
             # Calculate expected decimated count
             decimated_samples = len(archive.iq_samples) // 1600
@@ -792,13 +992,15 @@ class AnalyticsService:
             logger.error(f"Digital RF write error: {e}", exc_info=True)
             return 0
     
-    def _write_quality_metadata_to_drf(self, timestamp: float, quality: QualityInfo):
+    def _write_quality_metadata_to_drf(self, timestamp: float, quality: QualityInfo, 
+                                       timing: TimingAnnotation):
         """
-        Write quality metrics as Digital RF metadata
+        Write quality metrics and timing annotation as Digital RF metadata
         
         Args:
             timestamp: UTC timestamp
             quality: Quality metrics to embed
+            timing: Timing quality annotation
         """
         if not self.drf_writer or not self.drf_writer.metadata_writer:
             return
@@ -807,8 +1009,9 @@ class AnalyticsService:
             # Calculate global index at output rate (10 Hz)
             global_index = int(timestamp * 10)
             
-            # Build metadata dict
+            # Build metadata dict with quality and timing annotations
             metadata = {
+                # Data quality metrics
                 'completeness_pct': quality.completeness_pct,
                 'gap_count': quality.gap_count,
                 'gap_duration_ms': quality.gap_duration_ms,
@@ -818,7 +1021,15 @@ class AnalyticsService:
                 'recorder_offline_ms': quality.recorder_offline_ms,
                 'time_snap_established': quality.time_snap_established,
                 'time_snap_confidence': quality.time_snap_confidence,
-                'discontinuity_count': len(quality.discontinuities)
+                'discontinuity_count': len(quality.discontinuities),
+                
+                # Timing quality annotations
+                'timing_quality': timing.quality.value,
+                'time_snap_age_seconds': timing.time_snap_age_seconds,
+                'ntp_offset_ms': timing.ntp_offset_ms,
+                'sample_count_error': timing.sample_count_error,
+                'reprocessing_recommended': timing.reprocessing_recommended,
+                'timing_notes': timing.notes
             }
             
             # Write to metadata channel

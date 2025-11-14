@@ -87,6 +87,14 @@ ka9q-radio RTP (16 kHz IQ) → Resequencing → time_snap → Gap Fill → Fork 
 - **Embedded metadata:** Quality info in archive files AND Digital RF metadata
 - **No silent corrections:** All timing adjustments logged with explanation
 - **Health monitoring:** Automatic detection and recovery from radiod restarts
+- **Timing Quality Framework (Nov 2024):** Digital RF uploads ALWAYS occur with quality annotation:
+  - **GPS_LOCKED** (±1ms): WWV/CHU time_snap within 5 minutes
+  - **NTP_SYNCED** (±10ms): System clock NTP-synchronized
+  - **INTERPOLATED** (degrades): Aged time_snap (5-60 minutes old)
+  - **WALL_CLOCK** (±seconds): Unsynchronized fallback
+  - Sample count validation: 960,000 samples/minute invariant (16 kHz)
+  - Quality metadata embedded in Digital RF for selective reprocessing
+  - See: `docs/TIMING_QUALITY_FRAMEWORK.md`
 
 **5. Configuration & Testing**
 
@@ -414,7 +422,20 @@ GRAPERecorderManager:
   - Status: ✅ 3 WWV + 4 WWVH detections observed, 203ms mean differential delay
   - Documentation: Commit message `c07f59a`
 
-- ⏳ **Phase 2E - Upload Integration** (Future priority)
+- ✅ **Phase 2E - Timing Quality Framework** (Nov 13, 2024)
+  - **Architecture:** Single timing calculation per archive, passed to all consumers (tone detection, Digital RF, metadata)
+  - **4 Quality Levels:** GPS_LOCKED (±1ms, time_snap < 5min), NTP_SYNCED (±10ms), INTERPOLATED (5-60min old time_snap), WALL_CLOCK (fallback)
+  - **Implementation:** TimingAnnotation dataclass with UTC timestamp calculated once from best available source
+  - **NTP Validation:** Checks ntpq/chronyc for offset < 100ms, stratum ≤ 4
+  - **Digital RF Metadata:** Embeds `timing_quality`, `time_snap_age_seconds`, `ntp_offset_ms`, `reprocessing_recommended` in parallel channel
+  - **Critical Discovery:** Each ka9q-radio channel has independent RTP clock (cannot share time_snap between channels)
+  - **Continuous Upload:** No data gaps during propagation fades - always upload with quality annotations
+  - **Bug Fixes:** Enum serialization (StationType), timestamp calculation consistency, Digital RF writer timestamp tracking
+  - Status: ✅ Operational, tested overnight run pending
+  - Documentation: `docs/TIMING_QUALITY_FRAMEWORK.md`, `DIGITAL_RF_UPLOAD_TIMING.md`
+  - Next: Web-UI display of timing quality and gap analysis
+
+- ⏳ **Phase 2F - Upload Integration** (Future priority)
   - Module exists: `uploader.py`
   - Needs: Wire to analytics service, implement rsync/sftp, trigger on directory completion
 

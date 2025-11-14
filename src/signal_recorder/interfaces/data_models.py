@@ -154,7 +154,7 @@ class TimeSnapReference:
             'sample_rate': self.sample_rate,
             'source': self.source,
             'confidence': self.confidence,
-            'station': self.station,
+            'station': self.station.value,  # Convert enum to string for JSON
             'established_at': self.established_at,
         }
 
