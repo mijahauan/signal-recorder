@@ -15,10 +15,13 @@ import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { parse } from 'csv-parse/sync';
 import toml from 'toml';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+
+// Track ongoing spectrogram generation jobs
+const spectrogramJobs = new Map(); // jobId -> { status, type, date, progress, error, startTime }
 
 const __dirname = join(fileURLToPath(import.meta.url), '..');
 const app = express();
@@ -873,12 +876,15 @@ app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) =
 
 /**
  * Get spectrogram image for a channel and date
+ * Currently supports only carrier (10 Hz) spectrograms from Digital RF.
+ * For the current UTC day, the carrier spectrogram is always regenerated
+ * so that same-day views reflect the latest data.
  */
-app.get('/api/v1/channels/:channelName/spectrogram/:date', async (req, res) => {
+app.get('/api/v1/channels/:channelName/spectrogram/:type/:date', async (req, res) => {
   try {
-    const { channelName, date } = req.params;
+    const { channelName, type, date } = req.params;
     
-    // Map channel names to their directory names (preserve dots)
+    // Map channel names to their actual directory names
     const channelMap = {
       'WWV 2.5 MHz': 'WWV_2.5_MHz',
       'WWV 5 MHz': 'WWV_5_MHz',
@@ -893,24 +899,60 @@ app.get('/api/v1/channels/:channelName/spectrogram/:date', async (req, res) => {
     
     const channelDirName = channelMap[channelName] || channelName.replace(/ /g, '_');
     
-    // Build path to spectrogram PNG
-    // Format: spectrograms/YYYYMMDD/CHANNEL_YYYYMMDD_spectrogram.png
-    const spectrogramPath = join(dataRoot, 'spectrograms', date, 
-                                 `${channelDirName}_${date}_spectrogram.png`);
+    // Only carrier (10 Hz) spectrograms are supported now
+    if (type !== 'carrier') {
+      return res.status(400).json({
+        error: 'Invalid spectrogram type',
+        message: `Only 'carrier' spectrograms are supported`
+      });
+    }
     
-    // Check if file exists
+    const spectrogramPath = join(
+      dataRoot,
+      'spectrograms',
+      date,
+      `${channelDirName}_${date}_carrier_spectrogram.png`
+    );
+    
+    // For the current UTC date, always regenerate the carrier spectrogram
+    // so that the visualization reflects the latest data, even if a PNG
+    // already exists from earlier in the day.
+    const nowUtc = new Date();
+    const todayUtcStr = nowUtc.toISOString().slice(0, 10).replace(/-/g, '');
+    
+    if (date === todayUtcStr) {
+      try {
+        const scriptPath = join(installDir, 'scripts', 'generate_spectrograms_drf.py');
+        if (!fs.existsSync(scriptPath)) {
+          return res.status(500).json({
+            error: 'Generation script not found',
+            message: `Expected script at ${scriptPath}`
+          });
+        }
+        
+        const cmd = `python3 "${scriptPath}" --date ${date} --data-root "${dataRoot}"`;
+        await execAsync(cmd);
+      } catch (err) {
+        console.error('Failed to regenerate carrier spectrogram:', err);
+        return res.status(500).json({
+          error: 'Failed to regenerate spectrogram',
+          message: err.message
+        });
+      }
+    }
+    
+    // Check if file exists after potential regeneration
     if (!fs.existsSync(spectrogramPath)) {
       return res.status(404).json({
         error: 'Spectrogram not found',
-        message: `No spectrogram available for ${channelName} on ${date}`,
+        message: `No carrier spectrogram available for ${channelName} on ${date}`,
         path: spectrogramPath,
-        suggestion: 'Run: python3 scripts/generate_spectrograms.py --date ' + date
+        suggestion: `Run: python3 scripts/generate_spectrograms_drf.py --date ${date}`
       });
     }
     
     // Serve the PNG file
     res.sendFile(spectrogramPath);
-    
   } catch (error) {
     console.error('Failed to get spectrogram:', error);
     res.status(500).json({
@@ -918,6 +960,188 @@ app.get('/api/v1/channels/:channelName/spectrogram/:date', async (req, res) => {
       details: error.message
     });
   }
+});
+
+/**
+ * Legacy endpoint - defaults to archive type
+ */
+app.get('/api/v1/channels/:channelName/spectrogram/:date', async (req, res) => {
+  const { channelName, date } = req.params;
+  req.params.type = 'archive';
+  return app._router.handle(req, res);
+});
+
+/**
+ * Generate spectrograms for a specific date and type
+ * Runs in background, returns job ID for status tracking
+ */
+app.post('/api/v1/spectrograms/generate', async (req, res) => {
+  try {
+    const { date, type } = req.body;
+    
+    if (!date || !type) {
+      return res.status(400).json({
+        error: 'Missing required parameters',
+        message: 'Both date and type are required'
+      });
+    }
+    
+    // Only carrier (10 Hz) spectrograms are supported.
+    if (type !== 'carrier') {
+      return res.status(400).json({
+        error: 'Invalid type',
+        message: 'Type must be "carrier"'
+      });
+    }
+    
+    // Validate date format (YYYYMMDD)
+    if (!/^\d{8}$/.test(date)) {
+      return res.status(400).json({
+        error: 'Invalid date format',
+        message: 'Date must be in YYYYMMDD format'
+      });
+    }
+    
+    // Create unique job ID
+    const jobId = `${type}_${date}_${Date.now()}`;
+    
+    // Check if already generating this combination
+    const existingJob = Array.from(spectrogramJobs.values()).find(
+      job => job.date === date && job.type === type && job.status === 'running'
+    );
+    
+    if (existingJob) {
+      return res.json({
+        jobId: Array.from(spectrogramJobs.entries()).find(([k, v]) => v === existingJob)[0],
+        status: 'already_running',
+        message: `Spectrogram generation for ${type} ${date} is already in progress`
+      });
+    }
+    
+    // Determine script path
+    const scriptName = 'generate_spectrograms_drf.py';
+    const scriptPath = join(installDir, 'scripts', scriptName);
+    
+    // Check if script exists
+    if (!fs.existsSync(scriptPath)) {
+      return res.status(500).json({
+        error: 'Script not found',
+        message: `Generation script not found: ${scriptPath}`
+      });
+    }
+    
+    // Initialize job status
+    spectrogramJobs.set(jobId, {
+      status: 'running',
+      type,
+      date,
+      progress: 0,
+      error: null,
+      startTime: Date.now(),
+      output: []
+    });
+    
+    console.log(`Starting spectrogram generation: ${type} for ${date} (job ${jobId})`);
+    
+    // Spawn background process
+    const pythonPath = process.env.PYTHON_PATH || 'python3';
+    const args = [scriptPath, '--date', date, '--data-root', dataRoot];
+    
+    const child = spawn(pythonPath, args, {
+      cwd: installDir,
+      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    });
+    
+    const job = spectrogramJobs.get(jobId);
+    
+    // Capture stdout
+    child.stdout.on('data', (data) => {
+      const output = data.toString();
+      job.output.push(output);
+      console.log(`[${jobId}] ${output.trim()}`);
+      
+      // Parse progress if possible
+      // Match patterns: "Progress: 100/993" or "Processing 5/9"
+      const progressMatch = output.match(/Progress:?\s+(\d+)\/(\d+)/i) || 
+                           output.match(/Processing.*?(\d+)\/(\d+)/);
+      if (progressMatch) {
+        job.progress = Math.round((parseInt(progressMatch[1]) / parseInt(progressMatch[2])) * 100);
+      }
+    });
+    
+    // Capture stderr
+    child.stderr.on('data', (data) => {
+      const output = data.toString();
+      job.output.push(output);
+      console.error(`[${jobId}] ERROR: ${output.trim()}`);
+    });
+    
+    // Handle completion
+    child.on('close', (code) => {
+      if (code === 0) {
+        job.status = 'completed';
+        job.progress = 100;
+        console.log(`Spectrogram generation completed: ${jobId}`);
+      } else {
+        job.status = 'failed';
+        job.error = `Process exited with code ${code}`;
+        console.error(`Spectrogram generation failed: ${jobId} (code ${code})`);
+      }
+      
+      // Clean up old jobs after 5 minutes
+      setTimeout(() => {
+        spectrogramJobs.delete(jobId);
+        console.log(`Cleaned up job: ${jobId}`);
+      }, 5 * 60 * 1000);
+    });
+    
+    child.on('error', (error) => {
+      job.status = 'failed';
+      job.error = error.message;
+      console.error(`Spectrogram generation error: ${jobId}`, error);
+    });
+    
+    // Return job ID immediately
+    res.json({
+      jobId,
+      status: 'started',
+      message: `Spectrogram generation started for ${type} ${date}`,
+      pollUrl: `/api/v1/spectrograms/status/${jobId}`
+    });
+    
+  } catch (error) {
+    console.error('Failed to start spectrogram generation:', error);
+    res.status(500).json({
+      error: 'Failed to start generation',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * Check status of spectrogram generation job
+ */
+app.get('/api/v1/spectrograms/status/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = spectrogramJobs.get(jobId);
+  
+  if (!job) {
+    return res.status(404).json({
+      error: 'Job not found',
+      message: 'Job may have completed and been cleaned up, or never existed'
+    });
+  }
+  
+  res.json({
+    jobId,
+    status: job.status,
+    type: job.type,
+    date: job.date,
+    progress: job.progress,
+    error: job.error,
+    elapsedSeconds: Math.round((Date.now() - job.startTime) / 1000),
+    recentOutput: job.output.slice(-10).join('') // Last 10 lines
+  });
 });
 
 /**
@@ -1455,6 +1679,130 @@ app.get('/api/monitoring/live-quality', (req, res) => {
   }
 });
 
+/**
+ * Timing and Gap Analysis - detailed timing quality and packet loss analysis
+ * GET /api/v1/timing/analysis?date=20251115&channel=WWV+10+MHz
+ */
+app.get('/api/v1/timing/analysis', async (req, res) => {
+  try {
+    const date = req.query.date;
+    const channel = req.query.channel;
+    
+    if (!date) {
+      return res.status(400).json({ error: 'date parameter required (YYYYMMDD)' });
+    }
+    
+    // Build command
+    const scriptPath = join(installDir, 'scripts/analyze_timing.py');
+    let cmd = `python3 "${scriptPath}" --date ${date} --data-root "${dataRoot}"`;
+    
+    if (channel) {
+      cmd += ` --channel "${channel}"`;
+    }
+    
+    // Export to temp JSON file
+    const tmpFile = `/tmp/grape-timing-${date}-${Date.now()}.json`;
+    cmd += ` --export "${tmpFile}"`;
+    
+    // Execute analysis
+    const { stdout, stderr } = await execAsync(cmd, { 
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 60000 
+    });
+    
+    // Read results from temp file
+    let analysisData = null;
+    try {
+      const jsonContent = fs.readFileSync(tmpFile, 'utf8');
+      analysisData = JSON.parse(jsonContent);
+      fs.unlinkSync(tmpFile); // Clean up
+    } catch (err) {
+      console.error('Failed to read analysis results:', err);
+      return res.status(500).json({ 
+        error: 'Failed to parse analysis results',
+        stdout: stdout,
+        stderr: stderr 
+      });
+    }
+    
+    // Calculate summary statistics
+    const files = analysisData.files || [];
+    const totalFiles = files.length;
+    const filesWithGaps = files.filter(f => f.gaps_count > 0).length;
+    const totalGaps = files.reduce((sum, f) => sum + f.gaps_count, 0);
+    const totalSamplesFilled = files.reduce((sum, f) => sum + f.gaps_filled, 0);
+    const totalPacketsRx = files.reduce((sum, f) => sum + f.packets_received, 0);
+    const totalPacketsExpected = files.reduce((sum, f) => sum + f.packets_expected, 0);
+    
+    const completeness = totalPacketsExpected > 0 
+      ? (totalPacketsRx / totalPacketsExpected * 100)
+      : 100.0;
+    
+    // Calculate quality grade
+    let grade;
+    if (completeness >= 99.9) grade = 'A+';
+    else if (completeness >= 99.5) grade = 'A';
+    else if (completeness >= 99.0) grade = 'B';
+    else if (completeness >= 95.0) grade = 'C';
+    else grade = 'F';
+    
+    // Hourly breakdown
+    const hourly = {};
+    for (let hour = 0; hour < 24; hour++) {
+      hourly[hour] = { count: 0, samples: 0, files: 0, completeness: [] };
+    }
+    
+    for (const file of files) {
+      try {
+        const hour = parseInt(file.filename.substring(9, 11));
+        hourly[hour].count += file.gaps_count;
+        hourly[hour].samples += file.gaps_filled;
+        hourly[hour].files += 1;
+        hourly[hour].completeness.push(file.completeness * 100);
+      } catch (err) {
+        // Skip files with bad format
+      }
+    }
+    
+    // Calculate average completeness per hour
+    for (let hour = 0; hour < 24; hour++) {
+      const h = hourly[hour];
+      if (h.completeness.length > 0) {
+        h.avg_completeness = h.completeness.reduce((a, b) => a + b) / h.completeness.length;
+      } else {
+        h.avg_completeness = null;
+      }
+      delete h.completeness; // Don't send full array
+    }
+    
+    // Format response
+    res.json({
+      channel: analysisData.channel,
+      date: analysisData.date,
+      summary: {
+        total_files: totalFiles,
+        files_with_gaps: filesWithGaps,
+        total_gaps: totalGaps,
+        samples_filled: totalSamplesFilled,
+        packets_received: totalPacketsRx,
+        packets_expected: totalPacketsExpected,
+        completeness_percent: completeness,
+        quality_grade: grade
+      },
+      time_snap: analysisData.time_snap,
+      hourly_breakdown: hourly,
+      files: files  // Full detail if needed
+    });
+    
+  } catch (err) {
+    console.error('Timing analysis error:', err);
+    res.status(500).json({ 
+      error: 'Analysis failed',
+      message: err.message 
+    });
+  }
+});
+
 // ============================================================================
 // STATIC PAGE ROUTES
 // ============================================================================
@@ -1482,11 +1830,13 @@ app.listen(PORT, () => {
   console.log('📊 Dashboards:');
   console.log(`   http://localhost:${PORT}/                   - Main dashboard`);
   console.log(`   http://localhost:${PORT}/timing-dashboard.html  - Timing & quality`);
+  console.log(`   http://localhost:${PORT}/timing-analysis.html   - Gap analysis`);
   console.log('');
   console.log('📡 API v1 Endpoints (New):');
-  console.log(`   http://localhost:${PORT}/api/v1/system/status   - System health`);
-  console.log(`   http://localhost:${PORT}/api/v1/system/health   - Health check`);
-  console.log(`   http://localhost:${PORT}/api/v1/system/errors   - Recent errors`);
+  console.log(`   http://localhost:${PORT}/api/v1/system/status      - System health`);
+  console.log(`   http://localhost:${PORT}/api/v1/system/health      - Health check`);
+  console.log(`   http://localhost:${PORT}/api/v1/system/errors      - Recent errors`);
+  console.log(`   http://localhost:${PORT}/api/v1/timing/analysis    - Gap & timing analysis`);
   console.log('');
   console.log('📡 Legacy Endpoints (Backward compatible):');
   console.log(`   http://localhost:${PORT}/api/monitoring/station-info`);

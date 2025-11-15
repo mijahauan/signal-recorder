@@ -24,10 +24,19 @@ test_data_root = "/tmp/grape-test"
 production_data_root = "/var/lib/signal-recorder"
 
 # Directory structure (auto-created based on mode):
-# ${data_root}/data/YYYYMMDD/CALLSIGN_GRID/CHANNEL/  - Raw IQ files
-# ${data_root}/analytics/quality/YYYYMMDD/           - Quality CSVs
-# ${data_root}/analytics/discontinuities/YYYYMMDD/   - Gap/discontinuity logs
-# ${data_root}/analytics/daily_summary/YYYYMMDD/     - Daily summaries
+# CRITICAL: All code MUST use src/signal_recorder/paths.py to generate paths
+#
+# ${data_root}/
+#   archives/{CHANNEL}/                              - Raw 16 kHz NPZ files
+#   analytics/{CHANNEL}/
+#     digital_rf/{YYYYMMDD}/.../{CHANNEL}/*.h5       - 10 Hz Digital RF files
+#     discrimination/                                - WWV/WWVH analysis
+#     quality/                                       - Quality metrics
+#     logs/                                          - Processing logs
+#     status/                                        - Runtime status
+#   spectrograms/{YYYYMMDD}/*.png                    - Web UI spectrograms
+#   state/analytics-{channel_key}.json               - Service state
+#   status/analytics-service-status.json             - System status
 
 recording_interval = 60
 continuous = true

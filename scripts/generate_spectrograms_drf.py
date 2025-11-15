@@ -11,10 +11,18 @@ Usage:
 
 import argparse
 import logging
+import os
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, List
 import numpy as np
+import toml
+
+# Add parent to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# CRITICAL: Use centralized paths API
+from src.signal_recorder.paths import get_paths, GRAPEPaths
 
 try:
     import digital_rf as drf
@@ -41,111 +49,160 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def find_drf_channels(analytics_dir: Path, date_str: str) -> List[Tuple[str, Path]]:
-    """
-    Find all Digital RF channel directories for a given date
-    
-    Args:
-        analytics_dir: Base analytics directory
-        date_str: Date in YYYYMMDD format
-        
+def find_drf_channels(paths: GRAPEPaths) -> List[Tuple[str, Path]]:
+    """Discover channels that have Digital RF output using paths API.
+
     Returns:
-        List of (channel_name, drf_channel_path) tuples
+        List of (channel_name, drf_base_path) tuples
     """
-    channels = []
+    channels: List[Tuple[str, Path]] = []
+
+    # Use paths API to discover all channels
+    all_channels = paths.discover_channels()
     
-    # Look for channel directories
-    for channel_dir in analytics_dir.glob('*'):
-        if not channel_dir.is_dir():
-            continue
-        
-        # Check for digital_rf subdirectory with date
-        drf_date_dir = channel_dir / 'digital_rf' / date_str
-        if not drf_date_dir.exists():
-            continue
-        
-        # Find the actual channel directory (deep in PSWS structure)
-        # Structure: YYYYMMDD/CALLSIGN_GRID/RECEIVER@STATION/OBS.../CHANNEL/
-        for drf_channel_dir in drf_date_dir.rglob('drf_properties.h5'):
-            channel_path = drf_channel_dir.parent
-            channel_name = channel_path.name
-            channels.append((channel_name, channel_path))
-            logger.info(f"Found channel: {channel_name} at {channel_path}")
-            break  # Only need one per channel
-    
+    for channel_name in all_channels:
+        drf_base = paths.get_digital_rf_dir(channel_name)
+        if drf_base.exists():
+            channels.append((channel_name, drf_base))
+            logger.info(f"Found Digital RF channel: {channel_name} at {drf_base}")
+
     return channels
 
 
-def read_drf_day(drf_channel_path: Path, date_str: str) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
-    """
-    Read full day of Digital RF data for a channel
-    
+def read_drf_day(drf_base: Path, date_str: str, safe_channel_name: str) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
+    """Read 10 Hz IQ samples for a given day directly from Digital RF.
+
     Args:
-        drf_channel_path: Path to Digital RF channel directory (with drf_properties.h5)
+        drf_base: Base Digital RF directory for this logical channel
         date_str: Date in YYYYMMDD format
-        
+        safe_channel_name: Channel name with spaces replaced by underscores
+
     Returns:
-        Tuple of (timestamps, iq_samples, sample_rate) or None if error
+        (timestamps_unix, iq_10hz, sample_rate) or None if no data.
     """
     try:
-        # Parse date
-        year = int(date_str[:4])
-        month = int(date_str[4:6])
-        day = int(date_str[6:8])
-        
-        start_dt = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
-        end_dt = start_dt + timedelta(days=1)
-        
-        # Open Digital RF reader on parent directory
-        parent_dir = drf_channel_path.parent
-        reader = drf.DigitalRFReader(str(parent_dir))
-        
-        channel_name = drf_channel_path.name
-        
-        # Get properties
-        properties = reader.get_properties(channel_name)
-        sample_rate = float(properties['samples_per_second'])
-        
-        logger.info(f"Reading {channel_name}")
-        logger.info(f"  Sample rate: {sample_rate} Hz")
-        logger.info(f"  Date range: {start_dt} to {end_dt}")
-        
-        # Get data bounds for this channel
-        bounds = reader.get_bounds(channel_name)
-        if bounds[0] is None or bounds[1] is None:
-            logger.warning(f"  No data bounds available")
+        if not drf_base.exists():
+            logger.warning(f"Digital RF base directory not found: {drf_base}")
             return None
-        
-        # Calculate sample indices for the day
-        start_sample = int(start_dt.timestamp() * sample_rate)
-        end_sample = int(end_dt.timestamp() * sample_rate)
-        
-        # Constrain to actual data bounds
-        if start_sample < bounds[0]:
-            start_sample = bounds[0]
-        if end_sample > bounds[1]:
-            end_sample = bounds[1]
-        
-        logger.info(f"  Reading samples {start_sample} to {end_sample}")
-        
-        # Read data
-        try:
-            data = reader.read_vector(start_sample, end_sample - start_sample, channel_name)
-            iq_samples = data[channel_name]
-        except Exception as e:
-            logger.error(f"  Failed to read data: {e}")
+
+        # DigitalRFWriter writes channel data under:
+        #   {drf_base}/{YYYYMMDD}/CALL_GRID/RECEIVER@ID/OBS.../{CHANNEL}
+        # and uses that deepest CHANNEL directory as the top-level path when
+        # constructing the DigitalRFWriter. To mirror that on read, we scan
+        # for drf_properties.h5 under the requested date and create readers
+        # rooted at each CHANNEL directory that matches safe_channel_name.
+
+        date_dir = drf_base / date_str
+        if not date_dir.exists():
+            logger.warning(f"No Digital RF directory for date {date_str}: {date_dir}")
             return None
-        
-        # Generate timestamps
-        num_samples = len(iq_samples)
-        timestamps = start_sample / sample_rate + np.arange(num_samples) / sample_rate
-        
-        logger.info(f"  ✅ Read {num_samples:,} samples ({num_samples / 3600:.1f} hours)")
-        
-        return timestamps, iq_samples, sample_rate
-        
+
+        prop_files = list(date_dir.rglob('drf_properties.h5'))
+        if not prop_files:
+            logger.warning(f"No drf_properties.h5 files found for {date_str} under {date_dir}")
+            return None
+
+        all_samples: List[np.ndarray] = []
+        all_indices: List[np.ndarray] = []
+        sample_rate: Optional[float] = None
+
+        for prop_file in sorted(prop_files):
+            channel_dir = prop_file.parent
+            if channel_dir.name != safe_channel_name:
+                # Different logical channel under same date tree
+                continue
+
+            # digital_rf expects the top-level directory that contains
+            # channel subdirectories (OBS directory), not the deepest
+            # channel directory itself.
+            obs_dir = channel_dir.parent
+            logger.info(f"    Probing OBS directory: {obs_dir}")
+
+            try:
+                try:
+                    reader = drf.DigitalRFReader(str(obs_dir))
+                except ValueError as ve:
+                    logger.warning(f"    Skipping {obs_dir} (DigitalRFReader error): {ve}")
+                    continue
+
+                channel_keys = reader.get_channels()
+                logger.info(f"    Channels under {obs_dir}: {channel_keys}")
+                if not channel_keys:
+                    logger.warning(f"    No channels found in {obs_dir}")
+                    continue
+
+                if safe_channel_name not in channel_keys:
+                    logger.warning(f"    Channel {safe_channel_name} not present under {obs_dir} (found: {channel_keys})")
+                    continue
+
+                ch = safe_channel_name
+
+                try:
+                    props = reader.get_properties(ch)
+                    fs_num = props.get('sample_rate_numerator', 10)
+                    fs_den = props.get('sample_rate_denominator', 1)
+                    fs = fs_num / fs_den
+                    sample_rate = fs
+
+                    start, end = reader.get_bounds(ch)
+                    logger.info(f"    get_bounds({ch!r}) -> start={start}, end={end}")
+                    if start is None or end is None:
+                        logger.warning(f"    Channel {ch}: empty bounds")
+                        continue
+
+                    count = int(end - start + 1)
+                    logger.info(f"    About to read {count:,} samples from {ch} (indices {start}–{end})")
+
+                    # DigitalRFReader.read(start_sample, end_sample, channel)
+                    # Returns OrderedDict: {sample_index: numpy_array}
+                    data_dict = reader.read(start, end, ch)
+                    if not data_dict:
+                        logger.warning(f"    Channel {ch}: read returned no data")
+                        continue
+
+                    # Concatenate all data segments and extract indices
+                    data_segments = []
+                    index_list = []
+                    for idx, segment in data_dict.items():
+                        # Segment shape is (N, 1) for complex data, squeeze to 1D
+                        segment_1d = segment.squeeze()
+                        data_segments.append(segment_1d)
+                        index_list.extend(range(idx, idx + len(segment_1d)))
+                    
+                    if not data_segments:
+                        logger.warning(f"    Channel {ch}: no data segments found")
+                        continue
+                    
+                    data = np.concatenate(data_segments)
+                    indices = np.array(index_list, dtype=np.int64)
+                    all_samples.append(data)
+                    all_indices.append(indices)
+                except Exception as e:
+                    logger.error(f"    Error reading Digital RF channel {ch}: {e}", exc_info=True)
+                    continue
+            except Exception as e:
+                logger.error(f"    Error processing Digital RF directory {obs_dir}: {e}", exc_info=True)
+                continue
+
+        if not all_samples:
+            logger.warning(f"No usable Digital RF samples found for {date_str} under {drf_base}")
+            return None
+
+        iq_10hz = np.concatenate(all_samples)
+        indices = np.concatenate(all_indices)
+
+        if sample_rate is None or sample_rate <= 0:
+            sample_rate = 10.0
+
+        timestamps = indices.astype(np.float64) / float(sample_rate)
+
+        hours_of_data = iq_10hz.size / sample_rate / 3600.0
+        logger.info(f"  ✅ Loaded {iq_10hz.size:,} samples @ {sample_rate:.2f} Hz ({hours_of_data:.1f} hours)")
+
+        return timestamps, iq_10hz, float(sample_rate)
+
     except Exception as e:
-        logger.error(f"Error reading Digital RF: {e}", exc_info=True)
+        logger.error(f"Error reading Digital RF data: {e}", exc_info=True)
         return None
 
 
@@ -190,10 +247,23 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         # Create figure
         fig, ax = plt.subplots(figsize=(16, 6), dpi=100)
         
-        # Convert time offsets to actual UTC datetime
-        start_timestamp = timestamps[0]
-        plot_times = [datetime.fromtimestamp(start_timestamp + offset, tz=timezone.utc) 
+        # Convert spectrogram time axis to UTC datetime
+        # t contains time offsets from start of data, timestamps[0] is the absolute start time
+        plot_times = [datetime.fromtimestamp(timestamps[0] + offset, tz=timezone.utc) 
                      for offset in t]
+        
+        # Calculate actual data coverage for subtitle
+        data_start = datetime.fromtimestamp(timestamps[0], tz=timezone.utc)
+        data_end = datetime.fromtimestamp(timestamps[-1], tz=timezone.utc)
+        hours_covered = (timestamps[-1] - timestamps[0]) / 3600
+        coverage_str = f"Coverage: {data_start.strftime('%H:%M')} - {data_end.strftime('%H:%M')} UTC ({hours_covered:.1f} hrs)"
+        
+        # Parse date_str to get full 24-hour range for x-axis
+        year = int(date_str.split('-')[0])
+        month = int(date_str.split('-')[1])
+        day = int(date_str.split('-')[2])
+        day_start = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
+        day_end = datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
         
         # Shift frequencies to be centered at 0
         f_shifted = np.fft.fftshift(f)
@@ -213,8 +283,11 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         # Format axes
         ax.set_ylabel('Frequency Offset (Hz)', fontsize=12)
         ax.set_xlabel('Time (UTC)', fontsize=12)
-        ax.set_title(f'{channel_name} - {date_str} - Carrier Spectrogram (10 Hz IQ)', 
+        ax.set_title(f'{channel_name} - {date_str} - Carrier Spectrogram (10 Hz IQ)\n{coverage_str}', 
                     fontsize=14, fontweight='bold')
+        
+        # Force 24-hour x-axis range (00:00-23:59 UTC)
+        ax.set_xlim(day_start, day_end)
         
         # Format x-axis as time
         ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
@@ -241,7 +314,7 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
 
 def main():
     parser = argparse.ArgumentParser(description='Generate spectrograms from Digital RF carrier data')
-    parser.add_argument('--date', default=None, 
+    parser.add_argument('--date', default=None,
                        help='Date in YYYYMMDD format (default: today)')
     parser.add_argument('--data-root', default='/tmp/grape-test',
                        help='Data root directory (default: /tmp/grape-test)')
@@ -249,9 +322,9 @@ def main():
                        help='Output directory for PNGs (default: {data-root}/spectrograms)')
     parser.add_argument('--channels', nargs='+', default=None,
                        help='Specific channels to process (default: all)')
-    
+
     args = parser.parse_args()
-    
+
     # Determine date
     if args.date:
         date_str = args.date
@@ -259,79 +332,78 @@ def main():
         # Default to today
         today = datetime.now(timezone.utc)
         date_str = today.strftime('%Y%m%d')
-    
+
     # Parse date for display
     year = int(date_str[:4])
     month = int(date_str[4:6])
     day = int(date_str[6:8])
     date_display = f"{year}-{month:02d}-{day:02d}"
-    
+
     logger.info(f"Generating carrier spectrograms for: {date_display}")
+
+    # Create centralized paths API instance
+    paths = get_paths(args.data_root)
     
-    # Setup paths
-    analytics_dir = Path(args.data_root) / 'analytics'
+    # Setup output directory using paths API
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
-        output_dir = Path(args.data_root) / 'spectrograms'
+        output_dir = paths.get_spectrograms_root()
     
-    if not analytics_dir.exists():
-        logger.error(f"Analytics directory not found: {analytics_dir}")
-        return 1
-    
-    # Discover Digital RF channels
-    channels = find_drf_channels(analytics_dir, date_str)
-    
+    logger.info(f"Data root: {paths.data_root}")
+    logger.info(f"Output dir: {output_dir}")
+
+    # Discover channels that have Digital RF output using paths API
+    channels = find_drf_channels(paths)
+
     if not channels:
-        logger.warning(f"No Digital RF data found for {date_str}")
+        logger.warning(f"No Digital RF data found")
         return 1
-    
+
     # Filter channels if specified
     if args.channels:
-        channels = [(name, path) for name, path in channels if name in args.channels]
-    
-    logger.info(f"Found {len(channels)} channels to process")
-    
+        filtered = [(c, p) for c, p in channels if c in args.channels]
+        if not filtered:
+            logger.error(f"None of the specified channels found: {args.channels}")
+            return 1
+        channels = filtered
+
+    logger.info(f"Processing {len(channels)} channel(s)")
+
     success_count = 0
-    
-    for channel_name, channel_path in channels:
-        try:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Processing: {channel_name}")
-            logger.info(f"{'='*60}")
-            
-            # Read data
-            result = read_drf_day(channel_path, date_str)
-            if result is None:
-                logger.warning(f"  Skipping - no data available")
-                continue
-            
-            timestamps, iq_samples, sample_rate = result
-            
-            # Generate spectrogram
-            output_filename = f"{channel_name}_{date_str}_carrier_spectrogram.png"
-            output_path = output_dir / date_str / output_filename
-            
+    for channel_name, drf_base in channels:
+        logger.info(f"\n--- {channel_name} ---")
+
+        # Read entire day
+        safe_channel_name = channel_name.replace(' ', '_')
+        result = read_drf_day(drf_base, date_str, safe_channel_name)
+
+        if result:
+            timestamps, iq_10hz, sample_rate = result
+
+            # Generate spectrogram using paths API
+            output_path = paths.get_spectrogram_path(channel_name, date_str, 'carrier')
+
             generate_spectrogram(
                 timestamps=timestamps,
-                iq_samples=iq_samples,
+                iq_samples=iq_10hz,
                 sample_rate=sample_rate,
                 output_path=output_path,
                 channel_name=channel_name,
                 date_str=date_display
             )
-            
+
             success_count += 1
-            
+
         except Exception as e:
             logger.error(f"Failed to process {channel_name}: {e}")
             continue
-    
+
     logger.info(f"\n{'='*60}")
     logger.info(f"✅ Completed: {success_count}/{len(channels)} spectrograms generated")
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"{'='*60}")
-    
+
     return 0 if success_count > 0 else 1
 
 
