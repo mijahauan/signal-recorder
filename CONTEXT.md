@@ -170,6 +170,69 @@ _correlate_with_template(audio, template, station_type, minute_boundary, current
     # Returns result with use_for_time_snap flag set correctly
 ```
 
+### Paths API (Centralized Data Locations)
+**Files:** `src/signal_recorder/paths.py` (Python), `web-ui/grape-paths.js` (JavaScript)  
+**Purpose:** Single source of truth for all data paths. Prevents path mismatches.
+
+**CRITICAL: All code MUST use this API for path generation.**
+
+**Python Usage:**
+```python
+from signal_recorder.paths import get_paths
+
+paths = get_paths('/tmp/grape-test')  # or load_paths_from_config()
+
+# Path generation (automatic channel name conversion)
+archive_dir = paths.get_archive_dir('WWV 10 MHz')
+  # → /tmp/grape-test/archives/WWV_10_MHz/
+
+drf_dir = paths.get_digital_rf_dir('WWV 10 MHz')
+  # → /tmp/grape-test/analytics/WWV_10_MHz/digital_rf/
+
+spec_path = paths.get_spectrogram_path('WWV 10 MHz', '20251115', 'carrier')
+  # → /tmp/grape-test/spectrograms/20251115/WWV_10_MHz_20251115_carrier_spectrogram.png
+
+state_file = paths.get_analytics_state_file('WWV 10 MHz')
+  # → /tmp/grape-test/state/analytics-wwv10.json
+
+# Channel discovery
+channels = paths.discover_channels()
+  # → ['WWV 10 MHz', 'WWV 2.5 MHz', 'CHU 3.33 MHz', ...]
+```
+
+**JavaScript Usage:**
+```javascript
+import { GRAPEPaths } from './grape-paths.js';
+
+const paths = new GRAPEPaths(dataRoot);
+
+const archiveDir = paths.getArchiveDir('WWV 10 MHz');
+const specPath = paths.getSpectrogramPath('WWV 10 MHz', '20251115', 'carrier');
+const stateFile = paths.getAnalyticsStateFile('WWV 10 MHz');
+const channels = paths.discoverChannels();
+```
+
+**Channel Name Conversions (automatic):**
+- Display: `WWV 10 MHz` → Directory: `WWV_10_MHz` → State key: `wwv10`
+- Display: `WWV 2.5 MHz` → Directory: `WWV_2.5_MHz` → State key: `wwv2.5`
+- Display: `CHU 3.33 MHz` → Directory: `CHU_3.33_MHz` → State key: `chu3.33`
+
+**Directory Structure:**
+```
+{data_root}/
+├── archives/{CHANNEL}/              # Raw 16 kHz NPZ
+├── analytics/{CHANNEL}/
+│   ├── digital_rf/                  # 10 Hz Digital RF
+│   ├── discrimination/              # WWV/WWVH analysis
+│   ├── quality/                     # Quality metrics
+│   └── logs/                        # Processing logs
+├── spectrograms/{YYYYMMDD}/         # Web UI spectrograms
+├── state/analytics-{key}.json       # Service state
+└── status/                          # System status
+```
+
+**Migration Guide:** See `docs/PATHS_API_MIGRATION.md`
+
 ### Web UI Monitoring
 **Files:** `web-ui/monitoring-server.js`, `web-ui/channels.html`
 
@@ -203,8 +266,8 @@ multicast_address = "239.20.1.1:5005"
 ## 4. ⚡ Current Task & Git Context
 
 **Current Branch:** `main`  
-**Last Commit:** fd82a38 - Phase 2E: Timing Quality Framework  
-**Status:** ✅ Operational, overnight validation run in progress
+**Last Commit:** 6a49445 - Add centralized Paths API for iron-clad data location management  
+**Status:** ✅ Operational with centralized path management
 
 **Recent Accomplishments:**
 - ✅ Dual-service architecture (core recorder + analytics)
@@ -213,23 +276,34 @@ multicast_address = "239.20.1.1:5005"
 - ✅ Digital RF integration with quality metadata
 - ✅ Web UI for real-time monitoring
 - ✅ WWV/H discrimination for propagation analysis
+- ✅ **Centralized Paths API** - Single source of truth for all data locations (Python + JavaScript)
+- ✅ **Gap analysis tools** - CLI and web dashboard for timing/quality analysis
+- ✅ **10 Hz NPZ optimization** - Pre-decimation for 200x faster DRF regeneration
+
+**Latest Session (Nov 15, 2024):**
+- Fixed carrier spectrogram generation (DRF read API, index calculation)
+- Implemented centralized Paths API to prevent path mismatches
+- Migrated 3 major scripts to use paths API
+- Created gap/timing analysis dashboard
+- Verified system handles edge cases (WWV 2.5 MHz, CHU 3.33 MHz)
 
 **Next Session Goals:**
-1. **Review overnight run results** (timing quality distribution, stability, any crashes)
-2. **Web UI enhancements:**
-   - Display timing quality per channel (GPS_LOCKED/NTP_SYNCED/etc.)
-   - Visualize time_snap establishment and age
-   - Gap analysis dashboard (packet loss, timing degradation visualization)
-   - Timing quality distribution chart (pie/bar chart)
-3. **Address any issues** discovered in overnight logs
+1. **Complete paths API migration** of remaining components:
+   - analytics_service.py
+   - monitoring-server.js endpoint updates
+2. **Correlate packet loss with signal strength** (SNR analysis)
+3. **Web UI enhancements:**
+   - Display timing quality per channel
+   - Gap analysis visualization integration
+4. **Optimize DRF generation** using pre-decimated 10 Hz NPZ files
 
 **Known Issues:**
-- None currently blocking (pending overnight validation)
+- None blocking - system operational with verified timing
 
 **Development Focus:**
-- Web UI gap analysis and timing visualization
-- Long-term stability monitoring
-- Potential future: automated reprocessing for low-quality segments
+- Complete paths API adoption across all services
+- SNR vs packet loss correlation analysis
+- Web dashboard polish and integration
 
 ---
 
@@ -237,11 +311,14 @@ multicast_address = "239.20.1.1:5005"
 
 **Documentation:**
 - `docs/TIMING_QUALITY_FRAMEWORK.md` - Timing architecture (comprehensive)
+- `docs/PATHS_API_MIGRATION.md` - **Path management guide (CRITICAL)**
+- `docs/PATHS_API_WEB_UI_EXAMPLE.md` - JavaScript integration examples
 - `DIGITAL_RF_UPLOAD_TIMING.md` - Quick reference
-- `docs/SESSION_NOV13_TIMING_QUALITY.md` - Latest session summary
+- `docs/SESSION_NOV13_TIMING_QUALITY.md` - Session summaries
 
-**Monitoring:**
+**Monitoring & Analysis:**
 - Web UI: http://localhost:3000 (when monitoring-server running)
+- Gap analysis: http://localhost:3000/timing-analysis.html
 - Logs: `{data_root}/logs/analytics-{channel}.log`
 - Status: `{data_root}/status/*.json`
 
@@ -260,10 +337,20 @@ tail -f /tmp/grape-test/logs/analytics-wwv10.log
 pkill -f analytics_service
 rm -rf /tmp/grape-test/analytics/*/digital_rf/*
 rm -rf /tmp/grape-test/state/analytics-*.json
+
+# Analysis tools
+python3 scripts/analyze_timing.py --date 20251115 --channel "WWV 10 MHz" --data-root /tmp/grape-test
+python3 scripts/regenerate_drf_from_npz.py --date 20251115 --data-root /tmp/grape-test
+python3 scripts/generate_spectrograms_drf.py --date 20251115 --data-root /tmp/grape-test
+
+# Generate pre-decimated 10 Hz files (optimization)
+python3 scripts/generate_10hz_npz.py --data-root /tmp/grape-test
 ```
 
-**Test Data Locations:**
-- Archives: `/tmp/grape-test/archives/{channel}/YYYYMMDD/*.npz`
-- Digital RF: `/tmp/grape-test/analytics/{channel}/digital_rf/YYYYMMDD/*.h5`
-- State: `/tmp/grape-test/state/*.json`
+**Data Locations (use paths API in code!):**
+- Archives: `/tmp/grape-test/archives/{CHANNEL}/`
+- Digital RF: `/tmp/grape-test/analytics/{CHANNEL}/digital_rf/`
+- Spectrograms: `/tmp/grape-test/spectrograms/{YYYYMMDD}/`
+- State: `/tmp/grape-test/state/analytics-{key}.json`
+- Status: `/tmp/grape-test/status/*.json`
 - Logs: `/tmp/grape-test/logs/*.log`
