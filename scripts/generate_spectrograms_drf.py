@@ -12,6 +12,7 @@ Usage:
 import argparse
 import logging
 import os
+import sys
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, List
@@ -69,7 +70,7 @@ def find_drf_channels(paths: GRAPEPaths) -> List[Tuple[str, Path]]:
     return channels
 
 
-def read_drf_day(drf_base: Path, date_str: str, safe_channel_name: str) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
+def read_drf_day(drf_base: Path, date_str: str, safe_channel_name: str) -> Optional[Tuple[np.ndarray, np.ndarray, float, float]]:
     """Read 10 Hz IQ samples for a given day directly from Digital RF.
 
     Args:
@@ -150,6 +151,17 @@ def read_drf_day(drf_base: Path, date_str: str, safe_channel_name: str) -> Optio
                         logger.warning(f"    Channel {ch}: empty bounds")
                         continue
 
+                    # Log timestamp for debugging but don't skip
+                    # (Some data has incorrect clock timestamps but signal is valid)
+                    start_time = start / fs
+                    target_year = int(date_str[:4])
+                    try:
+                        start_year = datetime.fromtimestamp(start_time, tz=timezone.utc).year
+                        if abs(start_year - target_year) > 10:
+                            logger.warning(f"    ⚠️  Timestamp mismatch: data from {start_year} (expected ~{target_year}), but continuing...")
+                    except (ValueError, OSError):
+                        logger.warning(f"    ⚠️  Could not parse timestamp, but continuing...")
+
                     count = int(end - start + 1)
                     logger.info(f"    About to read {count:,} samples from {ch} (indices {start}–{end})")
 
@@ -160,23 +172,27 @@ def read_drf_day(drf_base: Path, date_str: str, safe_channel_name: str) -> Optio
                         logger.warning(f"    Channel {ch}: read returned no data")
                         continue
 
-                    # Concatenate all data segments and extract indices
+                    # Concatenate all data segments and extract absolute sample indices
                     data_segments = []
                     index_list = []
                     for idx, segment in data_dict.items():
                         # Segment shape is (N, 1) for complex data, squeeze to 1D
                         segment_1d = segment.squeeze()
                         data_segments.append(segment_1d)
-                        index_list.extend(range(idx, idx + len(segment_1d)))
+                        # Use actual Digital RF sample indices (already in correct time base)
+                        segment_indices = np.arange(idx, idx + len(segment_1d), dtype=np.int64)
+                        index_list.append(segment_indices)
                     
                     if not data_segments:
                         logger.warning(f"    Channel {ch}: no data segments found")
                         continue
                     
                     data = np.concatenate(data_segments)
-                    indices = np.array(index_list, dtype=np.int64)
+                    indices = np.concatenate(index_list)
                     all_samples.append(data)
                     all_indices.append(indices)
+                    
+                    logger.info(f"    ✅ Read {len(data):,} samples from this OBS directory")
                 except Exception as e:
                     logger.error(f"    Error reading Digital RF channel {ch}: {e}", exc_info=True)
                     continue
@@ -188,18 +204,35 @@ def read_drf_day(drf_base: Path, date_str: str, safe_channel_name: str) -> Optio
             logger.warning(f"No usable Digital RF samples found for {date_str} under {drf_base}")
             return None
 
-        iq_10hz = np.concatenate(all_samples)
-        indices = np.concatenate(all_indices)
+        # Sort all data by index (sample time) before concatenating
+        # Each OBS directory may have different index offsets
+        sorted_data = sorted(zip(all_indices, all_samples), key=lambda x: x[0][0])
+        
+        all_sorted_indices = [idx for idx, _ in sorted_data]
+        all_sorted_samples = [samples for _, samples in sorted_data]
+        
+        iq_10hz = np.concatenate(all_sorted_samples)
+        indices = np.concatenate(all_sorted_indices)
 
         if sample_rate is None or sample_rate <= 0:
             sample_rate = 10.0
 
-        timestamps = indices.astype(np.float64) / float(sample_rate)
+        # Convert Digital RF sample indices to timestamps (seconds since epoch)
+        # Digital RF indices are already in sample-rate units from epoch
+        timestamps_epoch = indices.astype(np.float64) / float(sample_rate)
+        
+        # Normalize to relative timestamps from first sample (for plotting)
+        # This avoids issues with matplotlib and huge/invalid absolute timestamps
+        timestamps = timestamps_epoch - timestamps_epoch[0]
+        
+        # Store first timestamp for subtitle (data coverage display)
+        first_epoch_time = timestamps_epoch[0]
+        logger.info(f"  First sample epoch time: {first_epoch_time:.0f} ({datetime.fromtimestamp(first_epoch_time, tz=timezone.utc)})")
 
         hours_of_data = iq_10hz.size / sample_rate / 3600.0
         logger.info(f"  ✅ Loaded {iq_10hz.size:,} samples @ {sample_rate:.2f} Hz ({hours_of_data:.1f} hours)")
 
-        return timestamps, iq_10hz, float(sample_rate)
+        return timestamps, iq_10hz, float(sample_rate), float(first_epoch_time)
 
     except Exception as e:
         logger.error(f"Error reading Digital RF data: {e}", exc_info=True)
@@ -208,7 +241,7 @@ def read_drf_day(drf_base: Path, date_str: str, safe_channel_name: str) -> Optio
 
 def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
                         sample_rate: float, output_path: Path,
-                        channel_name: str, date_str: str):
+                        channel_name: str, date_str: str, first_epoch: float = 0):
     """
     Generate carrier spectrogram PNG from 10 Hz IQ samples
     
@@ -230,6 +263,10 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         noverlap = nperseg * 3 // 4  # 75% overlap for smooth visualization
         
         # Compute spectrogram
+        logger.info(f"  Computing spectrogram: nperseg={nperseg}, noverlap={noverlap}")
+        logger.info(f"  IQ samples shape: {iq_samples.shape}, dtype: {iq_samples.dtype}")
+        logger.info(f"  IQ range: {np.min(np.abs(iq_samples)):.6f} to {np.max(np.abs(iq_samples)):.6f}")
+        
         f, t, Sxx = signal.spectrogram(
             iq_samples,
             fs=sample_rate,
@@ -241,6 +278,10 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
             return_onesided=False  # Complex data, need both sides
         )
         
+        logger.info(f"  Spectrogram output: f.shape={f.shape}, t.shape={t.shape}, Sxx.shape={Sxx.shape}")
+        logger.info(f"  Time axis range: {t[0]:.1f} to {t[-1]:.1f} seconds")
+        logger.info(f"  Sxx range: {Sxx.min():.2e} to {Sxx.max():.2e}")
+        
         # Convert to dB scale
         Sxx_db = 10 * np.log10(Sxx + 1e-10)
         
@@ -248,14 +289,18 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         fig, ax = plt.subplots(figsize=(16, 6), dpi=100)
         
         # Convert spectrogram time axis to UTC datetime
-        # t contains time offsets from start of data, timestamps[0] is the absolute start time
-        plot_times = [datetime.fromtimestamp(timestamps[0] + offset, tz=timezone.utc) 
+        # t contains time offsets from start of data in seconds
+        # timestamps array contains relative times (0 = first sample)
+        # first_epoch contains the absolute epoch time of the first sample
+        
+        # Create plot times from spectrogram time axis
+        plot_times = [datetime.fromtimestamp(first_epoch + offset, tz=timezone.utc) 
                      for offset in t]
         
         # Calculate actual data coverage for subtitle
-        data_start = datetime.fromtimestamp(timestamps[0], tz=timezone.utc)
-        data_end = datetime.fromtimestamp(timestamps[-1], tz=timezone.utc)
-        hours_covered = (timestamps[-1] - timestamps[0]) / 3600
+        data_start = datetime.fromtimestamp(first_epoch, tz=timezone.utc)
+        data_end = datetime.fromtimestamp(first_epoch + timestamps[-1], tz=timezone.utc) if len(timestamps) > 0 else data_start
+        hours_covered = timestamps[-1] / 3600 if len(timestamps) > 0 else 0
         coverage_str = f"Coverage: {data_start.strftime('%H:%M')} - {data_end.strftime('%H:%M')} UTC ({hours_covered:.1f} hrs)"
         
         # Parse date_str to get full 24-hour range for x-axis
@@ -269,15 +314,23 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         f_shifted = np.fft.fftshift(f)
         Sxx_db_shifted = np.fft.fftshift(Sxx_db, axes=0)
         
-        # Create spectrogram plot
+        # Create spectrogram plot with adaptive scaling
+        # Use 1st-99th percentile for maximum contrast (show even weak signals)
+        vmin = np.percentile(Sxx_db_shifted, 1)
+        vmax = np.percentile(Sxx_db_shifted, 99)
+        dynamic_range = vmax - vmin
+        
+        logger.info(f"  Spectrogram dB range: {Sxx_db_shifted.min():.1f} to {Sxx_db_shifted.max():.1f} dB")
+        logger.info(f"  Color scale: {vmin:.1f} to {vmax:.1f} dB (dynamic range: {dynamic_range:.1f} dB)")
+        
         im = ax.pcolormesh(
             plot_times,
             f_shifted,
             Sxx_db_shifted,
             shading='gouraud',
             cmap='viridis',
-            vmin=np.percentile(Sxx_db_shifted, 5),
-            vmax=np.percentile(Sxx_db_shifted, 95)
+            vmin=vmin,
+            vmax=vmax
         )
         
         # Format axes
@@ -286,8 +339,12 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         ax.set_title(f'{channel_name} - {date_str} - Carrier Spectrogram (10 Hz IQ)\n{coverage_str}', 
                     fontsize=14, fontweight='bold')
         
-        # Force 24-hour x-axis range (00:00-23:59 UTC)
-        ax.set_xlim(day_start, day_end)
+        # Set x-axis to actual data range (don't force to specific day)
+        # This handles cases where timestamps may be off by a few days
+        if len(plot_times) > 0:
+            ax.set_xlim(plot_times[0], plot_times[-1])
+        else:
+            ax.set_xlim(day_start, day_end)
         
         # Format x-axis as time
         ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
@@ -373,33 +430,36 @@ def main():
     success_count = 0
     for channel_name, drf_base in channels:
         logger.info(f"\n--- {channel_name} ---")
+        
+        try:
+            # Read entire day
+            safe_channel_name = channel_name.replace(' ', '_')
+            result = read_drf_day(drf_base, date_str, safe_channel_name)
 
-        # Read entire day
-        safe_channel_name = channel_name.replace(' ', '_')
-        result = read_drf_day(drf_base, date_str, safe_channel_name)
+            if result:
+                timestamps, iq_10hz, sample_rate, first_epoch = result
 
-        if result:
-            timestamps, iq_10hz, sample_rate = result
+                # Generate spectrogram using paths API
+                output_path = paths.get_spectrogram_path(channel_name, date_str, 'carrier')
 
-            # Generate spectrogram using paths API
-            output_path = paths.get_spectrogram_path(channel_name, date_str, 'carrier')
+                generate_spectrogram(
+                    timestamps=timestamps,
+                    iq_samples=iq_10hz,
+                    sample_rate=sample_rate,
+                    output_path=output_path,
+                    channel_name=channel_name,
+                    date_str=date_display,
+                    first_epoch=first_epoch
+                )
 
-            generate_spectrogram(
-                timestamps=timestamps,
-                iq_samples=iq_10hz,
-                sample_rate=sample_rate,
-                output_path=output_path,
-                channel_name=channel_name,
-                date_str=date_display
-            )
-
-            success_count += 1
+                success_count += 1
 
         except Exception as e:
             logger.error(f"Failed to process {channel_name}: {e}")
             continue
 
     logger.info(f"\n{'='*60}")
+    logger.info(f"Completed: {success_count}/{len(channels)} spectrograms generated")
     logger.info(f"✅ Completed: {success_count}/{len(channels)} spectrograms generated")
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"{'='*60}")

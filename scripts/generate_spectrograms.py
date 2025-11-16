@@ -181,7 +181,7 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         nperseg = min(2048, len(iq_samples))  # FFT window size
         noverlap = nperseg // 2  # 50% overlap
         
-        # Compute spectrogram
+        # Compute spectrogram (complex IQ data)
         f, t, Sxx = signal.spectrogram(
             iq_samples,
             fs=sample_rate,
@@ -189,11 +189,16 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
             noverlap=noverlap,
             window='hann',
             scaling='density',
-            mode='magnitude'
+            mode='magnitude',
+            return_onesided=False  # Required for complex IQ data
         )
         
         # Convert to dB scale
         Sxx_db = 10 * np.log10(Sxx + 1e-10)  # Add small value to avoid log(0)
+        
+        # Shift frequencies to be centered at 0 (for complex IQ data)
+        f_shifted = np.fft.fftshift(f)
+        Sxx_db_shifted = np.fft.fftshift(Sxx_db, axes=0)
         
         # Create figure
         fig, ax = plt.subplots(figsize=(16, 6), dpi=100)
@@ -207,12 +212,12 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         # Create spectrogram plot
         im = ax.pcolormesh(
             plot_times, 
-            f, 
-            Sxx_db,
+            f_shifted, 
+            Sxx_db_shifted,
             shading='gouraud',
             cmap='viridis',
-            vmin=np.percentile(Sxx_db, 5),  # Auto-scale to remove noise floor
-            vmax=np.percentile(Sxx_db, 95)
+            vmin=np.percentile(Sxx_db_shifted, 5),  # Auto-scale to remove noise floor
+            vmax=np.percentile(Sxx_db_shifted, 95)
         )
         
         # Format axes
@@ -311,10 +316,11 @@ def main():
             logger.info(f"Processing: {channel_name}")
             logger.info(f"{'='*60}")
             
-            # Find archive directory
-            archive_dir = archive_base / channel_name
+            # Find archive directory (convert spaces to underscores)
+            archive_dir_name = channel_name.replace(' ', '_')
+            archive_dir = archive_base / archive_dir_name
             if not archive_dir.exists():
-                logger.warning(f"Skipping {channel_name} - archive directory not found")
+                logger.warning(f"Skipping {channel_name} - archive directory not found: {archive_dir}")
                 continue
             
             # Find NPZ files for date
@@ -332,7 +338,7 @@ def main():
             timestamps, iq_samples, sample_rate = result
             
             # Generate spectrogram
-            output_filename = f"{channel_name}_{date_str}_spectrogram.png"
+            output_filename = f"{archive_dir_name}_{date_str}_spectrogram.png"
             output_path = output_dir / date_str / output_filename
             
             generate_spectrogram(

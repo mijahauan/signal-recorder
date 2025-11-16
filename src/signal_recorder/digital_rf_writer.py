@@ -85,6 +85,11 @@ class DigitalRFWriter:
         self.samples_written = 0
         self.last_write_time = None
         self.current_day = None
+        # Monotonic DRF index state (seeded on first writer creation)
+        # We intentionally advance by sample count rather than recomputing
+        # from UTC every block to avoid overlaps/backwards jumps when
+        # time_snap or timing jitter shifts slightly.
+        self.next_index: Optional[int] = None
         
         logger.info(f"{channel_name}: DigitalRFWriter initialized")
         logger.info(f"{channel_name}: Decimation: {input_sample_rate} Hz → {output_sample_rate} Hz")
@@ -130,7 +135,8 @@ class DigitalRFWriter:
         drf_dir.mkdir(parents=True, exist_ok=True)
         
         # Calculate start_global_index (samples since Unix epoch at output rate)
-        # For continuous writing, use current timestamp
+        # Seed once from the first UTC timestamp; subsequent blocks advance
+        # by sample count to keep indices strictly monotonic for DRF.
         start_global_index = int(timestamp * self.output_sample_rate)
         
         logger.info(f"{self.channel_name}: Creating Digital RF writer for {day_date}")
@@ -182,6 +188,9 @@ class DigitalRFWriter:
         
         self.current_day = day_date
         self.drf_channel_name = safe_channel_name
+        # Initialize monotonic index if not already set
+        if self.next_index is None:
+            self.next_index = start_global_index
         
         logger.info(f"{self.channel_name}: ✅ Digital RF writer ready")
     
@@ -231,17 +240,29 @@ class DigitalRFWriter:
             try:
                 decimated = self.decimator(chunk)
                 
-                # Calculate global index for this chunk
-                global_index = int(chunk_timestamp * self.output_sample_rate)
+                # Use monotonic index sequence for DRF writes. We advance
+                # by the number of decimated samples rather than
+                # recomputing from UTC to prevent index overlaps when
+                # time_snap or clock adjustments occur.
+                if self.next_index is None:
+                    self.next_index = int(chunk_timestamp * self.output_sample_rate)
                 
-                # Write to Digital RF
-                self.drf_writer.rf_write(decimated, global_index)
-                
+                # Safety check: Detect backwards time jump (archive processed out of order)
+                calculated_index = int(chunk_timestamp * self.output_sample_rate)
+                if calculated_index < self.next_index:
+                    logger.warning(f"{self.channel_name}: ⚠️  Archive out of order! "
+                                 f"Calculated index {calculated_index} < next_index {self.next_index}. "
+                                 f"Skipping {len(decimated)} samples to maintain monotonic sequence.")
+                    # Skip this chunk - better to drop data than corrupt the DRF timeline
+                    continue
+
+                self.drf_writer.rf_write(decimated, int(self.next_index))
                 self.samples_written += len(decimated)
+                self.next_index += len(decimated)
                 self.last_write_time = time.time()
                 
                 logger.debug(f"{self.channel_name}: Wrote {len(decimated)} decimated samples "
-                           f"(global_index={global_index})")
+                           f"(global_index={self.next_index})")
                 
             except Exception as e:
                 logger.error(f"{self.channel_name}: Decimation/write error: {e}", exc_info=True)
@@ -262,11 +283,20 @@ class DigitalRFWriter:
             
             try:
                 decimated = self.decimator(remaining)
-                global_index = int(chunk_timestamp * self.output_sample_rate)
+                if self.next_index is None:
+                    self.next_index = int(chunk_timestamp * self.output_sample_rate)
                 
+                # Safety check for backwards time jump
+                calculated_index = int(chunk_timestamp * self.output_sample_rate)
+                if calculated_index < self.next_index:
+                    logger.warning(f"{self.channel_name}: ⚠️  Flush would go backwards "
+                                 f"(calculated={calculated_index}, next={self.next_index}). Skipping.")
+                    return
+
                 if self.drf_writer:
-                    self.drf_writer.rf_write(decimated, global_index)
+                    self.drf_writer.rf_write(decimated, int(self.next_index))
                     self.samples_written += len(decimated)
+                    self.next_index += len(decimated)
                     logger.info(f"{self.channel_name}: Flushed {len(decimated)} remaining samples")
             except Exception as e:
                 logger.warning(f"{self.channel_name}: Error flushing: {e}")

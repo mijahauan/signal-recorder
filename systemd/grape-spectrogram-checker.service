@@ -1,0 +1,20 @@
+[Unit]
+Description=GRAPE Spectrogram Checker (Auto-generate missing spectrograms)
+After=network.target
+
+[Service]
+Type=oneshot
+User=mjh
+WorkingDirectory=/home/mjh/git/signal-recorder
+Environment="GRAPE_DATA_ROOT=/mnt/grape-data"
+ExecStart=/home/mjh/git/signal-recorder/scripts/check_and_generate_spectrograms.py --data-root ${GRAPE_DATA_ROOT} --skip-incomplete
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=grape-spectrogram-checker
+
+# Resource limits
+MemoryMax=4G
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

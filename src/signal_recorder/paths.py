@@ -255,9 +255,9 @@ class GRAPEPaths:
     def get_core_status_file(self) -> Path:
         """Get core recorder status file.
         
-        Returns: {data_root}/state/core-recorder-status.json
+        Returns: {data_root}/status/core-recorder-status.json
         """
-        return self.get_state_dir() / 'core-recorder-status.json'
+        return self.get_status_dir() / 'core-recorder-status.json'
     
     # ========================================================================
     # System Status Paths

@@ -1,0 +1,12 @@
+[Unit]
+Description=GRAPE Daily Spectrogram Generation Timer
+After=network.target
+
+[Timer]
+# Run at 00:15 UTC daily
+OnCalendar=*-*-* 00:15:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

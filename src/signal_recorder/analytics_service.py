@@ -31,7 +31,6 @@ import json
 from enum import Enum
 
 from .tone_detector import MultiStationToneDetector
-from .digital_rf_writer import DigitalRFWriter
 from .wwvh_discrimination import WWVHDiscriminator, DiscriminationResult
 from .interfaces.data_models import (
     TimeSnapReference, 
@@ -51,11 +50,12 @@ class TimingQuality(Enum):
     
     Used to annotate each data segment with timing confidence,
     enabling scientists to filter/reprocess based on requirements.
+    
+    Hierarchy: TONE_LOCKED > NTP_SYNCED > WALL_CLOCK
     """
-    GPS_LOCKED = "gps_locked"      # WWV/CHU tone within last 5 minutes - ±1ms accuracy
+    TONE_LOCKED = "tone_locked"    # WWV/CHU time_snap within last 5 minutes - ±1ms accuracy
     NTP_SYNCED = "ntp_synced"      # System clock NTP-synchronized - ±10ms accuracy  
     WALL_CLOCK = "wall_clock"      # System clock unsynchronized - ±seconds accuracy
-    INTERPOLATED = "interpolated"  # Between valid time_snaps - degrades with age
 
 
 @dataclass
@@ -243,21 +243,9 @@ class AnalyticsService:
             self.wwvh_discriminator = WWVHDiscriminator(channel_name=channel_name)
             logger.info("✅ WWVHDiscriminator initialized for dual-station channel")
         
-        # Digital RF writer (16 kHz → 10 Hz decimation + HDF5 output)
-        self.drf_writer: Optional[DigitalRFWriter] = None
-        try:
-            self.drf_writer = DigitalRFWriter(
-                output_dir=self.drf_dir,
-                channel_name=channel_name,
-                frequency_hz=frequency_hz,
-                input_sample_rate=16000,
-                output_sample_rate=10,
-                station_config=self.station_config
-            )
-            logger.info("✅ DigitalRFWriter initialized")
-        except ImportError as e:
-            logger.warning(f"Digital RF not available: {e}")
-            logger.warning("Continuing without Digital RF output")
+        # Digital RF writing has been moved to standalone drf_writer_service.py
+        # This service now only does tone detection, decimation, and outputs 10Hz NPZ files
+        logger.info("✅ Analytics service initialized (tone detection + decimation only)")
         
         # Running flag
         self.running = False
@@ -453,13 +441,22 @@ class AnalyticsService:
         Discover new NPZ files to process
         
         Returns:
-            List of NPZ file paths, sorted by creation time
+            List of NPZ file paths, sorted by timestamp in filename (chronological order)
         """
         # Find all NPZ files recursively
-        all_files = sorted(self.archive_dir.rglob('*.npz'))
+        all_files = list(self.archive_dir.rglob('*.npz'))
         
         # Filter to new files (after last processed)
-        if self.state.last_processed_time:
+        if self.state.last_processed_file:
+            # Use filename comparison instead of mtime to ensure chronological order
+            # NPZ files have format: YYYYMMDDTHHMMSSZ_freq_iq.npz
+            last_processed_name = self.state.last_processed_file.name
+            new_files = [
+                f for f in all_files 
+                if f.name > last_processed_name  # Lexicographic comparison works for ISO timestamps
+            ]
+        elif self.state.last_processed_time:
+            # Legacy fallback for old state files
             new_files = [
                 f for f in all_files 
                 if f.stat().st_mtime > self.state.last_processed_time
@@ -467,6 +464,10 @@ class AnalyticsService:
         else:
             # First run - process all files
             new_files = all_files
+        
+        # CRITICAL: Sort by filename to ensure strict chronological order
+        # This prevents out-of-order processing that causes DRF sample index conflicts
+        new_files = sorted(new_files, key=lambda f: f.name)
         
         logger.info(f"Discovered {len(new_files)} new NPZ files")
         return new_files
@@ -536,14 +537,11 @@ class AnalyticsService:
                     self.stats['total_detections'] = len(self.state.detection_history)
                     self.stats['last_detection_time'] = datetime.now(timezone.utc).isoformat()
             
-            # Step 4: Decimation and Digital RF output - uses same timing product
-            decimated_count = self._decimate_and_write_drf(archive, quality, timing)
+            # Step 4: Digital RF writing moved to standalone service
+            # (That service reads the *_iq_10hz.npz files written by decimator)
+            results['decimated_samples'] = 0  # No longer written here
             
-            results['decimated_samples'] = decimated_count
-            
-            self.stats['drf_samples_written'] += decimated_count
-            if decimated_count > 0:
-                self.stats['drf_files_written'] += 1
+            # Stats tracking for DRF moved to drf_writer_service
             
             # Update quality stats
             self.stats['last_completeness_pct'] = quality.completeness_pct
@@ -676,7 +674,7 @@ class AnalyticsService:
         # The buffer spans from previous file tail to current file head
         # Minute boundary (where tone occurs) should be at the MIDDLE of this buffer
         
-        # Archive UTC is from timing product (may be GPS_LOCKED, NTP_SYNCED, or WALL_CLOCK)
+        # Archive UTC is from timing product (may be TONE_LOCKED, NTP_SYNCED, or WALL_CLOCK)
         archive_utc = timing.utc_timestamp
         
         # If we have previous file, buffer starts 30s before current file
@@ -712,16 +710,16 @@ class AnalyticsService:
             # Get minute timestamp from timing product
             minute_timestamp = int(timing.utc_timestamp / 60) * 60
             
-            # Run discrimination (ALWAYS returns a result - uses noise floor when needed)
-            discrimination = self.wwvh_discriminator.compute_discrimination(
-                detections=detections,
-                minute_timestamp=minute_timestamp
+            # Run FULL discrimination analysis including 440 Hz detection
+            # This requires the complete minute of IQ samples from the archive
+            discrimination = self.wwvh_discriminator.analyze_minute_with_440hz(
+                iq_samples=archive.iq_samples,
+                sample_rate=archive.sample_rate,
+                minute_timestamp=minute_timestamp,
+                detections=detections
             )
             
-            # Store latest result
-            self.latest_discrimination = discrimination
-            
-            # Log to daily file for historical retrieval
+            # Log discrimination result (now includes 440 Hz info)
             self._log_discrimination(discrimination)
             
             # Log if both detected (detailed logging in discriminator)
@@ -800,8 +798,8 @@ class AnalyticsService:
         
         # If this is the FIRST time_snap (transitioning from None), log milestone
         if not old_time_snap:
-            logger.info("✅ TIME_SNAP ESTABLISHED - GPS-accurate timestamps now available")
-            logger.info("   Timing quality upgraded from NTP/wall-clock to GPS-locked (±1ms)")
+            logger.info("✅ TIME_SNAP ESTABLISHED - Tone-locked timestamps now available")
+            logger.info("   Timing quality upgraded from NTP/wall-clock to tone-locked (±1ms)")
             logger.info("   Earlier data uploaded with lower quality can be reprocessed if needed")
         
         return True
@@ -898,20 +896,13 @@ class AnalyticsService:
                 
                 if time_snap_age < 300:  # < 5 minutes
                     return TimingAnnotation(
-                        quality=TimingQuality.GPS_LOCKED,
+                        quality=TimingQuality.TONE_LOCKED,
                         utc_timestamp=utc_timestamp,
                         time_snap_age_seconds=time_snap_age,
                         reprocessing_recommended=False,
                         notes=f"WWV/CHU time_snap from {time_snap.station.value}"
                     )
-                elif time_snap_age < 3600:  # < 1 hour - interpolated
-                    return TimingAnnotation(
-                        quality=TimingQuality.INTERPOLATED,
-                        utc_timestamp=utc_timestamp,
-                        time_snap_age_seconds=time_snap_age,
-                        reprocessing_recommended=True,
-                        notes=f"Interpolated from {time_snap_age/60:.1f} min old time_snap"
-                    )
+                # Aged time_snap (>5 min): fall through to NTP/wall clock
             except (ValueError, AttributeError) as e:
                 logger.warning(f"Error using time_snap for timing annotation: {e}, falling back to NTP/wall clock")
                 # Fall through to NTP/wall clock check
@@ -939,106 +930,8 @@ class AnalyticsService:
             notes="Wall clock only - reprocessing recommended when time_snap available"
         )
     
-    def _decimate_and_write_drf(self, archive: NPZArchive, quality: QualityInfo, 
-                                timing: TimingAnnotation) -> int:
-        """
-        Decimate samples and write to Digital RF format with timing quality annotation
-        
-        Always uploads data regardless of timing quality. Quality is recorded in metadata
-        to enable selective reprocessing and filtering by scientists.
-        
-        Args:
-            archive: Source archive
-            quality: Quality metrics  
-            timing: Timing annotation with quality level and UTC timestamp
-            
-        Returns:
-            Number of decimated samples written
-        """
-        if not self.drf_writer:
-            logger.debug("Digital RF writer not available - skipping decimation")
-            return 0
-        
-        try:
-            # Use UTC timestamp from timing annotation (may be from time_snap or NTP)
-            utc_timestamp = timing.utc_timestamp
-            
-            # Log timing quality for awareness
-            if timing.quality == TimingQuality.GPS_LOCKED:
-                logger.debug(f"Writing with GPS-locked timing: {timing.notes}")
-            elif timing.quality == TimingQuality.INTERPOLATED:
-                logger.info(f"⚠️  Writing with interpolated timing: {timing.notes}")
-            elif timing.quality == TimingQuality.NTP_SYNCED:
-                logger.debug(f"Writing with NTP-synced timing (offset: {timing.ntp_offset_ms:.1f}ms)")
-            elif timing.quality == TimingQuality.WALL_CLOCK:
-                logger.warning(f"⚠️  Writing with wall clock timing - reprocessing recommended")
-            
-            # Add samples to writer (handles decimation internally)
-            # Writer will buffer and decimate in 1-second chunks
-            self.drf_writer.add_samples(utc_timestamp, archive.iq_samples)
-            
-            # Write quality metadata with timing annotation to parallel channel
-            self._write_quality_metadata_to_drf(utc_timestamp, quality, timing)
-            
-            # Calculate expected decimated count
-            decimated_samples = len(archive.iq_samples) // 1600
-            
-            logger.debug(f"Added {len(archive.iq_samples)} samples to Digital RF "
-                        f"(will produce ~{decimated_samples} decimated samples)")
-            
-            return decimated_samples
-            
-        except Exception as e:
-            logger.error(f"Digital RF write error: {e}", exc_info=True)
-            return 0
-    
-    def _write_quality_metadata_to_drf(self, timestamp: float, quality: QualityInfo, 
-                                       timing: TimingAnnotation):
-        """
-        Write quality metrics and timing annotation as Digital RF metadata
-        
-        Args:
-            timestamp: UTC timestamp
-            quality: Quality metrics to embed
-            timing: Timing quality annotation
-        """
-        if not self.drf_writer or not self.drf_writer.metadata_writer:
-            return
-        
-        try:
-            # Calculate global index at output rate (10 Hz)
-            global_index = int(timestamp * 10)
-            
-            # Build metadata dict with quality and timing annotations
-            metadata = {
-                # Data quality metrics
-                'completeness_pct': quality.completeness_pct,
-                'gap_count': quality.gap_count,
-                'gap_duration_ms': quality.gap_duration_ms,
-                'packet_loss_pct': quality.packet_loss_pct,
-                'network_gap_ms': quality.network_gap_ms,
-                'source_failure_ms': quality.source_failure_ms,
-                'recorder_offline_ms': quality.recorder_offline_ms,
-                'time_snap_established': quality.time_snap_established,
-                'time_snap_confidence': quality.time_snap_confidence,
-                'discontinuity_count': len(quality.discontinuities),
-                
-                # Timing quality annotations
-                'timing_quality': timing.quality.value,
-                'time_snap_age_seconds': timing.time_snap_age_seconds,
-                'ntp_offset_ms': timing.ntp_offset_ms,
-                'sample_count_error': timing.sample_count_error,
-                'reprocessing_recommended': timing.reprocessing_recommended,
-                'timing_notes': timing.notes
-            }
-            
-            # Write to metadata channel
-            self.drf_writer.metadata_writer.write(global_index, metadata)
-            
-            logger.debug(f"Wrote quality metadata at index {global_index}")
-            
-        except Exception as e:
-            logger.warning(f"Failed to write quality metadata: {e}")
+    # Digital RF writing methods removed - moved to drf_writer_service.py
+    # That service reads *_iq_10hz.npz files and writes Digital RF HDF5
     
     def _write_quality_metrics(self, archive: NPZArchive, quality: QualityInfo):
         """Write quality metrics to CSV file"""
@@ -1098,8 +991,11 @@ class AnalyticsService:
         """
         Log discrimination result to daily CSV file
         
-        Format: timestamp, wwv_detected, wwvh_detected, wwv_snr_db, wwvh_snr_db,
-                power_ratio_db, differential_delay_ms, dominant_station, confidence
+        Format includes:
+        - 1000 Hz vs 1200 Hz power analysis
+        - Differential propagation delay
+        - 440 Hz tone detection (minute 1 = WWVH, minute 2 = WWV)
+        - Dominant station determination and confidence
         """
         try:
             # Get date for filename
@@ -1114,16 +1010,28 @@ class AnalyticsService:
             
             with open(log_file, 'a') as f:
                 if write_header:
-                    f.write('timestamp_utc,minute_timestamp,wwv_detected,wwvh_detected,'
-                           'wwv_snr_db,wwvh_snr_db,power_ratio_db,differential_delay_ms,'
+                    f.write('timestamp_utc,minute_timestamp,minute_number,'
+                           'wwv_detected,wwvh_detected,'
+                           'wwv_power_db,wwvh_power_db,power_ratio_db,'
+                           'differential_delay_ms,'
+                           'tone_440hz_wwv_detected,tone_440hz_wwv_power_db,'
+                           'tone_440hz_wwvh_detected,tone_440hz_wwvh_power_db,'
                            'dominant_station,confidence\n')
                 
-                # Format data
-                f.write(f'{dt.isoformat()},{result.minute_timestamp},'
+                # Format data with all fields including 440 Hz detection
+                minute_number = dt.minute
+                f.write(f'{dt.isoformat()},{result.minute_timestamp},{minute_number},'
                        f'{int(result.wwv_detected)},{int(result.wwvh_detected)},'
-                       f'{result.wwv_power_db:.2f},{result.wwvh_power_db:.2f},'
-                       f'{result.power_ratio_db:.2f},{result.differential_delay_ms if result.differential_delay_ms is not None else ""},'
-                       f'{result.dominant_station},{result.confidence}\n')
+                       f'{result.wwv_power_db:.2f if result.wwv_power_db is not None else ""},'
+                       f'{result.wwvh_power_db:.2f if result.wwvh_power_db is not None else ""},'
+                       f'{result.power_ratio_db:.2f if result.power_ratio_db is not None else ""},'
+                       f'{result.differential_delay_ms:.2f if result.differential_delay_ms is not None else ""},'
+                       f'{int(result.tone_440hz_wwv_detected)},'
+                       f'{result.tone_440hz_wwv_power_db:.2f if result.tone_440hz_wwv_power_db is not None else ""},'
+                       f'{int(result.tone_440hz_wwvh_detected)},'
+                       f'{result.tone_440hz_wwvh_power_db:.2f if result.tone_440hz_wwvh_power_db is not None else ""},'
+                       f'{result.dominant_station if result.dominant_station else ""},'
+                       f'{result.confidence}\n')
                        
         except Exception as e:
             logger.warning(f"Failed to log discrimination: {e}")
@@ -1204,10 +1112,7 @@ class AnalyticsService:
             # Final state save
             self._save_state()
             
-            # Flush Digital RF buffers
-            if self.drf_writer:
-                logger.info("Flushing Digital RF buffers...")
-                self.drf_writer.flush()
+            # Digital RF flushing handled by separate service
             
             logger.info("Analytics service stopped")
     
@@ -1215,13 +1120,7 @@ class AnalyticsService:
         """Stop the analytics service"""
         self.running = False
         
-        # Flush Digital RF writer on stop
-        if self.drf_writer:
-            logger.info("Flushing Digital RF writer...")
-            try:
-                self.drf_writer.flush()
-            except Exception as e:
-                logger.error(f"Error flushing Digital RF: {e}")
+        # Digital RF flushing handled by separate service
 
 
 def main():

@@ -171,6 +171,16 @@ class GRAPEPaths {
         return join(this.getAnalyticsDir(channelName), 'status');
     }
     
+    /**
+     * Get analytics status file for a channel.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/status/analytics-service-status.json
+     */
+    getAnalyticsStatusFile(channelName) {
+        return join(this.getAnalyticsStatusDir(channelName), 'analytics-service-status.json');
+    }
+    
     // ========================================================================
     // Spectrogram Paths (Web UI)
     // ========================================================================
@@ -237,10 +247,10 @@ class GRAPEPaths {
     /**
      * Get core recorder status file.
      * 
-     * @returns {string} Path: {data_root}/state/core-recorder-status.json
+     * @returns {string} Path: {data_root}/status/core-recorder-status.json
      */
     getCoreStatusFile() {
-        return join(this.getStateDir(), 'core-recorder-status.json');
+        return join(this.getStatusDir(), 'core-recorder-status.json');
     }
     
     // ========================================================================

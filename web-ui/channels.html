@@ -301,13 +301,20 @@
             <div class="day-selector">
                 <label>Select Date:</label>
                 <input type="date" id="carrier-date" value="">
+                <label style="margin-left: 20px;">Spectrogram Type:</label>
+                <select id="spectrogram-type" style="padding: 8px; background: #1e293b; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; font-size: 14px;">
+                    <option value="carrier">10 Hz Carrier (frequency deviation)</option>
+                </select>
                 <button onclick="loadCarrierData()">Load Data</button>
             </div>
             <div id="carrier-container">
                 <div class="placeholder">
-                    <h3>📈 Carrier Data Spectrograms</h3>
-                    <p>Select a date and click "Load Data" to view stacked spectrograms</p>
-                    <p style="margin-top: 10px; font-size: 13px;">Displays 10 Hz Digital RF data per channel</p>
+                    <h3>📈 Carrier Spectrograms (10 Hz)</h3>
+                    <p>Select a date and click "Load Data"</p>
+                    <div style="margin-top: 15px; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 6px; text-align: left; font-size: 13px;">
+                        <strong style="color: #10b981;">10 Hz Carrier Spectrograms:</strong> Shows frequency deviations from nominal (±5 Hz).<br>
+                        Decimated from 16 kHz archives for memory efficiency.
+                    </div>
                 </div>
             </div>
         </div>
@@ -472,13 +479,216 @@
         async function loadCarrierData() {
             const date = document.getElementById('carrier-date').value;
             const dateStr = date.replace(/-/g, ''); // Convert YYYY-MM-DD to YYYYMMDD
+            const spectrogramType = document.getElementById('spectrogram-type').value;
             
-            console.log('Loading carrier spectrograms for date:', date);
+            console.log('Loading spectrograms for date:', date, 'type:', spectrogramType);
             
             document.getElementById('carrier-container').innerHTML = `
-                <div class="loading">Loading spectrograms for ${date}...</div>
+                <div class="loading">Checking for ${spectrogramType} spectrograms for ${date}...</div>
             `;
             
+            try {
+                // First, check if any spectrograms exist for this date
+                const channelsToCheck = [
+                    'WWV 2.5 MHz', 'WWV 5 MHz', 'WWV 10 MHz', 'WWV 15 MHz', 'WWV 20 MHz', 'WWV 25 MHz',
+                    'CHU 3.33 MHz', 'CHU 7.85 MHz', 'CHU 14.67 MHz'
+                ];
+                
+                let needsGeneration = false;
+                try {
+                    // Check first channel to see if spectrograms exist
+                    const testUrl = `/api/v1/channels/${encodeURIComponent(channelsToCheck[0])}/spectrogram/${spectrogramType}/${dateStr}`;
+                    const testResponse = await fetch(testUrl);
+                    
+                    if (testResponse.status === 404) {
+                        needsGeneration = true;
+                    }
+                } catch (error) {
+                    console.log('Error checking spectrograms:', error);
+                }
+                
+                // If spectrograms don't exist, offer to generate them
+                if (needsGeneration) {
+                    document.getElementById('carrier-container').innerHTML = `
+                        <div style="padding: 40px; text-align: center; background: rgba(255,255,255,0.03); border-radius: 8px;">
+                            <h3 style="color: #f59e0b; margin-bottom: 20px;">📊 Spectrograms Not Found</h3>
+                            <p style="color: #94a3b8; margin-bottom: 30px; font-size: 16px;">
+                                ${spectrogramType === 'carrier' ? '10 Hz carrier' : '16 kHz archive'} spectrograms for ${date} have not been generated yet.
+                            </p>
+                            <button onclick="generateSpectrograms('${dateStr}', '${spectrogramType}')" 
+                                    style="padding: 15px 30px; background: #10b981; border: none; border-radius: 8px; color: #fff; font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s;"
+                                    onmouseover="this.style.background='#059669'" 
+                                    onmouseout="this.style.background='#10b981'">
+                                🚀 Generate Spectrograms Now
+                            </button>
+                            <p style="margin-top: 20px; color: #94a3b8; font-size: 13px;">
+                                This may take 1-5 minutes depending on data size
+                            </p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // If spectrograms exist, load and display them
+                await displaySpectrograms(date, dateStr, spectrogramType);
+                
+            } catch (error) {
+                console.error('Error loading carrier data:', error);
+                document.getElementById('carrier-container').innerHTML = `
+                    <div class="error">
+                        ❌ Failed to load spectrograms: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // Generate spectrograms via API
+        async function generateSpectrograms(dateStr, type) {
+            console.log('Triggering generation:', dateStr, type);
+            
+            document.getElementById('carrier-container').innerHTML = `
+                <div style="padding: 40px; text-align: center; background: rgba(255,255,255,0.03); border-radius: 8px;">
+                    <h3 style="color: #10b981; margin-bottom: 20px;">⏳ Generating Spectrograms...</h3>
+                    <p style="color: #94a3b8; margin-bottom: 20px; font-size: 16px;">
+                        Processing ${type === 'carrier' ? '10 Hz carrier' : '16 kHz archive'} data for ${dateStr}
+                    </p>
+                    <div id="generation-progress" style="margin: 20px auto; max-width: 500px;">
+                        <div style="background: rgba(255,255,255,0.1); border-radius: 10px; height: 30px; overflow: hidden;">
+                            <div id="progress-bar" style="background: linear-gradient(90deg, #10b981, #059669); height: 100%; width: 0%; transition: width 0.3s;"></div>
+                        </div>
+                        <p id="progress-text" style="margin-top: 10px; color: #94a3b8; font-size: 14px;">Initializing...</p>
+                    </div>
+                    <div id="generation-output" style="margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 6px; text-align: left; font-family: monospace; font-size: 12px; color: #10b981; max-height: 200px; overflow-y: auto; display: none;"></div>
+                </div>
+            `;
+            
+            try {
+                // Start generation
+                const response = await fetch('/api/v1/spectrograms/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ date: dateStr, type: type })
+                });
+                
+                // Check if response is JSON
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    throw new Error(`Server returned non-JSON response: ${text.substring(0, 200)}`);
+                }
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.message || data.error || 'Failed to start generation');
+                }
+                
+                if (data.status === 'already_running') {
+                    console.log('Generation already in progress');
+                }
+                
+                // Poll for status
+                pollGenerationStatus(data.jobId, dateStr, type);
+                
+            } catch (error) {
+                console.error('Failed to start generation:', error);
+                document.getElementById('carrier-container').innerHTML = `
+                    <div class="error">
+                        ❌ Failed to start spectrogram generation: ${error.message}
+                        <br><br>
+                        <button onclick="loadCarrierData()" style="padding: 10px 20px; background: #8b5cf6; border: none; border-radius: 6px; color: #fff; cursor: pointer;">
+                            Try Again
+                        </button>
+                    </div>
+                `;
+            }
+        }
+
+        // Poll generation status
+        function pollGenerationStatus(jobId, dateStr, type) {
+            const pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`/api/v1/spectrograms/status/${jobId}`);
+                    const status = await response.json();
+                    
+                    console.log('Generation status:', status);
+                    
+                    // Update progress bar
+                    const progressBar = document.getElementById('progress-bar');
+                    const progressText = document.getElementById('progress-text');
+                    const outputDiv = document.getElementById('generation-output');
+                    
+                    if (progressBar && progressText) {
+                        progressBar.style.width = `${status.progress}%`;
+                        progressText.textContent = `${status.progress}% complete (${status.elapsedSeconds}s elapsed)`;
+                    }
+                    
+                    // Show recent output
+                    if (outputDiv && status.recentOutput) {
+                        outputDiv.style.display = 'block';
+                        outputDiv.textContent = status.recentOutput;
+                        outputDiv.scrollTop = outputDiv.scrollHeight;
+                    }
+                    
+                    // Check if completed
+                    if (status.status === 'completed') {
+                        clearInterval(pollInterval);
+                        
+                        // Show success and reload
+                        document.getElementById('carrier-container').innerHTML = `
+                            <div style="padding: 40px; text-align: center; background: rgba(16, 185, 129, 0.1); border-radius: 8px; border: 2px solid #10b981;">
+                                <h3 style="color: #10b981; margin-bottom: 20px;">✅ Generation Complete!</h3>
+                                <p style="color: #94a3b8; margin-bottom: 30px; font-size: 16px;">
+                                    Spectrograms generated successfully in ${status.elapsedSeconds}s
+                                </p>
+                                <button onclick="loadCarrierData()" 
+                                        style="padding: 15px 30px; background: #10b981; border: none; border-radius: 8px; color: #fff; font-size: 16px; font-weight: 600; cursor: pointer;">
+                                    View Spectrograms
+                                </button>
+                            </div>
+                        `;
+                    } else if (status.status === 'failed') {
+                        clearInterval(pollInterval);
+                        
+                        // Check if it's a "no data available" error
+                        const isNoData = status.recentOutput && status.recentOutput.includes('No data available');
+                        const errorMessage = isNoData 
+                            ? `No ${type === 'carrier' ? '10 Hz Digital RF' : '16 kHz archive'} data available for this date`
+                            : (status.error || 'Unknown error');
+                        
+                        const helpText = isNoData
+                            ? `<p style="color: #94a3b8; font-size: 14px; margin-top: 15px;">This usually means:<br>
+                               • Data hasn't been processed yet for this date<br>
+                               • Analytics service needs to catch up<br>
+                               • Try a different date with existing data</p>`
+                            : '';
+                        
+                        document.getElementById('carrier-container').innerHTML = `
+                            <div class="error">
+                                ❌ Generation failed: ${errorMessage}
+                                ${helpText}
+                                <br>
+                                <details style="margin-top: 15px; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 4px; text-align: left;">
+                                    <summary style="cursor: pointer; color: #94a3b8;">Show technical details</summary>
+                                    <pre style="margin-top: 10px; font-size: 11px; color: #94a3b8; white-space: pre-wrap;">${status.recentOutput}</pre>
+                                </details>
+                                <br>
+                                <button onclick="loadCarrierData()" style="padding: 10px 20px; background: #8b5cf6; border: none; border-radius: 6px; color: #fff; cursor: pointer;">
+                                    Try Different Date
+                                </button>
+                            </div>
+                        `;
+                    }
+                    
+                } catch (error) {
+                    console.error('Failed to poll status:', error);
+                    clearInterval(pollInterval);
+                }
+            }, 2000); // Poll every 2 seconds
+        }
+
+        // Display spectrograms (extracted from original function)
+        async function displaySpectrograms(date, dateStr, spectrogramType) {
             try {
                 // List of all WWV channels (6 channels)
                 const channels = [
@@ -499,27 +709,40 @@
                 
                 const allChannels = [...channels, ...chuChannels]; // Total 9 channels
                 
+                // Determine titles and descriptions based on type
+                const typeInfo = spectrogramType === 'carrier' ? {
+                    title: '10 Hz Carrier Spectrograms',
+                    description: 'Decimated 10 Hz IQ showing frequency deviations from nominal carrier (±5 Hz range)',
+                    scriptName: 'generate_spectrograms_drf.py',
+                    color: '#10b981'
+                } : {
+                    title: '16 kHz Archive Spectrograms',
+                    description: 'Full 16 kHz IQ spectrograms showing carrier variations and signal quality over 24 hours',
+                    scriptName: 'generate_spectrograms.py',
+                    color: '#8b5cf6'
+                };
+                
                 // Build HTML for stacked spectrograms
                 let html = `
                     <div style="margin-bottom: 20px;">
-                        <h3 style="color: #10b981; margin-bottom: 10px;">📈 Carrier Spectrograms - ${date}</h3>
+                        <h3 style="color: ${typeInfo.color}; margin-bottom: 10px;">📈 ${typeInfo.title} - ${date}</h3>
                         <p style="color: #94a3b8; font-size: 14px; margin-bottom: 20px;">
-                            16 kHz IQ spectrograms showing carrier variations and signal quality over 24 hours
+                            ${typeInfo.description}
                         </p>
                     </div>
                 `;
                 
                 // Add spectrogram images for each channel
                 for (const channel of allChannels) {
-                    const spectrogramUrl = `/api/v1/channels/${encodeURIComponent(channel)}/spectrogram/${dateStr}`;
+                    const spectrogramUrl = `/api/v1/channels/${encodeURIComponent(channel)}/spectrogram/${spectrogramType}/${dateStr}`;
                     
                     html += `
                         <div style="margin-bottom: 30px; background: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px;">
                             <h4 style="color: #e0e0e0; margin-bottom: 15px; font-size: 16px;">${channel}</h4>
                             <img src="${spectrogramUrl}" 
-                                 alt="${channel} spectrogram" 
+                                 alt="${channel} ${spectrogramType} spectrogram" 
                                  style="width: 100%; height: auto; border-radius: 4px; background: #000;"
-                                 onerror="this.onerror=null; this.src=''; this.alt='❌ Spectrogram not available for ${channel} on ${date}'; this.style.padding='20px'; this.style.textAlign='center'; this.style.background='rgba(239,68,68,0.1)'; this.style.color='#ef4444';">
+                                 onerror="this.onerror=null; this.src=''; this.alt='❌ ${spectrogramType.toUpperCase()} spectrogram not available for ${channel} on ${date}'; this.style.padding='20px'; this.style.textAlign='center'; this.style.background='rgba(239,68,68,0.1)'; this.style.color='#ef4444';">
                         </div>
                     `;
                 }
@@ -528,7 +751,7 @@
                     <div style="margin-top: 30px; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 6px; font-size: 13px; color: #94a3b8;">
                         <strong>Note:</strong> Spectrograms must be pre-generated using:<br>
                         <code style="display: block; margin-top: 8px; padding: 8px; background: rgba(0,0,0,0.3); border-radius: 4px; color: #10b981;">
-                            python3 scripts/generate_spectrograms.py --date ${dateStr}
+                            python3 scripts/${typeInfo.scriptName} --date ${dateStr}
                         </code>
                     </div>
                 `;
@@ -536,12 +759,8 @@
                 document.getElementById('carrier-container').innerHTML = html;
                 
             } catch (error) {
-                console.error('Error loading carrier data:', error);
-                document.getElementById('carrier-container').innerHTML = `
-                    <div class="error">
-                        ❌ Failed to load carrier spectrograms: ${error.message}
-                    </div>
-                `;
+                console.error('Error displaying spectrograms:', error);
+                throw error;
             }
         }
 
@@ -594,13 +813,13 @@
                     return;
                 }
                 
-                // Create separate plot containers for each channel
+                // Create separate plot containers for each channel - now with 3 subplots
                 const plotsHtml = results.map((result, idx) => {
                     if (!result.data || result.data.length === 0) return '';
                     return `
-                        <div style="margin-bottom: 30px;">
+                        <div style="margin-bottom: 40px; background: rgba(255,255,255,0.02); padding: 20px; border-radius: 8px;">
                             <h3 style="color: #e0e0e0; margin-bottom: 15px;">${result.channel}</h3>
-                            <div id="discrimination-plot-${idx}" style="width: 100%; height: 400px;"></div>
+                            <div id="discrimination-plot-${idx}" style="width: 100%; height: 900px;"></div>
                         </div>
                     `;
                 }).join('');
@@ -608,13 +827,28 @@
                 document.getElementById('discrimination-container').innerHTML = `
                     ${plotsHtml}
                     <div style="margin-top: 20px; padding: 20px; background: rgba(255,255,255,0.03); border-radius: 8px;">
-                        <h4 style="color: #e0e0e0; margin-bottom: 10px;">About WWV/WWVH Discrimination</h4>
-                        <p style="color: #94a3b8; font-size: 14px; line-height: 1.6;">
-                            <strong style="color: #10b981;">WWV (1000 Hz, solid line)</strong>: Fort Collins, CO - Used for time_snap timing reference<br>
-                            <strong style="color: #ef4444;">WWVH (1200 Hz, dashed line)</strong>: Kauai, HI - Propagation study<br>
-                            <strong>Differential Delay</strong>: Time difference between WWV and WWVH arrivals (ionospheric path)<br>
-                            <strong>Gaps</strong>: One or both tones not detected - normal for ionospheric research!
-                        </p>
+                        <h4 style="color: #e0e0e0; margin-bottom: 15px;">📊 Understanding the Multi-Panel Discrimination Display</h4>
+                        <div style="color: #94a3b8; font-size: 14px; line-height: 1.8;">
+                            <p style="margin-bottom: 12px;">
+                                <strong style="color: #10b981;">WWV (1000 Hz)</strong>: Fort Collins, CO - Used for time_snap timing reference<br>
+                                <strong style="color: #ef4444;">WWVH (1200 Hz)</strong>: Kauai, HI - Propagation study only
+                            </p>
+                            <p style="margin-bottom: 12px;">
+                                <strong style="color: #8b5cf6;">Panel 1 - SNR Comparison</strong>: Signal strength of each station<br>
+                                Shows which tones are being received at what strength. Gaps = tone not detected (normal!)
+                            </p>
+                            <p style="margin-bottom: 12px;">
+                                <strong style="color: #8b5cf6;">Panel 2 - Power Ratio</strong>: Relative contribution (WWV - WWVH)<br>
+                                • Positive values (purple above zero): WWV is stronger/dominant<br>
+                                • Negative values (purple below zero): WWVH is stronger/dominant<br>
+                                • Near zero: Both stations roughly equal (balanced reception)
+                            </p>
+                            <p>
+                                <strong style="color: #f59e0b;">Panel 3 - Differential Delay</strong>: Ionospheric propagation path difference<br>
+                                Time difference between WWV and WWVH signal arrivals (typically 100-300ms).<br>
+                                Only shown when BOTH tones detected. Variations indicate ionospheric conditions.
+                            </p>
+                        </div>
                     </div>
                 `;
                 
@@ -659,20 +893,28 @@
                         return new Date(utcDate.getTime() + utcDate.getTimezoneOffset() * 60000);
                     });
                     
+                    // Extract all metrics
                     const wwvSnr = filteredData.map(d => d.wwv_detected ? d.wwv_snr_db : null);
                     const wwvhSnr = filteredData.map(d => d.wwvh_detected ? d.wwvh_snr_db : null);
+                    const powerRatio = filteredData.map(d => d.power_ratio_db);
                     const diffDelay = filteredData.map(d => d.differential_delay_ms);
+                    const dominantStation = filteredData.map(d => d.dominant_station);
                     
+                    // Create three subplots with shared x-axis
                     const traces = [
+                        // Subplot 1: SNR Comparison (top)
                         {
                             x: timestamps,
                             y: wwvSnr,
                             name: 'WWV SNR',
                             mode: 'lines+markers',
                             line: { color: '#10b981', width: 2 },
-                            marker: { size: 4 },
+                            marker: { size: 3 },
                             connectgaps: false,
-                            hovertemplate: 'WWV SNR: %{y:.1f} dB<br>%{x|%Y-%m-%d %H:%M:%S} UTC<extra></extra>'
+                            xaxis: 'x',
+                            yaxis: 'y',
+                            hovertemplate: 'WWV SNR: %{y:.1f} dB<br>%{x|%H:%M} UTC<extra></extra>',
+                            legendgroup: 'snr'
                         },
                         {
                             x: timestamps,
@@ -680,9 +922,51 @@
                             name: 'WWVH SNR',
                             mode: 'lines+markers',
                             line: { color: '#ef4444', width: 2, dash: 'dash' },
-                            marker: { size: 4, symbol: 'square' },
+                            marker: { size: 3, symbol: 'square' },
                             connectgaps: false,
-                            hovertemplate: 'WWVH SNR: %{y:.1f} dB<br>%{x|%Y-%m-%d %H:%M:%S} UTC<extra></extra>'
+                            xaxis: 'x',
+                            yaxis: 'y',
+                            hovertemplate: 'WWVH SNR: %{y:.1f} dB<br>%{x|%H:%M} UTC<extra></extra>',
+                            legendgroup: 'snr'
+                        },
+                        // Subplot 2: Power Ratio (middle) - shows dominance
+                        {
+                            x: timestamps,
+                            y: powerRatio,
+                            name: 'Power Ratio (WWV - WWVH)',
+                            mode: 'lines+markers',
+                            line: { color: '#8b5cf6', width: 2 },
+                            marker: { size: 3 },
+                            connectgaps: false,
+                            xaxis: 'x2',
+                            yaxis: 'y2',
+                            hovertemplate: 'Power Ratio: %{y:+.1f} dB<br>%{x|%H:%M} UTC<extra></extra>',
+                            legendgroup: 'ratio'
+                        },
+                        // Add zero reference line for power ratio
+                        {
+                            x: [timestamps[0], timestamps[timestamps.length - 1]],
+                            y: [0, 0],
+                            mode: 'lines',
+                            line: { color: 'rgba(255,255,255,0.2)', width: 1, dash: 'dot' },
+                            showlegend: false,
+                            xaxis: 'x2',
+                            yaxis: 'y2',
+                            hoverinfo: 'skip'
+                        },
+                        // Subplot 3: Differential Delay (bottom) - ionospheric path difference
+                        {
+                            x: timestamps,
+                            y: diffDelay,
+                            name: 'Differential Delay',
+                            mode: 'lines+markers',
+                            line: { color: '#f59e0b', width: 2 },
+                            marker: { size: 3 },
+                            connectgaps: false,
+                            xaxis: 'x3',
+                            yaxis: 'y3',
+                            hovertemplate: 'Delay: %{y:+.1f} ms<br>%{x|%H:%M} UTC<extra></extra>',
+                            legendgroup: 'delay'
                         }
                     ];
                     
@@ -690,37 +974,93 @@
                     const rangeStart = new Date(dayStart.getTime() + dayStart.getTimezoneOffset() * 60000);
                     const rangeEnd = new Date(dayEnd.getTime() + dayEnd.getTimezoneOffset() * 60000);
                     
+                    // Layout with 3 vertically stacked subplots
                     const layout = {
+                        // Subplot 1: SNR Comparison (top)
                         xaxis: {
-                            title: 'Time (UTC)',
                             gridcolor: 'rgba(255,255,255,0.1)',
                             color: '#94a3b8',
                             showgrid: true,
-                            range: [rangeStart, rangeEnd],  // Force full 24-hour range (displayed as 00:00-23:59 UTC)
-                            autorange: false,  // Disable auto-range
+                            range: [rangeStart, rangeEnd],
+                            autorange: false,
                             type: 'date',
-                            fixedrange: false,  // Allow zoom/pan
-                            tickformat: '%H:%M',  // Show time (will display as UTC due to offset)
-                            hoverformat: '%Y-%m-%d %H:%M:%S'  // Time format for hover
+                            fixedrange: false,
+                            tickformat: '%H:%M',
+                            showticklabels: false,  // Hide x-axis labels on top plot
+                            domain: [0, 1],
+                            anchor: 'y'
                         },
                         yaxis: {
                             title: 'SNR (dB)',
                             gridcolor: 'rgba(255,255,255,0.1)',
                             color: '#94a3b8',
-                            showgrid: true
+                            showgrid: true,
+                            domain: [0.70, 1.0],  // Top 30% of plot
+                            anchor: 'x'
+                        },
+                        // Subplot 2: Power Ratio (middle)
+                        xaxis2: {
+                            gridcolor: 'rgba(255,255,255,0.1)',
+                            color: '#94a3b8',
+                            showgrid: true,
+                            range: [rangeStart, rangeEnd],
+                            autorange: false,
+                            type: 'date',
+                            fixedrange: false,
+                            tickformat: '%H:%M',
+                            showticklabels: false,  // Hide x-axis labels on middle plot
+                            domain: [0, 1],
+                            anchor: 'y2'
+                        },
+                        yaxis2: {
+                            title: 'Power Ratio (dB)<br><sub>Positive = WWV dominant</sub>',
+                            gridcolor: 'rgba(255,255,255,0.1)',
+                            color: '#94a3b8',
+                            showgrid: true,
+                            domain: [0.37, 0.67],  // Middle 30% of plot
+                            anchor: 'x2',
+                            zeroline: true,
+                            zerolinecolor: 'rgba(255,255,255,0.3)',
+                            zerolinewidth: 2
+                        },
+                        // Subplot 3: Differential Delay (bottom)
+                        xaxis3: {
+                            title: 'Time (UTC)',
+                            gridcolor: 'rgba(255,255,255,0.1)',
+                            color: '#94a3b8',
+                            showgrid: true,
+                            range: [rangeStart, rangeEnd],
+                            autorange: false,
+                            type: 'date',
+                            fixedrange: false,
+                            tickformat: '%H:%M',
+                            showticklabels: true,  // Show x-axis labels on bottom plot
+                            domain: [0, 1],
+                            anchor: 'y3'
+                        },
+                        yaxis3: {
+                            title: 'Differential Delay (ms)<br><sub>WWV - WWVH arrival time</sub>',
+                            gridcolor: 'rgba(255,255,255,0.1)',
+                            color: '#94a3b8',
+                            showgrid: true,
+                            domain: [0.0, 0.30],  // Bottom 30% of plot
+                            anchor: 'x3'
                         },
                         plot_bgcolor: 'rgba(0,0,0,0.2)',
                         paper_bgcolor: 'transparent',
-                        font: { color: '#e0e0e0' },
+                        font: { color: '#e0e0e0', size: 11 },
                         legend: {
-                            bgcolor: 'rgba(0,0,0,0.3)',
-                            bordercolor: 'rgba(255,255,255,0.1)',
+                            bgcolor: 'rgba(0,0,0,0.5)',
+                            bordercolor: 'rgba(255,255,255,0.2)',
                             borderwidth: 1,
-                            x: 0.01,
-                            y: 0.99
+                            x: 1.01,
+                            y: 1.0,
+                            xanchor: 'left',
+                            yanchor: 'top'
                         },
-                        margin: { t: 20, b: 60, l: 60, r: 20 },
-                        hovermode: 'x unified'
+                        margin: { t: 30, b: 70, l: 80, r: 20 },
+                        hovermode: 'x unified',
+                        showlegend: true
                     };
                     
                     const config = {

@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Carrier Analysis - GRAPE Signal Recorder</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #ecf0f1;
+      color: #2c3e50;
+      padding: 20px;
+    }
+    
+    .header {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .nav-links {
+      display: flex;
+      gap: 15px;
+      margin-bottom: 15px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #ecf0f1;
+    }
+    
+    .nav-links a {
+      color: #3498db;
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 14px;
+    }
+    
+    .nav-links a:hover {
+      color: #2980b9;
+      text-decoration: underline;
+    }
+    
+    .header h1 {
+      font-size: 24px;
+      margin-bottom: 10px;
+    }
+    
+    .header-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 15px;
+    }
+    
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      background: #3498db;
+      color: white;
+    }
+    
+    button:hover {
+      background: #2980b9;
+    }
+    
+    select {
+      padding: 8px 12px;
+      border: 1px solid #bdc3c7;
+      border-radius: 4px;
+      font-size: 14px;
+      background: white;
+      cursor: pointer;
+    }
+    
+    select:focus {
+      outline: none;
+      border-color: #3498db;
+    }
+    
+    .summary-banner {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .summary-banner h2 {
+      font-size: 18px;
+      margin-bottom: 15px;
+    }
+    
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+    }
+    
+    .summary-item {
+      padding: 10px;
+      background: #f8f9fa;
+      border-radius: 4px;
+    }
+    
+    .summary-label {
+      font-size: 12px;
+      color: #7f8c8d;
+      margin-bottom: 5px;
+    }
+    
+    .summary-value {
+      font-size: 20px;
+      font-weight: 600;
+    }
+    
+    .status-good { color: #27ae60; }
+    .status-warning { color: #f39c12; }
+    .status-critical { color: #e74c3c; }
+    
+    .alerts {
+      margin-top: 15px;
+      padding: 10px;
+      background: #fff3cd;
+      border-left: 4px solid #f39c12;
+      border-radius: 4px;
+    }
+    
+    .alerts.critical {
+      background: #f8d7da;
+      border-left-color: #e74c3c;
+    }
+    
+    .channel-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+      gap: 20px;
+    }
+    
+    .channel-card {
+      background: white;
+      border-radius: 8px;
+      padding: 15px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .channel-card.has-warning {
+      border-left: 4px solid #f39c12;
+    }
+    
+    .channel-card.has-critical {
+      border-left: 4px solid #e74c3c;
+    }
+    
+    .channel-header {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    
+    .spectrogram {
+      width: 100%;
+      border-radius: 4px;
+      margin: 10px 0;
+      background: #f8f9fa;
+    }
+    
+    .metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    
+    .metric {
+      font-size: 13px;
+    }
+    
+    .metric-label {
+      color: #7f8c8d;
+      font-size: 11px;
+    }
+    
+    .metric-value {
+      font-weight: 600;
+    }
+    
+    .timing-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    
+    .timing-tone { background: #d4edda; color: #155724; }
+    .timing-ntp { background: #fff3cd; color: #856404; }
+    .timing-wall { background: #f8d7da; color: #721c24; }
+    
+    .upload-current { color: #27ae60; }
+    .upload-delayed { color: #f39c12; }
+    .upload-stalled { color: #e74c3c; }
+    
+    .alert-item {
+      font-size: 13px;
+      padding: 5px 0;
+      border-bottom: 1px solid #dee2e6;
+    }
+    
+    .alert-item:last-child {
+      border-bottom: none;
+    }
+    
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #7f8c8d;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="nav-links">
+      <a href="/summary.html">← Summary</a>
+      <a href="/timing-dashboard.html">WWV-H Discrimination →</a>
+    </div>
+    <h1>🎯 Carrier Analysis - Data Quality Dashboard</h1>
+    <div>Last updated: <span id="last-update">--</span></div>
+    <div class="header-controls">
+      <label>
+        Date: 
+        <select id="date-picker">
+          <option value="">Loading...</option>
+        </select>
+      </label>
+      <button id="btn-refresh">🔄 Refresh</button>
+      <label style="margin-left: auto;">
+        Auto-refresh: 
+        <input type="checkbox" id="auto-refresh" checked> 
+        <span style="font-size: 12px;">(30s)</span>
+      </label>
+    </div>
+  </div>
+  
+  <div id="summary-banner"></div>
+  <div id="channel-grid" class="channel-grid"></div>
+  <div id="loading" class="loading">Loading...</div>
+
+  <script>
+    let currentDate = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    let autoRefreshInterval = null;
+    let availableDates = [];
+    
+    // Fetch available dates and populate dropdown
+    async function loadAvailableDates() {
+      try {
+        const response = await fetch('/api/v1/carrier/available-dates');
+        const data = await response.json();
+        availableDates = data.dates;
+        
+        const picker = document.getElementById('date-picker');
+        picker.innerHTML = '';
+        
+        if (availableDates.length === 0) {
+          picker.innerHTML = '<option value="">No data available</option>';
+          return;
+        }
+        
+        // Add options for each date
+        availableDates.forEach(d => {
+          const option = document.createElement('option');
+          option.value = d.date;
+          option.textContent = `${d.formatted} (${d.count} spectrograms)`;
+          picker.appendChild(option);
+        });
+        
+        // Select most recent date by default
+        picker.value = availableDates[0].date;
+        currentDate = availableDates[0].date;
+        
+      } catch (err) {
+        console.error('Error loading available dates:', err);
+        document.getElementById('date-picker').innerHTML = '<option value="">Error loading dates</option>';
+      }
+    }
+    
+    // Date selection
+    document.getElementById('date-picker').addEventListener('change', (e) => {
+      currentDate = e.target.value;
+      fetchData();
+    });
+    
+    document.getElementById('btn-refresh').addEventListener('click', () => {
+      fetchData();
+    });
+    
+    document.getElementById('auto-refresh').addEventListener('change', (e) => {
+      if (e.target.checked) {
+        startAutoRefresh();
+      } else {
+        stopAutoRefresh();
+      }
+    });
+    
+    async function fetchData() {
+      try {
+        const response = await fetch(`/api/v1/carrier/quality?date=${currentDate}`);
+        const data = await response.json();
+        renderSummary(data.system_summary, data.channels);
+        renderChannels(data.channels);
+        document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+        document.getElementById('loading').style.display = 'none';
+      } catch (err) {
+        console.error('Error fetching carrier data:', err);
+        document.getElementById('loading').innerHTML = `<div style="color: #e74c3c;">Error loading data: ${err.message}</div>`;
+      }
+    }
+    
+    function renderSummary(summary, channels) {
+      const allAlerts = channels.flatMap(c => c.alerts);
+      const criticalAlerts = allAlerts.filter(a => a.severity === 'critical');
+      const warnings = allAlerts.filter(a => a.severity === 'warning');
+      
+      let statusClass = 'status-good';
+      let statusText = '✅ GOOD';
+      if (summary.critical_alerts > 0) {
+        statusClass = 'status-critical';
+        statusText = '❌ CRITICAL';
+      } else if (summary.warnings > 2) {
+        statusClass = 'status-warning';
+        statusText = '⚠️ WARNING';
+      }
+      
+      let html = `
+        <div class="summary-banner">
+          <h2>System-Wide Quality Summary</h2>
+          <div class="summary-grid">
+            <div class="summary-item">
+              <div class="summary-label">Overall Status</div>
+              <div class="summary-value ${statusClass}">${statusText}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Channels Operating</div>
+              <div class="summary-value">${summary.channels_active}/${summary.channels_total}</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Average Completeness</div>
+              <div class="summary-value">${summary.average_completeness.toFixed(1)}%</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Alerts</div>
+              <div class="summary-value">
+                ${summary.critical_alerts > 0 ? `<span class="status-critical">${summary.critical_alerts} Critical</span> ` : ''}
+                ${summary.warnings > 0 ? `<span class="status-warning">${summary.warnings} Warning(s)</span>` : ''}
+                ${summary.critical_alerts === 0 && summary.warnings === 0 ? '<span class="status-good">None</span>' : ''}
+              </div>
+            </div>
+          </div>
+      `;
+      
+      if (allAlerts.length > 0) {
+        html += `
+          <div class="alerts ${criticalAlerts.length > 0 ? 'critical' : ''}">
+            <strong>${criticalAlerts.length > 0 ? '🔴' : '🟡'} Active Alerts:</strong>
+            ${allAlerts.slice(0, 5).map(a => `<div class="alert-item">${a.message}</div>`).join('')}
+            ${allAlerts.length > 5 ? `<div class="alert-item">... and ${allAlerts.length - 5} more</div>` : ''}
+          </div>
+        `;
+      }
+      
+      html += '</div>';
+      document.getElementById('summary-banner').innerHTML = html;
+    }
+    
+    function renderChannels(channels) {
+      let html = '';
+      
+      channels.forEach(ch => {
+        const hasWarning = ch.alerts.some(a => a.severity === 'warning');
+        const hasCritical = ch.alerts.some(a => a.severity === 'critical');
+        const cardClass = hasCritical ? 'has-critical' : (hasWarning ? 'has-warning' : '');
+        
+        let timingClass = 'timing-wall';
+        let timingLabel = ch.timing_quality;
+        if (ch.timing_quality === 'TONE_LOCKED') {
+          timingClass = 'timing-tone';
+          timingLabel = 'TONE';
+        } else if (ch.timing_quality === 'NTP_SYNCED') {
+          timingClass = 'timing-ntp';
+          timingLabel = 'NTP';
+        } else if (ch.timing_quality === 'WALL_CLOCK') {
+          timingClass = 'timing-wall';
+          timingLabel = 'WALL';
+        }
+        
+        let uploadClass = 'upload-current';
+        let uploadText = '✅ Current';
+        if (ch.upload_status === 'delayed') {
+          uploadClass = 'upload-delayed';
+          uploadText = '⏳ Delayed';
+        } else if (ch.upload_status === 'stalled') {
+          uploadClass = 'upload-stalled';
+          uploadText = '❌ Stalled';
+        }
+        
+        const completenessClass = ch.completeness_pct >= 95 ? 'status-good' : (ch.completeness_pct >= 90 ? 'status-warning' : 'status-critical');
+        
+        html += `
+          <div class="channel-card ${cardClass}">
+            <div class="channel-header">${ch.name}</div>
+            <img src="${ch.spectrogram_url}" alt="${ch.name} spectrogram" class="spectrogram" 
+                 onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22200%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22400%22 height=%22200%22/%3E%3Ctext x=%22200%22 y=%22100%22 text-anchor=%22middle%22 fill=%22%23999%22%3ESpectrogram not available%3C/text%3E%3C/svg%3E'">
+            <div class="metrics">
+              <div class="metric">
+                <div class="metric-label">Completeness</div>
+                <div class="metric-value ${completenessClass}">${ch.completeness_pct !== null ? ch.completeness_pct.toFixed(1) + '%' : 'N/A'}</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Packet Loss</div>
+                <div class="metric-value">${ch.packet_loss_pct !== null ? ch.packet_loss_pct.toFixed(1) + '%' : 'N/A'}</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Timing Quality</div>
+                <div class="metric-value"><span class="timing-badge ${timingClass}">${timingLabel}</span></div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Upload Status</div>
+                <div class="metric-value ${uploadClass}">${uploadText}</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">SNR</div>
+                <div class="metric-value">${ch.snr_db !== null ? ch.snr_db.toFixed(1) + ' dB' : 'N/A'}</div>
+              </div>
+              <div class="metric">
+                <div class="metric-label">Time Snap Age</div>
+                <div class="metric-value">${ch.time_snap_age_minutes !== null ? ch.time_snap_age_minutes + ' min' : 'N/A'}</div>
+              </div>
+            </div>
+            ${ch.alerts.length > 0 ? `
+              <div style="margin-top: 10px; padding: 8px; background: #fff3cd; border-radius: 4px; font-size: 12px;">
+                ${ch.alerts.map(a => `<div>⚠️ ${a.message}</div>`).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `;
+      });
+      
+      document.getElementById('channel-grid').innerHTML = html;
+    }
+    
+    function startAutoRefresh() {
+      if (autoRefreshInterval) return;
+      autoRefreshInterval = setInterval(fetchData, 30000);
+    }
+    
+    function stopAutoRefresh() {
+      if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+      }
+    }
+    
+    // Initial load
+    async function init() {
+      await loadAvailableDates();
+      fetchData();
+      startAutoRefresh();
+    }
+    
+    init();
+  </script>
+</body>
+</html>

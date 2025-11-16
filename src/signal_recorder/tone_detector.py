@@ -17,6 +17,7 @@ Design:
 """
 
 import logging
+import re
 import numpy as np
 from typing import Optional, List, Dict, Tuple
 from scipy import signal as scipy_signal
@@ -53,6 +54,9 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         self.sample_rate = sample_rate
         self.is_chu_channel = 'CHU' in channel_name.upper()
         
+        # Determine channel frequency from name
+        self.channel_frequency_mhz = self._extract_frequency_mhz(channel_name)
+        
         # Detection threshold (configurable)
         self.detection_threshold = 0.5
         
@@ -65,9 +69,16 @@ class MultiStationToneDetector(IMultiStationToneDetector):
             self.templates[StationType.CHU] = self._create_template(1000, 0.5)
         else:
             # WWV frequencies: 2.5, 5, 10, 15, 20, 25 MHz
-            # Detect BOTH WWV and WWVH
+            # Always detect WWV 1000 Hz tone
             self.templates[StationType.WWV] = self._create_template(1000, 0.8)
-            self.templates[StationType.WWVH] = self._create_template(1200, 0.8)
+            
+            # WWVH only broadcasts on 2.5, 5, 10, 15 MHz (NOT on 20 or 25 MHz)
+            wwvh_frequencies = [2.5, 5.0, 10.0, 15.0]
+            if self.channel_frequency_mhz in wwvh_frequencies:
+                self.templates[StationType.WWVH] = self._create_template(1200, 0.8)
+                logger.info(f"{channel_name}: WWVH detection enabled (shared frequency)")
+            else:
+                logger.info(f"{channel_name}: WWVH detection disabled (WWV-only frequency)")
         
         # State tracking
         self.last_detections_by_minute: Dict[int, List[ToneDetectionResult]] = {}
@@ -95,6 +106,22 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         
         logger.info(f"{channel_name}: MultiStationToneDetector initialized - "
                    f"stations={list(self.templates.keys())}, sample_rate={sample_rate}Hz")
+    
+    def _extract_frequency_mhz(self, channel_name: str) -> Optional[float]:
+        """
+        Extract frequency in MHz from channel name
+        
+        Args:
+            channel_name: Channel name like "WWV 2.5 MHz", "WWV 10 MHz"
+            
+        Returns:
+            Frequency in MHz, or None if not found
+        """
+        # Match patterns like "WWV 2.5 MHz", "WWV 10 MHz", etc.
+        match = re.search(r'(\d+(?:\.\d+)?)\s*MHz', channel_name, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+        return None
     
     def _create_template(self, frequency_hz: float, duration_sec: float) -> dict:
         """
