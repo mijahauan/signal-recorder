@@ -505,20 +505,24 @@ async function getChannelStatuses(paths) {
           const content = fs.readFileSync(statusFile, 'utf8');
           const status = JSON.parse(content);
           
+          // Get channel-specific data
+          const channelData = status.channels?.[channelName];
+          
           // Get SNR (if available)
-          snrDb = status.current_snr_db || null;
+          snrDb = channelData?.quality_metrics?.last_snr_db || status.current_snr_db || null;
           
           // Determine time basis
           // Priority: TONE_LOCKED > NTP_SYNCED > WALL_CLOCK
-          if (status.time_snap) {
-            const age = Date.now() / 1000 - status.time_snap.timestamp;
+          if (channelData?.time_snap?.established) {
+            const age = Date.now() / 1000 - channelData.time_snap.utc_timestamp;
             timeSnapAge = age;
             
-            if (age < 300) {
-              // time_snap within 5 minutes = tone-locked
+            if (age < 10800) {
+              // time_snap within 3 hours = tone-locked
+              // (Propagation varies naturally, but time_snap remains scientifically valid)
               timeBasis = 'TONE_LOCKED';
             } else if (ntpStatus.synchronized) {
-              // Aged time_snap, fall back to NTP if available
+              // Very aged time_snap (>3 hours), fall back to NTP if available
               timeBasis = 'NTP_SYNCED';
             }
             // else: WALL_CLOCK (default)
@@ -527,6 +531,7 @@ async function getChannelStatuses(paths) {
           }
         } catch (err) {
           // Use defaults
+          console.error(`Error reading status for ${channelName}:`, err.message);
         }
       }
       
@@ -870,6 +875,118 @@ app.get('/api/v1/carrier/available-dates', async (req, res) => {
     res.json({ dates });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/channels/:channelName/discrimination/:date
+ * Get discrimination time-series data for a channel and date
+ */
+app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) => {
+  try {
+    const { channelName, date } = req.params;
+    
+    // Map channel names to their actual directory names
+    const dirMap = {
+      'WWV 2.5 MHz': 'WWV_2.5_MHz',
+      'WWV 5 MHz': 'WWV_5_MHz',
+      'WWV 10 MHz': 'WWV_10_MHz',
+      'WWV 15 MHz': 'WWV_15_MHz'
+    };
+    
+    const channelDirName = dirMap[channelName] || channelName.replace(/ /g, '_');
+    const fileChannelName = channelName.replace(/ /g, '_');
+    const fileName = `${fileChannelName}_discrimination_${date}.csv`;
+    
+    // Use GRAPEPaths to get discrimination file path
+    const filePath = join(paths.getDiscriminationDir(channelName), fileName);
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.json({
+        date: date,
+        channel: channelName,
+        data: [],
+        message: 'No data for this date'
+      });
+    }
+    
+    // Read CSV file
+    const csvContent = fs.readFileSync(filePath, 'utf8');
+    const lines = csvContent.trim().split('\n');
+    
+    // Parse CSV (skip header)
+    // CSV format: timestamp_utc,minute_timestamp,minute_number,wwv_detected,wwvh_detected,
+    //             wwv_power_db,wwvh_power_db,power_ratio_db,differential_delay_ms,
+    //             tone_440hz_wwv_detected,tone_440hz_wwv_power_db,
+    //             tone_440hz_wwvh_detected,tone_440hz_wwvh_power_db,
+    //             dominant_station,confidence
+    const data = [];
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(',');
+      if (parts.length >= 15) {
+        // New format with 440 Hz analysis (15 fields)
+        let timestamp = parts[0].trim();
+        if (timestamp.endsWith('+00:00')) {
+          timestamp = timestamp.replace('+00:00', 'Z');
+        }
+        
+        data.push({
+          timestamp_utc: timestamp,
+          minute_timestamp: parseInt(parts[1]),
+          minute_number: parseInt(parts[2]),
+          wwv_detected: parts[3] === '1',
+          wwvh_detected: parts[4] === '1',
+          wwv_snr_db: parseFloat(parts[5]),
+          wwvh_snr_db: parseFloat(parts[6]),
+          power_ratio_db: parseFloat(parts[7]),
+          differential_delay_ms: parts[8] !== '' ? parseFloat(parts[8]) : null,
+          tone_440hz_wwv_detected: parts[9] === '1',
+          tone_440hz_wwv_power_db: parts[10] !== '' ? parseFloat(parts[10]) : null,
+          tone_440hz_wwvh_detected: parts[11] === '1',
+          tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
+          dominant_station: parts[13],
+          confidence: parts[14]
+        });
+      } else if (parts.length >= 10) {
+        // Old format without 440 Hz analysis (10 fields) - for backwards compatibility
+        let timestamp = parts[0].trim();
+        if (timestamp.endsWith('+00:00')) {
+          timestamp = timestamp.replace('+00:00', 'Z');
+        }
+        
+        data.push({
+          timestamp_utc: timestamp,
+          minute_timestamp: parseInt(parts[1]),
+          minute_number: null,
+          wwv_detected: parts[2] === '1',
+          wwvh_detected: parts[3] === '1',
+          wwv_snr_db: parseFloat(parts[4]),
+          wwvh_snr_db: parseFloat(parts[5]),
+          power_ratio_db: parseFloat(parts[6]),
+          differential_delay_ms: parts[7] !== '' ? parseFloat(parts[7]) : null,
+          tone_440hz_wwv_detected: false,
+          tone_440hz_wwv_power_db: null,
+          tone_440hz_wwvh_detected: false,
+          tone_440hz_wwvh_power_db: null,
+          dominant_station: parts[8],
+          confidence: parts[9]
+        });
+      }
+    }
+    
+    res.json({
+      date: date,
+      channel: channelName,
+      data: data,
+      count: data.length
+    });
+  } catch (error) {
+    console.error('Failed to get discrimination data:', error);
+    res.status(500).json({
+      error: 'Failed to get discrimination data',
+      details: error.message
+    });
   }
 });
 

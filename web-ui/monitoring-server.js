@@ -834,11 +834,16 @@ app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) =
     const lines = csvContent.trim().split('\n');
     
     // Parse CSV (skip header)
+    // CSV format: timestamp_utc,minute_timestamp,minute_number,wwv_detected,wwvh_detected,
+    //             wwv_power_db,wwvh_power_db,power_ratio_db,differential_delay_ms,
+    //             tone_440hz_wwv_detected,tone_440hz_wwv_power_db,
+    //             tone_440hz_wwvh_detected,tone_440hz_wwvh_power_db,
+    //             dominant_station,confidence
     const data = [];
     for (let i = 1; i < lines.length; i++) {
       const parts = lines[i].split(',');
-      if (parts.length >= 10) {
-        // Normalize timestamp to use 'Z' suffix instead of '+00:00' for UTC
+      if (parts.length >= 15) {
+        // New format with 440 Hz analysis (15 fields)
         let timestamp = parts[0].trim();
         if (timestamp.endsWith('+00:00')) {
           timestamp = timestamp.replace('+00:00', 'Z');
@@ -847,12 +852,41 @@ app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) =
         data.push({
           timestamp_utc: timestamp,
           minute_timestamp: parseInt(parts[1]),
+          minute_number: parseInt(parts[2]),
+          wwv_detected: parts[3] === '1',
+          wwvh_detected: parts[4] === '1',
+          wwv_snr_db: parseFloat(parts[5]),
+          wwvh_snr_db: parseFloat(parts[6]),
+          power_ratio_db: parseFloat(parts[7]),
+          differential_delay_ms: parts[8] !== '' ? parseFloat(parts[8]) : null,
+          tone_440hz_wwv_detected: parts[9] === '1',
+          tone_440hz_wwv_power_db: parts[10] !== '' ? parseFloat(parts[10]) : null,
+          tone_440hz_wwvh_detected: parts[11] === '1',
+          tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
+          dominant_station: parts[13],
+          confidence: parts[14]
+        });
+      } else if (parts.length >= 10) {
+        // Old format without 440 Hz analysis (10 fields) - for backwards compatibility
+        let timestamp = parts[0].trim();
+        if (timestamp.endsWith('+00:00')) {
+          timestamp = timestamp.replace('+00:00', 'Z');
+        }
+        
+        data.push({
+          timestamp_utc: timestamp,
+          minute_timestamp: parseInt(parts[1]),
+          minute_number: null,
           wwv_detected: parts[2] === '1',
           wwvh_detected: parts[3] === '1',
           wwv_snr_db: parseFloat(parts[4]),
           wwvh_snr_db: parseFloat(parts[5]),
           power_ratio_db: parseFloat(parts[6]),
           differential_delay_ms: parts[7] !== '' ? parseFloat(parts[7]) : null,
+          tone_440hz_wwv_detected: false,
+          tone_440hz_wwv_power_db: null,
+          tone_440hz_wwvh_detected: false,
+          tone_440hz_wwvh_power_db: null,
           dominant_station: parts[8],
           confidence: parts[9]
         });

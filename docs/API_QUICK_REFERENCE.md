@@ -127,9 +127,69 @@ DiscriminationResult(
 ## File Formats
 
 ```
-Raw NPZ:       {timestamp}Z_{freq}_iq.npz
-Decimated NPZ: {timestamp}Z_{freq}_iq_10hz.npz
-CSV:           {channel}_discrimination_{date}.csv
+Raw NPZ (16 kHz):       {timestamp}Z_{freq}_iq.npz
+Decimated NPZ (10 Hz):  {timestamp}Z_{freq}_iq_10hz.npz
+CSV Quality:            {channel}_quality.csv
+CSV Discrimination:     {channel}_discrimination_{date}.csv
+Digital RF:             rf@{timestamp}.h5 (HDF5 format)
+Spectrogram PNG:        {channel}_{date}_carrier_spectrogram.png
+```
+
+## Data Flow Architecture
+
+```
+Core Recorder (RTP → NPZ)
+    ↓
+{timestamp}_iq.npz (16 kHz)
+    ↓
+Analytics Service (Tone Detection + Decimation)
+    ├→ Tone Detection (WWV/WWVH/CHU @ 1000/1200 Hz)
+    ├→ Time_snap Management (establishes GPS-quality timestamps)
+    ├→ Quality Metrics (completeness, packet loss, gaps)
+    ├→ Discrimination Analysis (WWV vs WWVH with 440 Hz)
+    └→ Decimation (16 kHz → 10 Hz)
+         ↓
+    {timestamp}_iq_10hz.npz (embedded metadata)
+         ├→ DRF Writer Service → Digital RF HDF5 (for PSWS upload)
+         └→ Spectrogram Generator → PNG (for web UI carrier display)
+```
+
+## 10 Hz NPZ Metadata Structure
+
+The decimated NPZ files include embedded metadata for downstream consumers:
+
+```python
+# Core Data
+iq: np.ndarray                      # Decimated IQ samples (10 Hz)
+rtp_timestamp: int                  # RTP timestamp from source
+sample_rate_original: int           # 16000
+sample_rate_decimated: int          # 10
+decimation_factor: int              # 1600
+created_timestamp: float            # Unix timestamp when created
+source_file: str                    # Original 16kHz NPZ filename
+
+# Timing Metadata (for DRF quality annotations)
+timing_metadata: dict
+    quality: str                    # 'tone_locked', 'ntp_synced', 'wall_clock'
+    time_snap_age_seconds: float    # Age of time_snap reference
+    ntp_offset_ms: float           # NTP offset if checked
+    reprocessing_recommended: bool  # True if low-quality timing
+
+# Quality Metadata (for gap/loss tracking)
+quality_metadata: dict
+    completeness_pct: float         # % of expected samples present
+    packet_loss_pct: float          # % of packets lost
+    gaps_count: int                 # Number of gaps detected
+    gaps_filled: int                # Samples filled with zeros
+
+# Tone Detection Metadata (for discrimination/analysis)
+tone_metadata: dict
+    detections: list[dict]
+        station: str                # 'WWV', 'WWVH', 'CHU'
+        frequency_hz: int           # 1000, 1200
+        timing_error_ms: float      # Error vs :00.000
+        snr_db: float              # Signal-to-noise ratio
+        confidence: float          # 0.0-1.0
 ```
 
 ## Import Paths

@@ -38,21 +38,27 @@ Essential context for maintaining the GRAPE (Global Radio Amateur Propagation Ex
 
 ## File Locations
 
-- Raw archives: `/tmp/grape-test/archives/{channel}/*_iq.npz` (16 kHz)
-- Decimated: `/tmp/grape-test/archives/{channel}/*_iq_10hz.npz` (10 Hz)
-- Digital RF: `/tmp/grape-test/analytics/{channel}/digital_rf/`
-- Discrimination CSV: `/tmp/grape-test/analytics/{channel}/discrimination_logs/`
-- State: `/tmp/grape-test/analytics/{channel}/analytics_state.json` (time_snap here)
-- Config: `config/grape-config.toml`, `src/signal_recorder/paths.py`
+- **Raw archives (16 kHz):** `/tmp/grape-test/archives/{channel}/*_iq.npz`
+- **Decimated (10 Hz):** `/tmp/grape-test/analytics/{channel}/decimated/*_iq_10hz.npz`
+- **Digital RF:** `/tmp/grape-test/analytics/{channel}/digital_rf/`
+- **Discrimination CSV:** `/tmp/grape-test/analytics/{channel}/discrimination/`
+- **Quality CSV:** `/tmp/grape-test/analytics/{channel}/quality/`
+- **Spectrograms:** `/tmp/grape-test/spectrograms/{YYYYMMDD}/`
+- **State:** `/tmp/grape-test/state/analytics-{channel}.json` (time_snap here)
+- **Config:** `config/grape-config.toml`, `src/signal_recorder/paths.py`
 
-## Web UI (3 Screens + Next)
+## Web UI (4 Screens)
 
 1. **summary.html** - All channels status, detection counts, upload progress
 2. **carrier.html** - Spectrograms (Doppler shifts), phase analysis
 3. **channels.html** - Per-channel details, gaps, WWV timing
-4. **discrimination display** (next objective) - WWV-H analysis visualization
+4. **discrimination.html** - WWV-H analysis visualization with 4 panels:
+   - Panel 1: SNR comparison (1000 Hz vs 1200 Hz)
+   - Panel 2: Power ratio (WWV - WWVH dominance)
+   - Panel 3: Differential delay (ionospheric path difference)
+   - Panel 4: 440 Hz station ID tones (minute 1 = WWVH, minute 2 = WWV)
 
-**Data Sources:** Status JSONs (live), spectrograms (nightly), CSVs (discrimination)
+**Data Sources:** Status JSONs (live), spectrograms (nightly), CSVs (discrimination with 440 Hz data)
 
 ## Doppler Interpretation (Scientific Data)
 

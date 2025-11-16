@@ -127,23 +127,67 @@ Unlike generic SDR recorders, this system is **optimized for continuous timing s
 | **Upload** | rsync to PSWS | Manual/FTP |
 | **Management** | Web UI + monitoring | Command-line only |
 
-### 🔬 Precision Signal Processing
+### 🔬 Multi-Stage Processing Architecture
+
+The system uses a **three-service architecture** for scientific reliability and reprocessability:
 
 ```
-ka9q-radio RTP stream (16 kHz IQ)
-    ↓ scipy.signal.decimate (anti-aliased FIR)
-10 Hz IQ samples
-    ↓ Digital RF Writer (HDF5 + metadata)
-Time-indexed archive
-    ↓ rsync with verification
-HamSCI PSWS repository
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Core Recorder (Rock-Solid Archiving)                    │
+│    ka9q-radio RTP packets (16 kHz IQ)                       │
+│         ↓ Resequencing + gap fill                           │
+│    {timestamp}_iq.npz (16 kHz, complete record)             │
+│    Location: archives/{channel}/                            │
+└─────────────────────────────────────────────────────────────┘
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 2. Analytics Service (Tone Detection + Decimation)          │
+│    ├→ WWV/WWVH/CHU Tone Detection (1000/1200 Hz)           │
+│    ├→ Time_snap Establishment (GPS-quality timestamps)      │
+│    ├→ Quality Metrics (completeness, packet loss, gaps)     │
+│    ├→ WWV-H Discrimination (with 440 Hz station ID)         │
+│    └→ Decimation (16 kHz → 10 Hz with metadata)            │
+│         ↓                                                    │
+│    {timestamp}_iq_10hz.npz (10 Hz + embedded metadata)      │
+│    Location: analytics/{channel}/decimated/                 │
+└─────────────────────────────────────────────────────────────┘
+                           ↓
+              ┌────────────┴────────────┐
+              ↓                         ↓
+┌──────────────────────────┐  ┌──────────────────────────┐
+│ 3a. DRF Writer Service   │  │ 3b. Spectrogram Generator│
+│    Reads 10Hz NPZ        │  │    Reads 10Hz NPZ        │
+│         ↓                │  │         ↓                │
+│    Digital RF HDF5       │  │    Carrier PNG           │
+│    (for PSWS upload)     │  │    (for web UI display)  │
+│         ↓                │  │         ↓                │
+│    rsync to HamSCI       │  │    spectrograms/{date}/  │
+└──────────────────────────┘  └──────────────────────────┘
 ```
 
-**Why scipy instead of sox/wsprdaemon?**
-- Direct RTP→Digital RF pipeline (no external tools)
+**Key Design Principles:**
+
+1. **Separation of Concerns:**
+   - Core recorder: Focus on complete, timestamped data capture
+   - Analytics: Can restart/update without data loss
+   - DRF/Spectrogram: Independent downstream consumers
+
+2. **10 Hz Decimated NPZ as Pivot Point:**
+   - Single decimation (not multiple per consumer)
+   - Embedded timing/quality/tone metadata
+   - Enables carrier analysis (Doppler shifts ±5 Hz)
+   - 1600x smaller than 16 kHz for efficient processing
+
+3. **Reprocessability:**
+   - Original 16 kHz archives preserved forever
+   - Analytics can rerun with improved algorithms
+   - 10 Hz files can be regenerated if needed
+
+**Why scipy.signal.decimate?**
+- Direct Python implementation (no external sox/jt9 dependencies)
+- Three-stage anti-aliased FIR filtering (16k→1.6k→160→10 Hz)
 - Sub-millisecond timing preservation
 - Continuous data flow (not 2-minute WSPR cycles)
-- Pure Python (no sox/jt9 dependencies)
 
 ### 📊 Real-Time Quality Monitoring
 

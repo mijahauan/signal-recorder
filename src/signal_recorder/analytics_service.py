@@ -32,6 +32,7 @@ from enum import Enum
 
 from .tone_detector import MultiStationToneDetector
 from .wwvh_discrimination import WWVHDiscriminator, DiscriminationResult
+from .decimation import decimate_for_upload
 from .interfaces.data_models import (
     TimeSnapReference, 
     QualityInfo, 
@@ -221,10 +222,12 @@ class AnalyticsService:
         
         # Create output directories
         self.quality_dir = self.output_dir / 'quality'
+        self.decimated_dir = self.output_dir / 'decimated'
         self.drf_dir = self.output_dir / 'digital_rf'
         self.logs_dir = self.output_dir / 'logs'
+        self.discrimination_log_dir = self.output_dir / 'discrimination'
         
-        for d in [self.quality_dir, self.drf_dir, self.logs_dir]:
+        for d in [self.quality_dir, self.decimated_dir, self.drf_dir, self.logs_dir, self.discrimination_log_dir]:
             d.mkdir(parents=True, exist_ok=True)
         
         # Processing state
@@ -537,11 +540,11 @@ class AnalyticsService:
                     self.stats['total_detections'] = len(self.state.detection_history)
                     self.stats['last_detection_time'] = datetime.now(timezone.utc).isoformat()
             
-            # Step 4: Digital RF writing moved to standalone service
-            # (That service reads the *_iq_10hz.npz files written by decimator)
-            results['decimated_samples'] = 0  # No longer written here
+            # Step 4: Decimate and write 10Hz NPZ (for DRF writer + spectrogram generation)
+            decimated_samples = self._write_decimated_npz(archive, timing, detections if self._is_tone_detection_channel(archive.channel_name) else [])
+            results['decimated_samples'] = decimated_samples
             
-            # Stats tracking for DRF moved to drf_writer_service
+            # Stats tracking for DRF handled by drf_writer_service
             
             # Update quality stats
             self.stats['last_completeness_pct'] = quality.completeness_pct
@@ -932,6 +935,89 @@ class AnalyticsService:
     
     # Digital RF writing methods removed - moved to drf_writer_service.py
     # That service reads *_iq_10hz.npz files and writes Digital RF HDF5
+    
+    def _write_decimated_npz(self, archive: NPZArchive, timing: TimingAnnotation, 
+                             detections: List[ToneDetectionResult]) -> int:
+        """
+        Decimate IQ samples to 10 Hz and write NPZ file with embedded metadata
+        
+        This 10Hz NPZ serves as input for:
+        1. DRF Writer Service → Digital RF HDF5 for upload
+        2. Spectrogram Generator → PNG for web UI carrier display
+        
+        Args:
+            archive: Source 16 kHz NPZ archive
+            timing: Timing annotation for this archive
+            detections: Tone detection results for metadata
+            
+        Returns:
+            Number of decimated samples written
+        """
+        try:
+            # Decimate 16 kHz → 10 Hz (factor of 1600)
+            decimated_iq = decimate_for_upload(
+                archive.iq_samples,
+                input_rate=archive.sample_rate,
+                output_rate=10
+            )
+            
+            # Build filename matching source: YYYYMMDDTHHMMSSZ_freq_iq_10hz.npz
+            source_name = archive.file_path.stem  # e.g., "20251116T120000Z_10000000_iq"
+            decimated_name = source_name + "_10hz.npz"
+            output_path = self.decimated_dir / decimated_name
+            
+            # Prepare metadata (embedded in NPZ for downstream services)
+            timing_metadata = {
+                'quality': timing.quality.value,
+                'time_snap_age_seconds': timing.time_snap_age_seconds,
+                'ntp_offset_ms': timing.ntp_offset_ms,
+                'reprocessing_recommended': timing.reprocessing_recommended
+            }
+            
+            quality_metadata = {
+                'completeness_pct': archive.packets_received / archive.packets_expected * 100 if archive.packets_expected > 0 else 0,
+                'packet_loss_pct': (archive.packets_expected - archive.packets_received) / archive.packets_expected * 100 if archive.packets_expected > 0 else 0,
+                'gaps_count': archive.gaps_count,
+                'gaps_filled': archive.gaps_filled
+            }
+            
+            # Tone detection metadata (if applicable)
+            tone_metadata = None
+            if detections:
+                tone_metadata = {
+                    'detections': [
+                        {
+                            'station': det.station.value,
+                            'frequency_hz': det.frequency_hz,
+                            'timing_error_ms': det.timing_error_ms,
+                            'snr_db': det.snr_db,
+                            'confidence': det.confidence
+                        }
+                        for det in detections
+                    ]
+                }
+            
+            # Write 10Hz NPZ with metadata
+            np.savez_compressed(
+                output_path,
+                iq=decimated_iq,
+                rtp_timestamp=archive.rtp_timestamp,
+                sample_rate_original=archive.sample_rate,
+                sample_rate_decimated=10,
+                decimation_factor=archive.sample_rate // 10,
+                created_timestamp=time.time(),
+                source_file=str(archive.file_path.name),
+                timing_metadata=timing_metadata,
+                quality_metadata=quality_metadata,
+                tone_metadata=tone_metadata if tone_metadata else {}
+            )
+            
+            logger.debug(f"Wrote {len(decimated_iq)} samples to {decimated_name}")
+            return len(decimated_iq)
+            
+        except Exception as e:
+            logger.error(f"Failed to write decimated NPZ: {e}", exc_info=True)
+            return 0
     
     def _write_quality_metrics(self, archive: NPZArchive, quality: QualityInfo):
         """Write quality metrics to CSV file"""
