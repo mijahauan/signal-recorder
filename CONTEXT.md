@@ -242,6 +242,7 @@ GET /api/status -> Combined status from core + analytics
 GET /api/channels -> Per-channel details
 GET /api/quality/:channel -> Quality metrics for channel
 GET /api/spectrograms -> Available spectrogram files
+GET /api/gaps -> Gap analysis data
 ```
 
 **Status Files (JSON):**
