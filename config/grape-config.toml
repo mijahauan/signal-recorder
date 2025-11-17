@@ -11,6 +11,8 @@ description = "beelink rx888 SAS"
 
 [ka9q]
 status_address = "bee1-hf-status.local"
+# data_address will be auto-discovered from radiod via status_address
+# Uncomment to override: data_address = "239.103.26.231"
 auto_create_channels = true
 
 [recorder]
@@ -137,6 +139,109 @@ sample_rate = 16000
 agc = 0
 gain = 0
 description = "CHU 14.67 MHz"
+enabled = true
+processor = "grape"
+
+# ============================================================================
+# Carrier Channels (10 Hz bandwidth for Doppler/spectrogram analysis)
+# ============================================================================
+
+[[recorder.channels]]
+ssrc = 102500000
+frequency_hz = 2500000
+preset = "cw"
+sample_rate = 10
+agc = 0
+gain = 0
+description = "WWV 2.5 MHz carrier"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 105000000
+frequency_hz = 5000000
+preset = "cw"
+sample_rate = 10
+agc = 0
+gain = 0
+description = "WWV 5 MHz carrier"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 110000000
+frequency_hz = 10000000
+preset = "cw"
+sample_rate = 10
+agc = 0
+gain = 0
+description = "WWV 10 MHz carrier"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 115000000
+frequency_hz = 15000000
+preset = "cw"
+sample_rate = 10
+agc = 0
+gain = 0
+description = "WWV 15 MHz carrier"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 120000000
+frequency_hz = 20000000
+preset = "cw"
+sample_rate = 10
+agc = 0
+gain = 0
+description = "WWV 20 MHz carrier"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 125000000
+frequency_hz = 25000000
+preset = "cw"
+sample_rate = 10
+agc = 0
+gain = 0
+description = "WWV 25 MHz carrier"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 103330000
+frequency_hz = 3330000
+preset = "cw"
+sample_rate = 10
+agc = 0
+gain = 0
+description = "CHU 3.33 MHz carrier"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 107850000
+frequency_hz = 7850000
+preset = "cw"
+sample_rate = 10
+agc = 0
+gain = 0
+description = "CHU 7.85 MHz carrier"
+enabled = true
+processor = "grape"
+
+[[recorder.channels]]
+ssrc = 114670000
+frequency_hz = 14670000
+preset = "cw"
+sample_rate = 10
+agc = 0
+gain = 0
+description = "CHU 14.67 MHz carrier"
 enabled = true
 processor = "grape"
 
