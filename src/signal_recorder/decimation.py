@@ -28,6 +28,7 @@ def decimate_for_upload(iq_samples: np.ndarray, input_rate: int = 16000,
         
     Returns:
         Decimated complex IQ samples at output_rate
+        Returns None if input is too short for decimation filter
         
     Example:
         >>> iq_16k = np.random.randn(16000) + 1j*np.random.randn(16000)
@@ -43,31 +44,54 @@ def decimate_for_upload(iq_samples: np.ndarray, input_rate: int = 16000,
     if total_factor == 1:
         return iq_samples  # No decimation needed
     
+    # Check minimum length for IIR filter (padlen = 27 for default 8th order Butterworth)
+    # Minimum length is approximately 3 * padlen + 1 ~ 82 samples
+    min_length = 100  # Conservative minimum
+    if len(iq_samples) < min_length:
+        logger.warning(f"Input too short for decimation: {len(iq_samples)} < {min_length} samples, skipping")
+        return None
+    
     # Three-stage decimation for 16000 Hz → 10 Hz (factor 1600)
     # This balances efficiency and code simplicity
     
     # Stage 1: 16000 → 1600 Hz (factor 10)
     if total_factor >= 10:
-        iq_samples = signal.decimate(iq_samples, q=10, ftype='iir', zero_phase=True)
-        logger.debug(f"Stage 1: decimated to {input_rate // 10} Hz, {len(iq_samples)} samples")
-        total_factor //= 10
+        try:
+            iq_samples = signal.decimate(iq_samples, q=10, ftype='iir', zero_phase=True)
+            logger.debug(f"Stage 1: decimated to {input_rate // 10} Hz, {len(iq_samples)} samples")
+            total_factor //= 10
+        except ValueError as e:
+            logger.warning(f"Stage 1 decimation failed: {e}, skipping file")
+            return None
     
     # Stage 2: 1600 → 160 Hz (factor 10)
     if total_factor >= 10:
-        iq_samples = signal.decimate(iq_samples, q=10, ftype='iir', zero_phase=True)
-        logger.debug(f"Stage 2: decimated to {input_rate // 100} Hz, {len(iq_samples)} samples")
-        total_factor //= 10
+        try:
+            iq_samples = signal.decimate(iq_samples, q=10, ftype='iir', zero_phase=True)
+            logger.debug(f"Stage 2: decimated to {input_rate // 100} Hz, {len(iq_samples)} samples")
+            total_factor //= 10
+        except ValueError as e:
+            logger.warning(f"Stage 2 decimation failed: {e}, skipping file")
+            return None
     
     # Stage 3: 160 → 10 Hz (factor 16)
     if total_factor >= 16:
-        iq_samples = signal.decimate(iq_samples, q=16, ftype='iir', zero_phase=True)
-        logger.debug(f"Stage 3: decimated to {output_rate} Hz, {len(iq_samples)} samples")
-        total_factor //= 16
+        try:
+            iq_samples = signal.decimate(iq_samples, q=16, ftype='iir', zero_phase=True)
+            logger.debug(f"Stage 3: decimated to {output_rate} Hz, {len(iq_samples)} samples")
+            total_factor //= 16
+        except ValueError as e:
+            logger.warning(f"Stage 3 decimation failed: {e}, skipping file")
+            return None
     
     # Handle any remaining factor
     if total_factor > 1:
-        iq_samples = signal.decimate(iq_samples, q=total_factor, ftype='iir', zero_phase=True)
-        logger.debug(f"Final stage: decimated by {total_factor}, {len(iq_samples)} samples")
+        try:
+            iq_samples = signal.decimate(iq_samples, q=total_factor, ftype='iir', zero_phase=True)
+            logger.debug(f"Final stage: decimated by {total_factor}, {len(iq_samples)} samples")
+        except ValueError as e:
+            logger.warning(f"Final stage decimation failed: {e}, skipping file")
+            return None
     
     return iq_samples
 

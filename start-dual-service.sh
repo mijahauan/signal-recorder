@@ -4,6 +4,10 @@
 
 set -e
 
+# Activate virtual environment
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/venv/bin/activate"
+
 # Configuration
 CONFIG="${1:-config/grape-config.toml}"
 
@@ -72,11 +76,22 @@ else
 fi
 echo ""
 
-# Stop any existing instances
-echo "🛑 Stopping existing instances..."
-pkill -f core_recorder 2>/dev/null || true
+# Check if core recorder is already running
+CORE_RUNNING=$(ps aux | grep core_recorder | grep -v grep | wc -l)
+
+if [ "$CORE_RUNNING" -gt 0 ]; then
+    echo "ℹ️  Core Recorder already running - will NOT restart"
+    echo "   (Use ./stop-dual-service.sh to stop everything)"
+    echo ""
+    SKIP_CORE=true
+else
+    SKIP_CORE=false
+fi
+
+# Stop analytics and web-ui (but not core recorder if running)
+echo "🛑 Stopping analytics and web-ui..."
 pkill -f analytics_service 2>/dev/null || true
-pkill -f monitoring-server.js 2>/dev/null || true
+pkill -f monitoring-server 2>/dev/null || true
 sleep 2
 
 # Create directories
@@ -86,28 +101,35 @@ mkdir -p "$DATA_ROOT/status"
 echo ""
 
 # ============================================================================
-# Step 1: Start Core Recorder
+# Step 1: Core Recorder
 # ============================================================================
-echo "▶️  Step 1: Starting Core Recorder..."
-CORE_LOG="$DATA_ROOT/logs/core-recorder.log"
-
-nohup python3 -m signal_recorder.core_recorder \
-  --config "$CONFIG" \
-  > "$CORE_LOG" 2>&1 &
-
-CORE_PID=$!
-sleep 3
-
-# Verify core recorder started
-if ps -p $CORE_PID > /dev/null 2>&1; then
-    echo "   ✅ Core Recorder started (PID: $CORE_PID)"
-    echo "   📄 Log: $CORE_LOG"
+if [ "$SKIP_CORE" = true ]; then
+    echo "⏭️  Step 1: Core Recorder already running - skipping"
+    CORE_PID=$(ps aux | grep core_recorder | grep -v grep | awk '{print $2}' | head -1)
+    echo "   ✅ Core Recorder running (PID: $CORE_PID)"
+    echo ""
 else
-    echo "   ❌ Core Recorder failed to start"
-    echo "   Check log: tail -f $CORE_LOG"
-    exit 1
+    echo "▶️  Step 1: Starting Core Recorder..."
+    CORE_LOG="$DATA_ROOT/logs/core-recorder.log"
+
+    nohup python3 -m signal_recorder.core_recorder \
+      --config "$CONFIG" \
+      > "$CORE_LOG" 2>&1 &
+
+    CORE_PID=$!
+    sleep 3
+
+    # Verify core recorder started
+    if ps -p $CORE_PID > /dev/null 2>&1; then
+        echo "   ✅ Core Recorder started (PID: $CORE_PID)"
+        echo "   📄 Log: $CORE_LOG"
+    else
+        echo "   ❌ Core Recorder failed to start"
+        echo "   Check log: tail -f $CORE_LOG"
+        exit 1
+    fi
+    echo ""
 fi
-echo ""
 
 # ============================================================================
 # Step 2: Start Analytics Services (one per channel)
@@ -129,6 +151,8 @@ for freq_mhz in 2.5 5 10 15 20 25; do
       --frequency-hz "$freq_hz" \
       --state-file "$DATA_ROOT/state/analytics-wwv${freq_mhz}.json" \
       --poll-interval 10.0 \
+      --backfill-gaps \
+      --max-backfill 100 \
       --log-level INFO \
       --callsign "$CALLSIGN" \
       --grid-square "$GRID" \
@@ -159,6 +183,8 @@ for i in 0 1 2; do
       --frequency-hz "$freq_hz" \
       --state-file "$DATA_ROOT/state/analytics-chu${freq_mhz}.json" \
       --poll-interval 10.0 \
+      --backfill-gaps \
+      --max-backfill 100 \
       --log-level INFO \
       --callsign "$CALLSIGN" \
       --grid-square "$GRID" \
@@ -182,20 +208,18 @@ echo ""
 # ============================================================================
 # Step 3: Start Web-UI Monitoring Server
 # ============================================================================
-echo "▶️  Step 3: Starting Web-UI Monitoring Server..."
+echo "▶️  Step 3: Starting Web-UI Monitoring Server (v3)..."
 cd web-ui
 
-export GRAPE_CONFIG="../$CONFIG"
-
-nohup node monitoring-server.js > monitoring-server.log 2>&1 &
+nohup node monitoring-server-v3.js "$DATA_ROOT" > "$DATA_ROOT/logs/webui.log" 2>&1 &
 WEB_PID=$!
 sleep 3
 
 if ps -p $WEB_PID > /dev/null 2>&1; then
-    echo "   ✅ Web-UI started (PID: $WEB_PID)"
+    echo "   ✅ Web-UI v3 started (PID: $WEB_PID)"
 else
     echo "   ⚠️  Web-UI may have failed"
-    echo "   Check log: tail -f web-ui/monitoring-server.log"
+    echo "   Check log: tail -f $DATA_ROOT/logs/webui.log"
 fi
 
 cd ..
@@ -225,7 +249,7 @@ echo ""
 echo "📝 Logs:"
 echo "   Core recorder: tail -f $DATA_ROOT/logs/core-recorder.log"
 echo "   Analytics (WWV 5): tail -f $DATA_ROOT/logs/analytics-wwv5.log"
-echo "   Web-UI: tail -f web-ui/monitoring-server.log"
+echo "   Web-UI: tail -f $DATA_ROOT/logs/webui.log"
 echo "   All logs: tail -f $DATA_ROOT/logs/*.log"
 echo ""
 echo "🔍 Monitor Status:"
@@ -241,7 +265,7 @@ echo ""
 echo "🛑 Stop All Services:"
 echo "   pkill -f core_recorder"
 echo "   pkill -f analytics_service"
-echo "   pkill -f monitoring-server.js"
+echo "   pkill -f monitoring-server"
 echo ""
 echo "⏱️  Timeline:"
 echo "   • Core recorder: Receiving RTP packets now"

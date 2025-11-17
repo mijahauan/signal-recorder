@@ -780,11 +780,22 @@ class AnalyticsService:
             established_at=time.time()
         )
         
-        # Check if this is a significant update
+        # Check if this is a significant update (clock drift detection)
         if self.state.time_snap:
-            time_diff_ms = abs((new_time_snap.utc_timestamp - self.state.time_snap.utc_timestamp) * 1000)
-            if time_diff_ms > 5.0:  # More than 5ms difference
-                logger.warning(f"Time snap adjustment: {time_diff_ms:.1f}ms difference")
+            # Calculate expected RTP advancement based on UTC time difference
+            utc_elapsed = new_time_snap.utc_timestamp - self.state.time_snap.utc_timestamp
+            expected_rtp_delta = utc_elapsed * archive.sample_rate
+            
+            # Actual RTP advancement
+            actual_rtp_delta = new_time_snap.rtp_timestamp - self.state.time_snap.rtp_timestamp
+            
+            # Clock drift = difference between expected and actual RTP advancement
+            rtp_drift_samples = abs(actual_rtp_delta - expected_rtp_delta)
+            drift_ms = (rtp_drift_samples / archive.sample_rate) * 1000
+            
+            # Only warn if drift > 5ms (actual clock problem, not just new minute)
+            if drift_ms > 5.0:
+                logger.warning(f"RTP clock drift detected: {drift_ms:.1f}ms over {utc_elapsed:.0f}s")
         
         # Update state
         old_time_snap = self.state.time_snap
@@ -961,6 +972,11 @@ class AnalyticsService:
                 output_rate=10
             )
             
+            # Check if decimation succeeded
+            if decimated_iq is None:
+                logger.warning(f"Decimation skipped for {archive.file_path.name} (input too short or filter error)")
+                return 0
+            
             # Build filename matching source: YYYYMMDDTHHMMSSZ_freq_iq_10hz.npz
             source_name = archive.file_path.stem  # e.g., "20251116T120000Z_10000000_iq"
             decimated_name = source_name + "_10hz.npz"
@@ -1106,34 +1122,97 @@ class AnalyticsService:
                 
                 # Format data with all fields including 440 Hz detection
                 minute_number = dt.minute
+                
+                # Format optional float fields
+                wwv_power_str = f'{result.wwv_power_db:.2f}' if result.wwv_power_db is not None else ''
+                wwvh_power_str = f'{result.wwvh_power_db:.2f}' if result.wwvh_power_db is not None else ''
+                power_ratio_str = f'{result.power_ratio_db:.2f}' if result.power_ratio_db is not None else ''
+                diff_delay_str = f'{result.differential_delay_ms:.2f}' if result.differential_delay_ms is not None else ''
+                tone_440_wwv_power_str = f'{result.tone_440hz_wwv_power_db:.2f}' if result.tone_440hz_wwv_power_db is not None else ''
+                tone_440_wwvh_power_str = f'{result.tone_440hz_wwvh_power_db:.2f}' if result.tone_440hz_wwvh_power_db is not None else ''
+                
                 f.write(f'{dt.isoformat()},{result.minute_timestamp},{minute_number},'
                        f'{int(result.wwv_detected)},{int(result.wwvh_detected)},'
-                       f'{result.wwv_power_db:.2f if result.wwv_power_db is not None else ""},'
-                       f'{result.wwvh_power_db:.2f if result.wwvh_power_db is not None else ""},'
-                       f'{result.power_ratio_db:.2f if result.power_ratio_db is not None else ""},'
-                       f'{result.differential_delay_ms:.2f if result.differential_delay_ms is not None else ""},'
-                       f'{int(result.tone_440hz_wwv_detected)},'
-                       f'{result.tone_440hz_wwv_power_db:.2f if result.tone_440hz_wwv_power_db is not None else ""},'
-                       f'{int(result.tone_440hz_wwvh_detected)},'
-                       f'{result.tone_440hz_wwvh_power_db:.2f if result.tone_440hz_wwvh_power_db is not None else ""},'
+                       f'{wwv_power_str},{wwvh_power_str},{power_ratio_str},{diff_delay_str},'
+                       f'{int(result.tone_440hz_wwv_detected)},{tone_440_wwv_power_str},'
+                       f'{int(result.tone_440hz_wwvh_detected)},{tone_440_wwvh_power_str},'
                        f'{result.dominant_station if result.dominant_station else ""},'
                        f'{result.confidence}\n')
                        
         except Exception as e:
             logger.warning(f"Failed to log discrimination: {e}")
     
-    def run(self, poll_interval: float = 10.0):
+    def _backfill_gaps_on_startup(self, max_backfill: int):
+        """
+        Detect and backfill gaps in discrimination data on startup.
+        
+        Compares NPZ archive coverage vs discrimination CSV coverage,
+        reprocesses missing files.
+        
+        Args:
+            max_backfill: Maximum number of gaps to fill (prevents long startup delays)
+        """
+        print("📊 Gap backfill: Starting...")
+        try:
+            from .gap_backfill import find_gaps, format_gap_summary
+            print("📊 Gap backfill: Imports successful")
+            
+            # Find today's discrimination CSV
+            today = datetime.now(timezone.utc).strftime('%Y%m%d')
+            csv_file = self.output_dir / 'discrimination' / f'{self.channel_name.replace(" ", "_")}_discrimination_{today}.csv'
+            
+            # Detect gaps
+            gaps = find_gaps(self.archive_dir, csv_file)
+            
+            if not gaps:
+                logger.info("✅ No gaps detected - discrimination data complete")
+                return
+            
+            logger.info(f"⚠️  Detected {len(gaps)} gaps in discrimination data")
+            logger.info(format_gap_summary(gaps))
+            
+            # Backfill (limited to prevent blocking startup)
+            if len(gaps) > max_backfill:
+                logger.info(f"Backfilling first {max_backfill} gaps (remaining {len(gaps) - max_backfill} will process in background)")
+                gaps_to_fill = gaps[:max_backfill]
+            else:
+                gaps_to_fill = gaps
+            
+            successful = 0
+            for i, (gap_time, npz_file) in enumerate(gaps_to_fill):
+                try:
+                    logger.info(f"  Backfill [{i+1}/{len(gaps_to_fill)}]: {gap_time.strftime('%Y-%m-%d %H:%M')} UTC")
+                    archive = NPZArchive.load(npz_file)
+                    self.process_archive(archive)
+                    successful += 1
+                except Exception as e:
+                    logger.error(f"  Failed to backfill {npz_file.name}: {e}")
+            
+            logger.info(f"✅ Backfilled {successful}/{len(gaps_to_fill)} gaps")
+            
+        except Exception as e:
+            logger.error(f"Gap backfill failed: {e}", exc_info=True)
+    
+    def run(self, poll_interval: float = 10.0, backfill_gaps: bool = True, max_backfill: int = 100):
         """
         Main processing loop - polls for new files and processes them
         
         Args:
             poll_interval: Seconds between directory scans
+            backfill_gaps: If True, detect and backfill gaps on startup
+            max_backfill: Maximum gaps to backfill on startup (prevents long delays)
         """
         logger.info("Analytics service started")
         self.running = True
         
         # Write initial status
         self._write_status()
+        
+        # GAP BACKFILL: Check for missing discrimination data on startup
+        if backfill_gaps:
+            print(f"🔍 Checking for gaps in discrimination data (max_backfill={max_backfill})...")
+            logger.info(f"Starting gap backfill (max_backfill={max_backfill})")
+            self._backfill_gaps_on_startup(max_backfill)
         
         last_status_time = 0
         try:
@@ -1220,6 +1299,9 @@ def main():
     parser.add_argument('--frequency-hz', type=float, required=True, help='Center frequency in Hz')
     parser.add_argument('--state-file', help='State persistence file')
     parser.add_argument('--poll-interval', type=float, default=10.0, help='Poll interval (seconds)')
+    parser.add_argument('--backfill-gaps', action='store_true', default=True, help='Auto-detect and backfill gaps on startup (default: True)')
+    parser.add_argument('--no-backfill-gaps', action='store_false', dest='backfill_gaps', help='Disable gap backfill on startup')
+    parser.add_argument('--max-backfill', type=int, default=100, help='Maximum gaps to backfill on startup (default: 100)')
     parser.add_argument('--log-level', default='INFO', help='Log level')
     parser.add_argument('--callsign', help='Station callsign for Digital RF metadata')
     parser.add_argument('--grid-square', help='Grid square for Digital RF metadata')
@@ -1258,7 +1340,11 @@ def main():
         station_config=station_config if station_config else None
     )
     
-    service.run(poll_interval=args.poll_interval)
+    service.run(
+        poll_interval=args.poll_interval,
+        backfill_gaps=args.backfill_gaps,
+        max_backfill=args.max_backfill
+    )
 
 
 if __name__ == '__main__':
