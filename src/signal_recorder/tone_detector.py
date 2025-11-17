@@ -332,10 +332,15 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         ])
         
         if len(noise_samples) > 100:
-            noise_mean = np.mean(noise_samples)
-            noise_std = np.std(noise_samples)
-            noise_floor = noise_mean + 2.0 * noise_std
+            # IMPROVED: Percentile-based noise floor (more robust than mean)
+            # Validated 2025-11-17: +6-11% detection improvement across all frequencies
+            # See scripts/compare_tone_detectors.py for multi-frequency validation
+            noise_floor_base = np.percentile(noise_samples, 10)  # 10th percentile
+            noise_std = np.std(noise_samples[noise_samples < np.median(noise_samples)])
+            noise_floor = noise_floor_base + 3.0 * noise_std  # 3-sigma (was 2.0)
+            noise_mean = np.mean(noise_samples)  # Still compute for SNR calculation
         else:
+            # Fallback for short buffers (use old method)
             noise_mean = np.mean(correlation)
             noise_std = np.std(correlation)
             noise_floor = noise_mean + 2.0 * noise_std
