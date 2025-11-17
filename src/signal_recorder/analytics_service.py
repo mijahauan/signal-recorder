@@ -727,8 +727,10 @@ class AnalyticsService:
             
             # Log if both detected (detailed logging in discriminator)
             if discrimination.wwv_detected and discrimination.wwvh_detected:
-                logger.info(f"Discrimination: Power ratio={discrimination.power_ratio_db:+.1f}dB, "
-                           f"Delay={discrimination.differential_delay_ms:+.1f}ms, "
+                power_str = f"{discrimination.power_ratio_db:+.1f}dB" if discrimination.power_ratio_db is not None else "N/A"
+                delay_str = f"{discrimination.differential_delay_ms:+.1f}ms" if discrimination.differential_delay_ms is not None else "N/A"
+                logger.info(f"Discrimination: Power ratio={power_str}, "
+                           f"Delay={delay_str}, "
                            f"Dominant={discrimination.dominant_station}")
         
         return detections or []
