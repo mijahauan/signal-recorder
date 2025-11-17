@@ -130,18 +130,38 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
                         sample_rate: float, output_path: Path,
                         channel_name: str, date_str: str):
     """
-    Generate carrier spectrogram PNG from 10 Hz IQ samples
+    Generate carrier spectrogram PNG from carrier IQ samples
     
     Args:
         timestamps: Unix timestamps for each sample
-        iq_samples: Complex IQ samples at 10 Hz
-        sample_rate: Sample rate (10 Hz)
+        iq_samples: Complex IQ samples (200 Hz from radiod)
+        sample_rate: Sample rate (200 Hz)
         output_path: Path to save PNG
         channel_name: Channel name for title
         date_str: Date string (YYYY-MM-DD)
     """
     try:
-        logger.info(f"Generating spectrogram for {len(iq_samples):,} samples...")
+        logger.info(f"Generating spectrogram for {len(iq_samples):,} samples @ {sample_rate} Hz...")
+        
+        # Filter and decimate to 10 Hz for Doppler analysis
+        # Carrier Doppler shifts are < 10 Hz, so focus on that bandwidth
+        if sample_rate > 10:
+            logger.info(f"Applying 10 Hz low-pass filter and decimating {sample_rate} Hz → 10 Hz...")
+            
+            # Design 10 Hz low-pass filter (cutoff at 5 Hz, Nyquist for 10 Hz output)
+            # Use 8th order Butterworth for sharp rolloff
+            sos = scipy_signal.butter(8, 5.0, btype='low', fs=sample_rate, output='sos')
+            
+            # Apply zero-phase filter (forward-backward to avoid phase distortion)
+            iq_filtered = scipy_signal.sosfiltfilt(sos, iq_samples)
+            
+            # Decimate to 10 Hz
+            decimation_factor = int(sample_rate / 10)
+            iq_samples = iq_filtered[::decimation_factor]
+            timestamps = timestamps[::decimation_factor]
+            sample_rate = 10.0
+            
+            logger.info(f"After decimation: {len(iq_samples):,} samples @ {sample_rate} Hz")
         
         # Spectrogram parameters for 10 Hz carrier data
         nperseg = min(512, len(iq_samples))  # 51.2 second windows
