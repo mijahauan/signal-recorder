@@ -45,6 +45,134 @@ from .interfaces.data_models import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class RTPOffsetTracker:
+    """
+    Track RTP timestamp offset between paired channels (wide + carrier)
+    
+    Channels tuned to same frequency but different bandwidths share the same
+    hardware timing. Their RTP timestamps differ by a constant offset, allowing
+    time_snap from wide channel to be applied to carrier channel.
+    """
+    wide_channel_name: str
+    carrier_channel_name: str
+    frequency_hz: float
+    
+    # RTP offset: rtp_carrier = rtp_wide + offset
+    measured_offset: Optional[int] = None
+    offset_measurements: List[Tuple[float, int]] = field(default_factory=list)  # (timestamp, offset)
+    max_history: int = 100
+    
+    # Statistics
+    offset_mean: Optional[float] = None
+    offset_std: Optional[float] = None
+    last_update: Optional[float] = None
+    
+    def add_measurement(self, wide_rtp: int, carrier_rtp: int, wall_time: float):
+        """Add a new RTP offset measurement from simultaneous packets"""
+        offset = carrier_rtp - wide_rtp
+        
+        self.offset_measurements.append((wall_time, offset))
+        if len(self.offset_measurements) > self.max_history:
+            self.offset_measurements.pop(0)
+        
+        # Update statistics
+        offsets = [o for _, o in self.offset_measurements]
+        self.offset_mean = np.mean(offsets)
+        self.offset_std = np.std(offsets)
+        self.measured_offset = int(self.offset_mean)
+        self.last_update = wall_time
+        
+        # Compare RTP stability to NTP
+        if len(self.offset_measurements) >= 10:
+            # Get NTP offset for comparison
+            ntp_offset = self._get_ntp_offset()
+            
+            # Log comparison
+            logger.info(f"RTP offset stability: std={self.offset_std:.3f} samples "
+                       f"(~{self.offset_std/16000*1000:.3f} ms @ 16kHz)")
+            if ntp_offset is not None:
+                logger.info(f"NTP offset: {ntp_offset*1000:.3f} ms (for comparison)")
+            
+            # Warn if offset varies significantly
+            if self.offset_std > 100:  # More than 100 sample variation
+                logger.warning(f"⚠️  RTP offset unstable: mean={self.offset_mean:.0f}, "
+                             f"std={self.offset_std:.1f} samples (expected <10)")
+            elif self.offset_std < 1:
+                logger.info(f"✅ RTP offset extremely stable: std={self.offset_std:.3f} samples "
+                           f"(better than NTP!)")
+    
+    def _get_ntp_offset(self) -> Optional[float]:
+        """Get NTP offset in seconds (for comparison with RTP stability)"""
+        try:
+            # Try chronyc first
+            result = subprocess.run(['chronyc', 'tracking'], 
+                                   capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'System time' in line:
+                        # Parse: "System time     : 0.000012345 seconds slow of NTP time"
+                        parts = line.split(':')
+                        if len(parts) >= 2:
+                            offset_str = parts[1].strip().split()[0]
+                            return abs(float(offset_str))
+        except:
+            pass
+        
+        try:
+            # Try ntpq as fallback
+            result = subprocess.run(['ntpq', '-c', 'rv'], 
+                                   capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                for item in result.stdout.split(','):
+                    if 'offset=' in item:
+                        offset_ms = float(item.split('=')[1].strip())
+                        return abs(offset_ms / 1000.0)  # Convert ms to seconds
+        except:
+            pass
+        
+        return None
+    
+    def translate_time_snap(self, wide_time_snap: TimeSnapReference, carrier_rtp: int, 
+                           wide_sample_rate: int) -> Optional[float]:
+        """
+        Translate carrier RTP timestamp to UTC using wide channel's time_snap
+        
+        Args:
+            wide_time_snap: Time snap from wide channel
+            carrier_rtp: Carrier channel RTP timestamp to translate
+            wide_sample_rate: Wide channel sample rate (for UTC calculation)
+            
+        Returns:
+            UTC timestamp for carrier RTP, or None if offset not established
+        """
+        if self.measured_offset is None:
+            return None
+        
+        # Translate carrier RTP to equivalent wide RTP
+        equivalent_wide_rtp = carrier_rtp - self.measured_offset
+        
+        # Apply wide channel's time_snap
+        samples_from_snap = equivalent_wide_rtp - wide_time_snap.rtp_timestamp
+        utc = wide_time_snap.utc_timestamp + (samples_from_snap / wide_sample_rate)
+        
+        return utc
+    
+    def get_status(self) -> Dict:
+        """Get current offset tracking status"""
+        return {
+            'wide_channel': self.wide_channel_name,
+            'carrier_channel': self.carrier_channel_name,
+            'frequency_mhz': self.frequency_hz / 1e6,
+            'offset_established': self.measured_offset is not None,
+            'measured_offset': self.measured_offset,
+            'offset_mean': self.offset_mean,
+            'offset_std': self.offset_std,
+            'measurements': len(self.offset_measurements),
+            'last_update': self.last_update
+        }
+
+
 class TimingQuality(Enum):
     """
     Quality levels for timestamp accuracy in Digital RF data
