@@ -118,8 +118,63 @@ function getStationInfo() {
 }
 
 /**
+ * Get radiod status from dedicated health monitor
+ */
+async function getRadiodStatus(paths) {
+  try {
+    const radiodStatusFile = join(paths.getStateDir(), 'radiod-status.json');
+    
+    if (!fs.existsSync(radiodStatusFile)) {
+      // Fallback: try to detect radiod process directly
+      try {
+        const { execSync } = require('child_process');
+        const result = execSync('pgrep -x radiod', { encoding: 'utf8' }).trim();
+        const running = result.length > 0;
+        return {
+          running,
+          method: 'pgrep_fallback',
+          uptime_seconds: 0,
+          health: running ? 'unknown' : 'critical'
+        };
+      } catch (e) {
+        return {
+          running: false,
+          method: 'pgrep_fallback_failed',
+          health: 'critical'
+        };
+      }
+    }
+    
+    const content = fs.readFileSync(radiodStatusFile, 'utf8');
+    const status = JSON.parse(content);
+    
+    // Check status age
+    const statusTimestamp = new Date(status.timestamp).getTime() / 1000;
+    const age = Date.now() / 1000 - statusTimestamp;
+    
+    return {
+      running: status.process?.running || false,
+      connected: status.connectivity || false,
+      uptime_seconds: status.uptime_seconds || 0,
+      health: status.health || 'unknown',
+      alerts: status.alerts || [],
+      status_age_seconds: Math.round(age),
+      method: 'health_monitor'
+    };
+    
+  } catch (err) {
+    console.error('Error getting radiod status:', err);
+    return {
+      running: false,
+      error: err.message,
+      method: 'error',
+      health: 'critical'
+    };
+  }
+}
+
+/**
  * Get core recorder status
- * Also indicates radiod status (if packets flowing, radiod is running)
  */
 async function getCoreRecorderStatus(paths) {
   try {
@@ -128,8 +183,7 @@ async function getCoreRecorderStatus(paths) {
     if (!fs.existsSync(statusFile)) {
       return { 
         running: false, 
-        error: 'Status file not found',
-        radiod_running: false
+        error: 'Status file not found'
       };
     }
     
@@ -141,21 +195,33 @@ async function getCoreRecorderStatus(paths) {
     const age = Date.now() / 1000 - statusTimestamp;
     const running = age < 30;
     
-    // Count active channels and total packets
-    // Note: Core recorder v2 uses status.channels with hex SSRC keys
-    const channels = status.channels || {};
-    const channelsActive = Object.keys(channels).length;
-    const totalPackets = Object.values(channels).reduce((sum, ch) => sum + (ch.packets_received || 0), 0);
+    // Get channel info - handle both old and new status formats
+    let channelsActive = 0;
+    let channelsTotal = 0;
+    let totalPackets = 0;
+    let uptime = 0;
     
-    // radiod status inferred from packet flow
-    const radiodRunning = running && totalPackets > 0;
+    if (status.recorders && typeof status.recorders === 'object') {
+      // New format: status.recorders = {frequency: {...}}
+      const recorders = Object.values(status.recorders);
+      channelsActive = recorders.filter(r => r.packets_received > 0).length;
+      channelsTotal = status.channels || recorders.length;
+      totalPackets = recorders.reduce((sum, r) => sum + (r.packets_received || 0), 0);
+      uptime = status.recording_duration_sec || 0;
+    } else if (status.channels && typeof status.channels === 'object') {
+      // Old format: status.channels = {ssrc: {...}}
+      const channels = Object.values(status.channels);
+      channelsActive = channels.length;
+      channelsTotal = channels.length;
+      totalPackets = channels.reduce((sum, ch) => sum + (ch.packets_received || 0), 0);
+      uptime = status.uptime_seconds || 0;
+    }
     
     return {
       running,
-      radiod_running: radiodRunning,
-      uptime_seconds: status.uptime_seconds || 0,
+      uptime_seconds: uptime,
       channels_active: channelsActive,
-      channels_total: 9,
+      channels_total: channelsTotal,
       packets_received: totalPackets,
       last_update: status.timestamp,
       age_seconds: age
@@ -207,8 +273,10 @@ async function getAnalyticsServiceStatus(paths) {
               newestTimestamp = statusTimestamp;
             }
             
-            if (status.uptime && status.uptime < oldestUptime) {
-              oldestUptime = status.uptime;
+            // Get uptime from status file
+            const uptime = status.uptime_seconds || status.uptime || 0;
+            if (uptime > 0 && uptime < oldestUptime) {
+              oldestUptime = uptime;
             }
           }
         } catch (err) {
@@ -240,16 +308,12 @@ async function getAnalyticsServiceStatus(paths) {
  * Get process statuses
  */
 async function getProcessStatuses(paths) {
+  const radiodStatus = await getRadiodStatus(paths);
   const coreStatus = await getCoreRecorderStatus(paths);
   const analyticsStatus = await getAnalyticsServiceStatus(paths);
   
   return {
-    radiod: {
-      running: coreStatus.radiod_running,
-      connected: coreStatus.radiod_running, // Alias for compatibility
-      uptime_seconds: coreStatus.running ? coreStatus.uptime_seconds : 0,
-      method: 'inferred_from_core_recorder'
-    },
+    radiod: radiodStatus,
     core_recorder: {
       running: coreStatus.running,
       uptime_seconds: coreStatus.uptime_seconds,
