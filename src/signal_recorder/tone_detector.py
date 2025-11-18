@@ -346,8 +346,9 @@ class MultiStationToneDetector(IMultiStationToneDetector):
             noise_floor = noise_mean + 2.0 * noise_std
         
         # Calculate timing relative to minute boundary
+        # CRITICAL: onset_sample_idx is relative to buffer START, not middle
         onset_sample_idx = peak_idx
-        onset_time = current_unix_time + (onset_sample_idx / self.sample_rate)
+        onset_time = buffer_start_time + (onset_sample_idx / self.sample_rate)
         timing_error_sec = onset_time - minute_boundary
         
         # Handle wraparound
