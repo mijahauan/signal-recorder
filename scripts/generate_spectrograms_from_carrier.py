@@ -69,10 +69,10 @@ def find_carrier_npz_files(carrier_archive_dir: Path, date_str: str) -> List[Pat
 
 def read_10hz_day(npz_files: List[Path]) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
     """
-    Read and concatenate 10 Hz NPZ files for a full day
+    Read and decimate 200 Hz carrier NPZ files to 10 Hz for full day
     
     Args:
-        npz_files: List of 10 Hz NPZ file paths (sorted)
+        npz_files: List of 200 Hz carrier NPZ file paths (sorted)
         
     Returns:
         (timestamps, iq_samples, sample_rate) or None
@@ -82,14 +82,19 @@ def read_10hz_day(npz_files: List[Path]) -> Optional[Tuple[np.ndarray, np.ndarra
     
     all_timestamps = []
     all_samples = []
-    sample_rate = 10.0  # 10 Hz decimated data
+    input_sample_rate = 200.0  # Carrier channels are 200 Hz
+    output_sample_rate = 10.0  # Decimate to 10 Hz
+    decimation_factor = int(input_sample_rate / output_sample_rate)  # 20
     
-    logger.info(f"Reading {len(npz_files)} 10Hz NPZ files...")
+    logger.info(f"Reading {len(npz_files)} carrier NPZ files (200 Hz → 10 Hz decimation)...")
     
     for i, npz_file in enumerate(npz_files):
         try:
             data = np.load(npz_file)
-            iq = data['iq']  # 10 Hz decimated IQ data
+            iq_200hz = data['iq']  # 200 Hz carrier IQ data
+            
+            # Decimate 200 Hz → 10 Hz (factor of 20)
+            iq = scipy_signal.decimate(iq_200hz, decimation_factor, ftype='fir', zero_phase=True)
             
             # Parse timestamp from filename: YYYYMMDDTHHMMSSZ_freq_iq_10hz.npz
             filename = npz_file.name
@@ -98,9 +103,9 @@ def read_10hz_day(npz_files: List[Path]) -> Optional[Tuple[np.ndarray, np.ndarra
             dt = dt.replace(tzinfo=timezone.utc)
             file_unix_ts = dt.timestamp()
             
-            # Generate timestamps for this file
+            # Generate timestamps for decimated 10 Hz data
             num_samples = len(iq)
-            file_timestamps = file_unix_ts + np.arange(num_samples) / sample_rate
+            file_timestamps = file_unix_ts + np.arange(num_samples) / output_sample_rate
             
             all_timestamps.append(file_timestamps)
             all_samples.append(iq)
@@ -120,10 +125,10 @@ def read_10hz_day(npz_files: List[Path]) -> Optional[Tuple[np.ndarray, np.ndarra
     timestamps = np.concatenate(all_timestamps)
     iq_samples = np.concatenate(all_samples)
     
-    hours_of_data = iq_samples.size / sample_rate / 3600.0
-    logger.info(f"✅ Loaded {iq_samples.size:,} samples @ {sample_rate} Hz ({hours_of_data:.1f} hours)")
+    hours_of_data = iq_samples.size / output_sample_rate / 3600.0
+    logger.info(f"✅ Loaded {iq_samples.size:,} samples @ {output_sample_rate} Hz ({hours_of_data:.1f} hours)")
     
-    return timestamps, iq_samples, sample_rate
+    return timestamps, iq_samples, output_sample_rate
 
 
 def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
@@ -303,6 +308,11 @@ def main():
     total_count = 0
     
     for channel_name in channels:
+        # Only process carrier channels - skip wide channels
+        if 'carrier' not in channel_name:
+            logger.info(f"Skipping {channel_name} (wide channel, not native carrier)")
+            continue
+            
         total_count += 1
         logger.info(f"\n{'='*60}")
         logger.info(f"Channel: {channel_name}")
@@ -310,9 +320,33 @@ def main():
         
         try:
             # Get carrier archive directory
-            # Path: {data_root}/archives/{channel_dir}_carrier/
-            channel_dir = channel_name.replace(' ', '_')
-            carrier_archive_dir = Path(args.data_root) / 'archives' / f"{channel_dir}_carrier"
+            # Carrier channels stored in: data/YYYYMMDD/STATION/DOY/WWV_5_MHz_carrier/
+            date_obj = datetime.strptime(args.date, '%Y%m%d')
+            year_dir = date_obj.strftime('%Y%m%d')
+            
+            # Find the carrier directory
+            date_path = Path(args.data_root) / 'data' / year_dir
+            carrier_archive_dir = None
+            
+            if date_path.exists():
+                # Navigate: data/YYYYMMDD/STATION/DOY/CHANNEL/
+                for station_dir in date_path.iterdir():
+                    if not station_dir.is_dir():
+                        continue
+                    for doy_dir in station_dir.iterdir():
+                        if not doy_dir.is_dir():
+                            continue
+                        channel_dir = channel_name.replace(' ', '_')
+                        potential_path = doy_dir / channel_dir
+                        if potential_path.exists():
+                            carrier_archive_dir = potential_path
+                            break
+                    if carrier_archive_dir:
+                        break
+            
+            if not carrier_archive_dir:
+                logger.warning(f"Carrier archive directory not found for {channel_name}")
+                continue
             
             # Find carrier NPZ files
             npz_files = find_carrier_npz_files(carrier_archive_dir, args.date)
@@ -329,13 +363,13 @@ def main():
             
             timestamps, iq_samples, sample_rate = result
             
-            # Create output directory
-            output_dir = Path(args.data_root) / 'spectrograms' / args.date
+            # Create output directory for native-carrier spectrograms
+            output_dir = Path(args.data_root) / 'spectrograms' / args.date / 'native-carrier'
             output_dir.mkdir(parents=True, exist_ok=True)
             
-            # Generate spectrogram
+            # Generate spectrogram with clear naming
             safe_channel_name = channel_name.replace(' ', '_')
-            output_path = output_dir / f'{safe_channel_name}_{args.date}_carrier_spectrogram.png'
+            output_path = output_dir / f'{safe_channel_name}_10Hz_from_200Hz.png'
             
             generate_spectrogram(
                 timestamps, iq_samples, sample_rate,

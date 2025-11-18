@@ -56,7 +56,8 @@ class GRAPEChannelRecorderV2:
     
     def __init__(self, ssrc: int, channel_name: str, frequency_hz: float,
                  archive_dir: Path, analytics_dir: Path, station_config: dict,
-                 is_wwv_channel: bool = False, path_resolver=None, upload_dir: Path = None):
+                 is_wwv_channel: bool = False, path_resolver=None, upload_dir: Path = None,
+                 sample_rate: int = 16000):
         """
         Initialize channel recorder
         
@@ -70,18 +71,23 @@ class GRAPEChannelRecorderV2:
             is_wwv_channel: True if WWV (enables tone detection)
             path_resolver: Optional PathResolver
             upload_dir: Optional directory for Digital RF upload (None = disabled)
+            sample_rate: IQ sample rate in Hz (16000 for wide, 200 for carrier)
         """
         self.ssrc = ssrc
         self.channel_name = channel_name
         self.frequency_hz = frequency_hz
         self.station_config = station_config
-        self.is_wwv_channel = is_wwv_channel
         self.path_resolver = path_resolver
         
-        # Sample rate: From radiod config (typically 16 kHz IQ)
+        # Tone detection for WWV/CHU channels (30-second buffer architecture)
+        # Buffer spans :45-:15 (30 seconds), checked at :02.5 to ensure full tone received
+        # NOTE: Only enable for wide-band channels (>= 8 kHz) that can contain 1 kHz tone
+        self.is_wwv_channel = is_wwv_channel and sample_rate >= 8000
+        
+        # Sample rate: From radiod config (16 kHz for wide channels, 200 Hz for carrier)
         # NOTE: Config sample_rate is the actual IQ sample rate, not real samples
-        self.sample_rate = 16000  # TODO: Get from channel config
-        self.samples_per_minute = 16000 * 60  # 960,000
+        self.sample_rate = sample_rate
+        self.samples_per_minute = sample_rate * 60
         
         # File writer for 1-minute archives
         self.file_writer = MinuteFileWriter(
@@ -125,7 +131,7 @@ class GRAPEChannelRecorderV2:
         self.last_sequence = None
         self.last_rtp_timestamp = None
         self.expected_rtp_timestamp = None
-        self.rtp_sample_rate = 16000  # RTP timestamp rate (real samples)
+        self.rtp_sample_rate = self.sample_rate  # RTP timestamp rate matches IQ sample rate
         
         # Resequencing queue (KA9Q-style)
         # Circular buffer for handling out-of-order and missing packets
@@ -152,7 +158,7 @@ class GRAPEChannelRecorderV2:
         # WWV: 0.8s duration, CHU: 0.5s duration
         self.tone_detector = None
         self.wwvh_discriminator = None
-        if is_wwv_channel:
+        if self.is_wwv_channel:
             from .grape_rtp_recorder import MultiStationToneDetector, Resampler
             # Instantiate multi-station detector (3 kHz sample rate after resampling)
             self.tone_detector = MultiStationToneDetector(channel_name=channel_name, sample_rate=3000)
@@ -175,6 +181,10 @@ class GRAPEChannelRecorderV2:
         self.total_packets = 0
         self.packets_dropped = 0
         self.start_time = time.time()
+        
+        # Alias for status reporting compatibility
+        self.packets_received = 0  # Will be updated along with total_packets
+        self.samples_received = 0  # Will be updated along with total_samples
         
         # WWV tracking
         self.last_wwv_detection = None
@@ -254,6 +264,7 @@ class GRAPEChannelRecorderV2:
         arrival_time = time.time()
         self.packet_arrival_times.append(arrival_time)
         self.total_packets += 1
+        self.packets_received = self.total_packets  # Update alias for status reporting
         
         # Parse samples from payload
         # IQ channels: Complex I/Q pairs (4 bytes each: Q,I as int16 big-endian)
@@ -402,6 +413,7 @@ class GRAPEChannelRecorderV2:
                 
                 # Update totals
                 self.total_samples += gap_samples
+                self.samples_received = self.total_samples  # Update alias for status reporting
                 self.current_minute_samples += gap_samples
                 self.expected_rtp_timestamp = entry.timestamp
             
@@ -435,6 +447,7 @@ class GRAPEChannelRecorderV2:
             
             # Update totals and state
             self.total_samples += len(entry.samples)
+            self.samples_received = self.total_samples  # Update alias for status reporting
             self.last_sequence = entry.sequence
             self.last_rtp_timestamp = entry.timestamp
             
@@ -647,11 +660,14 @@ class GRAPEChannelRecorderV2:
                                 self.discrimination_results = {}
                             self.discrimination_results[minute_key] = discrimination
                             
+                            # Log discrimination result (handle None values safely)
+                            power_str = f"{discrimination.power_ratio_db:+.1f}dB" if discrimination.power_ratio_db is not None else "N/A"
+                            delay_str = f"{discrimination.differential_delay_ms:+.1f}ms" if discrimination.differential_delay_ms is not None else "N/A"
                             logger.info(f"{self.channel_name}: Discrimination result - "
-                                       f"Power ratio: {discrimination.power_ratio_db:+.1f}dB, "
-                                       f"Delay: {discrimination.differential_delay_ms:+.1f}ms, "
-                                       f"Dominant: {discrimination.dominant_station}, "
-                                       f"Confidence: {discrimination.confidence}")
+                                       f"Power ratio: {power_str}, "
+                                       f"Delay: {delay_str}, "
+                                       f"Dominant: {discrimination.dominant_station or 'N/A'}, "
+                                       f"Confidence: {discrimination.confidence or 'N/A'}")
                             
                             # For 440 Hz analysis, we need full minute samples
                             # This will be done when the minute file is finalized

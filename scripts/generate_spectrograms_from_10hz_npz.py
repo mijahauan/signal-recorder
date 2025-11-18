@@ -282,6 +282,11 @@ def main():
     total_count = 0
     
     for channel_name in channels:
+        # Skip carrier channels - they use native 200 Hz, not decimated from 16 kHz
+        if 'carrier' in channel_name:
+            logger.info(f"Skipping {channel_name} (native carrier, not decimated)")
+            continue
+            
         total_count += 1
         logger.info(f"\n{'='*60}")
         logger.info(f"Channel: {channel_name}")
@@ -308,13 +313,13 @@ def main():
             
             timestamps, iq_samples, sample_rate = result
             
-            # Create output directory
-            output_dir = Path(args.data_root) / 'spectrograms' / args.date
+            # Create output directory for wide-decimated spectrograms
+            output_dir = Path(args.data_root) / 'spectrograms' / args.date / 'wide-decimated'
             output_dir.mkdir(parents=True, exist_ok=True)
             
-            # Generate spectrogram
+            # Generate spectrogram with clear naming
             safe_channel_name = channel_name.replace(' ', '_')
-            output_path = output_dir / f'{safe_channel_name}_{args.date}_carrier_spectrogram.png'
+            output_path = output_dir / f'{safe_channel_name}_10Hz_from_16kHz.png'
             
             generate_spectrogram(
                 timestamps, iq_samples, sample_rate,

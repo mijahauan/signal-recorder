@@ -145,6 +145,20 @@
       gap: 20px;
     }
     
+    .frequency-group {
+      display: contents;
+    }
+    
+    .frequency-group-label {
+      grid-column: 1 / -1;
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+      margin: 20px 0 10px 0;
+      padding-bottom: 5px;
+      border-bottom: 2px solid #3498db;
+    }
+    
     .channel-card {
       background: white;
       border-radius: 8px;
@@ -232,6 +246,8 @@
       <a href="/summary.html">Summary</a>
       <a href="/carrier.html" style="font-weight: 700;">Carrier</a>
       <a href="/discrimination.html">Discrimination</a>
+      <a href="/timing-dashboard.html">Timing Dashboard</a>
+      <a href="/analysis.html">Analysis</a>
     </div>
     <h1>🎯 Carrier Analysis - Data Quality Dashboard</h1>
     <div>Last updated: <span id="last-update">--</span></div>
@@ -384,16 +400,43 @@
     function renderChannels(channels) {
       let html = '';
       
+      // Group channels by base frequency for comparison
+      const groups = {};
       channels.forEach(ch => {
+        const baseName = ch.name.replace(/ carrier$/, '');
+        if (!groups[baseName]) {
+          groups[baseName] = { wide: null, carrier: null };
+        }
+        if (ch.channel_type === 'carrier') {
+          groups[baseName].carrier = ch;
+        } else {
+          groups[baseName].wide = ch;
+        }
+      });
+      
+      // Render grouped by frequency (WWV first, then CHU)
+      const wwvGroups = Object.keys(groups).filter(k => k.startsWith('WWV')).sort();
+      const chuGroups = Object.keys(groups).filter(k => k.startsWith('CHU')).sort();
+      const allGroups = [...wwvGroups, ...chuGroups];
+      
+      allGroups.forEach(baseName => {
+        const group = groups[baseName];
+        
+        // Add frequency group label
+        html += `<div class="frequency-group-label">📻 ${baseName} — 10 Hz Carrier Comparison</div>`;
+        
+        // Render wide channel first, then carrier
+        [group.wide, group.carrier].forEach(ch => {
+          if (!ch) return;
         const hasWarning = ch.alerts.some(a => a.severity === 'warning');
         const hasCritical = ch.alerts.some(a => a.severity === 'critical');
         const cardClass = hasCritical ? 'has-critical' : (hasWarning ? 'has-warning' : '');
         
         let timingClass = 'timing-wall';
         let timingLabel = ch.timing_quality;
-        if (ch.timing_quality === 'TONE_LOCKED') {
+        if (ch.timing_quality === 'GPS_LOCKED' || ch.timing_quality === 'TONE_LOCKED') {
           timingClass = 'timing-tone';
-          timingLabel = 'TONE';
+          timingLabel = 'GPS';
         } else if (ch.timing_quality === 'NTP_SYNCED') {
           timingClass = 'timing-ntp';
           timingLabel = 'NTP';
@@ -414,9 +457,15 @@
         
         const completenessClass = ch.completeness_pct >= 95 ? 'status-good' : (ch.completeness_pct >= 90 ? 'status-warning' : 'status-critical');
         
+        const channelTypeIcon = ch.channel_type === 'carrier' ? '📡' : '📶';
+        const channelTypeLabel = ch.channel_type === 'carrier' ? 'Native Carrier' : 'Wide (Decimated)';
+        
         html += `
           <div class="channel-card ${cardClass}">
-            <div class="channel-header">${ch.name}</div>
+            <div class="channel-header">${channelTypeIcon} ${ch.name}</div>
+            <div style="font-size: 11px; color: #7f8c8d; margin: -5px 0 5px 0;">
+              <strong>${ch.source_type || channelTypeLabel}</strong> • ${ch.sample_rate || 'N/A'}
+            </div>
             <img src="${ch.spectrogram_url}" alt="${ch.name} spectrogram" class="spectrogram" 
                  onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22200%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22400%22 height=%22200%22/%3E%3Ctext x=%22200%22 y=%22100%22 text-anchor=%22middle%22 fill=%22%23999%22%3ESpectrogram not available%3C/text%3E%3C/svg%3E'">
             <div class="metrics">
@@ -452,7 +501,8 @@
             ` : ''}
           </div>
         `;
-      });
+        });  // End inner forEach (wide/carrier)
+      });  // End outer forEach (frequency groups)
       
       document.getElementById('channel-grid').innerHTML = html;
     }

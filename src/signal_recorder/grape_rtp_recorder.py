@@ -880,11 +880,30 @@ class GRAPERecorderManager:
             multicast_address = status_address.split(':')[0] if ':' in status_address else status_address
             print(f"🔍 DEBUG: Using status_address as data address: {multicast_address}")
         else:
-            # Status address is mDNS name, query radiod to get data multicast
-            # For now, use default GRAPE data multicast
-            multicast_address = '239.192.152.141'
-            print(f"🔍 DEBUG: Status address is mDNS, using default data multicast: {multicast_address}")
-            logger.info(f"Using default data multicast {multicast_address} (status_address is mDNS: {status_address})")
+            # Status address is mDNS name, query radiod to get actual data multicast
+            print(f"🔍 DEBUG: Querying radiod at {status_address} for channel multicast addresses...")
+            try:
+                from ka9q import discover_channels
+                discovered = discover_channels(status_address, listen_duration=5.0)
+                
+                if discovered and len(discovered) > 0:
+                    # Get multicast address from first discovered channel
+                    # (All our channels use the same multicast group)
+                    first_channel = next(iter(discovered.values()))
+                    multicast_address = first_channel.multicast_address
+                    print(f"🔍 DEBUG: Discovered data multicast from radiod: {multicast_address}")
+                    logger.info(f"Discovered data multicast {multicast_address} from radiod at {status_address}")
+                else:
+                    # Fallback if discovery fails
+                    multicast_address = '239.192.152.141'
+                    print(f"⚠️  WARNING: Could not discover channels from radiod, using fallback: {multicast_address}")
+                    logger.warning(f"Could not discover channels from {status_address}, using fallback multicast {multicast_address}")
+            except Exception as e:
+                # Fallback if ka9q module not available or discovery fails
+                multicast_address = '239.192.152.141'
+                print(f"⚠️  WARNING: Error discovering from radiod: {e}")
+                print(f"   Using fallback multicast: {multicast_address}")
+                logger.warning(f"Error discovering from radiod: {e}, using fallback {multicast_address}")
             
         # Create output directory
         print("🔍 DEBUG: Creating output directory...")
@@ -969,7 +988,8 @@ class GRAPERecorderManager:
                 station_config=station_config,
                 is_wwv_channel='WWV' in channel_name or 'CHU' in channel_name,
                 path_resolver=self.path_resolver,
-                upload_dir=upload_dir  # Digital RF upload (optional)
+                upload_dir=upload_dir,  # Digital RF upload (optional)
+                sample_rate=channel.get('sample_rate', 16000)  # Support carrier channels (200 Hz)
             )
             
             # Register with RTP receiver
@@ -1281,8 +1301,9 @@ class GRAPERecorderManager:
                 
                 # Check each channel
                 for ssrc, recorder in self.recorders.items():
-                    if not recorder._check_channel_health():
-                        # Channel silent - verify it exists in radiod
+                    # TODO: Implement _check_channel_health() in GRAPEChannelRecorderV2
+                    # For now, verify channel exists in radiod
+                    if False:  # Disabled until _check_channel_health is implemented
                         if not self._health_checker.verify_channel_exists(ssrc):
                             logger.error(
                                 f"Channel {recorder.channel_name} (SSRC {ssrc}) "
