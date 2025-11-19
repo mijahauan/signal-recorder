@@ -1410,6 +1410,38 @@ app.get('/spectrograms/:date/:filename', (req, res) => {
 });
 
 /**
+ * GET /quality-analysis/{filename}
+ * Serve quality analysis JSON reports
+ */
+app.get('/quality-analysis/:filename', (req, res) => {
+  try {
+    const { filename } = req.params;
+    
+    // Only allow JSON files to prevent directory traversal
+    if (!filename.endsWith('.json')) {
+      return res.status(400).json({ error: 'Only JSON files are allowed' });
+    }
+    
+    const qualityAnalysisPath = join(dataRoot, 'quality-analysis', filename);
+    
+    if (!fs.existsSync(qualityAnalysisPath)) {
+      return res.status(404).json({ error: 'Quality analysis report not found' });
+    }
+    
+    // Set headers to prevent caching (always serve fresh data)
+    res.set({
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
+    
+    res.sendFile(qualityAnalysisPath);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/analysis/correlations
  * Correlation analysis for identifying scientifically interesting patterns
  */

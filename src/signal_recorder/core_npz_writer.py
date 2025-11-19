@@ -144,8 +144,9 @@ class CoreNPZWriter:
         self.current_minute_gaps = []
         self.current_minute_packets_rx = 0
         # Expected packets = samples_per_minute / samples_per_packet
-        # Assume 320 samples per packet @ 16 kHz
-        self.current_minute_packets_expected = self.samples_per_minute // 320
+        # samples_per_packet scales with sample rate (320 @ 16 kHz, 4 @ 200 Hz, etc.)
+        samples_per_packet = max(1, int(320 * (self.sample_rate / 16000)))
+        self.current_minute_packets_expected = self.samples_per_minute // samples_per_packet
     
     def _calculate_next_minute(self, current: datetime) -> datetime:
         """Calculate next minute boundary"""
