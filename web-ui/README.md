@@ -1,249 +1,191 @@
-# GRAPE Configuration UI
+# GRAPE Web UI - Monitoring Dashboards
 
-**Lightweight JSON-based configuration interface for the GRAPE signal recorder.**
+**Real-time monitoring and visualization interface for the GRAPE signal recorder.**
 
 ## ✨ Features
 
-- **No Database Required** - Uses simple JSON files for storage
-- **Zero Configuration** - Works out of the box with default admin/admin login
-- **TOML Export** - Generate configuration files compatible with signal-recorder
-- **Channel Presets** - One-click setup for WWV and CHU frequencies
-- **Simple Installation** - Single command to start
+- **Real-time Monitoring** - System status, channel health, data quality
+- **Carrier Analysis** - Spectrograms and Doppler visualization
+- **WWV/WWVH Discrimination** - Differential delay time series
+- **Timing Quality** - GPS/NTP timing status and metrics
+- **Pure Presentation Layer** - No business logic, just displays data
+
+---
 
 ## 🚀 Quick Start
 
+### Prerequisites
+
+1. **GRAPE signal recorder** installed and running
+2. **Node.js 16+** and pnpm (or npm)
+3. **Data being generated** by core recorder and analytics service
+
 ### Installation
 
-1. **Install pnpm** (recommended, faster than npm):
-   ```bash
-   # On Ubuntu/Debian/macOS
-   curl -fsSL https://get.pnpm.io/install.js | sh -
+```bash
+cd web-ui
+pnpm install  # or: npm install
+```
 
-   # Alternative: npm (if pnpm not available)
-   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-   sudo apt install -y nodejs npm
-   ```
+### Starting the Web UI
 
-2. **Clone and start**:
-   ```bash
-   cd web-ui
-   pnpm install
-   pnpm start
+**From project root** (recommended):
+```bash
+./start-dual-service.sh
+# Starts: core recorder + analytics + web UI
+```
 
-   # Alternative with npm:
-   # npm install
-   # npm start
-   ```
+**Manually from web-ui directory**:
+```bash
+./start-monitoring.sh
+```
 
-3. **Access the interface**:
-   - Open http://localhost:3000
-   - Login with: `admin` / `admin`
+**Or directly**:
+```bash
+node monitoring-server-v3.js [data_root]
+```
 
-## 🔧 Usage
+### Accessing Dashboards
 
-1. **Login** with default credentials (admin/admin)
-2. **Create Configuration** - Fill in station details
-3. **Add Channels** - Use presets or add custom frequencies
-4. **Export TOML** - Download configuration file
-5. **Copy to signal-recorder** config directory
+**Entry point**: http://localhost:3000/ (redirects to summary)
+
+**Active Dashboards**:
+- **summary.html** - System overview, channel health, data completeness
+- **carrier.html** - Carrier analysis, spectrograms, Doppler visualization
+- **discrimination.html** - WWV/WWVH differential delays
+- **timing-dashboard.html** - Timing quality metrics
+
+---
 
 ## 🗂️ Project Structure
 
 ```
 web-ui/
-├── index.html          # Main web interface
-├── simple-server.js    # Express server with JSON API
-├── data/              # JSON database files (created automatically)
-│   ├── users.json
-│   ├── configurations.json
-│   └── channels.json
+├── monitoring-server-v3.js      # ⭐ Production API server
+├── grape-paths.js               # Data location authority
+│
+├── index.html                   # Entry (redirects to summary)
+├── summary.html                 # ⭐ Main dashboard
+├── carrier.html                 # ⭐ Carrier analysis
+├── discrimination.html          # ⭐ WWV/WWVH discrimination
+├── timing-dashboard.html        # ⭐ Timing quality
+├── discrimination.js            # Chart logic
+│
+├── utils/                       # Server utilities
+├── middleware/                  # Express middleware
+├── scripts/                     # Admin scripts
+├── data/                        # Runtime data (users, auth)
+│
+├── start-monitoring.sh          # Startup scripts
+├── start-audio-proxy.sh
+├── check-dashboard-status.sh
+│
+├── archive/legacy-pages/        # Archived obsolete pages
 └── package.json
 ```
 
-## 🔒 Security
+---
 
-- **Default Credentials**: admin/admin (change in production)
-- **Local Access**: Designed for local network use
-- **No External Dependencies**: All data stored locally
+## 🏗️ Architecture
 
-## 🛠️ Development
+**Design Principle**: Web UI is a **presentation layer only**.
 
-### Available Commands
+- ✅ **Knows WHERE** data is located (via `grape-paths.js`)
+- ✅ **Knows HOW** to display data effectively
+- ❌ **Does NOT know WHAT** data represents scientifically
+- ❌ **Does NOT know HOW** data is generated
 
-```bash
-pnpm start    # Start the server
-pnpm run dev  # Same as start (development mode)
-pnpm run format # Format code with Prettier
+**All business logic resides in the analytics service**, not in the presentation layer.
 
-# Alternative with npm:
-# npm start
-# npm run dev
-# npm run format
+**See**: `WEB_UI_ARCHITECTURE.md` for complete architectural details.
+
+---
+
+## 🛠️ API Endpoints
+
+The server provides REST endpoints:
+
+```
+GET /api/v1/summary                          - All dashboard data
+GET /api/v1/system/status                    - System processes
+GET /api/v1/channels/status                  - Per-channel status
+GET /api/v1/carrier/quality?date=YYYYMMDD    - Carrier metrics
+GET /api/v1/channels/:name/discrimination/:date - Discrimination data
+GET /spectrograms/:date/:dir/:file           - Spectrogram images
 ```
 
-### Adding Features
+**See**: `PATHS_API_QUICK_REFERENCE.md` for complete API reference.
 
-The server provides a REST API:
+---
 
-- `GET /api/configurations` - List all configurations
-- `POST /api/configurations` - Create new configuration
-- `GET /api/configurations/:id/export` - Export TOML file
-- `GET /api/presets/wwv` - WWV frequency presets
-- `GET /api/presets/chu` - CHU frequency presets
+## 📊 Data Display
 
-## 📊 Database Schema
+The web UI displays data generated by the analytics service:
 
-Configurations are stored as JSON with this structure:
+### Summary Dashboard
+- System status (core recorder, analytics, radiod)
+- Channel health and completeness
+- Data storage and upload status
 
-```json
-{
-  "id": "unique-id",
-  "name": "My Station",
-  "callsign": "W1AW",
-  "gridSquare": "EM10",
-  "stationId": "station_001",
-  "instrumentId": "instrument_001",
-  "description": "Primary monitoring station",
-  "dataDir": "/data/grape",
-  "archiveDir": "/archive/grape",
-  "pswsEnabled": "yes",
-  "pswsServer": "pswsnetwork.eng.ua.edu",
-  "createdAt": "2025-01-20T10:30:00.000Z",
-  "updatedAt": "2025-01-20T10:30:00.000Z"
-}
-```
+### Carrier Analysis
+- Spectrograms (PNG images from analytics service)
+- Quality metrics (JSON from analytics service)
+- Date navigation, frequency selection
 
-## ✅ **Direct RTP + Scipy Implementation**
+### Discrimination Screen
+- WWV/WWVH differential delays (CSV from analytics service)
+- Time series visualization
+- Statistics and trends
 
-The signal-recorder now uses **direct RTP reception with scipy-based resampling** instead of the external pcmrecord tool:
+### Timing Dashboard
+- GPS/NTP timing quality
+- time_snap events
+- Timing annotations
 
-**Previous (pcmrecord-based):**
-- External pcmrecord dependency
-- File-based processing pipeline
-- Multiple intermediate steps
-
-**Current (scipy-based):**
-- ✅ **Direct RTP packet reception** - No external tools
-- ✅ **Scipy resampling** - High-quality 12kHz → 10Hz decimation with anti-aliasing
-- ✅ **Real-time processing** - Immediate Digital RF output
-- ✅ **Integrated channel management** - Auto-creates radiod channels
-
-### **Technical Implementation:**
-- **RTP Reception**: Direct multicast socket with RTP header parsing
-- **Resampling**: scipy.signal with 8th-order Butterworth anti-aliasing filter
-- **Output**: Digital RF format with UTC-aligned timestamps
-- **Channel Management**: Automatic radiod channel creation via control utility
-
-### **Generated TOML Structure**
-```toml
-# GRAPE Signal Recorder Configuration
-# Generated by GRAPE Configuration UI
-
-[station]
-callsign = "W1AW"
-grid_square = "EM10"
-id = "station_001"
-instrument_id = "instrument_001"
-description = "Primary monitoring station"
-
-[ka9q]
-status_address = "239.251.200.193"
-auto_create_channels = true
-
-[recorder]
-data_dir = "/var/lib/signal-recorder/data"
-archive_dir = "/var/lib/signal-recorder/archive"
-recording_interval = 60
-continuous = true
-
-[[recorder.channels]]
-ssrc = 10000000
-frequency_hz = 10000000
-preset = "iq"
-sample_rate = 12000
-description = "WWV 10 MHz"
-enabled = true
-processor = "grape"
-
-[processor]
-enabled = false
-
-[processor.grape]
-process_time = "00:05"
-process_timezone = "UTC"
-expected_files_per_day = 1440
-output_sample_rate = 10
-output_format = "digital_rf"
-
-[uploader]
-enabled = false
-protocol = "rsync"
-upload_time = "00:30"
-# ... PSWS configuration when enabled
-
-[logging]
-level = "INFO"
-console_output = true
-
-[monitoring]
-enable_metrics = false
-```
-
-## 📁 **Save to Config Directory**
-
-The web-ui can now **automatically save** TOML configurations directly to the signal-recorder's `config/` directory:
-
-1. **Create/Edit** a configuration in the web interface
-2. **Click "Save to Config Directory"** button
-3. **TOML file** is written to `../config/grape-{station_id}.toml`
-4. **Ready to use** with signal-recorder immediately
-
-### **Alternative Options**
-- **Export TOML**: Downloads file to browser's Downloads folder
-- **Save to Config**: Writes directly to signal-recorder config directory
+---
 
 ## 🚨 Troubleshooting
 
 ### Server Won't Start
 ```bash
-# Check if port 3000 is available
+# Check if port 3000 is in use
 lsof -i :3000
 
-# Or use a different port
-PORT=8080 pnpm start
+# Kill existing instance
+pkill -f monitoring-server
 
-# Alternative with npm:
-# PORT=8080 npm start
+# Check logs
+tail -f monitoring-server.log
 ```
 
-### Cannot Login
-- Username: `admin`
-- Password: `admin`
-- Check browser console for errors
+### Data Not Showing
+```bash
+# Verify paths are correct
+node -e "const p = require('./grape-paths.js'); console.log(p.getDataRoot())"
 
-### Data Not Saving
-- Ensure write permissions in the web-ui directory
-- Check server logs for errors
+# Check if files exist
+ls -lh /path/to/data/archives/
 
-## 🔄 Migration from Complex Version
+# Check API directly
+curl http://localhost:3000/api/v1/summary | jq
+```
 
-If you have the old version with MySQL/SQLite:
-
-1. Export your configurations as TOML files
-2. Delete the old installation
-3. Use this simplified version
-4. Import TOML files if needed (or recreate configurations)
-
-## 📝 License
-
-Same as parent project (signal-recorder)
-
-## 🆘 Support
-
-- **Issues**: https://github.com/mijahauan/signal-recorder/issues
-- **Documentation**: See parent repository README
+### Path Sync Issues
+```bash
+# Validate Python/JavaScript path consistency
+cd /home/mjh/git/signal-recorder
+./scripts/validate-paths-sync.sh
+```
 
 ---
 
-**This simplified version prioritizes ease of use and reliability over complex features.**
+## 📝 Documentation
 
+- **WEB_UI_ARCHITECTURE.md** - Complete architectural documentation
+- **PATHS_API_QUICK_REFERENCE.md** - API reference
+- **../OPERATIONAL_SUMMARY.md** - System configuration
+- **../TECHNICAL_REFERENCE.md** - Developer reference
+
+---
+
+**Key Takeaway**: Web UI is a **dumb display layer**. All intelligence lives in the analytics service.
