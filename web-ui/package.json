@@ -29,7 +29,7 @@
   "devDependencies": {
     "prettier": "^3.6.2"
   },
-  "packageManager": "pnpm@10.20.0",
+  "packageManager": "pnpm@10.22.0",
   "pnpm": {
     "overrides": {},
     "onlyBuiltDependencies": [

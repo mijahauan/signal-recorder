@@ -18,21 +18,31 @@ def decimate_for_upload(iq_samples: np.ndarray, input_rate: int = 16000,
     """
     Decimate IQ samples for Digital RF upload
     
+    Supports both wide channels (16 kHz) and carrier channels (200 Hz):
+    - Wide: 16000 Hz → 10 Hz (factor 1600, three stages: 10×10×16)
+    - Carrier: 200 Hz → 10 Hz (factor 20, two stages: 10×2)
+    
     Current implementation: scipy.signal.decimate (simple, reliable)
     Future: Can replace with multi-stage cascade for efficiency
     
     Args:
         iq_samples: Complex IQ samples at input_rate
-        input_rate: Input sample rate (Hz)
-        output_rate: Output sample rate (Hz)
+        input_rate: Input sample rate (Hz) - typically 16000 (wide) or 200 (carrier)
+        output_rate: Output sample rate (Hz) - typically 10 Hz for DRF upload
         
     Returns:
         Decimated complex IQ samples at output_rate
         Returns None if input is too short for decimation filter
         
-    Example:
+    Example (wide channel):
         >>> iq_16k = np.random.randn(16000) + 1j*np.random.randn(16000)
         >>> iq_10 = decimate_for_upload(iq_16k, 16000, 10)
+        >>> len(iq_10)
+        10
+        
+    Example (carrier channel):
+        >>> iq_200 = np.random.randn(200) + 1j*np.random.randn(200)
+        >>> iq_10 = decimate_for_upload(iq_200, 200, 10)
         >>> len(iq_10)
         10
     """

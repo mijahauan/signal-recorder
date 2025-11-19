@@ -433,14 +433,15 @@ class ChannelProcessor:
                 return
             
             # Convert to complex IQ samples based on payload type
-            # PT 120 = int16 IQ (interleaved I, Q, I, Q, ...) - ka9q-radio IQ format
+            # PT 120 = int16 IQ (interleaved I, Q, I, Q, ...) - ka9q-radio IQ format (16 kHz channels)
+            # PT 97 = int16 IQ (same format) - ka9q-radio IQ format (carrier/narrow channels)
             # PT 11 = float32 IQ (interleaved I, Q, I, Q, ...)
             payload_type = header.payload_type
             
-            if payload_type == 120:
+            if payload_type == 120 or payload_type == 97:
                 # int16 format: 2 bytes per sample (I or Q)
                 if len(payload) % 4 != 0:
-                    logger.warning(f"{self.description}: Invalid payload length {len(payload)} for PT 120")
+                    logger.warning(f"{self.description}: Invalid payload length {len(payload)} for PT {payload_type}")
                     return
                 
                 # Parse as int16 and normalize to float range [-1.0, 1.0]

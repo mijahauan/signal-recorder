@@ -20,10 +20,12 @@ __version__ = "1.0.0"
 __author__ = "GRAPE Signal Recorder Project"
 
 # Core GRAPE components
-from .grape_rtp_recorder import GRAPERecorderManager
-from .grape_metadata import GRAPEMetadataGenerator
-# Note: GRAPEChannelRecorder V1 archived - use GRAPEChannelRecorderV2 from grape_channel_recorder_v2 if needed
-from .grape_recorder import GRAPERecorderManager as GRAPECLIManager
+# NOTE: V2 recorder stack archived to archive/legacy-code/v2-recorder/ (Nov 18, 2025)
+# V2 components (OBSOLETE): grape_recorder.py, grape_rtp_recorder.GRAPERecorderManager, grape_metadata.py
+# CURRENT stack: core_recorder.py + analytics_service.py
+# from .grape_rtp_recorder import GRAPERecorderManager  # ARCHIVED - V2 only
+# from .grape_metadata import GRAPEMetadataGenerator    # ARCHIVED - V2 only
+# from .grape_recorder import GRAPERecorderManager as GRAPECLIManager  # ARCHIVED
 
 # Channel management
 from .channel_manager import ChannelManager
@@ -36,10 +38,10 @@ discover_channels_via_control = discover_channels  # Legacy alias
 from .uploader import UploadManager, SSHRsyncUpload
 
 __all__ = [
-    # Core GRAPE
-    "GRAPERecorderManager",
-    "GRAPEMetadataGenerator",
-    "GRAPECLIManager",
+    # Core GRAPE (V2 components archived - use core_recorder.py instead)
+    # "GRAPERecorderManager",     # ARCHIVED - V2 only
+    # "GRAPEMetadataGenerator",    # ARCHIVED - V2 only
+    # "GRAPECLIManager",           # ARCHIVED - V2 only
     # Channel management
     "ChannelManager",
     "discover_channels_via_control",

@@ -12,6 +12,7 @@ Architecture:
     │
     ├── analytics/             # Per-channel analytics products
     │   └── {CHANNEL}/
+    │       ├── decimated/     # 10 Hz NPZ files (pre-DRF conversion)
     │       ├── digital_rf/    # Digital RF files (10 Hz decimated)
     │       │   └── {YYYYMMDD}/{CALL_GRID}/{RECEIVER}/{OBS}/{CHANNEL}/*.h5
     │       ├── discrimination/ # WWV/WWVH discrimination data
@@ -177,6 +178,13 @@ class GRAPEPaths:
         Returns: {data_root}/analytics/{CHANNEL}/quality/
         """
         return self.get_analytics_dir(channel_name) / 'quality'
+    
+    def get_decimated_dir(self, channel_name: str) -> Path:
+        """Get decimated NPZ directory (10 Hz NPZ files before DRF conversion).
+        
+        Returns: {data_root}/analytics/{CHANNEL}/decimated/
+        """
+        return self.get_analytics_dir(channel_name) / 'decimated'
     
     def get_analytics_logs_dir(self, channel_name: str) -> Path:
         """Get analytics logs directory.

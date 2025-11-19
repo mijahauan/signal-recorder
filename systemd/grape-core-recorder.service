@@ -1,0 +1,37 @@
+[Unit]
+Description=GRAPE Core Recorder - RTP to NPZ Archive Service
+Documentation=https://github.com/yourusername/signal-recorder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mjh
+Group=mjh
+WorkingDirectory=/home/mjh/git/signal-recorder
+
+# Core recorder with test configuration
+ExecStart=/home/mjh/git/signal-recorder/venv/bin/python3 -m signal_recorder.grape_recorder \
+    --config /home/mjh/git/signal-recorder/config/grape-config.toml \
+    --data-root /tmp/grape-test
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=grape-core-recorder
+
+# Resource limits
+Nice=-5
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=50
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target

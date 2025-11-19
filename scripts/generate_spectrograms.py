@@ -157,6 +157,9 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
     """
     Generate spectrogram PNG from IQ samples with 24-hour x-axis
     
+    Handles gaps in data by creating a full 24-hour time grid and placing
+    data at correct positions, with NaN for missing time periods.
+    
     Args:
         timestamps: Unix timestamps for each sample
         iq_samples: Complex IQ samples
@@ -174,10 +177,10 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         day = int(date_str.split('-')[2])
         day_start = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
         day_end = datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+        day_start_ts = day_start.timestamp()
+        day_end_ts = day_end.timestamp()
         
         # Spectrogram parameters for 16 kHz data
-        # With 16 kHz sample rate, we can see ±8 kHz around carrier
-        # Use longer FFT for better frequency resolution
         nperseg = min(2048, len(iq_samples))  # FFT window size
         noverlap = nperseg // 2  # 50% overlap
         
@@ -194,30 +197,44 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         )
         
         # Convert to dB scale
-        Sxx_db = 10 * np.log10(Sxx + 1e-10)  # Add small value to avoid log(0)
+        Sxx_db = 10 * np.log10(Sxx + 1e-10)
         
         # Shift frequencies to be centered at 0 (for complex IQ data)
         f_shifted = np.fft.fftshift(f)
         Sxx_db_shifted = np.fft.fftshift(Sxx_db, axes=0)
         
+        # Convert time indices to actual timestamps
+        start_timestamp = timestamps[0]
+        data_times = start_timestamp + t  # Actual data timestamps
+        
+        # Create full 24-hour time grid (1 minute resolution)
+        full_time_grid = np.arange(day_start_ts, day_end_ts + 60, 60)  # Every minute
+        full_datetime_grid = [datetime.fromtimestamp(ts, tz=timezone.utc) for ts in full_time_grid]
+        
+        # Create output spectrogram array with NaN for missing data
+        num_freqs = len(f_shifted)
+        num_time_bins = len(full_time_grid)
+        Sxx_full = np.full((num_freqs, num_time_bins), np.nan)
+        
+        # Map data to correct time bins
+        for i, data_t in enumerate(data_times):
+            # Find closest time bin in full grid
+            time_idx = np.argmin(np.abs(full_time_grid - data_t))
+            if time_idx < num_time_bins:
+                Sxx_full[:, time_idx] = Sxx_db_shifted[:, i]
+        
         # Create figure
         fig, ax = plt.subplots(figsize=(16, 6), dpi=100)
         
-        # Convert time indices to actual timestamps
-        time_offsets = t  # Offset in seconds from start
-        start_timestamp = timestamps[0]
-        plot_times = [datetime.fromtimestamp(start_timestamp + offset, tz=timezone.utc) 
-                     for offset in time_offsets]
-        
-        # Create spectrogram plot
+        # Create spectrogram plot with full 24-hour grid
         im = ax.pcolormesh(
-            plot_times, 
+            full_datetime_grid, 
             f_shifted, 
-            Sxx_db_shifted,
-            shading='gouraud',
+            Sxx_full,
+            shading='nearest',
             cmap='viridis',
-            vmin=np.percentile(Sxx_db_shifted, 5),  # Auto-scale to remove noise floor
-            vmax=np.percentile(Sxx_db_shifted, 95)
+            vmin=np.nanpercentile(Sxx_db_shifted, 5),
+            vmax=np.nanpercentile(Sxx_db_shifted, 95)
         )
         
         # Format axes

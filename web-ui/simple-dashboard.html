@@ -519,6 +519,8 @@
                 const response = await fetch('/api/v1/system/status');
                 const data = await response.json();
                 renderDashboard(data);
+                // Now that dashboard is rendered, fetch continuity data
+                fetchContinuity(currentRange);
             } catch (error) {
                 document.getElementById('content').innerHTML = `
                     <div class="error">
@@ -898,13 +900,11 @@
         });
         
         // Initial load
-        fetchSystemStatus();
-        fetchContinuity('24h');
+        fetchSystemStatus(); // This will call fetchContinuity() after rendering
         
         // Auto-refresh every 10 seconds
         setInterval(() => {
-            fetchSystemStatus();
-            fetchContinuity(currentRange);
+            fetchSystemStatus(); // This will also call fetchContinuity() after rendering
         }, 10000);
     </script>
 </body>

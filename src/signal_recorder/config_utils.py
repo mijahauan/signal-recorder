@@ -293,7 +293,7 @@ class PathResolver:
         if 'status_file' in monitoring_config:
             return Path(monitoring_config['status_file'])
         
-        return self.get_status_dir() / 'recording-stats.json'
+        return self.get_status_dir() / 'core-recorder-status.json'
     
     def get_credentials_dir(self) -> Path:
         """Get credentials directory (restrictive permissions)"""

@@ -241,6 +241,9 @@ All metrics logged to JSON and displayed in web UI.
 - **[Web UI Guide](web-ui/README.md)** - Interface walkthrough
 
 ### Technical Details
+- **[OPERATIONAL_SUMMARY.md](OPERATIONAL_SUMMARY.md)** - Current system configuration (18 channels, 5 data products)
+- **[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** - Developer quick reference
+- **[PROJECT_NARRATIVE.md](PROJECT_NARRATIVE.md)** - Complete project history and lessons learned
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design & rationale
 - **[GRAPE Digital RF Format](docs/GRAPE_DIGITAL_RF_RECORDER.md)** - Output specification
 - **[PSWS Upload Setup](docs/PSWS_SETUP_GUIDE.md)** - rsync configuration

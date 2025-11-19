@@ -141,38 +141,90 @@ function renderDiscriminationPlots(result, date, channel) {
     document.getElementById('data-container').innerHTML = html;
     
     // Create 4-panel plot
+    function movingAverage(data, windowSize) {
+        const result = [];
+        for (let i = 0; i < data.length; i++) {
+            const start = Math.max(0, i - Math.floor(windowSize / 2));
+            const end = Math.min(data.length, i + Math.floor(windowSize / 2) + 1);
+            const window = data.slice(start, end).filter(v => v !== null && v !== undefined);
+            result.push(window.length > 0 ? window.reduce((a,b) => a+b) / window.length : null);
+        }
+        return result;
+    }
+
+    // Calculate smoothed versions (10-minute moving average)
+    const wwvSmoothed = movingAverage(wwvSnr, 10);
+    const wwvhSmoothed = movingAverage(wwvhSnr, 10);
+    
     const traces = [
-        // Panel 1: SNR Comparison
         {
             x: timestamps, y: wwvSnr,
             name: 'WWV (1000 Hz)',
-            mode: 'lines+markers',
-            line: { color: '#10b981', width: 2 },
-            marker: { size: 3 },
+            mode: 'markers',
+            line: { color: '#10b981', width: 1 },
+            marker: { size: 4, opacity: 0.4 },
             connectgaps: false,
             xaxis: 'x', yaxis: 'y',
-            hovertemplate: 'WWV SNR: %{y:.1f} dB<br>%{x|%H:%M} UTC<extra></extra>'
+            hovertemplate: 'WWV: %{y:.1f} dB<br>%{x|%H:%M} UTC<extra></extra>'
+        },
+        {
+            x: timestamps, y: wwvSmoothed,
+            name: 'WWV (10-min avg)',
+            mode: 'lines',
+            line: { color: '#10b981', width: 3 },
+            connectgaps: true,
+            xaxis: 'x', yaxis: 'y',
+            hovertemplate: 'WWV (avg): %{y:.1f} dB<br>%{x|%H:%M} UTC<extra></extra>'
         },
         {
             x: timestamps, y: wwvhSnr,
             name: 'WWVH (1200 Hz)',
-            mode: 'lines+markers',
-            line: { color: '#ef4444', width: 2, dash: 'dot' },
-            marker: { size: 3, symbol: 'square' },
+            mode: 'markers',
+            line: { color: '#ef4444', width: 1, dash: 'dot' },
+            marker: { size: 4, symbol: 'square', opacity: 0.4 },
             connectgaps: false,
             xaxis: 'x', yaxis: 'y',
-            hovertemplate: 'WWVH SNR: %{y:.1f} dB<br>%{x|%H:%M} UTC<extra></extra>'
+            hovertemplate: 'WWVH: %{y:.1f} dB<br>%{x|%H:%M} UTC<extra></extra>'
         },
-        // Panel 2: Power Ratio
+        {
+            x: timestamps, y: wwvhSmoothed,
+            name: 'WWVH (10-min avg)',
+            mode: 'lines',
+            line: { color: '#ef4444', width: 3 },
+            connectgaps: true,
+            xaxis: 'x', yaxis: 'y',
+            hovertemplate: 'WWVH (avg): %{y:.1f} dB<br>%{x|%H:%M} UTC<extra></extra>'
+        },
         {
             x: timestamps, y: powerRatio,
             name: 'Power Ratio (WWV - WWVH)',
-            mode: 'lines+markers',
-            line: { color: '#8b5cf6', width: 2 },
-            marker: { size: 3 },
+            mode: 'markers',
+            marker: {
+                size: 6,
+                color: powerRatio,
+                colorscale: [
+                    [0, '#ef4444'],      // Red = WWVH dominant (negative)
+                    [0.5, '#94a3b8'],    // Gray = balanced (near zero)
+                    [1, '#10b981']       // Green = WWV dominant (positive)
+                ],
+                cmin: -20,
+                cmax: 20,
+                line: { width: 0.5, color: 'rgba(255,255,255,0.3)' }
+            },
             connectgaps: false,
             xaxis: 'x2', yaxis: 'y2',
             hovertemplate: 'Ratio: %{y:+.1f} dB<br>%{x|%H:%M} UTC<extra></extra>'
+        },
+        // Power ratio smoothed trend line
+        {
+            x: timestamps,
+            y: movingAverage(powerRatio, 10),
+            name: 'Ratio (10-min avg)',
+            mode: 'lines',
+            line: { color: '#8b5cf6', width: 3 },
+            connectgaps: true,
+            xaxis: 'x2', yaxis: 'y2',
+            hovertemplate: 'Ratio (avg): %{y:+.1f} dB<br>%{x|%H:%M} UTC<extra></extra>'
         },
         {
             x: [timestamps[0], timestamps[timestamps.length - 1]], y: [0, 0],
@@ -182,16 +234,27 @@ function renderDiscriminationPlots(result, date, channel) {
             xaxis: 'x2', yaxis: 'y2',
             hoverinfo: 'skip'
         },
-        // Panel 3: Differential Delay
+        // Panel 3: Differential Delay (raw)
         {
             x: timestamps, y: diffDelay,
             name: 'Differential Delay',
-            mode: 'lines+markers',
-            line: { color: '#f59e0b', width: 2 },
-            marker: { size: 3 },
+            mode: 'markers',
+            line: { color: '#f59e0b', width: 1 },
+            marker: { size: 4, opacity: 0.4 },
             connectgaps: false,
             xaxis: 'x3', yaxis: 'y3',
             hovertemplate: 'Delay: %{y:+.1f} ms<br>%{x|%H:%M} UTC<extra></extra>'
+        },
+        // Differential delay smoothed
+        {
+            x: timestamps,
+            y: movingAverage(diffDelay, 10),
+            name: 'Delay (10-min avg)',
+            mode: 'lines',
+            line: { color: '#f59e0b', width: 3 },
+            connectgaps: true,
+            xaxis: 'x3', yaxis: 'y3',
+            hovertemplate: 'Delay (avg): %{y:+.1f} ms<br>%{x|%H:%M} UTC<extra></extra>'
         },
         // Panel 4: 440 Hz Detection
         {

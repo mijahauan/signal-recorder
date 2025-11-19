@@ -339,12 +339,10 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         ax.set_title(f'{channel_name} - {date_str} - Carrier Spectrogram (10 Hz IQ)\n{coverage_str}', 
                     fontsize=14, fontweight='bold')
         
-        # Set x-axis to actual data range (don't force to specific day)
-        # This handles cases where timestamps may be off by a few days
-        if len(plot_times) > 0:
-            ax.set_xlim(plot_times[0], plot_times[-1])
-        else:
-            ax.set_xlim(day_start, day_end)
+        # Set x-axis to full 24-hour day (00:00-23:59 UTC)
+        # This provides consistent time scale across all spectrograms
+        # Data gaps will show as blank regions
+        ax.set_xlim(day_start, day_end)
         
         # Format x-axis as time
         ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))

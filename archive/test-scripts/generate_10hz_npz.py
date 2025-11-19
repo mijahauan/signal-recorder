@@ -54,10 +54,10 @@ def decimate_npz(npz_16khz: Path, npz_10hz: Path, overwrite: bool = False) -> bo
         decimated = decimated.astype(np.complex64)
         
         # Write compact 10 Hz file
-        # Only include essential fields to minimize size
+        # Key name 'iq' matches what analytics service produces
         np.savez_compressed(
             npz_10hz,
-            iq_decimated=decimated,              # 600 samples @ 10 Hz
+            iq=decimated,                        # 600 samples @ 10 Hz (key name matches analytics)
             rtp_timestamp=rtp_timestamp,         # RTP timestamp of iq[0]
             sample_rate_original=sample_rate,    # Original sample rate (16000)
             sample_rate_decimated=10,            # Output rate (10 Hz)
@@ -74,7 +74,7 @@ def decimate_npz(npz_16khz: Path, npz_10hz: Path, overwrite: bool = False) -> bo
         return False
 
 
-def process_channel(archives_root: Path, channel_name: str, overwrite: bool = False):
+def process_channel(archives_root: Path, analytics_root: Path, channel_name: str, overwrite: bool = False):
     """Process all NPZ files for a channel."""
     channel_dir = channel_name.replace(' ', '_')
     npz_dir = archives_root / channel_dir
@@ -82,6 +82,10 @@ def process_channel(archives_root: Path, channel_name: str, overwrite: bool = Fa
     if not npz_dir.exists():
         logger.warning(f"Channel directory not found: {npz_dir}")
         return
+    
+    # Create output directory in analytics/decimated/
+    decimated_dir = analytics_root / channel_dir / 'decimated'
+    decimated_dir.mkdir(parents=True, exist_ok=True)
     
     # Find all 16 kHz NPZ files
     npz_files = sorted(npz_dir.glob('*_iq.npz'))
@@ -93,6 +97,7 @@ def process_channel(archives_root: Path, channel_name: str, overwrite: bool = Fa
     logger.info(f"\n{'='*60}")
     logger.info(f"Processing: {channel_name}")
     logger.info(f"  Found {len(npz_files)} NPZ files")
+    logger.info(f"  Output: {decimated_dir}")
     logger.info(f"{'='*60}")
     
     generated = 0
@@ -100,7 +105,8 @@ def process_channel(archives_root: Path, channel_name: str, overwrite: bool = Fa
     
     for npz_file in npz_files:
         # Output file: 20251115T000000Z_10000000_iq.npz → 20251115T000000Z_10000000_iq_10hz.npz
-        npz_10hz = npz_file.with_name(npz_file.name.replace('_iq.npz', '_iq_10hz.npz'))
+        # Place in analytics/decimated/ directory
+        npz_10hz = decimated_dir / npz_file.name.replace('_iq.npz', '_iq_10hz.npz')
         
         if decimate_npz(npz_file, npz_10hz, overwrite):
             generated += 1
@@ -124,20 +130,25 @@ def main():
     args = parser.parse_args()
     
     archives_root = args.data_root / 'archives'
+    analytics_root = args.data_root / 'analytics'
     
     if not archives_root.exists():
         logger.error(f"Archives directory not found: {archives_root}")
         sys.exit(1)
     
+    # Create analytics root if needed
+    analytics_root.mkdir(parents=True, exist_ok=True)
+    
     logger.info("=" * 60)
     logger.info("Generate 10 Hz Pre-Decimated NPZ Files")
     logger.info("=" * 60)
     logger.info(f"Archives root: {archives_root}")
+    logger.info(f"Analytics root: {analytics_root}")
     logger.info(f"Overwrite: {args.overwrite}")
     
     if args.channel:
         # Process single channel
-        process_channel(archives_root, args.channel, args.overwrite)
+        process_channel(archives_root, analytics_root, args.channel, args.overwrite)
     else:
         # Process all channels
         channel_dirs = [d for d in archives_root.iterdir() if d.is_dir()]
@@ -148,7 +159,7 @@ def main():
             channel_name = channel_dir.name.replace('_', ' ')
             # Handle special case: preserve decimal in frequency (WWV 2.5 MHz)
             # This is a simple heuristic; adjust if needed
-            process_channel(archives_root, channel_name, args.overwrite)
+            process_channel(archives_root, analytics_root, channel_name, args.overwrite)
     
     logger.info("\n" + "=" * 60)
     logger.info("✅ Complete!")

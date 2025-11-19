@@ -2,7 +2,21 @@
  * GRAPE Paths - JavaScript/Node.js Implementation
  * 
  * Centralized path management for GRAPE data structures.
- * Matches the Python implementation in src/signal_recorder/paths.py
+ * MUST stay synchronized with Python implementation in src/signal_recorder/paths.py
+ * 
+ * Architecture:
+ *   data_root/
+ *   ├── archives/{CHANNEL}/                  - Raw 16 kHz NPZ files
+ *   ├── analytics/{CHANNEL}/
+ *   │   ├── decimated/                       - 10 Hz NPZ files (pre-DRF)
+ *   │   ├── digital_rf/                      - Digital RF HDF5 files
+ *   │   ├── discrimination/                  - WWV/WWVH analysis CSVs
+ *   │   ├── quality/                         - Quality metrics CSVs
+ *   │   ├── logs/                            - Processing logs
+ *   │   └── status/                          - Runtime status
+ *   ├── spectrograms/{YYYYMMDD}/             - PNG spectrograms
+ *   ├── state/                               - Service persistence
+ *   └── status/                              - System-wide status
  * 
  * Usage:
  *   import { GRAPEPaths, loadPathsFromConfig } from './grape-paths.js';
@@ -149,6 +163,16 @@ class GRAPEPaths {
      */
     getQualityDir(channelName) {
         return join(this.getAnalyticsDir(channelName), 'quality');
+    }
+    
+    /**
+     * Get decimated NPZ directory (10 Hz NPZ files before DRF conversion).
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/decimated/
+     */
+    getDecimatedDir(channelName) {
+        return join(this.getAnalyticsDir(channelName), 'decimated');
     }
     
     /**

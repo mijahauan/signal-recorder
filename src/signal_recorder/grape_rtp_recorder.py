@@ -28,8 +28,11 @@ except ImportError:
     HAS_DIGITAL_RF = False
     logging.warning("digital_rf not available - Digital RF output will not work")
 
-from .grape_metadata import GRAPEMetadataGenerator
-from .grape_channel_recorder_v2 import GRAPEChannelRecorderV2
+# NOTE (Nov 18, 2025): V2 imports commented out - modules archived
+# Only RTPReceiver class is CURRENT (used by core_recorder.py)
+# GRAPERecorderManager class is OBSOLETE (used old V2 stack)
+# from .grape_metadata import GRAPEMetadataGenerator  # ARCHIVED - V2 only
+# from .grape_channel_recorder_v2 import GRAPEChannelRecorderV2  # ARCHIVED - V2 only
 from .radiod_health import RadiodHealthChecker
 from .session_tracker import SessionBoundaryTracker
 
@@ -812,9 +815,25 @@ class DailyBuffer:
 # See archive README for details. Use V2 instead.
 # =============================================
 
+# ====================================================================
+# ⚠️  OBSOLETE - GRAPERecorderManager (V2 Stack)
+# ====================================================================
+# This class is part of the OLD V2 recorder stack (archived Nov 18, 2025)
+# It depends on archived modules: grape_channel_recorder_v2, grape_metadata
+# 
+# CURRENT SYSTEM: Use core_recorder.py instead
+# 
+# This class is kept here ONLY because it's in the same file as RTPReceiver
+# (which is still actively used by core_recorder.py). Refactoring needed:
+# TODO: Extract RTPReceiver to separate rtp_receiver.py file
+# TODO: Then archive this entire file to archive/legacy-code/v2-recorder/
+# ====================================================================
+
 class GRAPERecorderManager:
     """
     Manager for multiple GRAPE channel recorders
+    
+    ⚠️  OBSOLETE - Part of archived V2 stack. Use core_recorder.py instead.
     """
     
     def __init__(self, config: dict, path_resolver=None):

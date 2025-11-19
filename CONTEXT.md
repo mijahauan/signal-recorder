@@ -40,7 +40,7 @@ These are the non-negotiable rules for all development.
 ### Testing:
 * All signal processing changes must be tested with real WWV data
 * Test data location: `/tmp/grape-test/archives/WWV_5_MHz/`
-* Activate venv before testing: `source venv/bin/activate`
+* Activate venv before testing or running and code: `source venv/bin/activate`
 * Test scripts available: `test-drf-writer.py`, `test-wwvh-discrimination.py`
 
 ### Scientific Principles:
@@ -48,6 +48,15 @@ These are the non-negotiable rules for all development.
 * **Sample completeness > SNR** - 100% of samples (even noisy) beats 95% of clean signal
 * **Gap transparency** - Document all discontinuities, never hide data quality issues
 * **Reprocessability** - Original 16 kHz archives preserved forever, analytics can rerun
+
+### Web-UI/Analytics Synchronization:
+* **CRITICAL**: Use centralized GRAPEPaths API for all file paths
+* **Python API**: `src/signal_recorder/paths.py`
+* **JavaScript API**: `web-ui/grape-paths.js`
+* **Protocol**: `WEB_UI_ANALYTICS_SYNC_PROTOCOL.md` (comprehensive guide)
+* **Validation**: Run `./scripts/validate-paths-sync.sh` before committing path changes
+* **Rule**: When adding analytics paths, update BOTH Python and JavaScript implementations simultaneously
+* **Server**: Use `monitoring-server-v3.js` (NOT deprecated `monitoring-server.js`)
 
 ### Git Process:
 * Main branch is `main`
@@ -118,24 +127,27 @@ This is a high-level map of the project's most important, stable interfaces.
 * `QualityInfo`: Completeness, packet loss, gaps (for quality grading)
 * `DiscriminationResult`: WWV-H analysis output (power_ratio, differential_delay, 440hz data)
 
-## 4. ⚡ Current Task & Git Context
+## 4. ⚡ Recent Sessions Summary
 
-* **Current Branch:** `main`
-* **Task Goal:** Improve WWV-H discrimination quality and integrate timing/gap analysis dashboard
-* **Key Steps:**
-  1. Review and refine WWV-H discrimination algorithm (especially 440 Hz station ID detection)
-  2. Link `timing-dashboard.html` into main web UI navigation
-  3. Test timing dashboard with live data
-  4. Verify gap analysis display is accurate and useful
-  5. Update discrimination display if needed based on data quality
-  6. Document any changes to discrimination algorithm or quality metrics
+**SESSION_2025-11-17_FINAL_SUMMARY.md**: Tone detector fix, carrier time basis
+- ✅ Fixed 30-second timing bug in tone detector
+- ✅ Verified carrier channels recording valid data (PT 97)
+- ✅ **DECISION**: Carrier channels use NTP_SYNCED timing (±10ms, adequate for ±0.1 Hz Doppler)
+- ✅ RTP offset correlation proven UNSTABLE (std dev 1.2B samples - independent clocks per channel)
 
-**Context:**
-- Decimation pipeline just implemented (10 Hz NPZ files now being created)
-- Time basis display fixed (TONE_LOCKED now shows correctly)
-- Discrimination display working but may need quality improvements
-- Timing dashboard exists (`timing-dashboard.html`) but not linked in main UI
-- Quality metrics system (A-F grading) already implemented but not visible in main UI
+**SESSION_2025-11-17_WEB_UI_SYNC.md**: Web-UI/Analytics synchronization
+- ✅ Added missing `decimated_dir` to GRAPEPaths API (Python + JavaScript)
+- ✅ Deprecated old `monitoring-server.js` (hardcoded paths)
+- ✅ Created automated validation: `scripts/validate-paths-sync.sh`
+- ✅ Documented comprehensive sync protocol: `WEB_UI_ANALYTICS_SYNC_PROTOCOL.md`
+- ✅ **PROTOCOL**: Always update both Python and JavaScript paths simultaneously
+
+**CARRIER_CHANNEL_ANALYTICS_IMPLEMENTATION.md**: Carrier channel support
+- ✅ Implemented unified metadata structure (wide + carrier channels)
+- ✅ Carrier channels use NTP_SYNCED timing (±10ms, no tone detection)
+- ✅ Same decimated NPZ format: timing_metadata, quality_metadata, gap analysis
+- ✅ Decimation: 200 Hz → 10 Hz (factor 20, automatic multi-stage)
+- ✅ **NO BREAKING CHANGES**: Wide channels continue with TONE_LOCKED timing
 
 ---
 
@@ -187,8 +199,15 @@ This is a high-level map of the project's most important, stable interfaces.
 
 ### Timing Quality Hierarchy
 
-1. **TONE_LOCKED** (±1ms): time_snap from WWV/CHU within last 3 hours
+1. **TONE_LOCKED** (±1ms): time_snap from WWV/CHU tone detection
+   - **Wide channels (16 kHz)**: Always use this method (tone detection available)
+   - Anchors RTP timestamp to UTC via tone rising edge at :00.000
+   
 2. **NTP_SYNCED** (±10ms): System clock NTP-synchronized (offset <100ms, stratum ≤4)
+   - **Carrier channels (200 Hz)**: Use this method (no tone detection due to narrow bandwidth)
+   - Adequate for ±0.1 Hz Doppler measurement goal
+   - RTP correlation proven unstable (independent clocks per channel)
+   
 3. **WALL_CLOCK** (±seconds): Unsynchronized fallback (recommend reprocessing)
 
 ### Quality Grading System

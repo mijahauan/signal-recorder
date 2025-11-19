@@ -300,13 +300,115 @@
             font-size: 13px;
             font-weight: 600;
         }
+        
+        /* Quality Analysis Section */
+        .quality-analysis-section {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+            border-left: 4px solid #8b5cf6;
+        }
+        
+        .quality-metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+        
+        .quality-metric-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .quality-metric-title {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+        
+        .quality-metric-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        
+        .quality-metric-comparison {
+            font-size: 13px;
+            color: #cbd5e1;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        
+        .quality-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .quality-badge.better {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+        
+        .quality-badge.worse {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+        
+        .quality-badge.neutral {
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+        }
+        
+        .quality-channel-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+        }
+        
+        .quality-channel-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .quality-channel-name {
+            font-weight: 600;
+            color: #e0e0e0;
+            margin-bottom: 4px;
+        }
+        
+        .quality-channel-stat {
+            font-size: 11px;
+            color: #94a3b8;
+        }
     </style>
 </head>
 <body>
-    <nav style="background: #1e3a8a; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <h2 style="margin: 0; font-size: 20px; color: #fff;">📡 GRAPE Signal Recorder - Timing & Quality Dashboard</h2>
-        <div style="display: flex; gap: 15px; align-items: center;">
-            <span style="color: rgba(255,255,255,0.7); font-size: 14px;">Edit config: <code style="background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 3px;">config/*.toml</code></span>
+    <nav style="background: #1e3a8a; padding: 15px 30px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 style="margin: 0; font-size: 20px; color: #fff;">📡 GRAPE Signal Recorder</h2>
+            <div style="display: flex; gap: 15px; align-items: center;">
+                <a href="/summary.html" style="color: rgba(255,255,255,0.8); text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: background 0.2s;">Summary</a>
+                <a href="/carrier.html" style="color: rgba(255,255,255,0.8); text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: background 0.2s;">Carrier</a>
+                <a href="/discrimination.html" style="color: rgba(255,255,255,0.8); text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: background 0.2s;">Discrimination</a>
+                <a href="/timing-dashboard.html" style="color: #fff; background: rgba(255,255,255,0.2); text-decoration: none; padding: 8px 16px; border-radius: 4px; font-weight: 600;">Timing Dashboard</a>
+                <a href="/analysis.html" style="color: rgba(255,255,255,0.8); text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: background 0.2s;">Analysis</a>
+            </div>
         </div>
     </nav>
 
@@ -320,6 +422,28 @@
     </div>
 
     <div id="station-info-container"></div>
+    
+    <!-- CLI Tool Reference -->
+    <div class="time-snap-status" style="border-left-color: #3b82f6; margin-bottom: 20px;">
+        <div class="time-snap-header">
+            📊 Detailed Per-Channel Analysis
+        </div>
+        <p style="color: #94a3b8; margin-bottom: 12px;">
+            For detailed hourly quality breakdowns and propagation correlation analysis, use the CLI tool:
+        </p>
+        <div style="background: #0f172a; padding: 15px; border-radius: 6px; font-family: monospace; font-size: 13px; overflow-x: auto;">
+            <div style="color: #10b981; margin-bottom: 8px;"># Analyze all channels for today:</div>
+            <div>python3 scripts/analyze_timing.py --date <span style="color: #f59e0b;">$(date +%Y%m%d)</span> --data-root /tmp/grape-test</div>
+            
+            <div style="color: #10b981; margin-top: 12px; margin-bottom: 8px;"># Analyze specific channel:</div>
+            <div>python3 scripts/analyze_timing.py --date <span style="color: #f59e0b;">20251116</span> --channel <span style="color: #f59e0b;">"WWV 10 MHz"</span> --data-root /tmp/grape-test</div>
+        </div>
+        <p style="color: #64748b; margin-top: 12px; font-size: 13px;">
+            Shows: Time_snap history, hourly gap analysis, completeness timeline charts, and quality grades per hour.
+            Perfect for correlating quality with ionospheric propagation conditions across the day.
+        </p>
+    </div>
+    
     <div id="dashboard-content">
         <div class="loading">Loading quality data...</div>
     </div>
@@ -413,7 +537,7 @@
             }
         }
         
-        function renderDashboard(data) {
+        async function renderDashboard(data) {
             const container = document.getElementById('dashboard-content');
             
             // System Status
@@ -421,6 +545,10 @@
             
             // Analytics Summary (WWV/WWVH discrimination)
             const analyticsHtml = renderAnalyticsSummary(data.channels);
+            
+            // Quality Analysis (NEW - decimation & timing comparison)
+            const qualityData = await fetchQualityAnalysis();
+            const qualityHtml = renderQualityAnalysis(qualityData);
             
             // Channel table
             const channelTableHtml = renderChannelTable(data.channels);
@@ -431,6 +559,7 @@
             container.innerHTML = `
                 ${systemStatusHtml}
                 ${analyticsHtml}
+                ${qualityHtml}
                 ${channelTableHtml}
                 ${alertsHtml}
             `;
@@ -634,6 +763,149 @@
                             ${rows}
                         </tbody>
                     </table>
+                </div>
+            `;
+        }
+        
+        async function fetchQualityAnalysis() {
+            try {
+                const response = await fetch('/quality-analysis/quality_report_latest.json');
+                if (!response.ok) return null;
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                console.error('Quality analysis not available:', error);
+                return null;
+            }
+        }
+        
+        function renderQualityAnalysis(qualityData) {
+            if (!qualityData || !qualityData.summary) {
+                return ''; // Skip section if no data
+            }
+            
+            const summary = qualityData.summary;
+            const channels = qualityData.channels;
+            
+            // Format timestamp
+            const reportTime = new Date(qualityData.generated_at).toLocaleString('en-US', {
+                timeZone: 'UTC',
+                hour12: false,
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            
+            // Decimation quality
+            const snrAdvantage = summary.mean_snr_advantage_db || 0;
+            const jitterRatio = summary.mean_jitter_ratio || 1.0;
+            const carrierBetter = jitterRatio > 1.0;
+            
+            // Timing quality
+            const toneLockedPct = summary.mean_tone_locked_pct || 0;
+            const ntpSyncedPct = summary.mean_ntp_synced_pct || 0;
+            
+            // Per-channel cards
+            const channelCards = Object.entries(channels).map(([chanName, chanData]) => {
+                const freq = chanName.replace(/_/g, ' ');
+                const dec = chanData.decimation_quality;
+                const jitterRatio = dec?.comparison?.phase_jitter_ratio || 1.0;
+                const timingDist = chanData.timing_quality?.wide?.timing_distribution || {};
+                const toneLocked = timingDist.tone_locked || 0;
+                
+                return `
+                    <div class="quality-channel-item">
+                        <div class="quality-channel-name">${freq}</div>
+                        <div class="quality-channel-stat">Jitter: ${jitterRatio.toFixed(2)}x</div>
+                        <div class="quality-channel-stat">Tone: ${toneLocked.toFixed(0)}%</div>
+                    </div>
+                `;
+            }).join('');
+            
+            return `
+                <div class="quality-analysis-section">
+                    <div class="time-snap-header" style="color: #fff;">
+                        📊 Decimation & Timing Quality Analysis
+                        <span style="margin-left: auto; font-size: 12px; color: #94a3b8; font-weight: normal;">
+                            Updated: ${reportTime} UTC
+                        </span>
+                    </div>
+                    
+                    <div class="quality-metrics-grid">
+                        <!-- Phase Jitter -->
+                        <div class="quality-metric-card">
+                            <div class="quality-metric-title">Phase Jitter Ratio (Wide/Carrier)</div>
+                            <div class="quality-metric-value">${jitterRatio.toFixed(2)}x</div>
+                            <div class="quality-metric-comparison">
+                                ${carrierBetter ? 
+                                    '<span class="quality-badge better">Carrier Cleaner</span>' :
+                                    '<span class="quality-badge worse">Wide Cleaner</span>'
+                                }
+                                <span>200Hz→10Hz vs 16kHz→10Hz</span>
+                            </div>
+                        </div>
+                        
+                        <!-- SNR -->
+                        <div class="quality-metric-card">
+                            <div class="quality-metric-title">SNR Difference (Carrier - Wide)</div>
+                            <div class="quality-metric-value" style="color: ${Math.abs(snrAdvantage) < 2 ? '#3b82f6' : snrAdvantage > 0 ? '#10b981' : '#94a3b8'};">
+                                ${snrAdvantage > 0 ? '+' : ''}${snrAdvantage.toFixed(1)} dB
+                            </div>
+                            <div class="quality-metric-comparison">
+                                ${Math.abs(snrAdvantage) < 2 ? 
+                                    '<span class="quality-badge neutral">Equivalent</span>' :
+                                    snrAdvantage > 0 ? 
+                                        '<span class="quality-badge better">Carrier Advantage</span>' :
+                                        '<span class="quality-badge neutral">Wide Stronger</span>'
+                                }
+                                <span>Due to bandwidth difference</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Tone-Locked -->
+                        <div class="quality-metric-card">
+                            <div class="quality-metric-title">Tone-Locked Coverage</div>
+                            <div class="quality-metric-value" style="color: ${toneLockedPct > 80 ? '#10b981' : toneLockedPct > 50 ? '#f59e0b' : '#ef4444'};">
+                                ${toneLockedPct.toFixed(1)}%
+                            </div>
+                            <div class="quality-metric-comparison">
+                                ${toneLockedPct > 80 ? 
+                                    '<span class="quality-badge better">Excellent</span>' :
+                                    toneLockedPct > 50 ?
+                                        '<span class="quality-badge neutral">Good</span>' :
+                                        '<span class="quality-badge worse">Poor</span>'
+                                }
+                                <span>±1ms WWV/CHU timing (wide)</span>
+                            </div>
+                        </div>
+                        
+                        <!-- NTP-Synced -->
+                        <div class="quality-metric-card">
+                            <div class="quality-metric-title">NTP-Synced Coverage</div>
+                            <div class="quality-metric-value" style="color: ${ntpSyncedPct > 95 ? '#10b981' : ntpSyncedPct > 80 ? '#f59e0b' : '#ef4444'};">
+                                ${ntpSyncedPct.toFixed(1)}%
+                            </div>
+                            <div class="quality-metric-comparison">
+                                ${ntpSyncedPct > 95 ? 
+                                    '<span class="quality-badge better">Excellent</span>' :
+                                    ntpSyncedPct > 80 ?
+                                        '<span class="quality-badge neutral">Good</span>' :
+                                        '<span class="quality-badge worse">Poor</span>'
+                                }
+                                <span>±10ms system clock (carrier)</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 20px;">
+                        <div style="font-size: 14px; font-weight: 600; color: #cbd5e1; margin-bottom: 12px;">
+                            Per-Channel Metrics (${summary.channels_analyzed} analyzed)
+                        </div>
+                        <div class="quality-channel-list">
+                            ${channelCards}
+                        </div>
+                    </div>
                 </div>
             `;
         }

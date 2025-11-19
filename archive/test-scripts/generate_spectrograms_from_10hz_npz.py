@@ -256,6 +256,7 @@ def main():
     parser.add_argument('--date', required=True, help='Date (YYYYMMDD)')
     parser.add_argument('--data-root', default='/tmp/grape-test', help='Data root directory')
     parser.add_argument('--channel', help='Specific channel (e.g. "WWV 10 MHz")')
+    parser.add_argument('--include-carrier', action='store_true', help='Include carrier channels (now using analytics decimated files)')
     
     args = parser.parse_args()
     
@@ -282,12 +283,14 @@ def main():
     total_count = 0
     
     for channel_name in channels:
-        # Skip carrier channels - they use native 200 Hz, not decimated from 16 kHz
-        if 'carrier' in channel_name:
-            logger.info(f"Skipping {channel_name} (native carrier, not decimated)")
+        # Skip carrier channels unless --include-carrier specified
+        # With analytics running, carrier channels now have decimated files too (200 Hz → 10 Hz via IIR)
+        if 'carrier' in channel_name and not args.include_carrier:
+            logger.info(f"Skipping {channel_name} (use --include-carrier to process)")
             continue
             
         total_count += 1
+        is_carrier = 'carrier' in channel_name
         logger.info(f"\n{'='*60}")
         logger.info(f"Channel: {channel_name}")
         logger.info(f"{'='*60}")
@@ -313,13 +316,17 @@ def main():
             
             timestamps, iq_samples, sample_rate = result
             
-            # Create output directory for wide-decimated spectrograms
-            output_dir = Path(args.data_root) / 'spectrograms' / args.date / 'wide-decimated'
+            # Create output directory
+            # Carrier channels: native-carrier (200Hz→10Hz)
+            # Wide channels: wide-decimated (16kHz→10Hz)
+            subdirectory = 'native-carrier' if is_carrier else 'wide-decimated'
+            output_dir = Path(args.data_root) / 'spectrograms' / args.date / subdirectory
             output_dir.mkdir(parents=True, exist_ok=True)
             
             # Generate spectrogram with clear naming
             safe_channel_name = channel_name.replace(' ', '_')
-            output_path = output_dir / f'{safe_channel_name}_10Hz_from_16kHz.png'
+            source_rate = '200Hz' if is_carrier else '16kHz'
+            output_path = output_dir / f'{safe_channel_name}_10Hz_from_{source_rate}.png'
             
             generate_spectrogram(
                 timestamps, iq_samples, sample_rate,

@@ -184,16 +184,32 @@ class WWVHDiscriminator:
         # Determine confidence based on actual detections
         if wwv_detected and wwvh_detected:
             min_snr = min(wwv_det.snr_db, wwvh_det.snr_db)
+            max_snr = max(wwv_det.snr_db, wwvh_det.snr_db)
             power_diff = abs(power_ratio_db)
             
-            if min_snr > 20 and power_diff > 6.0:
+            # Improved confidence logic:
+            # High confidence: Strong dominant station OR both stations strong with clear separation
+            if (max_snr > 25 and power_diff > 15):  # One very strong, other clearly weaker
                 confidence = 'high'
-            elif min_snr > 10 and power_diff > 3.0:
+            elif (min_snr > 20 and power_diff > 6.0):  # Both strong with good separation
+                confidence = 'high'
+            elif (max_snr > 15 and power_diff > 10):  # One strong with clear dominance
+                confidence = 'medium'
+            elif (min_snr > 10 and power_diff > 3.0):  # Both moderate with separation
+                confidence = 'medium'
+            else:
+                confidence = 'low'
+        elif wwv_detected or wwvh_detected:
+            # Single station detected - confidence based on SNR of detected station
+            detected_snr = wwv_det.snr_db if wwv_detected else wwvh_det.snr_db
+            if detected_snr > 20:
+                confidence = 'high'  # Strong single station is high confidence
+            elif detected_snr > 10:
                 confidence = 'medium'
             else:
                 confidence = 'low'
         else:
-            # Only one or neither detected - low confidence
+            # Neither detected - low confidence
             confidence = 'low'
         
         result = DiscriminationResult(
@@ -215,14 +231,22 @@ class WWVHDiscriminator:
         
         # Log appropriately based on detection status
         if wwv_detected and wwvh_detected:
+            # Safely format values that might be None
+            wwv_str = f"{wwv_power_db:.1f}dB" if wwv_power_db is not None else "N/A"
+            wwvh_str = f"{wwvh_power_db:.1f}dB" if wwvh_power_db is not None else "N/A"
+            ratio_str = f"{power_ratio_db:+.1f}dB" if power_ratio_db is not None else "N/A"
+            delay_str = f"{differential_delay_ms:+.1f}ms" if differential_delay_ms is not None else "N/A"
+            
             logger.info(f"{self.channel_name}: Discrimination - "
-                       f"WWV: {wwv_power_db:.1f}dB, WWVH: {wwvh_power_db:.1f}dB, "
-                       f"Ratio: {power_ratio_db:+.1f}dB, Delay: {differential_delay_ms:+.1f}ms, "
-                       f"Dominant: {dominant_station}, Confidence: {confidence}")
+                       f"WWV: {wwv_str}, WWVH: {wwvh_str}, "
+                       f"Ratio: {ratio_str}, Delay: {delay_str}, "
+                       f"Dominant: {dominant_station or 'N/A'}, Confidence: {confidence or 'N/A'}")
         else:
+            wwv_str = f"{wwv_power_db:.1f}dB" if wwv_power_db is not None else "N/A"
+            wwvh_str = f"{wwvh_power_db:.1f}dB" if wwvh_power_db is not None else "N/A"
             logger.debug(f"{self.channel_name}: Discrimination (partial) - "
-                        f"WWV: {'detected' if wwv_detected else 'noise'} ({wwv_power_db:.1f}dB), "
-                        f"WWVH: {'detected' if wwvh_detected else 'noise'} ({wwvh_power_db:.1f}dB)")
+                        f"WWV: {'detected' if wwv_detected else 'noise'} ({wwv_str}), "
+                        f"WWVH: {'detected' if wwvh_detected else 'noise'} ({wwvh_str})")
         
         return result
     
@@ -312,6 +336,8 @@ class WWVHDiscriminator:
             power_db = -np.inf
         
         # Detection threshold: SNR > 10 dB
+        # NOTE: This threshold could be made adaptive based on the 1000/1200 Hz tone SNRs
+        # For now, 10 dB provides good balance between sensitivity and false positive rate
         detected = snr_db > 10.0
         
         if detected:

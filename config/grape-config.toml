@@ -26,14 +26,18 @@ test_data_root = "/tmp/grape-test"
 production_data_root = "/var/lib/signal-recorder"
 
 # Directory structure (auto-created based on mode):
-# CRITICAL: All code MUST use src/signal_recorder/paths.py to generate paths
+# CRITICAL: All code MUST use centralized GRAPEPaths API:
+#   - Python:     src/signal_recorder/paths.py
+#   - JavaScript: web-ui/grape-paths.js
+#   - Protocol:   WEB_UI_ANALYTICS_SYNC_PROTOCOL.md
 #
 # ${data_root}/
 #   archives/{CHANNEL}/                              - Raw 16 kHz NPZ files
 #   analytics/{CHANNEL}/
+#     decimated/                                     - 10 Hz NPZ files (pre-DRF)
 #     digital_rf/{YYYYMMDD}/.../{CHANNEL}/*.h5       - 10 Hz Digital RF files
-#     discrimination/                                - WWV/WWVH analysis
-#     quality/                                       - Quality metrics
+#     discrimination/                                - WWV/WWVH analysis CSVs
+#     quality/                                       - Quality metrics CSVs
 #     logs/                                          - Processing logs
 #     status/                                        - Runtime status
 #   spectrograms/{YYYYMMDD}/*.png                    - Web UI spectrograms

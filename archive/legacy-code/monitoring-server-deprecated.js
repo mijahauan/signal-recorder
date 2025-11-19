@@ -1,13 +1,34 @@
 #!/usr/bin/env node
 /**
- * GRAPE Signal Recorder - Simplified Monitoring Server
+ * GRAPE Signal Recorder - Monitoring Server (DEPRECATED)
  * 
+ * ⚠️  DEPRECATION WARNING ⚠️
+ * This file contains HARDCODED PATHS and will fall out of sync with analytics changes.
+ * 
+ * USE: monitoring-server-v3.js instead
+ *   - Uses centralized GRAPEPaths API
+ *   - Automatically syncs with Python analytics service
+ *   - Supports both test and production modes
+ * 
+ * This file is kept for reference only. Use start-dual-service.sh or restart-webui.sh
+ * which launch monitoring-server-v3.js by default.
+ * 
+ * Original description:
  * A clean, authentication-free monitoring interface
  * Focused on: Timing & Quality Dashboard
  * 
  * No configuration editing - users edit TOML files directly
  * No authentication - monitoring only
  */
+
+console.error('⚠️  WARNING: You are running the DEPRECATED monitoring-server.js');
+console.error('⚠️  This version has hardcoded paths and will become out of sync.');
+console.error('');
+console.error('✅ RECOMMENDED: Use monitoring-server-v3.js instead:');
+console.error('   node monitoring-server-v3.js');
+console.error('');
+console.error('Continuing in 5 seconds...');
+await new Promise(resolve => setTimeout(resolve, 5000));
 
 import express from 'express';
 import fs from 'fs';
