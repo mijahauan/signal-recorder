@@ -1,0 +1,8 @@
+timestamp,dominant_station,confidence_level,source,notes
+1732060800,WWV,high,geographic_time,Early morning UTC typically WWV dominant
+1732064400,WWV,high,geographic_time,0400 UTC - short E-layer path favors WWV
+1732068000,WWV,medium,geographic_time,0500 UTC - WWV still likely dominant
+1732071600,BALANCED,low,geographic_time,0600 UTC - transition period
+1732089600,BALANCED,medium,geographic_time,Midday - both stations strong
+1732104000,WWVH,medium,geographic_time,Evening - Pacific propagation improves
+1732111200,WWVH,high,geographic_time,Late evening - WWVH typically stronger

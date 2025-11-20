@@ -20,8 +20,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from scipy import signal as scipy_signal
 from scipy.fft import rfft, rfftfreq
+from scipy.signal import iirnotch, filtfilt
 
 from .interfaces.data_models import ToneDetectionResult, StationType
+from .wwv_bcd_encoder import WWVBCDEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,12 @@ class DiscriminationResult:
         tone_440hz_wwvh_detected: Whether 440 Hz tone detected in minute 1
         tone_440hz_wwv_power_db: Power of 440 Hz tone in minute 2 (if detected)
         tone_440hz_wwvh_power_db: Power of 440 Hz tone in minute 1 (if detected)
+        tick_windows_10sec: High-resolution 10-second windowed tick analysis (6 windows per minute)
+            Each window contains both coherent and incoherent integration results:
+            - coherent_wwv_snr_db, coherent_wwvh_snr_db: Phase-aligned amplitude sum (10 dB gain)
+            - incoherent_wwv_snr_db, incoherent_wwvh_snr_db: Power sum (5 dB gain)
+            - coherence_quality: 0-1 metric indicating phase stability
+            - integration_method: 'coherent' or 'incoherent' (chosen based on quality)
     """
     minute_timestamp: float
     wwv_detected: bool
@@ -59,6 +67,13 @@ class DiscriminationResult:
     tone_440hz_wwvh_detected: bool = False
     tone_440hz_wwv_power_db: Optional[float] = None
     tone_440hz_wwvh_power_db: Optional[float] = None
+    tick_windows_10sec: Optional[List[Dict[str, float]]] = None
+    # BCD-based discrimination (100 Hz cross-correlation method)
+    bcd_wwv_amplitude: Optional[float] = None
+    bcd_wwvh_amplitude: Optional[float] = None
+    bcd_differential_delay_ms: Optional[float] = None
+    bcd_correlation_quality: Optional[float] = None
+    bcd_windows: Optional[List[Dict[str, float]]] = None  # Time-series data from sliding windows
     
     def to_dict(self) -> Dict:
         """Convert to dictionary for logging/storage"""
@@ -75,7 +90,8 @@ class DiscriminationResult:
             'tone_440hz_wwv_detected': self.tone_440hz_wwv_detected,
             'tone_440hz_wwvh_detected': self.tone_440hz_wwvh_detected,
             'tone_440hz_wwv_power_db': self.tone_440hz_wwv_power_db,
-            'tone_440hz_wwvh_power_db': self.tone_440hz_wwvh_power_db
+            'tone_440hz_wwvh_power_db': self.tone_440hz_wwvh_power_db,
+            'tick_windows_10sec': self.tick_windows_10sec
         }
 
 
@@ -101,6 +117,9 @@ class WWVHDiscriminator:
         
         # Keep last 1000 measurements
         self.max_history = 1000
+        
+        # Initialize BCD encoder for template generation
+        self.bcd_encoder = WWVBCDEncoder(sample_rate=16000)
         
         logger.info(f"{channel_name}: WWVHDiscriminator initialized")
     
@@ -141,31 +160,43 @@ class WWVHDiscriminator:
         
         if wwv_detected:
             wwv_power_db = getattr(wwv_det, 'tone_power_db', wwv_det.snr_db)
+            # Ensure we have a valid number
+            if wwv_power_db is None:
+                wwv_power_db = wwv_det.snr_db if wwv_det.snr_db is not None else 0.0
         else:
             # No WWV detection - record noise floor (assume ~0 dB SNR = noise)
             wwv_power_db = 0.0
         
         if wwvh_detected:
             wwvh_power_db = getattr(wwvh_det, 'tone_power_db', wwvh_det.snr_db)
+            # Ensure we have a valid number
+            if wwvh_power_db is None:
+                wwvh_power_db = wwvh_det.snr_db if wwvh_det.snr_db is not None else 0.0
         else:
             # No WWVH detection - record noise floor
             wwvh_power_db = 0.0
         
         # Calculate power ratio (always computed, even with noise floor)
-        power_ratio_db = wwv_power_db - wwvh_power_db
+        # Safety check for None values
+        if wwv_power_db is None or wwvh_power_db is None:
+            power_ratio_db = 0.0
+        else:
+            power_ratio_db = wwv_power_db - wwvh_power_db
         
         # Calculate differential delay ONLY if BOTH detected
         # Otherwise null (creates gap in time-series graph)
         differential_delay_ms = None
         if wwv_detected and wwvh_detected:
-            differential_delay_ms = wwv_det.timing_error_ms - wwvh_det.timing_error_ms
-            
-            # Reject outliers: Ionospheric differential delay should be < ±1 second
-            # Values outside this range indicate detection errors
-            if abs(differential_delay_ms) > 1000:
-                logger.warning(f"{self.channel_name}: Rejecting outlier differential delay: {differential_delay_ms:.1f}ms "
-                              f"(WWV: {wwv_det.timing_error_ms:.1f}ms, WWVH: {wwvh_det.timing_error_ms:.1f}ms)")
-                differential_delay_ms = None
+            # Safety check for None timing errors
+            if wwv_det.timing_error_ms is not None and wwvh_det.timing_error_ms is not None:
+                differential_delay_ms = wwv_det.timing_error_ms - wwvh_det.timing_error_ms
+                
+                # Reject outliers: Ionospheric differential delay should be < ±1 second
+                # Values outside this range indicate detection errors
+                if abs(differential_delay_ms) > 1000:
+                    logger.warning(f"{self.channel_name}: Rejecting outlier differential delay: {differential_delay_ms:.1f}ms "
+                                  f"(WWV: {wwv_det.timing_error_ms:.1f}ms, WWVH: {wwvh_det.timing_error_ms:.1f}ms)")
+                    differential_delay_ms = None
         
         # Determine dominant station
         if not wwv_detected and not wwvh_detected:
@@ -250,6 +281,154 @@ class WWVHDiscriminator:
         
         return result
     
+    def finalize_discrimination(
+        self,
+        result: DiscriminationResult,
+        minute_number: int,
+        bcd_wwv_amp: Optional[float],
+        bcd_wwvh_amp: Optional[float],
+        tone_440_wwv_detected: bool,
+        tone_440_wwvh_detected: bool,
+        tick_results: Optional[List[dict]] = None
+    ) -> DiscriminationResult:
+        """
+        Finalize discrimination using weighted voting based on minute-specific confidence
+        
+        Weighting hierarchy:
+        - Minutes 1/2: 440 Hz tone (highest weight) → Tick SNR → BCD (if available)
+        - Minutes 0/8-10/29-30: BCD amplitude (highest weight) → Tick SNR → 1000/1200 Hz
+        - All other minutes: 1000/1200 Hz power (highest weight) → Tick SNR
+        
+        Args:
+            result: Base discrimination result from 1000/1200 Hz tones
+            minute_number: Minute of hour (0-59)
+            bcd_wwv_amp: WWV amplitude from BCD correlation
+            bcd_wwvh_amp: WWVH amplitude from BCD correlation
+            tone_440_wwv_detected: 440 Hz detected in minute 2
+            tone_440_wwvh_detected: 440 Hz detected in minute 1
+            tick_results: Per-second tick discrimination results
+            
+        Returns:
+            Enhanced DiscriminationResult with weighted voting
+        """
+        # BCD-dominant minutes (0, 8-10, 29-30)
+        bcd_minutes = [0, 8, 9, 10, 29, 30]
+        # 440 Hz tone minutes
+        tone_440_minutes = [1, 2]
+        
+        # Initialize voting scores
+        wwv_score = 0.0
+        wwvh_score = 0.0
+        total_weight = 0.0
+        
+        # Weight factors
+        if minute_number in tone_440_minutes:
+            w_440 = 10.0  # Highest weight for 440 Hz
+            w_tick = 5.0
+            w_bcd = 2.0
+            w_carrier = 1.0
+        elif minute_number in bcd_minutes:
+            w_bcd = 10.0  # Highest weight for BCD
+            w_tick = 5.0
+            w_carrier = 2.0
+            w_440 = 0.0
+        else:
+            w_carrier = 10.0  # Highest weight for carrier tones
+            w_tick = 5.0
+            w_bcd = 2.0
+            w_440 = 0.0
+        
+        # === VOTE 1: 440 Hz Tone Detection ===
+        if w_440 > 0:
+            if tone_440_wwv_detected and not tone_440_wwvh_detected:
+                wwv_score += w_440
+                total_weight += w_440
+            elif tone_440_wwvh_detected and not tone_440_wwv_detected:
+                wwvh_score += w_440
+                total_weight += w_440
+            elif tone_440_wwv_detected and tone_440_wwvh_detected:
+                # Both detected (shouldn't happen) - ignore
+                pass
+        
+        # === VOTE 2: BCD Amplitude Ratio ===
+        if w_bcd > 0 and bcd_wwv_amp is not None and bcd_wwvh_amp is not None:
+            if bcd_wwv_amp > 0 and bcd_wwvh_amp > 0:
+                bcd_ratio_db = 20 * np.log10(bcd_wwv_amp / bcd_wwvh_amp)
+                
+                if abs(bcd_ratio_db) >= 3.0:  # Significant difference
+                    if bcd_ratio_db > 0:
+                        wwv_score += w_bcd
+                    else:
+                        wwvh_score += w_bcd
+                    total_weight += w_bcd
+        
+        # === VOTE 3: 1000/1200 Hz Carrier Power Ratio ===
+        if w_carrier > 0 and result.power_ratio_db is not None:
+            if abs(result.power_ratio_db) >= 3.0:  # Significant difference
+                if result.power_ratio_db > 0:
+                    wwv_score += w_carrier
+                else:
+                    wwvh_score += w_carrier
+                total_weight += w_carrier
+        
+        # === VOTE 4: Per-Second Tick SNR Average ===
+        if w_tick > 0 and tick_results:
+            wwv_tick_snr = []
+            wwvh_tick_snr = []
+            
+            for tick in tick_results:
+                if 'wwv_snr_db' in tick and 'wwvh_snr_db' in tick:
+                    wwv_tick_snr.append(tick['wwv_snr_db'])
+                    wwvh_tick_snr.append(tick['wwvh_snr_db'])
+            
+            if wwv_tick_snr and wwvh_tick_snr:
+                avg_wwv_tick = np.mean(wwv_tick_snr)
+                avg_wwvh_tick = np.mean(wwvh_tick_snr)
+                tick_ratio_db = avg_wwv_tick - avg_wwvh_tick
+                
+                if abs(tick_ratio_db) >= 3.0:
+                    if tick_ratio_db > 0:
+                        wwv_score += w_tick
+                    else:
+                        wwvh_score += w_tick
+                    total_weight += w_tick
+        
+        # === FINAL DECISION ===
+        if total_weight > 0:
+            # Normalize scores
+            wwv_norm = wwv_score / total_weight
+            wwvh_norm = wwvh_score / total_weight
+            
+            # Determine dominant station
+            if abs(wwv_norm - wwvh_norm) < 0.15:  # Within ~15% of each other
+                dominant_station = 'BALANCED'
+                confidence = 'medium'
+            elif wwv_norm > wwvh_norm:
+                dominant_station = 'WWV'
+                # Confidence based on score margin
+                margin = wwv_norm - wwvh_norm
+                if margin > 0.7:
+                    confidence = 'high'
+                elif margin > 0.4:
+                    confidence = 'medium'
+                else:
+                    confidence = 'low'
+            else:
+                dominant_station = 'WWVH'
+                margin = wwvh_norm - wwv_norm
+                if margin > 0.7:
+                    confidence = 'high'
+                elif margin > 0.4:
+                    confidence = 'medium'
+                else:
+                    confidence = 'low'
+            
+            # Update result
+            result.dominant_station = dominant_station
+            result.confidence = confidence
+        
+        return result
+    
     def detect_440hz_tone(
         self,
         iq_samples: np.ndarray,
@@ -308,22 +487,25 @@ class WWVHDiscriminator:
         # Measure power at 440 Hz
         power_at_440 = np.abs(fft_result[freq_idx])**2
         
-        # Measure noise floor (average power in nearby bins, excluding 440 Hz)
-        # Use bins ±50 Hz around 440 Hz, excluding ±5 Hz
-        noise_low = max(0, freq_idx - int(50.0 * len(windowed) / sample_rate))
-        noise_high = min(len(fft_result), freq_idx + int(50.0 * len(windowed) / sample_rate))
-        exclude_low = max(0, freq_idx - int(5.0 * len(windowed) / sample_rate))
-        exclude_high = min(len(fft_result), freq_idx + int(5.0 * len(windowed) / sample_rate))
+        # Measure noise floor using the 825-875 Hz guard band (consistent with tick detection)
+        # This band is guaranteed clean (no station tones or harmonics)
+        # High-pass filter at 200 Hz is already implicit in AM demod DC removal
+        guard_low = 825.0  # Hz
+        guard_high = 875.0  # Hz
         
-        noise_bins = np.concatenate([
-            np.arange(noise_low, exclude_low),
-            np.arange(exclude_high, noise_high)
-        ])
+        guard_low_idx = np.argmin(np.abs(freqs - guard_low))
+        guard_high_idx = np.argmin(np.abs(freqs - guard_high))
         
-        if len(noise_bins) > 10:
-            noise_power = np.mean(np.abs(fft_result[noise_bins])**2)
+        if guard_high_idx > guard_low_idx and guard_high_idx < len(fft_result):
+            # Measure noise power density (N₀) in guard band
+            guard_band_power = np.abs(fft_result[guard_low_idx:guard_high_idx])**2
+            N0 = np.mean(guard_band_power)  # W/Hz (average power per bin)
+            
+            # For 440 Hz tone, use ENBW = 1.5 Hz (Hann window)
+            B_signal = 1.5  # Hz
+            noise_power = N0 * B_signal
         else:
-            # Fallback: use overall average
+            # Fallback: use overall average (shouldn't happen)
             noise_power = np.mean(np.abs(fft_result)**2)
         
         # Calculate SNR
@@ -347,6 +529,598 @@ class WWVHDiscriminator:
         
         return detected, power_db if detected else None
     
+    def detect_tick_windows(
+        self,
+        iq_samples: np.ndarray,
+        sample_rate: int
+    ) -> List[Dict[str, float]]:
+        """
+        Detect 5ms tick tones in 10-second windows with coherent integration
+        
+        Implements true coherent integration with phase tracking:
+        - Coherent: Phase-aligned amplitude sum → 10 dB gain (N)
+        - Incoherent: Power sum → 5 dB gain (√N)
+        - Automatically selects best method based on phase stability
+        
+        Args:
+            iq_samples: Full minute of complex IQ samples at sample_rate
+            sample_rate: Sample rate in Hz (typically 16000)
+            
+        Returns:
+            List of 6 dictionaries, one per 10-second window:
+            {
+                'second': start second in minute (1, 11, 21, 31, 41, 51),
+                    NOTE: Second 0 is EXCLUDED (contains 800ms tone marker)
+                    Windows: 1-10, 11-20, 21-30, 31-40, 41-50, 51-59
+                    Last window has only 9 ticks (51-59)
+                'coherent_wwv_snr_db': Coherent integration SNR (10 dB gain),
+                'coherent_wwvh_snr_db': Coherent integration SNR,
+                'incoherent_wwv_snr_db': Incoherent integration SNR (5 dB gain),
+                'incoherent_wwvh_snr_db': Incoherent integration SNR,
+                'coherence_quality_wwv': Phase stability metric (0-1),
+                'coherence_quality_wwvh': Phase stability metric (0-1),
+                'integration_method': 'coherent' or 'incoherent' (chosen),
+                'wwv_snr_db': Best SNR (from chosen method),
+                'wwvh_snr_db': Best SNR (from chosen method),
+                'ratio_db': wwv_snr - wwvh_snr,
+                'tick_count': number of ticks analyzed (10 for windows 0-4, 9 for window 5)
+            }
+        """
+        # AM demodulation for entire minute
+        magnitude = np.abs(iq_samples)
+        audio_signal = magnitude - np.mean(magnitude)  # AC coupling
+        
+        # CRITICAL: Remove station ID tones before tick detection to prevent harmonic contamination
+        # WWV/WWVH broadcast 440/500/600 Hz tones throughout each minute per schedule.
+        # Receiver 2nd/3rd order nonlinearity creates spurious signals at tick frequencies:
+        #   500 Hz × 2 = 1000 Hz (contaminates WWV ticks)
+        #   600 Hz × 2 = 1200 Hz (contaminates WWVH ticks)
+        #   440 Hz × 3 = 1320 Hz (near WWVH 1200 Hz)
+        # Must remove fundamentals to ensure clean, unbiased power measurements.
+        
+        # 440 Hz notch (Q=20, ~22 Hz width) - prevents 3rd harmonic at 1320 Hz
+        b_440, a_440 = iirnotch(440, 20, sample_rate)
+        audio_signal = filtfilt(b_440, a_440, audio_signal)
+        
+        # 500 Hz notch (Q=20, ~25 Hz width) - prevents 2nd harmonic at 1000 Hz
+        b_500, a_500 = iirnotch(500, 20, sample_rate)
+        audio_signal = filtfilt(b_500, a_500, audio_signal)
+        
+        # 600 Hz notch (Q=20, ~30 Hz width) - prevents 2nd harmonic at 1200 Hz
+        b_600, a_600 = iirnotch(600, 20, sample_rate)
+        audio_signal = filtfilt(b_600, a_600, audio_signal)
+        
+        window_seconds = 10
+        samples_per_window = window_seconds * sample_rate
+        
+        # CRITICAL: Skip second 0 (contains 800ms tone marker)
+        # Windows: 1-10, 11-20, 21-30, 31-40, 41-50, 51-59
+        # Note: Last window has only 9 ticks (51-59)
+        num_windows = 6
+        
+        results = []
+        
+        for window_idx in range(num_windows):
+            # Start at second 1 (not 0) to avoid 800ms tone marker
+            window_start_second = 1 + (window_idx * window_seconds)
+            window_start_sample = window_start_second * sample_rate
+            
+            # Last window is only 9 seconds (51-59)
+            if window_idx == 5:
+                window_end_second = 60  # Up to but not including next minute
+                actual_window_seconds = 9  # 51-59 = 9 ticks
+            else:
+                window_end_second = window_start_second + window_seconds
+                actual_window_seconds = window_seconds
+            
+            window_end_sample = window_end_second * sample_rate
+            
+            # Check if we have enough data
+            if window_end_sample > len(audio_signal):
+                logger.debug(f"{self.channel_name}: Tick window {window_idx} incomplete "
+                            f"({len(audio_signal)} < {window_end_sample} samples)")
+                break
+            
+            window_data = audio_signal[window_start_sample:window_end_sample]
+            
+            # Track both coherent (complex amplitude) and incoherent (power) integration
+            wwv_complex_sum = 0.0 + 0.0j  # Coherent sum
+            wwvh_complex_sum = 0.0 + 0.0j
+            wwv_energy_sum = 0.0  # Incoherent sum
+            wwvh_energy_sum = 0.0
+            noise_estimate_sum = 0.0
+            
+            # Track phase for coherence quality measurement
+            wwv_phases = []
+            wwvh_phases = []
+            
+            valid_ticks = 0
+            
+            for tick_idx in range(actual_window_seconds):
+                # Extract 100ms window around each tick (±50ms)
+                # Ticks occur at :XX.0 seconds within the window
+                tick_center_sample = tick_idx * sample_rate
+                tick_window_start = max(0, tick_center_sample - int(0.05 * sample_rate))
+                tick_window_end = min(len(window_data), tick_center_sample + int(0.05 * sample_rate))
+                
+                if tick_window_end - tick_window_start < int(0.08 * sample_rate):
+                    continue  # Need at least 80ms
+                
+                tick_window = window_data[tick_window_start:tick_window_end]
+                
+                # Apply Hann window to reduce spectral leakage
+                windowed_tick = tick_window * scipy_signal.windows.hann(len(tick_window))
+                
+                # Zero-pad to achieve 1 Hz frequency resolution
+                # 1 second at sample_rate = 1 Hz bins
+                padded_length = sample_rate  # 16000 samples → 1 Hz resolution
+                padded_tick = np.pad(windowed_tick, (0, padded_length - len(windowed_tick)), mode='constant')
+                
+                # FFT to extract complex amplitudes with fine frequency resolution
+                fft_result = rfft(padded_tick)
+                freqs = rfftfreq(padded_length, 1/sample_rate)
+                
+                # Extract complex values at WWV (1000 Hz) and WWVH (1200 Hz)
+                wwv_freq_idx = np.argmin(np.abs(freqs - 1000.0))
+                wwvh_freq_idx = np.argmin(np.abs(freqs - 1200.0))
+                
+                wwv_complex = fft_result[wwv_freq_idx]  # Complex amplitude
+                wwvh_complex = fft_result[wwvh_freq_idx]
+                
+                # Phase tracking for coherence quality
+                wwv_phase = np.angle(wwv_complex)
+                wwvh_phase = np.angle(wwvh_complex)
+                
+                # Phase correction: align to first tick's phase
+                if valid_ticks == 0:
+                    # Reference phase from first tick
+                    wwv_ref_phase = wwv_phase
+                    wwvh_ref_phase = wwvh_phase
+                else:
+                    # Correct phase drift (simple first-order correction)
+                    wwv_phase_correction = np.exp(-1j * (wwv_phase - wwv_ref_phase))
+                    wwvh_phase_correction = np.exp(-1j * (wwvh_phase - wwvh_ref_phase))
+                    
+                    wwv_complex *= wwv_phase_correction
+                    wwvh_complex *= wwvh_phase_correction
+                
+                # Coherent integration: sum complex amplitudes
+                wwv_complex_sum += wwv_complex
+                wwvh_complex_sum += wwvh_complex
+                
+                # Incoherent integration: sum power
+                wwv_energy = np.abs(wwv_complex)**2
+                wwvh_energy = np.abs(wwvh_complex)**2
+                wwv_energy_sum += wwv_energy
+                wwvh_energy_sum += wwvh_energy
+                
+                # Track phases for coherence quality
+                wwv_phases.append(wwv_phase)
+                wwvh_phases.append(wwvh_phase)
+                
+                # Measure noise power density in clean guard band
+                # Use 825-875 Hz (50 Hz band, below both signals and modulation sidebands)
+                # Avoids:
+                #   WWV: 1000 ± 100 Hz = 900-1100 Hz
+                #   WWVH: 1200 ± 100 Hz = 1100-1300 Hz
+                noise_low_idx = np.argmin(np.abs(freqs - 825.0))
+                noise_high_idx = np.argmin(np.abs(freqs - 875.0))
+                noise_bins = fft_result[noise_low_idx:noise_high_idx]
+                
+                if len(noise_bins) > 0:
+                    # Total noise power in 50 Hz band
+                    total_noise_power = np.mean(np.abs(noise_bins)**2)
+                    # Normalize to power spectral density (W/Hz)
+                    noise_bandwidth_hz = 50.0
+                    noise_power_density = total_noise_power / noise_bandwidth_hz
+                    noise_estimate_sum += noise_power_density
+                else:
+                    noise_estimate_sum += 1e-12
+                
+                valid_ticks += 1
+            
+            # Calculate average noise power density per tick
+            if valid_ticks > 0 and noise_estimate_sum > 0:
+                N0 = noise_estimate_sum / valid_ticks  # Average noise power density (W/Hz)
+                
+                # Signal filter bandwidth (effective)
+                # Hann window ENBW = 1.5 × frequency resolution
+                # With 1 Hz FFT bins (1 second zero-padding), ENBW = 1.5 Hz
+                B_signal = 1.5  # Hz (Hann window ENBW)
+                
+                # ===== COHERENT INTEGRATION (10 dB gain) =====
+                # Power from coherent sum of complex amplitudes
+                wwv_coherent_power = np.abs(wwv_complex_sum)**2
+                wwvh_coherent_power = np.abs(wwvh_complex_sum)**2
+                
+                # SNR with proper bandwidth normalization
+                # SNR = S / (N₀ × B_signal × N_ticks)
+                noise_power_coherent = N0 * B_signal * valid_ticks
+                coherent_wwv_snr = 10 * np.log10(wwv_coherent_power / noise_power_coherent) if wwv_coherent_power > 0 else -100
+                coherent_wwvh_snr = 10 * np.log10(wwvh_coherent_power / noise_power_coherent) if wwvh_coherent_power > 0 else -100
+                
+                # ===== INCOHERENT INTEGRATION (5 dB gain) =====
+                # Sum of power (energy)
+                noise_power_incoherent = N0 * B_signal * valid_ticks
+                incoherent_wwv_snr = 10 * np.log10(wwv_energy_sum / noise_power_incoherent) if wwv_energy_sum > 0 else -100
+                incoherent_wwvh_snr = 10 * np.log10(wwvh_energy_sum / noise_power_incoherent) if wwvh_energy_sum > 0 else -100
+                
+                # ===== COHERENCE QUALITY METRIC =====
+                # Measure phase stability: low variance = high coherence
+                # Quality = 1 - (phase_variance / π²)  → ranges 0 (random) to 1 (stable)
+                wwv_coherence_quality = 0.0
+                wwvh_coherence_quality = 0.0
+                
+                if len(wwv_phases) > 1:
+                    # Unwrap phases to handle 2π discontinuities
+                    wwv_phases_unwrapped = np.unwrap(wwv_phases)
+                    wwv_phase_variance = np.var(wwv_phases_unwrapped)
+                    # Normalize: perfect coherence = 0 variance, random = π²/3 variance
+                    wwv_coherence_quality = max(0.0, min(1.0, 1.0 - (wwv_phase_variance / (np.pi**2 / 3))))
+                
+                if len(wwvh_phases) > 1:
+                    wwvh_phases_unwrapped = np.unwrap(wwvh_phases)
+                    wwvh_phase_variance = np.var(wwvh_phases_unwrapped)
+                    wwvh_coherence_quality = max(0.0, min(1.0, 1.0 - (wwvh_phase_variance / (np.pi**2 / 3))))
+                
+                # ===== CHOOSE INTEGRATION METHOD =====
+                # Use coherent integration if it yields significantly higher SNR
+                # If coherent SNR > incoherent SNR + threshold, coherence is real
+                # Otherwise fall back to incoherent (more robust)
+                coherent_snr_advantage_threshold = 3.0  # dB
+                
+                # Check if coherent method provides real SNR improvement
+                wwv_coherent_advantage = coherent_wwv_snr - incoherent_wwv_snr
+                wwvh_coherent_advantage = coherent_wwvh_snr - incoherent_wwvh_snr
+                
+                # Use coherent if BOTH stations show coherent advantage
+                if (wwv_coherent_advantage >= coherent_snr_advantage_threshold and 
+                    wwvh_coherent_advantage >= coherent_snr_advantage_threshold):
+                    integration_method = 'coherent'
+                    wwv_snr = coherent_wwv_snr
+                    wwvh_snr = coherent_wwvh_snr
+                else:
+                    integration_method = 'incoherent'
+                    wwv_snr = incoherent_wwv_snr
+                    wwvh_snr = incoherent_wwvh_snr
+                
+                ratio_db = wwv_snr - wwvh_snr
+                
+                # Convert noise power density to dB (relative to 1.0 = 0 dB)
+                # This is N₀ in dBW/Hz
+                noise_power_density_db = 10 * np.log10(N0) if N0 > 0 else -100
+                
+                results.append({
+                    'second': window_start_second,  # Actual start second (skips second 0)
+                    # Best SNR (chosen method)
+                    'wwv_snr_db': float(wwv_snr),
+                    'wwvh_snr_db': float(wwvh_snr),
+                    'ratio_db': float(ratio_db),
+                    # Coherent results
+                    'coherent_wwv_snr_db': float(coherent_wwv_snr),
+                    'coherent_wwvh_snr_db': float(coherent_wwvh_snr),
+                    # Incoherent results
+                    'incoherent_wwv_snr_db': float(incoherent_wwv_snr),
+                    'incoherent_wwvh_snr_db': float(incoherent_wwvh_snr),
+                    # Coherence quality
+                    'coherence_quality_wwv': float(wwv_coherence_quality),
+                    'coherence_quality_wwvh': float(wwvh_coherence_quality),
+                    'integration_method': integration_method,
+                    'tick_count': valid_ticks,
+                    # Noise power density N₀ (825-875 Hz, below modulation sidebands)
+                    'noise_power_density_db': float(noise_power_density_db),
+                    # Signal filter bandwidth for diagnostics
+                    'signal_bandwidth_hz': float(B_signal)
+                })
+                
+                logger.info(f"{self.channel_name}: Tick window {window_idx} (sec {window_start_second}-{window_end_second-1}): "
+                           f"{integration_method.upper()} - WWV={wwv_snr:.1f}dB, WWVH={wwvh_snr:.1f}dB, Ratio={ratio_db:+.1f}dB "
+                           f"(coherence: WWV={wwv_coherence_quality:.2f}, WWVH={wwvh_coherence_quality:.2f}, {valid_ticks} ticks)")
+            else:
+                # No valid ticks in this window
+                results.append({
+                    'second': window_start_second,  # Actual start second (skips second 0)
+                    'wwv_snr_db': -100.0,
+                    'wwvh_snr_db': -100.0,
+                    'ratio_db': 0.0,
+                    'coherent_wwv_snr_db': -100.0,
+                    'coherent_wwvh_snr_db': -100.0,
+                    'incoherent_wwv_snr_db': -100.0,
+                    'incoherent_wwvh_snr_db': -100.0,
+                    'coherence_quality_wwv': 0.0,
+                    'coherence_quality_wwvh': 0.0,
+                    'integration_method': 'none',
+                    'tick_count': 0,
+                    'noise_power_density_db': -100.0,
+                    'signal_bandwidth_hz': 5.0
+                })
+        
+        return results
+    
+    def detect_bcd_discrimination(
+        self,
+        iq_samples: np.ndarray,
+        sample_rate: int,
+        minute_timestamp: float,
+        window_seconds: int = 10,
+        step_seconds: int = 1,
+        adaptive: bool = True
+    ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], List[Dict[str, float]]]:
+        """
+        Discriminate WWV/WWVH using 100 Hz BCD cross-correlation with sliding windows
+        
+        Both WWV and WWVH transmit the IDENTICAL 100 Hz BCD time code simultaneously.
+        By cross-correlating the received 100 Hz signal against the expected template,
+        we get two peaks separated by the ionospheric differential delay (~10-20ms).
+        
+        CRITICAL: Uses sliding windows (default 10 sec with 1 sec steps) to balance SNR gain
+        with temporal resolution. 10 seconds is the sweet spot: below typical HF coherence time
+        (Tc ~15-20s) for stable correlation, while providing 10x SNR improvement over 1-second
+        integration. Heavy overlap (1-second steps) captures rapid ionospheric variations.
+        
+        ADAPTIVE WINDOWING (enabled by default):
+        - Similar amplitudes (<3 dB difference): Recommend expanding to 15s for better discrimination
+        - One station dominant (>10 dB difference): Recommend tightening to 5s for better resolution
+        - Weak signals (quality <3.0): Recommend expanding to 15-20s for better SNR
+        - Logs recommendations for operator to adjust window_seconds parameter
+        
+        This method completely avoids the 1000/1200 Hz time marker tone separation problem!
+        The 100 Hz BCD signal is the actual carrier.
+        
+        Args:
+            iq_samples: Full minute of complex IQ samples
+            sample_rate: Sample rate in Hz (typically 16000)
+            minute_timestamp: UTC timestamp of minute boundary
+            window_seconds: Integration window length (default 10s, adjust based on conditions)
+            step_seconds: Sliding step size (default 1s, heavy overlap for temporal resolution)
+            adaptive: Enable adaptive window recommendations (default True)
+            
+        Returns:
+            Tuple of (wwv_amp_mean, wwvh_amp_mean, delay_mean, quality_mean, windows_list)
+            Scalar values are means across all windows; windows_list contains time-series data
+            Returns (None, None, None, None, None) if correlation fails
+        """
+        try:
+            # Step 1: Extract 100 Hz BCD tone from the combined IQ signal
+            # BCD is amplitude modulation of a 100 Hz subcarrier, independent of 1000/1200 Hz ID tones
+            # Both WWV and WWVH transmit the same BCD pattern on 100 Hz
+            
+            # Bandpass filter around 100 Hz to isolate BCD subcarrier
+            nyquist = sample_rate / 2
+            bcd_low_norm = 50 / nyquist   # 50-150 Hz captures 100 Hz BCD
+            bcd_high_norm = 150 / nyquist
+            sos_bcd = scipy_signal.butter(4, [bcd_low_norm, bcd_high_norm], 'bandpass', output='sos')
+            bcd_100hz = scipy_signal.sosfilt(sos_bcd, iq_samples)
+            
+            # Step 2: AM demodulate the 100 Hz tone to get BCD envelope
+            bcd_envelope = np.abs(bcd_100hz)
+            bcd_envelope = bcd_envelope - np.mean(bcd_envelope)
+            
+            # Step 3: Low-pass filter to get the BCD modulation pattern
+            # BCD bit rate is ~1 Hz (1 bit per second), so keep 0-5 Hz
+            lp_cutoff_norm = 5 / nyquist
+            sos_lp = scipy_signal.butter(4, lp_cutoff_norm, 'low', output='sos')
+            bcd_signal = scipy_signal.sosfilt(sos_lp, bcd_envelope)
+            
+            # Step 4: Generate expected BCD template for this minute (full 60 seconds)
+            bcd_template_full = self._generate_bcd_template(minute_timestamp, sample_rate)
+            
+            if bcd_template_full is None:
+                logger.warning(f"{self.channel_name}: Failed to generate BCD template")
+                return None, None, None, None, None
+            
+            # Step 5: Sliding window correlation to find delay AND amplitudes
+            # The 100 Hz BCD signal IS the carrier - both stations transmit on 100 Hz
+            # Correlation peak heights give us the individual station amplitudes
+            window_samples = window_seconds * sample_rate
+            step_samples = step_seconds * sample_rate
+            
+            # Calculate number of windows
+            total_samples = len(bcd_signal)
+            num_windows = (total_samples - window_samples) // step_samples + 1
+            
+            windows_data = []
+            
+            for i in range(num_windows):
+                start_sample = i * step_samples
+                end_sample = start_sample + window_samples
+                window_start_time = start_sample / sample_rate  # Seconds into the minute
+                
+                # Extract BCD signal window and template
+                signal_window = bcd_signal[start_sample:end_sample]
+                template_window = bcd_template_full[start_sample:end_sample]
+                
+                # Cross-correlate to find two peaks (WWV and WWVH arrivals)
+                correlation = scipy_signal.correlate(signal_window, template_window, mode='full', method='fft')
+                correlation = np.abs(correlation)
+                
+                # Find two strongest peaks
+                mean_corr = np.mean(correlation)
+                std_corr = np.std(correlation)
+                threshold = mean_corr + 2 * std_corr
+                
+                min_peak_distance = int(0.005 * sample_rate)  # 5ms minimum
+                
+                peaks, properties = scipy_signal.find_peaks(
+                    correlation,
+                    height=threshold,
+                    distance=min_peak_distance,
+                    prominence=std_corr * 0.5
+                )
+                
+                if len(peaks) >= 2:
+                    peak_heights = properties['peak_heights']
+                    sorted_indices = np.argsort(peak_heights)[-2:]
+                    sorted_indices = np.sort(sorted_indices)
+                    
+                    peak1_idx = sorted_indices[0]
+                    peak2_idx = sorted_indices[1]
+                    
+                    peak1_time = peaks[peak1_idx] / sample_rate
+                    peak2_time = peaks[peak2_idx] / sample_rate
+                    
+                    delay_ms = (peak2_time - peak1_time) * 1000
+                    
+                    if 5 <= delay_ms <= 30:
+                        # Joint Least Squares Estimation to overcome temporal leakage
+                        # At each peak, we measure: C(τ) = A_WWV*R(τ-τ_WWV) + A_WWVH*R(τ-τ_WWVH)
+                        # This forms a 2x2 linear system we solve for A_WWV and A_WWVH
+                        
+                        # Get correlation values at both peaks
+                        c_peak1 = float(peak_heights[peak1_idx])
+                        c_peak2 = float(peak_heights[peak2_idx])
+                        
+                        # Compute template autocorrelation at delay Δτ
+                        delay_samples = int(delay_ms * sample_rate / 1000)
+                        
+                        # R(0) = template autocorrelation at zero lag (template energy)
+                        R_0 = float(np.sum(template_window**2))
+                        
+                        # R(Δτ) = template autocorrelation at the measured delay
+                        # Shift template and compute overlap
+                        if delay_samples < len(template_window):
+                            R_delta = float(np.sum(template_window[:-delay_samples] * 
+                                                  template_window[delay_samples:]))
+                        else:
+                            R_delta = 0.0
+                        
+                        # Set up the 2x2 system: [R(0) R(Δτ)] [A_WWV  ] = [C(τ_WWV) ]
+                        #                        [R(Δτ) R(0) ] [A_WWVH]   [C(τ_WWVH)]
+                        # Note: R(-Δτ) = R(Δτ) due to autocorrelation symmetry
+                        
+                        if R_0 > 0:
+                            # Solve the linear system
+                            A_matrix = np.array([[R_0, R_delta],
+                                               [R_delta, R_0]])
+                            b_vector = np.array([c_peak1, c_peak2])
+                            
+                            try:
+                                amplitudes = np.linalg.solve(A_matrix, b_vector)
+                                wwv_amp = float(amplitudes[0])
+                                wwvh_amp = float(amplitudes[1])
+                                
+                                # Normalize by sqrt(template energy) for physical units
+                                wwv_amp = wwv_amp / np.sqrt(R_0)
+                                wwvh_amp = wwvh_amp / np.sqrt(R_0)
+                            except np.linalg.LinAlgError:
+                                # Matrix is singular, fall back to naive method
+                                wwv_amp = c_peak1 / np.sqrt(R_0)
+                                wwvh_amp = c_peak2 / np.sqrt(R_0)
+                        else:
+                            wwv_amp = 0.0
+                            wwvh_amp = 0.0
+                        
+                        # Safety check for NaN/Inf values (breaks JSON)
+                        if not np.isfinite(wwv_amp):
+                            wwv_amp = 0.0
+                        if not np.isfinite(wwvh_amp):
+                            wwvh_amp = 0.0
+                        
+                        # Quality from correlation SNR
+                        noise_floor = np.median(correlation)
+                        quality = (c_peak1 + c_peak2) / (2 * noise_floor) if noise_floor > 0 else 0.0
+                        
+                        if not np.isfinite(quality):
+                            quality = 0.0
+                        
+                        windows_data.append({
+                            'window_start_sec': float(window_start_time),
+                            'wwv_amplitude': wwv_amp,
+                            'wwvh_amplitude': wwvh_amp,
+                            'differential_delay_ms': float(delay_ms),
+                            'correlation_quality': float(quality)
+                        })
+            
+            # Step 5: Compute summary statistics from all valid windows
+            if not windows_data:
+                logger.debug(f"{self.channel_name}: No valid BCD correlation windows")
+                return None, None, None, None, []
+            
+            wwv_amps = [w['wwv_amplitude'] for w in windows_data]
+            wwvh_amps = [w['wwvh_amplitude'] for w in windows_data]
+            delays = [w['differential_delay_ms'] for w in windows_data]
+            qualities = [w['correlation_quality'] for w in windows_data]
+            
+            wwv_amp_mean = float(np.mean(wwv_amps))
+            wwvh_amp_mean = float(np.mean(wwvh_amps))
+            delay_mean = float(np.mean(delays))
+            quality_mean = float(np.mean(qualities))
+            
+            # Adaptive windowing: Adjust window size based on signal conditions
+            window_adjustment = None
+            if adaptive:
+                # Calculate amplitude ratio (dB)
+                amp_ratio_db = 20 * np.log10(max(wwv_amp_mean, 1e-10) / max(wwvh_amp_mean, 1e-10))
+                
+                # Determine if one station is dominant or both are similar
+                if abs(amp_ratio_db) > 10:
+                    # One station is 10+ dB stronger (dominant or alone)
+                    # → Tighten window for better temporal resolution
+                    if window_seconds > 5:
+                        window_adjustment = "tighten"
+                        logger.info(f"{self.channel_name}: One station dominant ({amp_ratio_db:+.1f}dB) "
+                                   f"- consider 5-second windows for better resolution")
+                
+                elif abs(amp_ratio_db) < 3:
+                    # Stations within 3 dB (similar strength, hard to discriminate)
+                    # → Expand window for better SNR discrimination
+                    if window_seconds < 15:
+                        window_adjustment = "expand"
+                        logger.info(f"{self.channel_name}: Similar amplitudes ({amp_ratio_db:+.1f}dB) "
+                                   f"- consider 15-second windows for better discrimination")
+                
+                # Check overall signal strength (quality)
+                if quality_mean < 3.0 and window_seconds < 20:
+                    # Weak signals (poor SNR)
+                    # → Expand window regardless of amplitude ratio
+                    window_adjustment = "expand_weak"
+                    logger.info(f"{self.channel_name}: Weak signals (quality={quality_mean:.1f}) "
+                               f"- consider 15-20 second windows for better SNR")
+            
+            logger.info(f"{self.channel_name}: BCD correlation ({len(windows_data)} windows, {window_seconds}s) - "
+                       f"WWV amp={wwv_amp_mean:.1f}±{np.std(wwv_amps):.1f}, "
+                       f"WWVH amp={wwvh_amp_mean:.1f}±{np.std(wwvh_amps):.1f}, "
+                       f"ratio={20*np.log10(max(wwv_amp_mean,1e-10)/max(wwvh_amp_mean,1e-10)):+.1f}dB, "
+                       f"delay={delay_mean:.2f}±{np.std(delays):.2f}ms, "
+                       f"quality={quality_mean:.1f}")
+            
+            return wwv_amp_mean, wwvh_amp_mean, delay_mean, quality_mean, windows_data
+            
+        except Exception as e:
+            logger.error(f"{self.channel_name}: BCD discrimination failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None, None, None, None, None
+    
+    def _generate_bcd_template(
+        self,
+        minute_timestamp: float,
+        sample_rate: int
+    ) -> Optional[np.ndarray]:
+        """
+        Generate expected 100 Hz BCD template for a given UTC minute
+        
+        Uses the WWVBCDEncoder to generate an accurate template based on
+        Phil Karn's wwvsim.c implementation.
+        
+        Args:
+            minute_timestamp: UTC timestamp of minute boundary
+            sample_rate: Sample rate in Hz
+            
+        Returns:
+            60-second BCD template as numpy array, or None if generation fails
+        """
+        try:
+            # Use the encoder instance that was created during __init__
+            template = self.bcd_encoder.encode_minute(minute_timestamp)
+            return template
+            
+        except Exception as e:
+            logger.error(f"{self.channel_name}: Failed to generate BCD template: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
     def analyze_minute_with_440hz(
         self,
         iq_samples: np.ndarray,
@@ -355,7 +1129,7 @@ class WWVHDiscriminator:
         detections: List[ToneDetectionResult]
     ) -> Optional[DiscriminationResult]:
         """
-        Complete discrimination analysis including 440 Hz tone
+        Complete discrimination analysis including 440 Hz tone and high-resolution tick detection
         
         Args:
             iq_samples: Full minute of IQ samples
@@ -364,7 +1138,7 @@ class WWVHDiscriminator:
             detections: Tone detection results for this minute
             
         Returns:
-            Enhanced DiscriminationResult with 440 Hz analysis
+            Enhanced DiscriminationResult with 440 Hz and tick window analysis
         """
         # First compute basic discrimination
         result = self.compute_discrimination(detections, minute_timestamp)
@@ -396,6 +1170,67 @@ class WWVHDiscriminator:
             # If 440 Hz detected, increases confidence that WWV is present
             if detected and result.confidence == 'low':
                 result.confidence = 'medium'
+        
+        # High-resolution tick detection with coherent integration (10-second windows)
+        # Provides 6x better time resolution than minute-long tones
+        try:
+            tick_windows = self.detect_tick_windows(iq_samples, sample_rate)
+            result.tick_windows_10sec = tick_windows
+            
+            # Log summary with coherent integration statistics
+            good_windows = [w for w in tick_windows if w['wwv_snr_db'] > 0 or w['wwvh_snr_db'] > 0]
+            if good_windows:
+                coherent_count = sum(1 for w in good_windows if w.get('integration_method') == 'coherent')
+                avg_ratio = np.mean([w['ratio_db'] for w in good_windows])
+                avg_coherence_wwv = np.mean([w.get('coherence_quality_wwv', 0) for w in good_windows])
+                avg_coherence_wwvh = np.mean([w.get('coherence_quality_wwvh', 0) for w in good_windows])
+                
+                logger.info(f"{self.channel_name}: Tick analysis - {len(good_windows)}/6 windows valid, "
+                           f"{coherent_count}/{len(good_windows)} coherent, avg ratio: {avg_ratio:+.1f}dB, "
+                           f"coherence: WWV={avg_coherence_wwv:.2f} WWVH={avg_coherence_wwvh:.2f}")
+        except Exception as e:
+            logger.warning(f"{self.channel_name}: Tick detection failed: {e}")
+            result.tick_windows_10sec = []
+        
+        # BCD-based discrimination using 100 Hz cross-correlation
+        # Uses sliding 10-second windows (1-second steps) for SNR gain while tracking dynamics
+        # Amplitudes measured directly from 100 Hz BCD signal correlation peaks
+        try:
+            bcd_wwv, bcd_wwvh, bcd_delay, bcd_quality, bcd_windows = self.detect_bcd_discrimination(
+                iq_samples, sample_rate, minute_timestamp
+            )
+            
+            # Log 440 Hz reference measurements when available (hourly calibration anchor)
+            # 440 Hz provides harmonic-free reference (WWV minute 2, WWVH minute 1)
+            if minute_number == 1 and result.tone_440hz_wwvh_detected and result.tone_440hz_wwvh_power_db:
+                logger.debug(f"{self.channel_name}: 440 Hz WWVH reference: {result.tone_440hz_wwvh_power_db:.1f} dB")
+            elif minute_number == 2 and result.tone_440hz_wwv_detected and result.tone_440hz_wwv_power_db:
+                logger.debug(f"{self.channel_name}: 440 Hz WWV reference: {result.tone_440hz_wwv_power_db:.1f} dB")
+            
+            result.bcd_wwv_amplitude = bcd_wwv
+            result.bcd_wwvh_amplitude = bcd_wwvh
+            result.bcd_differential_delay_ms = bcd_delay
+            result.bcd_correlation_quality = bcd_quality
+            result.bcd_windows = bcd_windows  # Time-series data (~50 windows/minute with 1s steps)
+                    
+        except Exception as e:
+            logger.warning(f"{self.channel_name}: BCD discrimination failed: {e}")
+            result.bcd_wwv_amplitude = None
+            result.bcd_wwvh_amplitude = None
+            result.bcd_differential_delay_ms = None
+            result.bcd_correlation_quality = None
+            result.bcd_windows = None
+        
+        # Finalize discrimination with weighted voting
+        result = self.finalize_discrimination(
+            result=result,
+            minute_number=minute_number,
+            bcd_wwv_amp=result.bcd_wwv_amplitude,
+            bcd_wwvh_amp=result.bcd_wwvh_amplitude,
+            tone_440_wwv_detected=result.tone_440hz_wwv_detected,
+            tone_440_wwvh_detected=result.tone_440hz_wwvh_detected,
+            tick_results=result.tick_windows_10sec
+        )
         
         return result
     
