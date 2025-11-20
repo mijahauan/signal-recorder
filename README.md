@@ -1,361 +1,124 @@
 # GRAPE Signal Recorder
 
-**A specialized system for recording and archiving WWV/CHU time-standard signals for the HamSCI GRAPE (Grape Radio Aurora and Plasma Experiment) project.**
+**Precision WWV/CHU time-standard recorder for ionospheric research** - Captures high-precision IQ data from ka9q-radio, performs 5-method WWV/WWVH discrimination, and uploads Digital RF to HamSCI PSWS.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
----
+## Overview
 
-## What is GRAPE?
+The [HamSCI GRAPE project](https://hamsci.org/grape) studies ionospheric disturbances through timing variations in WWV/CHU broadcasts. This recorder enables amateur radio operators to contribute scientifically valid data to the global observation network.
 
-The [HamSCI GRAPE project](https://hamsci.org/grape) studies **ionospheric disturbances** by analyzing **timing variations** in WWV (Fort Collins, CO) and CHU (Ottawa, Canada) time-standard broadcasts. Amateur radio operators worldwide contribute data to build a global observation network.
-
-This recorder:
-- ✅ Captures **high-precision IQ data** from ka9q-radio
-- ✅ Archives **16 kHz NPZ** for reprocessability
-- ✅ Analyzes via **5 independent discrimination methods**
-- ✅ Decimates to **10 Hz Digital RF** for timing analysis
-- ✅ Monitors **data quality metrics** (completeness, timing drift, packet loss)
-- ✅ Uploads to **HamSCI PSWS repository** via rsync
-- ✅ Provides **web-based management** and real-time monitoring
-
----
+**Key Capabilities:**
+- 📡 **Multi-channel recording** - Simultaneous WWV 2.5-25 MHz, CHU 3.33-14.67 MHz
+- 🎯 **GPS-quality timing** - ±1ms via tone detection (time_snap mechanism)
+- 🔬 **5 discrimination methods** - Timing tones, ticks, 440 Hz ID, BCD, weighted voting
+- 📊 **Digital RF output** - 10 Hz IQ + metadata (wsprdaemon-compatible)
+- 🌐 **Web UI** - Real-time monitoring, configuration, quality metrics
+- 🚀 **PSWS upload** - Automated rsync to HamSCI repository
 
 ## Quick Start
 
-### Prerequisites
-
-1. **ka9q-radio** installed and configured ([installation guide](https://github.com/ka9q/ka9q-radio))
-2. **Linux system** with multicast networking
-3. **Python 3.8+** and **Node.js 16+**
-4. **PSWS account** from HamSCI (for uploads)
-
-### Installation
+**Prerequisites:** ka9q-radio, Linux with multicast, Python 3.8+, Node.js 16+
 
 ```bash
-# Clone repository
+# Install
 git clone https://github.com/yourusername/signal-recorder.git
 cd signal-recorder
+python3 -m venv venv && source venv/bin/activate && pip install -e .
+cd web-ui && pnpm install
 
-# Install Python dependencies
-python3 -m venv venv
-source venv/bin/activate
-pip install -e .
+# Configure via Web UI
+cd web-ui && pnpm start  # http://localhost:3000
+# OR edit config/grape-config.toml manually
 
-# Install web UI dependencies
-cd web-ui
-pnpm install  # or: npm install
-```
-
-### Configuration
-
-**Use the web interface** (easiest):
-
-```bash
-cd web-ui
-pnpm start
-# Open http://localhost:3000 (login: admin/admin)
-```
-
-The web UI guides you through:
-1. Station info (callsign, grid square, instrument)
-2. Channel selection (WWV/CHU presets available)
-3. PSWS upload credentials
-4. Export to `config/grape-config.toml`
-
-**Or edit TOML manually** (advanced users): see [Configuration Guide](docs/configuration.md)
-
-#### Test vs Production Mode
-
-The config file (`config/grape-config.toml`) includes a mode flag:
-
-```toml
-[recorder]
-mode = "test"  # or "production"
-test_data_root = "/tmp/grape-test"
-production_data_root = "/var/lib/signal-recorder"
-```
-
-- **Test mode** (default): Data stored in `/tmp/grape-test` (temporary, cleared on reboot)
-- **Production mode**: Data stored in `/var/lib/signal-recorder` (persistent)
-
-### Running
-
-**Test mode** (recommended for initial setup):
-
-```bash
-# Ensure config has: mode = "test"
+# Run (test mode safe for initial setup)
 signal-recorder daemon --config config/grape-config.toml
-
-# Data goes to /tmp/grape-test (temporary)
-# Safe for testing - won't affect production data
 ```
 
-**Production mode** (for operational data collection):
+**Test vs Production:** Set `mode = "test"` in config for `/tmp/grape-test` (temporary), or `mode = "production"` for `/var/lib/signal-recorder` (persistent).
 
-```bash
-# Edit config: mode = "production"
-signal-recorder daemon --config config/grape-config.toml
-
-# Data goes to /var/lib/signal-recorder (persistent)
-# Ensure proper permissions and disk space
-```
-
-**Or use the web UI** to start/stop: `http://localhost:3000`
-
-### Monitoring
-
-Real-time dashboard shows:
-- 📊 Channel health (🟢/🟡/🔴)
-- 📈 Completeness, packet loss, timing drift
-- 📁 Files written and data uploaded
-- 📋 Live daemon logs
-
-Access: `http://localhost:3000/monitoring`
-
----
-
-## Key Features
-
-### 🎯 Purpose-Built for GRAPE
-
-Unlike generic SDR recorders, this system is **optimized for continuous timing signal analysis**:
-
-| Feature | GRAPE Recorder | Generic Recorders |
-|---------|---------------|-------------------|
-| **Data Format** | Digital RF (10 Hz IQ) | Audio/WAV/Raw IQ |
-| **Timing Validation** | RTP clock tracking, drift monitoring | None |
-| **Quality Metrics** | Completeness, packet loss, timing stats | File size only |
-| **Upload** | rsync to PSWS | Manual/FTP |
-| **Management** | Web UI + monitoring | Command-line only |
-
-### 🔬 Multi-Stage Processing Architecture
-
-The system uses a **three-service architecture** for scientific reliability and reprocessability:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ 1. Core Recorder (Rock-Solid Archiving)                    │
-│    ka9q-radio RTP packets (16 kHz IQ)                       │
-│         ↓ Resequencing + gap fill                           │
-│    {timestamp}_iq.npz (16 kHz, complete record)             │
-│    Location: archives/{channel}/                            │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 2. Analytics Service (5 Discrimination Methods + Decimation)│
-│    ├→ Method 1: Timing Tones (1000/1200 Hz power, delay)   │
-│    ├→ Method 2: Tick Windows (5ms tick coherent analysis)   │
-│    ├→ Method 3: Station ID (440 Hz minute 1=WWVH, 2=WWV)   │
-│    ├→ Method 4: BCD (100 Hz subcarrier discrimination)      │
-│    ├→ Method 5: Weighted Voting (final determination)       │
-│    ├→ Time_snap Establishment (GPS-quality timestamps)      │
-│    ├→ Quality Metrics (completeness, packet loss, gaps)     │
-│    └→ Decimation (16 kHz → 10 Hz with metadata)            │
-│         ↓                                                    │
-│    {timestamp}_iq_10hz.npz (10 Hz + embedded metadata)      │
-│    + Separated CSVs per method in analytics/{channel}/      │
-│    Location: analytics/{channel}/decimated/                 │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-              ┌────────────┴────────────┐
-              ↓                         ↓
-┌──────────────────────────┐  ┌──────────────────────────┐
-│ 3a. DRF Writer Service   │  │ 3b. Spectrogram Generator│
-│    Reads 10Hz NPZ        │  │    Reads 10Hz NPZ        │
-│         ↓                │  │         ↓                │
-│    Digital RF HDF5       │  │    Carrier PNG           │
-│    (for PSWS upload)     │  │    (for web UI display)  │
-│         ↓                │  │         ↓                │
-│    rsync to HamSCI       │  │    spectrograms/{date}/  │
-└──────────────────────────┘  └──────────────────────────┘
-```
-
-**Key Design Principles:**
-
-1. **Canonical Contracts (Nov 2025):**
-   - All paths via `GRAPEPaths` API (no direct construction)
-   - All functions documented in `docs/API_REFERENCE.md`
-   - Consistent naming: `{CHANNEL}_{METHOD}_YYYYMMDD.csv`
-   - Automated validation: `scripts/validate_api_compliance.py`
-
-2. **Separation of Concerns:**
-   - Core recorder: Focus on complete, timestamped data capture
-   - Analytics: Can restart/update without data loss
-   - DRF/Spectrogram: Independent downstream consumers
-
-3. **10 Hz Decimated NPZ as Pivot Point:**
-   - Single decimation (not multiple per consumer)
-   - Embedded timing/quality/tone metadata
-   - Enables carrier analysis (Doppler shifts ±5 Hz)
-   - 1600x smaller than 16 kHz for efficient processing
-
-4. **5 Independent Discrimination Methods:**
-   - Separated CSVs per method for independent reprocessing
-   - Weighted voting for robust final determination
-   - Each testable in isolation
-
-5. **Reprocessability:**
-   - Original 16 kHz archives preserved forever
-   - Analytics can rerun with improved algorithms
-   - 10 Hz files can be regenerated if needed
-
-**Why scipy.signal.decimate?**
-- Direct Python implementation (no external sox/jt9 dependencies)
-- Three-stage anti-aliased FIR filtering (16k→1.6k→160→10 Hz)
-- Sub-millisecond timing preservation
-- Continuous data flow (not 2-minute WSPR cycles)
-
-### 📊 Real-Time Quality Monitoring
-
-Every channel tracks:
-
-**Completeness** - Percentage of expected samples received
-- 🟢 ≥99% (healthy)
-- 🟡 95-99% (warning)
-- 🔴 <95% (error)
-
-**Timing Drift** - RTP timestamp vs system clock offset
-- Measured every 10 seconds
-- Mean ± std deviation tracked
-- Should be < ±50 ms
-
-**Packet Loss** - RTP sequence gaps
-- < 1% is healthy
-- Indicates network/multicast issues
-
-All metrics logged to JSON and displayed in web UI.
-
-### 🌐 Web Management Interface
-
-<img src="docs/images/web-ui-screenshot.png" alt="Web UI" width="600">
-
-**Configuration Tab:**
-- Station setup wizard
-- WWV/CHU channel presets
-- PSWS credentials
-- TOML export
-
-**Monitoring Tab:**
-- Real-time health dashboard
-- Channel-by-channel metrics
-- Daemon logs (tail -100)
-- Auto-refresh every 30 seconds
-
-**Technology:**
-- Node.js backend (Express.js)
-- Vanilla HTML/CSS/JS frontend
-- JSON file database (no PostgreSQL/MySQL)
-- RESTful API
-
----
-
-## Documentation
-
-### Essential Documentation
-- **[CANONICAL_CONTRACTS.md](CANONICAL_CONTRACTS.md)** - ⭐ Project standards (START HERE)
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design & rationale (WHY)
-- **[DIRECTORY_STRUCTURE.md](DIRECTORY_STRUCTURE.md)** - File paths & naming (WHERE)
-- **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** - Function signatures (WHAT)
-
-### Getting Started
-- **[INSTALLATION.md](INSTALLATION.md)** - Detailed setup guide
-- **[Configuration Guide](docs/configuration.md)** - TOML reference
-- **[Web UI Guide](web-ui/README.md)** - Interface walkthrough
-
-### Technical Details
-- **[OPERATIONAL_SUMMARY.md](OPERATIONAL_SUMMARY.md)** - Current system configuration
-- **[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** - Developer quick reference
-- **[PROJECT_NARRATIVE.md](PROJECT_NARRATIVE.md)** - Project history & lessons
-- **[GRAPE Digital RF Format](docs/GRAPE_DIGITAL_RF_RECORDER.md)** - Output specification
-- **[PSWS Upload Setup](docs/PSWS_SETUP_GUIDE.md)** - rsync configuration
-
-### Operations
-- **[Monitoring Guide](docs/monitoring.md)** - Interpreting metrics
-- **[Troubleshooting](docs/troubleshooting.md)** - Common issues
-- **[Deployment Guide](DEPLOYMENT_GUIDE.md)** - systemd setup
-
----
+**Monitor:** `http://localhost:3000/monitoring` - Real-time channel health, quality metrics, logs
 
 ## Architecture
 
+**Three-service design** for reliability and reprocessability:
+
 ```
-┌─────────────────────────┐
-│   Web UI (Node.js)      │  Configuration & Monitoring
-│   http://localhost:3000 │
-└────────────┬────────────┘
-             │
-┌────────────▼────────────┐
-│  GRAPE Recorder Daemon  │  Python (signal-recorder)
-│  • RTP reception        │
-│  • scipy decimation     │
-│  • Digital RF output    │
-│  • Quality monitoring   │
-└────────────┬────────────┘
-             │
-┌────────────▼────────────┐
-│    ka9q-radio (radiod)  │  RTP stream source
-│  • WWV/CHU channels     │
-│  • 16 kHz IQ multicast  │
-└────────────┬────────────┘
-             │
-┌────────────▼────────────┐
-│  HamSCI PSWS Repository │  Data archive (rsync/SSH)
-│  pswsnetwork.eng.ua.edu │
-└─────────────────────────┘
+ka9q-radio (RTP multicast) → Core Recorder → Analytics → DRF Writer/Upload
+                              16kHz NPZ      10Hz NPZ   Digital RF HDF5
+                              archives/      analytics/ → PSWS rsync
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design rationale.
+**1. Core Recorder** (`grape_channel_recorder_v2.py`) - Rock-solid archiving
+- RTP → resequencing → gap fill → 16 kHz NPZ (complete record)
+- ~300 lines, changes <5x/year, minimal dependencies
 
----
+**2. Analytics Service** (`analytics_service.py`) - 5 discrimination methods
+- Method 1: Timing Tones (1000/1200 Hz power ratio)
+- Method 2: Tick Windows (5ms coherent analysis)
+- Method 3: Station ID (440 Hz at minutes 1/2)
+- Method 4: BCD (100 Hz subcarrier)
+- Method 5: Weighted Voting (final determination)
+- Decimation: 16 kHz → 10 Hz (optimized 3-stage FIR)
+- Output: Separated CSVs per method + 10 Hz NPZ with embedded metadata
+
+**3. DRF Writer** (`drf_writer_service.py`) - Wsprdaemon-compatible
+- Reads 10 Hz NPZ → writes Digital RF HDF5 (float32 I/Q pairs)
+- Two modes: wsprdaemon-compatible (default) or enhanced metadata
+- Automated rsync upload to HamSCI PSWS
+
+**Design Principles:**
+- **Reprocessability:** 16 kHz archives preserved, analytics can rerun
+- **Canonical contracts:** All paths via `GRAPEPaths` API ([CANONICAL_CONTRACTS.md](CANONICAL_CONTRACTS.md))
+- **Separation:** Core never stops, analytics restartable, DRF independent
+- **Time_snap:** WWV/CHU tones anchor RTP to UTC (±1ms GPS-quality)
+
+## Quality Metrics
+
+- **Completeness:** 🟢 ≥99% | 🟡 95-99% | 🔴 <95%
+- **Timing Drift:** RTP vs system clock (<±50ms healthy)
+- **Packet Loss:** <1% healthy (indicates network issues)
+- **Time_snap Quality:** TONE_LOCKED (±1ms) > NTP_SYNCED (±10ms) > WALL_CLOCK (±seconds)
+
+## Web UI
+
+**Configuration:** Station setup, channel presets, PSWS credentials, TOML export  
+**Monitoring:** Real-time health, metrics, logs (auto-refresh 30s)  
+**Stack:** Node.js/Express, vanilla JS, JSON storage
+
+## Documentation
+
+**Core Contracts** (consult before code changes):
+- [CANONICAL_CONTRACTS.md](CANONICAL_CONTRACTS.md) - Project standards ⭐ START HERE
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System design (WHY)
+- [DIRECTORY_STRUCTURE.md](DIRECTORY_STRUCTURE.md) - Paths & naming (WHERE)
+- [docs/API_REFERENCE.md](docs/API_REFERENCE.md) - Functions (WHAT)
+- [CONTEXT.md](CONTEXT.md) - AI assistant context transfer
+
+**Setup & Operations:**
+- [INSTALLATION.md](INSTALLATION.md) - Detailed setup
+- [docs/DRF_WRITER_MODES.md](docs/DRF_WRITER_MODES.md) - Wsprdaemon vs enhanced metadata
+- [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - systemd configuration
+- [docs/troubleshooting.md](docs/troubleshooting.md) - Common issues
+
 
 ## Requirements
 
-### Hardware
-- **Receiver**: Any SDR supported by ka9q-radio (RX888, Airspy, SDRPlay, etc.)
-- **Antenna**: HF antenna for WWV/CHU bands (2.5-25 MHz)
-- **Computer**: Linux system with 1+ GB RAM
+**Hardware:** SDR (RX888/Airspy/SDRPlay), HF antenna (2.5-25 MHz), Linux 1+ GB RAM  
+**Software:** ka9q-radio, Python 3.8+ (digital_rf≥3.0, scipy≥1.7, numpy≥1.20), Node.js 16+, rsync  
+**Network:** Multicast-capable, internet for upload, ports 3000 (web UI), 5004 (RTP)
 
-### Software
-- **ka9q-radio** (radiod + control utility)
-- **Python 3.8+** with:
-  - `digital_rf>=3.0.0`
-  - `scipy>=1.7.0`
-  - `numpy>=1.20.0`
-- **Node.js 16+** (for web UI)
-- **rsync** with SSH keys (for PSWS upload)
+## Configuration Example
 
-### Network
-- **Multicast-capable network** (for RTP reception)
-- **Internet connectivity** (for PSWS upload)
-- **Open ports**: 3000 (web UI), 5004 (RTP)
-
----
-
-## Example Configuration
-
-**File**: `config/grape-config.toml`
+Edit `config/grape-config.toml` or use Web UI (recommended):
 
 ```toml
 [station]
 callsign = "AC0G"
 grid_square = "EM38ww"
-instrument_id = "RX888"
-
-[ka9q]
-status_address = "239.192.152.141"
 
 [recorder]
 mode = "test"  # or "production"
-test_data_root = "/tmp/grape-test"
-production_data_root = "/var/lib/signal-recorder"
-archive_dir = "/var/lib/signal-recorder/archive"
-
-[[recorder.channels]]
-ssrc = 2500000
-frequency_hz = 2500000
-description = "WWV 2.5 MHz"
-enabled = true
 
 [[recorder.channels]]
 ssrc = 10000000
@@ -364,154 +127,35 @@ description = "WWV 10 MHz"
 enabled = true
 
 [uploader]
-enabled = true
-protocol = "rsync"
-remote_host = "pswsnetwork.eng.ua.edu"
-remote_user = "user_ac0g"
-remote_path = "/var/psws/archive/data/GRAPE/AC0G"
-ssh_key_path = "~/.ssh/psws_key"
+enabled = false  # Set true after PSWS credentials configured
 ```
 
-**Generate this automatically with the web UI!**
+## Workflow
 
----
+**Setup:** Install ka9q-radio → Install recorder → Configure via Web UI → Test mode (5 min) → Production mode → PSWS SSH keys  
+**Daily:** Daemon runs via systemd, monitor web UI for 🟢 status, auto-upload every 5 min  
+**Maintenance:** Check weekly, verify uploads, review logs
 
-## Typical Workflow
-
-### Setup (one-time)
-1. Install ka9q-radio and configure for WWV/CHU
-2. Install GRAPE recorder and dependencies
-3. Use web UI to create `config/grape-config.toml`
-4. **Test in test mode**: Set `mode = "test"`, run for 5 minutes, verify data in `/tmp/grape-test`
-5. **Switch to production**: Set `mode = "production"`, ensure `/var/lib/signal-recorder` permissions
-6. Set up PSWS SSH keys for uploads
-
-### Daily Operation (Production Mode)
-1. Daemon runs continuously via systemd with `mode = "production"`
-2. Web UI shows real-time health metrics
-3. Data persists in `/var/lib/signal-recorder`
-4. Data auto-uploads to PSWS every 5 minutes
-5. Monitor for 🟢 healthy status
-
-### Maintenance
-1. Check web UI monitoring weekly
-2. Verify PSWS uploads are completing
-3. Review logs if warnings/errors appear
-4. Update software as needed
-
----
-
-## Comparison: GRAPE vs wsprdaemon
-
-| Aspect | wsprdaemon | GRAPE Recorder |
-|--------|------------|----------------|
-| **Project** | WSPR decoding | GRAPE timing analysis |
-| **Data** | Audio (WAV) | IQ samples (Digital RF) |
-| **Output Rate** | N/A (spots only) | 10 Hz IQ |
-| **Tools** | sox, wsprd, jt9 | Pure Python (scipy) |
-| **Upload** | wsprnet.org (HTTP) | PSWS (rsync/SSH) |
-| **Monitoring** | Spot count | Completeness, drift, loss |
-| **Cycle** | 2-minute WSPR windows | Continuous 60-second files |
-
-**Bottom line**: If you're doing WSPR, use wsprdaemon. If you're doing GRAPE, use this!
-
----
 
 ## Troubleshooting
 
-### No data recorded
+**No data:** Check `radiod` running, multicast routing, firewall (allow 5004/udp, 3000/tcp)  
+**Completeness <99%:** Network congestion, multicast switch config  
+**Timing drift >50ms:** Verify NTP (`timedatectl`), check radiod clock sync  
+**Packet loss >1%:** Increase RTP buffer, check CPU, reduce channels
 
-**Check radiod is running:**
-```bash
-control -v 239.192.152.141  # Your radiod address
-# Should list active channels
-```
+See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
-**Check multicast routing:**
-```bash
-ip mroute show  # Should show active routes
-netstat -g      # Should show multicast group membership
-```
+## Credits & Support
 
-**Check firewall:**
-```bash
-sudo ufw allow 5004/udp  # RTP packets
-sudo ufw allow 3000/tcp  # Web UI
-```
+**Credits:** Phil Karn/KA9Q (ka9q-radio), MIT Haystack (Digital RF), Nathaniel Frissell/W2NAF (HamSCI GRAPE), Rob Robinett/AI6VN (wsprdaemon inspiration), Michael Hauan/AC0G (this implementation)
 
-### Data quality issues
+**Community:** [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io) | [GitHub Issues](https://github.com/yourusername/signal-recorder/issues)
 
-**Completeness < 99%:**
-- Check network congestion
-- Verify multicast switch configuration
-- Look for packet loss in `ifconfig`
+**PSWS Access:** Contact HamSCI coordinators to register station and receive credentials
 
-**Timing drift > 50ms:**
-- Verify NTP is running (`timedatectl`)
-- Check radiod clock sync
-- Review system load
-
-**Packet loss > 1%:**
-- Increase RTP buffer size in config
-- Check CPU usage during recording
-- Test with fewer channels
-
-See [Troubleshooting Guide](docs/troubleshooting.md) for more.
+**License:** MIT - See [LICENSE](LICENSE)
 
 ---
 
-## Contributing
-
-Contributions welcome! Areas of interest:
-
-- **Testing**: Try on different SDRs/systems
-- **Documentation**: Improve guides/tutorials
-- **Features**: Multi-site monitoring, cloud upload
-- **Bug reports**: GitHub issues
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
----
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file.
-
----
-
-## Credits
-
-### Projects
-- **[ka9q-radio](https://github.com/ka9q/ka9q-radio)** by Phil Karn (KA9Q) - Multichannel SDR
-- **[Digital RF](http://digitalrf.readthedocs.io/)** by MIT Haystack - HDF5 time-series format
-- **[HamSCI](https://hamsci.org/)** - Citizen science ionospheric research
-- **[wsprdaemon](https://github.com/rrobinett/wsprdaemon)** by Rob Robinett (AI6VN) - Inspiration
-
-### People
-- **Nathaniel Frissell (W2NAF)** - HamSCI GRAPE project lead
-- **Phil Karn (KA9Q)** - ka9q-radio author
-- **Rob Robinett (AI6VN)** - wsprdaemon author
-- **Michael Hauan (AC0G)** - This GRAPE recorder implementation
-
----
-
-## Support
-
-### Documentation
-- **[Installation Guide](INSTALLATION.md)**
-- **[Architecture Document](ARCHITECTURE.md)**
-- **[Configuration Reference](docs/configuration.md)**
-
-### Community
-- **HamSCI Groups.io**: [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io)
-- **GitHub Issues**: [Report bugs](https://github.com/yourusername/signal-recorder/issues)
-
-### Getting PSWS Access
-Contact HamSCI GRAPE coordinators via Groups.io to:
-1. Register your station
-2. Receive PSWS credentials
-3. Get SSH key setup help
-
----
-
-**🎯 Ready to contribute to ionospheric science? Install the recorder and start monitoring WWV/CHU today!**
+**🎯 Ready to contribute to ionospheric science? Install and start monitoring!**
