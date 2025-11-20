@@ -24,6 +24,7 @@ from scipy.signal import iirnotch, filtfilt
 
 from .interfaces.data_models import ToneDetectionResult, StationType
 from .wwv_bcd_encoder import WWVBCDEncoder
+from .tone_detector import MultiStationToneDetector
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +281,98 @@ class WWVHDiscriminator:
                         f"WWVH: {'detected' if wwvh_detected else 'noise'} ({wwvh_str})")
         
         return result
+    
+    def detect_timing_tones(
+        self,
+        iq_samples: np.ndarray,
+        sample_rate: int,
+        minute_timestamp: float
+    ) -> Tuple[Optional[float], Optional[float], Optional[float], List[ToneDetectionResult]]:
+        """
+        Detect 800ms timing tones from IQ samples - INDEPENDENT METHOD
+        
+        This method integrates ToneDetector to make tone detection independent
+        and reprocessable from archived IQ data. It extracts WWV/WWVH power
+        measurements and differential delay for discrimination.
+        
+        Args:
+            iq_samples: Complex IQ samples at sample_rate (typically 16 kHz, 60 seconds)
+            sample_rate: Sample rate in Hz
+            minute_timestamp: UTC timestamp of minute boundary
+            
+        Returns:
+            Tuple of:
+            - wwv_power_db: WWV 1000 Hz tone power (dB), or None if not detected
+            - wwvh_power_db: WWVH 1200 Hz tone power (dB), or None if not detected
+            - differential_delay_ms: Propagation delay difference (ms), or None if not both detected
+            - detections: List of ToneDetectionResult objects (for full provenance)
+        """
+        # Initialize tone detector if not already present
+        if not hasattr(self, 'tone_detector'):
+            self.tone_detector = MultiStationToneDetector(
+                channel_name=self.channel_name,
+                sample_rate=sample_rate
+            )
+        elif self.tone_detector.sample_rate != sample_rate:
+            # Reinitialize if sample rate changed
+            self.tone_detector = MultiStationToneDetector(
+                channel_name=self.channel_name,
+                sample_rate=sample_rate
+            )
+        
+        # Detect tones using process_samples() method
+        try:
+            detections = self.tone_detector.process_samples(
+                timestamp=minute_timestamp,
+                samples=iq_samples
+            )
+            if detections is None:
+                detections = []
+        except Exception as e:
+            logger.warning(f"{self.channel_name}: Tone detection failed: {e}")
+            return None, None, None, []
+        
+        # Extract WWV and WWVH detections
+        wwv_det = None
+        wwvh_det = None
+        
+        for det in detections:
+            if det.station == StationType.WWV:
+                wwv_det = det
+            elif det.station == StationType.WWVH:
+                wwvh_det = det
+        
+        # Extract power measurements
+        wwv_power_db = None
+        wwvh_power_db = None
+        differential_delay_ms = None
+        
+        if wwv_det:
+            # Prefer tone_power_db, fall back to snr_db
+            wwv_power_db = getattr(wwv_det, 'tone_power_db', None)
+            if wwv_power_db is None:
+                wwv_power_db = wwv_det.snr_db if wwv_det.snr_db is not None else 0.0
+        
+        if wwvh_det:
+            wwvh_power_db = getattr(wwvh_det, 'tone_power_db', None)
+            if wwvh_power_db is None:
+                wwvh_power_db = wwvh_det.snr_db if wwvh_det.snr_db is not None else 0.0
+        
+        # Calculate differential delay only if both detected
+        if wwv_det and wwvh_det:
+            if wwv_det.timing_error_ms is not None and wwvh_det.timing_error_ms is not None:
+                differential_delay_ms = wwv_det.timing_error_ms - wwvh_det.timing_error_ms
+                
+                # Sanity check: reject outliers beyond ±1 second
+                if abs(differential_delay_ms) > 1000:
+                    logger.warning(
+                        f"{self.channel_name}: Rejecting outlier differential delay: "
+                        f"{differential_delay_ms:.1f}ms (WWV: {wwv_det.timing_error_ms:.1f}ms, "
+                        f"WWVH: {wwvh_det.timing_error_ms:.1f}ms)"
+                    )
+                    differential_delay_ms = None
+        
+        return wwv_power_db, wwvh_power_db, differential_delay_ms, detections
     
     def finalize_discrimination(
         self,
@@ -1126,22 +1219,37 @@ class WWVHDiscriminator:
         iq_samples: np.ndarray,
         sample_rate: int,
         minute_timestamp: float,
-        detections: List[ToneDetectionResult]
+        detections: Optional[List[ToneDetectionResult]] = None
     ) -> Optional[DiscriminationResult]:
         """
-        Complete discrimination analysis including 440 Hz tone and high-resolution tick detection
+        Complete discrimination analysis including all methods - FULLY INDEPENDENT
+        
+        This method now detects timing tones directly from IQ samples, making it
+        fully reprocessable from archived data without external dependencies.
         
         Args:
-            iq_samples: Full minute of IQ samples
+            iq_samples: Full minute of IQ samples (typically 16 kHz, 60 seconds)
             sample_rate: Sample rate in Hz
             minute_timestamp: UTC timestamp of minute boundary
-            detections: Tone detection results for this minute
+            detections: DEPRECATED - Optional external tone detections (for backward compatibility).
+                       If None, will detect tones internally using detect_timing_tones().
             
         Returns:
-            Enhanced DiscriminationResult with 440 Hz and tick window analysis
+            Enhanced DiscriminationResult with all discrimination methods
         """
-        # First compute basic discrimination
-        result = self.compute_discrimination(detections, minute_timestamp)
+        # PHASE 1: Detect timing tones (800ms WWV/WWVH tones)
+        # If detections not provided, detect them from IQ samples (NEW: fully independent)
+        if detections is None or len(detections) == 0:
+            logger.debug(f"{self.channel_name}: No external detections provided, detecting tones from IQ data")
+            wwv_power_db, wwvh_power_db, differential_delay_ms, detections = self.detect_timing_tones(
+                iq_samples, sample_rate, minute_timestamp
+            )
+            # Create result directly from detected values
+            result = self.compute_discrimination(detections, minute_timestamp)
+        else:
+            # Legacy path: use provided detections
+            logger.debug(f"{self.channel_name}: Using {len(detections)} external tone detections")
+            result = self.compute_discrimination(detections, minute_timestamp)
         
         if result is None:
             return None
@@ -1150,7 +1258,7 @@ class WWVHDiscriminator:
         dt = datetime.utcfromtimestamp(minute_timestamp)
         minute_number = dt.minute
         
-        # Detect 440 Hz tone if in minutes 1 or 2
+        # PHASE 2: Detect 440 Hz station ID tone (minutes 1 & 2 only)
         if minute_number == 1:
             # WWVH should have 440 Hz tone
             detected, power_db = self.detect_440hz_tone(iq_samples, sample_rate, 1)
@@ -1171,7 +1279,7 @@ class WWVHDiscriminator:
             if detected and result.confidence == 'low':
                 result.confidence = 'medium'
         
-        # High-resolution tick detection with coherent integration (10-second windows)
+        # PHASE 3: Detect 5ms tick marks with coherent integration (10-second windows)
         # Provides 6x better time resolution than minute-long tones
         try:
             tick_windows = self.detect_tick_windows(iq_samples, sample_rate)
@@ -1192,7 +1300,7 @@ class WWVHDiscriminator:
             logger.warning(f"{self.channel_name}: Tick detection failed: {e}")
             result.tick_windows_10sec = []
         
-        # BCD-based discrimination using 100 Hz cross-correlation
+        # PHASE 4: BCD discrimination using 100 Hz subcarrier analysis
         # Uses sliding 10-second windows (1-second steps) for SNR gain while tracking dynamics
         # Amplitudes measured directly from 100 Hz BCD signal correlation peaks
         try:
@@ -1221,7 +1329,7 @@ class WWVHDiscriminator:
             result.bcd_correlation_quality = None
             result.bcd_windows = None
         
-        # Finalize discrimination with weighted voting
+        # PHASE 5: Finalize discrimination with weighted voting combiner
         result = self.finalize_discrimination(
             result=result,
             minute_number=minute_number,
