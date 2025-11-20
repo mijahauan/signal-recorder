@@ -104,9 +104,18 @@ class DecimatedArchive:
         if discrimination_metadata is not None and hasattr(discrimination_metadata, 'item'):
             discrimination_metadata = discrimination_metadata.item()
         
+        # Support both field names for backward compatibility
+        # New format: 'iq', Old format: 'iq_decimated'
+        if 'iq' in data:
+            iq_samples = data['iq']
+        elif 'iq_decimated' in data:
+            iq_samples = data['iq_decimated']
+        else:
+            raise KeyError("NPZ file missing both 'iq' and 'iq_decimated' fields")
+        
         return cls(
             file_path=file_path,
-            iq_samples=data['iq_decimated'],
+            iq_samples=iq_samples,
             rtp_timestamp=int(data['rtp_timestamp']),
             sample_rate_original=int(data['sample_rate_original']),
             sample_rate_decimated=int(data['sample_rate_decimated']),
@@ -138,11 +147,15 @@ class DRFWriterService:
     - Loads time_snap from analytics state file
     - Writes data in strict chronological order
     - Maintains monotonic sample indices
+    
+    Modes:
+    - wsprdaemon_compatible=True: Match wsprdaemon output exactly (no timing/gap metadata)
+    - wsprdaemon_compatible=False: Write enhanced metadata (timing quality, gaps, discrimination)
     """
     
     def __init__(self, input_dir: Path, output_dir: Path, channel_name: str,
                  frequency_hz: float, analytics_state_file: Path,
-                 station_config: dict):
+                 station_config: dict, wsprdaemon_compatible: bool = True):
         
         self.input_dir = input_dir
         self.output_dir = output_dir
@@ -150,6 +163,7 @@ class DRFWriterService:
         self.frequency_hz = frequency_hz
         self.analytics_state_file = analytics_state_file
         self.station_config = station_config
+        self.wsprdaemon_compatible = wsprdaemon_compatible
         
         self.sample_rate = 10  # 10 Hz decimated data
         self.running = False
@@ -173,6 +187,7 @@ class DRFWriterService:
         logger.info(f"  Input: {input_dir}")
         logger.info(f"  Output: {output_dir}")
         logger.info(f"  Channel: {channel_name} @ {frequency_hz/1e6:.2f} MHz")
+        logger.info(f"  Mode: {'wsprdaemon-compatible' if wsprdaemon_compatible else 'enhanced metadata'}")
     
     def _load_state(self):
         """Load service state from disk"""
@@ -252,7 +267,7 @@ class DRFWriterService:
         logger.debug(f"Discovered {len(new_files)} new 10Hz files")
         return new_files
     
-    def _create_drf_writer(self, timestamp: float):
+    def _create_drf_writer(self, timestamp: float, calculated_index: int):
         """Create Digital RF writer for current day"""
         day_date = datetime.fromtimestamp(timestamp, tz=timezone.utc).date()
         
@@ -274,17 +289,25 @@ class DRFWriterService:
         
         drf_dir.mkdir(parents=True, exist_ok=True)
         
-        # Calculate start_global_index
-        start_global_index = int(timestamp * self.sample_rate)
+        # Use calculated_index as start_global_index (passed from write_to_drf)
+        # This ensures DRF writer starts at the correct sample index
+        start_global_index = calculated_index
         
         logger.info(f"Creating Digital RF writer for {day_date}")
         logger.info(f"  Directory: {drf_dir}")
-        logger.info(f"  Start index: {start_global_index}")
+        logger.info(f"  Start index: {start_global_index} (type: {type(start_global_index)})")
+        logger.info(f"  UTC timestamp: {timestamp}")
+        logger.info(f"  Sample rate: {self.sample_rate}")
         
         # Create main data channel (IQ samples at 10 Hz)
+        logger.info(f"Creating DigitalRFWriter with:")
+        logger.info(f"  start_global_index={start_global_index}")
+        logger.info(f"  sample_rate_numerator={self.sample_rate}")
+        logger.info(f"  sample_rate_denominator=1")
+        
         self.drf_writer = drf.DigitalRFWriter(
             str(drf_dir),
-            dtype=np.complex64,
+            dtype=np.float32,  # float32 with (N, 2) shape for I/Q (wsprdaemon format)
             subdir_cadence_secs=86400,
             file_cadence_millisecs=3600000,
             start_global_index=start_global_index,
@@ -293,82 +316,112 @@ class DRFWriterService:
             uuid_str=self.dataset_uuid,
             compression_level=9,
             checksum=False,
-            is_complex=True,
+            is_complex=True,  # True when using float32 (N, 2) format
             num_subchannels=1,
             is_continuous=True,
             marching_periods=False
         )
         
-        # Create metadata writers for parallel channels
-        metadata_base = drf_dir / "metadata"
-        metadata_base.mkdir(parents=True, exist_ok=True)
+        # Create metadata directory and writer
+        metadata_dir = drf_dir / "metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
         
-        # Timing metadata channel
-        timing_metadata_dir = metadata_base / "timing_quality"
-        timing_metadata_dir.mkdir(parents=True, exist_ok=True)
-        self.metadata_writers['timing'] = drf.DigitalMetadataWriter(
-            metadata_dir=str(timing_metadata_dir),
-            subdir_cadence_secs=3600,  # 1 hour subdirectories
-            file_cadence_secs=60,       # 1 minute files
-            sample_rate_numerator=self.sample_rate,
-            sample_rate_denominator=1,
-            file_name="timing_quality"
-        )
-        
-        # Quality metadata channel
-        quality_metadata_dir = metadata_base / "data_quality"
-        quality_metadata_dir.mkdir(parents=True, exist_ok=True)
-        self.metadata_writers['quality'] = drf.DigitalMetadataWriter(
-            metadata_dir=str(quality_metadata_dir),
-            subdir_cadence_secs=3600,
-            file_cadence_secs=60,
-            sample_rate_numerator=self.sample_rate,
-            sample_rate_denominator=1,
-            file_name="data_quality"
-        )
-        
-        # WWV-H discrimination metadata channel (future expansion)
-        # Will contain: wwv_detected, wwvh_detected, power_ratio_db, 
-        #               differential_delay_ms, dominant_station, confidence
-        self.metadata_writers['discrimination'] = drf.DigitalMetadataWriter(
-            str(metadata_base),
-            subdir_cadence_secs=86400,
-            file_cadence_secs=3600,
-            sample_rate_numerator=self.sample_rate,
-            sample_rate_denominator=1,
-            file_name='wwvh_discrimination'
-        )
-        
-        # Station/receiver metadata (static info)
-        self.metadata_writers['station'] = drf.DigitalMetadataWriter(
-            str(metadata_dir),
-            subdir_cadence_secs=86400,
-            file_cadence_secs=86400,  # Daily file
-            sample_rate_numerator=self.sample_rate,
-            sample_rate_denominator=1,
-            file_name='station_info'
-        )
-        
-        # Write initial station metadata (once per day)
-        station_metadata = {
-            'callsign': self.station_config['callsign'],
-            'grid_square': self.station_config['grid_square'],
-            'receiver_name': self.station_config['receiver_name'],
-            'psws_station_id': self.station_config['psws_station_id'],
-            'psws_instrument_id': self.station_config['psws_instrument_id'],
-            'center_frequency_hz': self.frequency_hz,
-            'channel_name': self.channel_name,
-            'sample_rate_hz': self.sample_rate,
-            'data_type': 'complex64',
-            'processing_chain': 'GRAPE_V2 -> Analytics -> DRF_Writer',
-            'date': day_date.isoformat()
-        }
-        self.metadata_writers['station'].write(start_global_index, station_metadata)
+        if self.wsprdaemon_compatible:
+            # WSPRDAEMON MODE: Single metadata file matching wav2grape.py format
+            # Only static station info, no timing quality or gap analysis
+            self.metadata_writers['station'] = drf.DigitalMetadataWriter(
+                metadata_dir=str(metadata_dir),
+                subdir_cadence_secs=86400,
+                file_cadence_secs=86400,  # Daily file
+                sample_rate_numerator=self.sample_rate,
+                sample_rate_denominator=1,
+                file_name='metadata'  # wsprdaemon uses 'metadata' not 'station_info'
+            )
+            
+            # Write simple station metadata matching wsprdaemon format
+            station_metadata = {
+                'callsign': self.station_config['callsign'],
+                'grid_square': self.station_config['grid_square'],
+                'receiver_name': self.station_config['receiver_name'],
+                'center_frequencies': np.array([self.frequency_hz], dtype=np.float64),
+                'uuid_str': self.dataset_uuid
+            }
+            self.metadata_writers['station'].write(start_global_index, station_metadata)
+            logger.info(f"📝 Wsprdaemon-compatible metadata written (no timing/gap data)")
+            
+        else:
+            # ENHANCED MODE: Full metadata channels for timing quality, gaps, discrimination
+            metadata_base = drf_dir / "metadata"
+            metadata_base.mkdir(parents=True, exist_ok=True)
+            
+            # Timing metadata channel
+            timing_metadata_dir = metadata_base / "timing_quality"
+            timing_metadata_dir.mkdir(parents=True, exist_ok=True)
+            self.metadata_writers['timing'] = drf.DigitalMetadataWriter(
+                metadata_dir=str(timing_metadata_dir),
+                subdir_cadence_secs=3600,  # 1 hour subdirectories
+                file_cadence_secs=60,       # 1 minute files
+                sample_rate_numerator=self.sample_rate,
+                sample_rate_denominator=1,
+                file_name="timing_quality"
+            )
+            
+            # Quality metadata channel
+            quality_metadata_dir = metadata_base / "data_quality"
+            quality_metadata_dir.mkdir(parents=True, exist_ok=True)
+            self.metadata_writers['quality'] = drf.DigitalMetadataWriter(
+                metadata_dir=str(quality_metadata_dir),
+                subdir_cadence_secs=3600,
+                file_cadence_secs=60,
+                sample_rate_numerator=self.sample_rate,
+                sample_rate_denominator=1,
+                file_name="data_quality"
+            )
+            
+            # WWV-H discrimination metadata channel
+            self.metadata_writers['discrimination'] = drf.DigitalMetadataWriter(
+                str(metadata_base),
+                subdir_cadence_secs=86400,
+                file_cadence_secs=3600,
+                sample_rate_numerator=self.sample_rate,
+                sample_rate_denominator=1,
+                file_name='wwvh_discrimination'
+            )
+            
+            # Station/receiver metadata (static info)
+            self.metadata_writers['station'] = drf.DigitalMetadataWriter(
+                str(metadata_base),
+                subdir_cadence_secs=86400,
+                file_cadence_secs=86400,  # Daily file
+                sample_rate_numerator=self.sample_rate,
+                sample_rate_denominator=1,
+                file_name='station_info'
+            )
+            
+            # Write initial station metadata (once per day)
+            station_metadata = {
+                'callsign': self.station_config['callsign'],
+                'grid_square': self.station_config['grid_square'],
+                'receiver_name': self.station_config['receiver_name'],
+                'psws_station_id': self.station_config['psws_station_id'],
+                'psws_instrument_id': self.station_config['psws_instrument_id'],
+                'center_frequency_hz': self.frequency_hz,
+                'channel_name': self.channel_name,
+                'sample_rate_hz': self.sample_rate,
+                'data_type': 'complex64',
+                'processing_chain': 'GRAPE_V2 -> Analytics -> DRF_Writer',
+                'date': day_date.isoformat()
+            }
+            self.metadata_writers['station'].write(start_global_index, station_metadata)
+            logger.info(f"📝 Enhanced metadata channels created")
         
         self.current_day = day_date
         
-        # Initialize monotonic index if not set
-        if self.next_index is None:
+        # Initialize monotonic index
+        # If we don't have an index yet, OR if the calculated index is later than our current next_index,
+        # update to the calculated index. This handles both first-run and day-boundary cases.
+        if self.next_index is None or start_global_index > self.next_index:
+            logger.info(f"Updating next_index: {self.next_index} -> {start_global_index}")
             self.next_index = start_global_index
         
         logger.info(f"✅ Digital RF writer ready (next_index={self.next_index})")
@@ -380,15 +433,15 @@ class DRFWriterService:
             # Calculate UTC timestamp
             utc_timestamp = archive.calculate_utc_timestamp(time_snap)
             
-            # Create writer for this day if needed
-            self._create_drf_writer(utc_timestamp)
+            # Calculate sample index FIRST
+            calculated_index = int(utc_timestamp * self.sample_rate)
+            
+            # Create writer for this day if needed (pass calculated_index for initialization)
+            self._create_drf_writer(utc_timestamp, calculated_index)
             
             if not self.drf_writer:
                 logger.error("Failed to create DRF writer")
                 return
-            
-            # Calculate sample index
-            calculated_index = int(utc_timestamp * self.sample_rate)
             
             # CRITICAL: Check for backwards time jump (out-of-order archive)
             if calculated_index < self.next_index:
@@ -398,15 +451,33 @@ class DRFWriterService:
                 return
             
             # Write samples to main data channel
-            self.drf_writer.rf_write(archive.iq_samples, int(self.next_index))
+            # Convert complex64 to float32 (N, 2) format for Digital RF (wsprdaemon-compatible)
+            iq_complex = archive.iq_samples.astype(np.complex64, copy=False)
+            iq_float = np.zeros((len(iq_complex), 2), dtype=np.float32)
+            iq_float[:, 0] = iq_complex.real
+            iq_float[:, 1] = iq_complex.imag
+            
+            logger.info(f"Writing {len(iq_float)} samples at index {calculated_index}")
+            logger.info(f"  UTC timestamp: {utc_timestamp}")
+            logger.info(f"  Output dtype: {iq_float.dtype}, shape: {iq_float.shape}")
+            
+            # Write at calculated_index (not self.next_index) to ensure correct timestamp
+            write_index = int(calculated_index)
+            self.drf_writer.rf_write(iq_float, write_index)
+            
+            # CRITICAL: Close writer to flush data to disk
+            # Digital RF buffers writes and only flushes on close()
+            self.drf_writer.close()
+            self.drf_writer = None
+            logger.debug("Closed DRF writer to flush data")
             
             # Write metadata to parallel channels (if present in archive)
-            self._write_metadata_channels(archive, self.next_index)
+            self._write_metadata_channels(archive, calculated_index)
             
-            # Advance index monotonically
-            self.next_index += len(archive.iq_samples)
+            # Update next_index for monotonic sequence tracking
+            self.next_index = calculated_index + len(archive.iq_samples)
             
-            logger.debug(f"Wrote {len(archive.iq_samples)} samples (index now {self.next_index})")
+            logger.info(f"✅ Wrote {len(archive.iq_samples)} samples successfully (next_index={self.next_index})")
             
         except Exception as e:
             logger.error(f"DRF write error: {e}", exc_info=True)
@@ -415,26 +486,29 @@ class DRFWriterService:
         """
         Write metadata to parallel Digital RF metadata channels
         
-        This follows Digital RF spec for multi-channel data with metadata.
-        Currently, metadata is optional in 10Hz files. When analytics service
-        starts embedding it, this will automatically write it to DRF.
+        In wsprdaemon_compatible mode: Does nothing (metadata written once at start)
+        In enhanced mode: Writes timing/quality/discrimination metadata per minute
         """
+        if self.wsprdaemon_compatible:
+            # No per-minute metadata in wsprdaemon mode
+            return
+        
         try:
-            # Timing quality metadata
+            # Timing quality metadata (enhanced mode only)
             if archive.timing_metadata and 'timing' in self.metadata_writers:
                 self.metadata_writers['timing'].write(sample_index, archive.timing_metadata)
             
-            # Data quality metadata
+            # Data quality metadata (enhanced mode only)
             if archive.quality_metadata and 'quality' in self.metadata_writers:
                 self.metadata_writers['quality'].write(sample_index, archive.quality_metadata)
             
-            # WWV-H discrimination metadata
+            # WWV-H discrimination metadata (enhanced mode only)
             if archive.discrimination_metadata and 'discrimination' in self.metadata_writers:
                 self.metadata_writers['discrimination'].write(sample_index, archive.discrimination_metadata)
                 
         except Exception as e:
             # Non-fatal - log but continue
-            logger.warning(f"Failed to write metadata: {e}")
+            logger.warning(f"Failed to write enhanced metadata: {e}")
     
     def run(self, poll_interval: float = 10.0):
         """Main processing loop"""
@@ -528,18 +602,27 @@ def main():
     parser.add_argument('--receiver-name', default='GRAPE', help='Receiver name')
     parser.add_argument('--psws-station-id', required=True, help='PSWS station ID')
     parser.add_argument('--psws-instrument-id', required=True, help='PSWS instrument ID')
+    parser.add_argument('--wsprdaemon-compatible', action='store_true', default=True,
+                       help='Use wsprdaemon-compatible mode (no timing/gap metadata, default: True)')
+    parser.add_argument('--enhanced-metadata', action='store_true', default=False,
+                       help='Use enhanced metadata mode (timing quality, gaps, discrimination)')
     
     args = parser.parse_args()
     
     # Setup logging
     logging.basicConfig(
         level=getattr(logging, args.log_level),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(levelname)s:%(name)s:%(message)s',
+        force=True  # Override any existing logging config
     )
+    print(f"DRF Writer Service starting (log level: {args.log_level})", flush=True)
     
     if not DRF_AVAILABLE:
         logger.error("digital_rf module not available - cannot run")
         return 1
+    
+    # Determine mode (enhanced takes precedence if explicitly set)
+    wsprdaemon_compatible = not args.enhanced_metadata
     
     # Build station config
     station_config = {
@@ -557,7 +640,8 @@ def main():
         channel_name=args.channel_name,
         frequency_hz=args.frequency_hz,
         analytics_state_file=args.analytics_state_file,
-        station_config=station_config
+        station_config=station_config,
+        wsprdaemon_compatible=wsprdaemon_compatible
     )
     
     # Run
