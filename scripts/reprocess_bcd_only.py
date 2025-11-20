@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from signal_recorder.wwvh_discrimination import WWVHDiscriminator
+from signal_recorder.paths import GRAPEPaths, channel_name_to_dir
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,10 +44,11 @@ def reprocess_bcd_only(date_str: str, channel_name: str, hour: int = None, data_
         hour: Optional specific hour (0-23), or None for full day
         data_root: Root data directory
     """
-    # Setup paths
-    channel_dir = channel_name.replace(' ', '_').replace('.', '_')
-    archive_dir = Path(data_root) / 'archives' / channel_dir
-    output_dir = Path(data_root) / 'analytics' / channel_dir / 'bcd_discrimination'
+    # Setup paths using GRAPEPaths API
+    paths = GRAPEPaths(data_root)
+    archive_dir = paths.get_archive_dir(channel_name)
+    output_dir = paths.get_discrimination_dir(channel_name)
+    channel_dir = channel_name_to_dir(channel_name)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Output CSV file

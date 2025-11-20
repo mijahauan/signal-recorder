@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
+from .paths import GRAPEPaths
 
 logger = logging.getLogger(__name__)
 
@@ -97,24 +98,24 @@ class DiscriminationCSVWriters:
     
     def __init__(self, data_root: str, channel_name: str):
         """
-        Initialize CSV writers
+        Initialize CSV writers using GRAPEPaths API
         
         Args:
             data_root: Root directory for analytics (e.g., /tmp/grape-test)
             channel_name: Channel name (e.g., "WWV 10 MHz")
         """
-        self.data_root = Path(data_root)
+        self.channel_name = channel_name
+        self.paths = GRAPEPaths(data_root)
+        
+        # Method-specific directories (using GRAPEPaths API)
+        self.tone_dir = self.paths.get_tone_detections_dir(channel_name)
+        self.tick_dir = self.paths.get_tick_windows_dir(channel_name)
+        self.id_440_dir = self.paths.get_station_id_440hz_dir(channel_name)
+        self.bcd_dir = self.paths.get_bcd_discrimination_dir(channel_name)
+        self.disc_dir = self.paths.get_discrimination_dir(channel_name)
+        
+        # Channel directory name for file naming
         self.channel_dir = channel_name.replace(' ', '_').replace('.', '_')
-        
-        # Base analytics directory
-        self.analytics_dir = self.data_root / 'analytics' / self.channel_dir
-        
-        # Method-specific directories
-        self.tone_dir = self.analytics_dir / 'tone_detections'
-        self.tick_dir = self.analytics_dir / 'tick_windows'
-        self.id_440_dir = self.analytics_dir / 'station_id_440hz'
-        self.bcd_dir = self.analytics_dir / 'bcd_discrimination'
-        self.disc_dir = self.analytics_dir / 'discrimination'
         
         # Ensure directories exist
         for directory in [self.tone_dir, self.tick_dir, self.id_440_dir, 

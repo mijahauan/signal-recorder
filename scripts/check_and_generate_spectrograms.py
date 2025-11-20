@@ -66,8 +66,8 @@ def find_days_with_spectrograms(data_root: Path) -> Set[str]:
         if not (date_str.isdigit() and len(date_str) == 8):
             continue
         
-        # Count spectrograms for this date
-        spectrograms = list(date_dir.glob('*_carrier_spectrogram.png'))
+        # Count spectrograms for this date (now using 'decimated' type)
+        spectrograms = list(date_dir.glob('*_decimated_spectrogram.png'))
         
         # Consider complete if we have most channels (some might not have data)
         if len(spectrograms) >= 6:  # At least 6 out of 9 channels
@@ -92,9 +92,9 @@ def is_day_complete(date_str: str) -> bool:
 
 
 def generate_spectrograms(date_str: str, data_root: Path) -> bool:
-    """Generate spectrograms for a specific date"""
+    """Generate spectrograms for a specific date from 10 Hz decimated NPZ files"""
     script_dir = Path(__file__).parent
-    script = script_dir / 'generate_spectrograms_drf.py'
+    script = script_dir / 'generate_spectrograms_from_10hz.py'
     
     logger.info(f"📊 Generating spectrograms for {date_str}...")
     

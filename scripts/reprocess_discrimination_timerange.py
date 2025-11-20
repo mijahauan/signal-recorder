@@ -31,12 +31,16 @@ logger = logging.getLogger(__name__)
 def reprocess_timerange(date_str: str, channel_name: str, start_hour: int, end_hour: int, data_root: str):
     """Reprocess discrimination for a specific time range"""
     
-    # Setup paths
-    channel_dir = channel_name.replace(' ', '_').replace('.', '_')
-    archive_dir = Path(data_root) / 'archives' / channel_dir
-    output_dir = Path(data_root) / 'analytics' / channel_dir / 'discrimination'
+    # Setup paths using GRAPEPaths API
+    from signal_recorder.paths import GRAPEPaths, channel_name_to_dir
+    paths = GRAPEPaths(data_root)
+    archive_dir = paths.get_archive_dir(channel_name)
+    output_dir = paths.get_discrimination_dir(channel_name)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # NOTE: This script creates time-range suffix files for partial reprocessing
+    # These should be merged into daily files: {channel}_discrimination_{date}.csv
+    channel_dir = channel_name_to_dir(channel_name)
     output_file = output_dir / f"{channel_dir}_discrimination_{date_str}_{start_hour:02d}-{end_hour:02d}.csv"
     
     logger.info(f"Processing {channel_name} on {date_str} from {start_hour:02d}:00 to {end_hour:02d}:00")

@@ -281,11 +281,13 @@ class MultiStationToneDetector(IMultiStationToneDetector):
             corr_sin = correlate(audio_signal, template_sin, mode='valid')
             corr_cos = correlate(audio_signal, template_cos, mode='valid')
         except ValueError as e:
-            logger.warning(f"{station_type.value} @ {frequency}Hz: Correlation failed: {e}")
+            freq_str = f"{frequency}Hz" if frequency is not None else "??Hz"
+            logger.warning(f"{station_type.value} @ {freq_str}: Correlation failed: {e}")
             return None
         
         if len(corr_sin) == 0 or len(corr_cos) == 0:
-            logger.warning(f"{station_type.value} @ {frequency}Hz: Empty correlation result")
+            freq_str = f"{frequency}Hz" if frequency is not None else "??Hz"
+            logger.warning(f"{station_type.value} @ {freq_str}: Empty correlation result")
             return None
         
         # Combine to get phase-invariant magnitude: sqrt(sin^2 + cos^2)
@@ -309,13 +311,14 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         search_start = max(0, expected_pos_samples - search_window)
         search_end = min(len(correlation), expected_pos_samples + search_window)
         
-        logger.info(f"{station_type.value} @ {frequency}Hz: current_unix_time={current_unix_time:.2f}, "
+        freq_str = f"{frequency}Hz" if frequency is not None else "??Hz"
+        logger.info(f"{station_type.value} @ {freq_str}: current_unix_time={current_unix_time:.2f}, "
                     f"minute_boundary={minute_boundary}, buffer_start={buffer_start_time:.2f}, "
                     f"tone_offset={tone_offset_from_start:.2f}s, expected_pos={expected_pos_samples}, "
                     f"corr_len={len(correlation)}, search_window=[{search_start}:{search_end}]")
         
         if search_start >= search_end:
-            logger.warning(f"{station_type.value} @ {frequency}Hz: Invalid search window! "
+            logger.warning(f"{station_type.value} @ {freq_str}: Invalid search window! "
                           f"expected_pos={expected_pos_samples}, tone_offset={tone_offset_from_start:.2f}s")
             return None
         
@@ -406,9 +409,20 @@ class MultiStationToneDetector(IMultiStationToneDetector):
                 tone_power_db = snr_db  # Fallback to SNR estimate
         
         # Diagnostic logging BEFORE threshold check
-        logger.debug(f"{station_type.value} @ {frequency}Hz: peak={peak_val:.2f}, "
-                    f"noise_floor={noise_floor:.2f}, SNR={snr_db:.1f}dB, "
-                    f"tone_power={tone_power_db:.1f}dB, timing_err={timing_error_ms:+.1f}ms")
+        freq_str = f"{frequency}Hz" if frequency is not None else "??Hz"
+        peak_str = f"{peak_val:.2f}" if peak_val is not None else "None"
+        noise_str = f"{noise_floor:.2f}" if noise_floor is not None else "None"
+        snr_str = f"{snr_db:.1f}dB" if snr_db is not None else "None"
+        power_str = f"{tone_power_db:.1f}dB" if tone_power_db is not None else "None"
+        timing_str = f"{timing_error_ms:+.1f}ms" if timing_error_ms is not None else "None"
+        logger.debug(f"{station_type.value} @ {freq_str}: peak={peak_str}, "
+                    f"noise_floor={noise_str}, SNR={snr_str}, "
+                    f"tone_power={power_str}, timing_err={timing_str}")
+        
+        # Check if we have valid values
+        if peak_val is None or noise_floor is None:
+            logger.warning(f"  -> REJECTED (invalid peak or noise values)")
+            return None
         
         # Check if peak is significant
         if peak_val <= noise_floor:
@@ -437,8 +451,9 @@ class MultiStationToneDetector(IMultiStationToneDetector):
             tone_power_db=tone_power_db
         )
         
+        freq_str = f"{frequency}Hz" if frequency is not None else "??Hz"
         logger.info(f"{self.channel_name}: ✅ {station_type.value} DETECTED! "
-                   f"Freq: {frequency}Hz, Duration: {duration:.1f}s, "
+                   f"Freq: {freq_str}, Duration: {duration:.1f}s, "
                    f"Timing error: {timing_error_ms:+.1f}ms, SNR: {snr_db:.1f}dB, "
                    f"use_for_time_snap={use_for_time_snap}")
         

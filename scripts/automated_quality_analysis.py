@@ -24,14 +24,16 @@ from scipy.stats import entropy
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+from signal_recorder.paths import GRAPEPaths
 
 class QualityAnalyzer:
     """Analyze decimation and timing quality for dashboard"""
     
     def __init__(self, data_root: Path):
-        self.data_root = Path(data_root)
-        self.analytics_dir = self.data_root / 'analytics'
-        self.output_dir = self.data_root / 'quality-analysis'
+        paths = GRAPEPaths(data_root)
+        self.data_root = data_root
+        self.analytics_dir = paths.get_analytics_dir()
+        self.output_dir = paths.get_quality_dir()
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
     def analyze_decimation_quality_fast(self, wide_file: Path, carrier_file: Path):

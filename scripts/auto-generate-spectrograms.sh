@@ -20,12 +20,9 @@ while true; do
     echo "[$(date -u +%H:%M:%S)] Generating spectrograms for $DATE..."
     
     # Generate ALL channel spectrograms from decimated 10Hz NPZ files
-    # This includes both wide (16kHz→10Hz) and carrier (200Hz→10Hz) channels
-    # Both use identical IIR decimation via analytics_service.py
-    python3 scripts/generate_spectrograms_from_10hz_npz.py \
+    python3 scripts/generate_spectrograms_from_10hz.py \
         --data-root "$DATA_ROOT" \
         --date "$DATE" \
-        --include-carrier \
         2>&1 | grep -E "(Processing|Generated|Error)" || true
     
     echo "[$(date -u +%H:%M:%S)] Done. Next run in $(($INTERVAL/60)) minutes."

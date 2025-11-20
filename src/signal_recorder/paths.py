@@ -110,7 +110,7 @@ class GRAPEPaths:
         drf_dir = paths.get_digital_rf_dir('WWV 10 MHz')
         
         # Get spectrogram output path
-        spec_path = paths.get_spectrogram_path('WWV 10 MHz', '20251115', 'carrier')
+        spec_path = paths.get_spectrogram_path('WWV 10 MHz', '20251115', 'decimated')
     """
     
     def __init__(self, data_root: str | Path):
@@ -166,11 +166,39 @@ class GRAPEPaths:
         return self.get_analytics_dir(channel_name) / 'digital_rf'
     
     def get_discrimination_dir(self, channel_name: str) -> Path:
-        """Get WWV/WWVH discrimination directory.
+        """Get WWV/WWVH discrimination directory (final weighted voting).
         
         Returns: {data_root}/analytics/{CHANNEL}/discrimination/
         """
         return self.get_analytics_dir(channel_name) / 'discrimination'
+    
+    def get_tone_detections_dir(self, channel_name: str) -> Path:
+        """Get tone detections directory (1000/1200 Hz timing tones).
+        
+        Returns: {data_root}/analytics/{CHANNEL}/tone_detections/
+        """
+        return self.get_analytics_dir(channel_name) / 'tone_detections'
+    
+    def get_tick_windows_dir(self, channel_name: str) -> Path:
+        """Get tick windows directory (5ms tick analysis).
+        
+        Returns: {data_root}/analytics/{CHANNEL}/tick_windows/
+        """
+        return self.get_analytics_dir(channel_name) / 'tick_windows'
+    
+    def get_station_id_440hz_dir(self, channel_name: str) -> Path:
+        """Get 440 Hz station ID directory.
+        
+        Returns: {data_root}/analytics/{CHANNEL}/station_id_440hz/
+        """
+        return self.get_analytics_dir(channel_name) / 'station_id_440hz'
+    
+    def get_bcd_discrimination_dir(self, channel_name: str) -> Path:
+        """Get BCD discrimination directory (100 Hz subcarrier analysis).
+        
+        Returns: {data_root}/analytics/{CHANNEL}/bcd_discrimination/
+        """
+        return self.get_analytics_dir(channel_name) / 'bcd_discrimination'
     
     def get_quality_dir(self, channel_name: str) -> Path:
         """Get quality metrics directory.
@@ -221,13 +249,13 @@ class GRAPEPaths:
         """
         return self.get_spectrograms_root() / date
     
-    def get_spectrogram_path(self, channel_name: str, date: str, spec_type: str = 'carrier') -> Path:
+    def get_spectrogram_path(self, channel_name: str, date: str, spec_type: str = 'decimated') -> Path:
         """Get path for a specific spectrogram PNG.
         
         Args:
             channel_name: Channel name
             date: Date in YYYYMMDD format
-            spec_type: Type ('carrier', 'archive', etc.)
+            spec_type: Type ('decimated', 'archive', etc.) - decimated = from 10 Hz NPZ
         
         Returns: {data_root}/spectrograms/{YYYYMMDD}/{CHANNEL}_{YYYYMMDD}_{type}_spectrogram.png
         """

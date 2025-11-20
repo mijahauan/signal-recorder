@@ -1,24 +1,150 @@
-# GRAPE Signal Recorder API Reference
-*Complete API documentation for all services and modules*
+# GRAPE Signal Recorder - Unified API Reference
 
-## Table of Contents
-
-1. [Tone Detector API](#tone-detector-api)
-2. [WWV-H Discrimination API](#wwv-h-discrimination-api)
-3. [Analytics Service API](#analytics-service-api)
-4. [DRF Writer Service API](#drf-writer-service-api)
-5. [Data Models](#data-models)
-6. [Configuration](#configuration)
+**Status:** CANONICAL - Single source of truth for ALL function signatures  
+**Last Updated:** 2025-11-20  
+**Purpose:** Complete API for all GRAPE modules - USE THIS before writing or calling any function
 
 ---
 
-## Tone Detector API
+## Table of Contents
 
-### `MultiStationToneDetector`
+1. [Path Management API](#path-management-api)  
+2. [Tone Detection API](#tone-detection-api)
+3. [WWV/WWVH Discrimination API](#wwvwwvh-discrimination-api)
+4. [CSV Writers API](#csv-writers-api)
+5. [Data Models](#data-models)
+6. [Directory Structure Reference](#directory-structure-reference)
 
-**Location:** `src/signal_recorder/tone_detector.py`
+---
 
-**Purpose:** Detects WWV (1000 Hz), WWVH (1200 Hz), and CHU (1000 Hz) time signal tones using phase-invariant quadrature matched filtering.
+## Path Management API
+
+**Module:** `src/signal_recorder/paths.py`  
+**CRITICAL:** All code MUST use this API for file paths - NO direct construction
+
+### Class: `GRAPEPaths`
+
+Central path manager for all GRAPE data structures.
+
+#### Initialization
+
+```python
+from signal_recorder.paths import GRAPEPaths, load_paths_from_config
+
+# From config (recommended - respects test/production mode)
+paths = load_paths_from_config('/path/to/grape-config.toml')
+
+# Direct initialization
+paths = GRAPEPaths('/tmp/grape-test')
+```
+
+#### Archive Methods
+
+```python
+def get_archive_dir(self, channel_name: str) -> Path
+```
+Returns: `{data_root}/archives/{CHANNEL}/`
+
+```python
+def get_archive_path(self, channel_name: str, timestamp: float, freq_hz: int) -> Path
+```
+Returns: `{archive_dir}/{YYYYMMDDTHHMMSSZ}_{FREQ}_iq.npz`
+
+#### Analytics Methods - Directories
+
+```python
+def get_analytics_dir(self, channel_name: str) -> Path
+```
+Returns: `{data_root}/analytics/{CHANNEL}/`
+
+```python
+def get_decimated_dir(self, channel_name: str) -> Path
+```
+Returns: `{analytics}/{CHANNEL}/decimated/`
+
+```python
+def get_digital_rf_dir(self, channel_name: str) -> Path
+```
+Returns: `{analytics}/{CHANNEL}/digital_rf/`
+
+```python
+def get_discrimination_dir(self, channel_name: str) -> Path
+```
+Returns: `{analytics}/{CHANNEL}/discrimination/`
+
+```python
+def get_tone_detections_dir(self, channel_name: str) -> Path
+```
+Returns: `{analytics}/{CHANNEL}/tone_detections/`
+
+```python
+def get_tick_windows_dir(self, channel_name: str) -> Path
+```
+Returns: `{analytics}/{CHANNEL}/tick_windows/`
+
+```python
+def get_station_id_440hz_dir(self, channel_name: str) -> Path
+```
+Returns: `{analytics}/{CHANNEL}/station_id_440hz/`
+
+```python
+def get_bcd_discrimination_dir(self, channel_name: str) -> Path
+```
+Returns: `{analytics}/{CHANNEL}/bcd_discrimination/`
+
+```python
+def get_quality_dir(self, channel_name: str) -> Path
+```
+Returns: `{analytics}/{CHANNEL}/quality/`
+
+```python
+def get_analytics_logs_dir(self, channel_name: str) -> Path
+```
+Returns: `{analytics}/{CHANNEL}/logs/`
+
+```python
+def get_analytics_status_dir(self, channel_name: str) -> Path
+```
+Returns: `{analytics}/{CHANNEL}/status/`
+
+#### Analytics Methods - Files
+
+```python
+def get_discrimination_csv(self, channel_name: str, date: str) -> Path
+```
+Returns: `{discrimination_dir}/{CHANNEL}_discrimination_{YYYYMMDD}.csv`
+
+```python
+def get_quality_csv(self, channel_name: str, date: str) -> Path
+```
+Returns: `{quality_dir}/{CHANNEL}_quality_{YYYYMMDD}.csv`
+
+#### Helper Functions
+
+```python
+def channel_name_to_dir(channel_name: str) -> str
+```
+Converts "WWV 5 MHz" → "WWV_5_MHz"
+
+```python
+def channel_name_to_key(channel_name: str) -> str
+```
+Converts "WWV 5 MHz" → "wwv5"
+
+```python
+def channel_dir_to_name(dir_name: str) -> str
+```
+Converts "WWV_5_MHz" → "WWV 5 MHz"
+
+---
+
+## Tone Detection API
+
+**Module:** `src/signal_recorder/tone_detector.py`
+
+### Class: `MultiStationToneDetector`
+
+Detects WWV (1000 Hz), WWVH (1200 Hz), and CHU (1000 Hz) timing tones.
 
 #### Constructor
 
@@ -30,29 +156,21 @@ MultiStationToneDetector(
 ```
 
 **Parameters:**
-- `channel_name` (str): Channel name like "WWV 5 MHz", "CHU 7.85 MHz"
-  - Determines which station types to detect
-  - Extracts frequency to enable/disable WWVH detection
-- `sample_rate` (int, optional): Processing sample rate in Hz (default: 3000)
+- `channel_name` (str): "WWV 5 MHz", "CHU 7.85 MHz", etc.
+- `sample_rate` (int): Processing sample rate (default: 3000 Hz)
 
-**Behavior:**
-- WWV channels (2.5, 5, 10, 15 MHz): Detects WWV + WWVH
-- WWV channels (20, 25 MHz): Detects WWV only (WWVH doesn't broadcast here)
-- CHU channels: Detects CHU only
-
-**Example:**
-```python
-detector = MultiStationToneDetector("WWV 5 MHz")  # Detects WWV + WWVH
-detector = MultiStationToneDetector("WWV 20 MHz") # Detects WWV only
-detector = MultiStationToneDetector("CHU 7.85 MHz") # Detects CHU only
-```
+**Channel Behavior:**
+- WWV 2.5, 5, 10, 15 MHz: Detects WWV (1000 Hz) + WWVH (1200 Hz)
+- WWV 20, 25 MHz: Detects WWV only
+- CHU: Detects CHU only (1000 Hz)
 
 #### Methods
 
-##### `process_samples()` ⭐ **PRIMARY METHOD**
+##### `process_samples()` ⭐ PRIMARY METHOD
 
 ```python
-process_samples(
+def process_samples(
+    self,
     timestamp: float,
     samples: np.ndarray,
     rtp_timestamp: int
@@ -60,61 +178,31 @@ process_samples(
 ```
 
 **Parameters:**
-- `timestamp` (float): UTC timestamp at buffer midpoint (where minute boundary is expected)
-- `samples` (np.ndarray): IQ samples at 3000 Hz (must be pre-resampled!)
-- `rtp_timestamp` (int): RTP timestamp for tracking
+- `timestamp` (float): UTC timestamp at minute boundary
+- `samples` (np.ndarray): Complex IQ samples at 3000 Hz (MUST pre-resample!)
+- `rtp_timestamp` (int): RTP timestamp for time_snap
 
 **Returns:**
-- `List[ToneDetectionResult]`: Detected tones (may be empty if no detections)
+- `List[ToneDetectionResult]`: Detected tones (empty if none)
 
-**Notes:**
-- Expects samples at 3000 Hz - you must resample from 16 kHz first!
-- Searches ±500ms window around expected minute boundary
-- Buffer should include at least 60s of data centered on minute boundary
+**CRITICAL:** Input must be at 3000 Hz. Resample from 16 kHz:
 
-**Resampling Example:**
 ```python
 from scipy import signal as scipy_signal
 
-# Resample 16 kHz → 3 kHz
-resampled = scipy_signal.resample_poly(
-    iq_samples_16khz,
-    up=3,
-    down=16,
-    axis=0
-)
-
-# Detect tones
-detections = detector.process_samples(
-    timestamp=minute_timestamp,  # UTC of minute boundary
-    samples=resampled,           # 3 kHz IQ samples
-    rtp_timestamp=rtp_ts
-)
-
-for det in detections:
-    print(f"{det.station.value}: {det.timing_error_ms:+.1f}ms, SNR={det.snr_db:.1f}dB")
+resampled = scipy_signal.resample_poly(iq_16khz, up=3, down=16, axis=0)
+detections = detector.process_samples(timestamp, resampled, rtp_ts)
 ```
-
-##### `detect_tone_onset()` (Legacy - returns bool)
-
-```python
-detect_tone_onset(
-    iq_samples: np.ndarray,
-    buffer_start_time: float
-) -> bool
-```
-
-**Note:** This is a legacy method that returns a boolean. Use `process_samples()` instead for full detection results.
 
 ---
 
-## WWV-H Discrimination API
+## WWV/WWVH Discrimination API
 
-### `WWVHDiscriminator`
+**Module:** `src/signal_recorder/wwvh_discrimination.py`
 
-**Location:** `src/signal_recorder/wwvh_discrimination.py`
+Provides 5 independent analysis methods for WWV/WWVH discrimination.
 
-**Purpose:** Discriminate between WWV and WWVH stations using three methods: 1000/1200 Hz power ratio, differential delay, and 440 Hz station-specific tones.
+### Class: `WWVHDiscriminator`
 
 #### Constructor
 
@@ -123,82 +211,71 @@ WWVHDiscriminator(channel_name: str)
 ```
 
 **Parameters:**
-- `channel_name` (str): Channel name for logging (e.g., "WWV 5 MHz")
+- `channel_name` (str): "WWV 5 MHz", etc.
 
-**Example:**
-```python
-discriminator = WWVHDiscriminator("WWV 5 MHz")
-```
-
-#### Methods
-
-##### `compute_discrimination()`
-
-**Basic discrimination** (1000 Hz vs 1200 Hz power, differential delay only)
+### Method 1: Timing Tones (1000/1200 Hz)
 
 ```python
-compute_discrimination(
-    detections: List[ToneDetectionResult],
-    minute_timestamp: float
-) -> DiscriminationResult
-```
-
-**Parameters:**
-- `detections` (List[ToneDetectionResult]): Tone detections from MultiStationToneDetector
-- `minute_timestamp` (float): UTC timestamp of minute boundary
-
-**Returns:**
-- `DiscriminationResult`: Analysis result (always returns, even if no detections)
-
-##### `analyze_minute_with_440hz()` ⭐ **RECOMMENDED**
-
-**Complete discrimination** (includes 440 Hz tone analysis)
-
-```python
-analyze_minute_with_440hz(
+def detect_timing_tones(
+    self,
     iq_samples: np.ndarray,
     sample_rate: int,
-    minute_timestamp: float,
-    detections: List[ToneDetectionResult]
-) -> DiscriminationResult
+    minute_timestamp: float
+) -> Tuple[float, float, Optional[float], List[ToneDetectionResult]]
 ```
 
 **Parameters:**
-- `iq_samples` (np.ndarray): Full minute of complex IQ samples
-- `sample_rate` (int): Sample rate (typically 16000 Hz)
+- `iq_samples` (np.ndarray): Complex IQ for full minute  
+- `sample_rate` (int): Sample rate in Hz (typically 16000)
 - `minute_timestamp` (float): UTC timestamp of minute boundary
-- `detections` (List[ToneDetectionResult]): Pre-computed tone detections
 
-**Returns:**
-- `DiscriminationResult`: Complete analysis including 440 Hz detection
+**Returns:** `Tuple[wwv_power_db, wwvh_power_db, differential_delay_ms, detections]`
+- `wwv_power_db` (float): WWV power in dB (-inf if not detected)
+- `wwvh_power_db` (float): WWVH power in dB (-inf if not detected)
+- `differential_delay_ms` (Optional[float]): Delay between stations
+- `detections` (List[ToneDetectionResult]): Individual tone results
 
-**440 Hz Detection:**
-- Minute 1 (XX:01:15-59): Detects WWVH 440 Hz tone
-- Minute 2 (XX:02:15-59): Detects WWV 440 Hz tone
-- Other minutes: No 440 Hz analysis
+**CSV Output:** `{CHANNEL}_tones_YYYYMMDD.csv`  
+**Columns:** timestamp_utc, station, frequency_hz, duration_sec, timing_error_ms, snr_db, tone_power_db, confidence
 
-**Example:**
+### Method 2: Tick Windows (5ms ticks)
+
 ```python
-discrimination = discriminator.analyze_minute_with_440hz(
-    iq_samples=archive.iq_samples,
-    sample_rate=16000,
-    minute_timestamp=minute_ts,
-    detections=detections
-)
-
-print(f"WWV: {discrimination.wwv_detected}, WWVH: {discrimination.wwvh_detected}")
-print(f"Power ratio: {discrimination.power_ratio_db:+.1f} dB")
-print(f"Dominant: {discrimination.dominant_station} ({discrimination.confidence})")
-if discrimination.tone_440hz_wwv_detected:
-    print(f"WWV 440 Hz confirmed!")
+def detect_tick_windows(
+    self,
+    iq_samples: np.ndarray,
+    sample_rate: int
+) -> List[Dict[str, Any]]
 ```
 
-##### `detect_440hz_tone()`
+**Parameters:**
+- `iq_samples` (np.ndarray): Complex IQ for full minute
+- `sample_rate` (int): Sample rate in Hz (typically 16000)
 
-**Manual 440 Hz detection** (usually called internally)
+**Returns:** `List[Dict]` - Up to 6 windows per minute (every 10 seconds)
+
+**Window Dict Fields:**
+- `second` (int): Window start (0, 10, 20, 30, 40, 50)
+- `coherent_wwv_snr_db` (float): Coherent integration SNR WWV
+- `coherent_wwvh_snr_db` (float): Coherent integration SNR WWVH
+- `incoherent_wwv_snr_db` (float): Incoherent integration SNR WWV
+- `incoherent_wwvh_snr_db` (float): Incoherent integration SNR WWVH
+- `coherence_quality_wwv` (float): Phase coherence quality WWV (0-1)
+- `coherence_quality_wwvh` (float): Phase coherence quality WWVH (0-1)
+- `integration_method` (str): 'coherent' or 'incoherent'
+- `wwv_snr_db` (float): Selected SNR WWV
+- `wwvh_snr_db` (float): Selected SNR WWVH
+- `ratio_db` (float): WWV/WWVH power ratio
+- `tick_count` (int): Number of detected ticks
+
+**CSV Output:** `{CHANNEL}_ticks_YYYYMMDD.csv`  
+**Columns:** timestamp_utc, window_second, coherent_wwv_snr_db, coherent_wwvh_snr_db, incoherent_wwv_snr_db, incoherent_wwvh_snr_db, coherence_quality_wwv, coherence_quality_wwvh, integration_method, wwv_snr_db, wwvh_snr_db, ratio_db, tick_count
+
+### Method 3: Station ID (440 Hz)
 
 ```python
-detect_440hz_tone(
+def detect_440hz_tone(
+    self,
     iq_samples: np.ndarray,
     sample_rate: int,
     minute_number: int
@@ -206,481 +283,299 @@ detect_440hz_tone(
 ```
 
 **Parameters:**
-- `iq_samples` (np.ndarray): Full minute of IQ samples
-- `sample_rate` (int): Sample rate
-- `minute_number` (int): Minute number (0-59); only processes minutes 1 and 2
+- `iq_samples` (np.ndarray): Complex IQ for full minute
+- `sample_rate` (int): Sample rate in Hz (typically 16000)
+- `minute_number` (int): Minute number (0-59)
 
-**Returns:**
-- `(detected: bool, power_db: Optional[float])`
+**Returns:** `Tuple[detected, power_db]`
+- `detected` (bool): True if 440 Hz detected
+- `power_db` (Optional[float]): Power in dB if detected
+
+**Station Assignment:**
+- Minute 1 → WWVH
+- Minute 2 → WWV
+- Other minutes → No detection expected
+
+**CSV Output:** `{CHANNEL}_440hz_YYYYMMDD.csv`  
+**Columns:** timestamp_utc, minute_number, wwv_detected, wwvh_detected, wwv_power_db, wwvh_power_db
+
+### Method 4: BCD Discrimination (100 Hz)
+
+```python
+def detect_bcd_discrimination(
+    self,
+    iq_samples: np.ndarray,
+    sample_rate: int,
+    minute_timestamp: float
+) -> Tuple[float, float, Optional[float], Optional[float], List[Dict[str, Any]]]
+```
+
+**Parameters:**
+- `iq_samples` (np.ndarray): Complex IQ for full minute
+- `sample_rate` (int): Sample rate in Hz (typically 16000)
+- `minute_timestamp` (float): UTC timestamp of minute boundary
+
+**Returns:** `Tuple[wwv_amplitude, wwvh_amplitude, delay_ms, quality, bcd_windows]`
+- `wwv_amplitude` (float): Aggregate WWV amplitude
+- `wwvh_amplitude` (float): Aggregate WWVH amplitude
+- `differential_delay_ms` (Optional[float]): Propagation delay
+- `correlation_quality` (Optional[float]): Quality (0-1)
+- `bcd_windows` (List[Dict]): Individual window results
+
+**BCD Window Dict Fields:**
+- `window_start` or `window_start_sec` (float): Start time (seconds)
+- `wwv_amplitude` (float): WWV BCD amplitude
+- `wwvh_amplitude` (float): WWVH BCD amplitude
+- `differential_delay_ms` or `differential_delay` (Optional[float]): Delay
+- `correlation_quality` (float): Quality (0-1)
+
+**CSV Output:** `{CHANNEL}_bcd_YYYYMMDD.csv`  
+**Columns:** timestamp_utc, window_start_sec, wwv_amplitude, wwvh_amplitude, differential_delay_ms, correlation_quality, amplitude_ratio_db
+
+### Method 5: Weighted Voting (Final)
+
+```python
+def analyze_minute_with_440hz(
+    self,
+    iq_samples: np.ndarray,
+    sample_rate: int,
+    minute_timestamp: float,
+    detections: Optional[List[ToneDetectionResult]] = None
+) -> Optional[DiscriminationResult]
+```
+
+**Parameters:**
+- `iq_samples` (np.ndarray): Complex IQ for full minute
+- `sample_rate` (int): Sample rate in Hz (typically 16000)
+- `minute_timestamp` (float): UTC timestamp of minute boundary
+- `detections` (Optional[List[ToneDetectionResult]]): Pre-computed tones
+  - If None: Detects tones internally (recommended for reprocessing)
+  - If provided: Uses these detections (real-time mode)
+
+**Returns:** `Optional[DiscriminationResult]` - Complete analysis or None
+
+**Internally Calls:**
+1. `detect_timing_tones()` (if detections=None)
+2. `detect_440hz_tone()`
+3. `detect_tick_windows()`
+4. `detect_bcd_discrimination()`
+5. `finalize_discrimination()` (weighted voting)
+
+**CSV Output:** `{CHANNEL}_discrimination_YYYYMMDD.csv`  
+**Columns:** timestamp_utc, minute_timestamp, minute_number, wwv_detected, wwvh_detected, wwv_snr_db, wwvh_snr_db, power_ratio_db, differential_delay_ms, tone_440hz_wwv_detected, tone_440hz_wwv_power_db, tone_440hz_wwvh_detected, tone_440hz_wwvh_power_db, dominant_station, confidence, tick_windows_10sec (JSON), bcd_wwv_amplitude, bcd_wwvh_amplitude, bcd_differential_delay_ms, bcd_correlation_quality, bcd_windows (JSON)
 
 ---
 
-## Analytics Service API
+## CSV Writers API
 
-### `AnalyticsService`
+**Module:** `src/signal_recorder/discrimination_csv_writers.py`
 
-**Location:** `src/signal_recorder/analytics_service.py`
+### Class: `DiscriminationCSVWriters`
 
-**Purpose:** Orchestrates tone detection, decimation, quality metrics, and WWV-H discrimination for a single channel.
+Manages daily CSV files for all 5 discrimination methods.
 
 #### Constructor
 
 ```python
-AnalyticsService(
-    channel_name: str,
-    frequency_hz: float,
-    archive_directory: Path,
-    output_directory: Path,
-    station_config: dict
+DiscriminationCSVWriters(
+    data_root: str,
+    channel_name: str
 )
 ```
 
 **Parameters:**
+- `data_root` (str): Root directory (e.g., "/tmp/grape-test")
 - `channel_name` (str): Channel name (e.g., "WWV 5 MHz")
-- `frequency_hz` (float): Center frequency in Hz (e.g., 5_000_000)
-- `archive_directory` (Path): Directory containing raw *_iq.npz files
-- `output_directory` (Path): Base output directory for analytics products
-- `station_config` (dict): Station configuration
-
-**Station Config Required Fields:**
-```python
-{
-    'callsign': str,           # Station callsign
-    'grid_square': str,        # Maidenhead grid square
-    'receiver_name': str,      # Receiver identifier
-    'psws_station_id': str,    # PSWS station ID
-    'psws_instrument_id': str  # PSWS instrument ID
-}
-```
-
-**Example:**
-```python
-from pathlib import Path
-
-service = AnalyticsService(
-    channel_name="WWV 5 MHz",
-    frequency_hz=5_000_000,
-    archive_directory=Path("/tmp/grape-test/archives/WWV_5_MHz"),
-    output_directory=Path("/tmp/grape-test/analytics/WWV_5_MHz"),
-    station_config={
-        'callsign': 'W1ABC',
-        'grid_square': 'FN42',
-        'receiver_name': 'grape_v2_receiver_1',
-        'psws_station_id': 'station_001',
-        'psws_instrument_id': 'grape_v2'
-    }
-)
-```
 
 #### Methods
 
-##### `process_archive()`
-
 ```python
-process_archive(archive: NPZArchive) -> dict
+def append_tone_detections(
+    self,
+    records: List[Dict],
+    date_obj: date
+) -> None
 ```
 
-**Parameters:**
-- `archive` (NPZArchive): Loaded NPZ archive
-
-**Returns:**
-- `dict`: Processing results with keys:
-  - `'detections'`: List of tone detections
-  - `'time_snap_updated'`: bool
-  - `'decimated_file'`: Path or None
-  - `'errors'`: List of error messages
-
-**Pipeline:**
-1. Tone detection (WWV/WWVH/CHU)
-2. Time_snap update
-3. Quality metrics calculation
-4. WWV-H discrimination (if applicable)
-5. Decimation to 10 Hz
-6. Write decimated NPZ file
-
-##### `run()`
+Writes tone detection records to `{CHANNEL}_tones_YYYYMMDD.csv`
 
 ```python
-run(poll_interval: float = 10.0)
+def append_tick_windows(
+    self,
+    records: List[Dict],
+    date_obj: date
+) -> None
 ```
 
-**Parameters:**
-- `poll_interval` (float): Seconds between directory scans (default: 10.0)
-
-**Behavior:**
-- Polls `archive_directory` for new *_iq.npz files
-- Processes files in chronological order
-- Writes status files periodically
-- Runs until stopped
-
----
-
-## DRF Writer Service API
-
-### `DRFWriterService`
-
-**Location:** `src/signal_recorder/drf_writer_service.py`
-
-**Purpose:** Converts 10 Hz decimated NPZ files to Digital RF HDF5 format for upload.
-
-#### Constructor
+Writes tick window records to `{CHANNEL}_ticks_YYYYMMDD.csv`
 
 ```python
-DRFWriterService(
-    input_dir: Path,
-    output_dir: Path,
-    channel_name: str,
-    frequency_hz: float,
-    analytics_state_file: Path,
-    station_config: dict
-)
+def append_440hz_detections(
+    self,
+    records: List[Dict],
+    date_obj: date
+) -> None
 ```
 
-**Parameters:**
-- `input_dir` (Path): Directory containing *_iq_10hz.npz files
-- `output_dir` (Path): Output directory for Digital RF files
-- `channel_name` (str): Channel name
-- `frequency_hz` (float): Center frequency in Hz
-- `analytics_state_file` (Path): Path to analytics state JSON (for time_snap)
-- `station_config` (dict): Station configuration (same as Analytics Service)
-
-**Example:**
-```python
-from pathlib import Path
-
-service = DRFWriterService(
-    input_dir=Path("/tmp/grape-test/archives/WWV_5_MHz"),
-    output_dir=Path("/tmp/grape-test/digital_rf/WWV_5_MHz"),
-    channel_name="WWV 5 MHz",
-    frequency_hz=5_000_000,
-    analytics_state_file=Path("/tmp/grape-test/analytics/WWV_5_MHz/analytics_state.json"),
-    station_config={
-        'callsign': 'W1ABC',
-        'grid_square': 'FN42',
-        'receiver_name': 'grape_v2_receiver_1',
-        'psws_station_id': 'station_001',
-        'psws_instrument_id': 'grape_v2'
-    }
-)
-```
-
-#### Methods
-
-##### `write_to_drf()`
+Writes 440 Hz records to `{CHANNEL}_440hz_YYYYMMDD.csv`
 
 ```python
-write_to_drf(
-    archive: DecimatedArchive,
-    time_snap: Optional[TimeSnapReference]
-)
+def append_bcd_windows(
+    self,
+    records: List[Dict],
+    date_obj: date
+) -> None
 ```
 
-**Parameters:**
-- `archive` (DecimatedArchive): Loaded 10 Hz decimated archive
-- `time_snap` (TimeSnapReference | None): Current time_snap for UTC conversion
-
-**Behavior:**
-- Creates DRF writer if needed (new day)
-- Calculates UTC timestamp from time_snap or file creation time
-- Writes IQ samples with monotonic sample indexing
-- Writes optional metadata channels
-- Detects and skips backwards-time writes
-
-##### `run()`
+Writes BCD window records to `{CHANNEL}_bcd_YYYYMMDD.csv`
 
 ```python
-run(poll_interval: float = 10.0)
+def append_discrimination_results(
+    self,
+    results: List[DiscriminationResult],
+    date_obj: date
+) -> None
 ```
 
-**Parameters:**
-- `poll_interval` (float): Seconds between directory scans (default: 10.0)
-
-**Behavior:**
-- Polls `input_dir` for new *_iq_10hz.npz files
-- Loads time_snap from analytics state
-- Processes files in chronological order
-- Writes Digital RF + metadata channels
+Writes final discrimination to `{CHANNEL}_discrimination_YYYYMMDD.csv`
 
 ---
 
 ## Data Models
 
+**Module:** `src/signal_recorder/interfaces/data_models.py`
+
 ### `ToneDetectionResult`
 
-**Location:** `src/signal_recorder/interfaces/data_models.py`
-
 ```python
-@dataclass
+@dataclass(frozen=True)
 class ToneDetectionResult:
-    station: StationType          # WWV, WWVH, or CHU
-    timestamp: float              # Precise tone onset time (UTC)
-    timing_error_ms: float        # Error relative to minute boundary (ms)
-    snr_db: float                 # Signal-to-noise ratio (dB)
-    confidence: float             # Detection confidence (0.0-1.0)
-    tone_power_db: float          # FFT-based tone power (dB)
-    use_for_time_snap: bool       # Whether suitable for time_snap
+    station: StationType               # WWV, WWVH, or CHU
+    frequency_hz: float                # 1000 or 1200 Hz
+    duration_sec: float                # Tone duration (seconds)
+    timestamp_utc: float               # Tone onset (UTC)
+    timing_error_ms: float             # Error vs minute boundary (ms)
+    snr_db: float                      # Signal-to-noise ratio (dB)
+    confidence: float                  # Detection confidence (0-1)
+    use_for_time_snap: bool            # Use for timing (WWV/CHU only)
+    correlation_peak: float            # Matched filter peak
+    noise_floor: float                 # Noise floor estimate
+    tone_power_db: Optional[float]     # Power relative to noise (dB)
 ```
 
 ### `DiscriminationResult`
 
-**Location:** `src/signal_recorder/wwvh_discrimination.py`
+**Module:** `src/signal_recorder/wwvh_discrimination.py`
 
 ```python
 @dataclass
 class DiscriminationResult:
-    minute_timestamp: float                    # UTC timestamp of minute
-    wwv_detected: bool                         # WWV 1000 Hz detected
-    wwvh_detected: bool                        # WWVH 1200 Hz detected
-    wwv_power_db: Optional[float]              # WWV tone power (dB)
-    wwvh_power_db: Optional[float]             # WWVH tone power (dB)
-    power_ratio_db: Optional[float]            # WWV - WWVH (dB)
-    differential_delay_ms: Optional[float]     # Arrival time diff (ms)
-    dominant_station: Optional[str]            # 'WWV', 'WWVH', 'BALANCED'
-    confidence: str                            # 'high', 'medium', 'low'
-    tone_440hz_wwv_detected: bool              # 440 Hz in minute 2
-    tone_440hz_wwv_power_db: Optional[float]   # Power (dB)
-    tone_440hz_wwvh_detected: bool             # 440 Hz in minute 1
-    tone_440hz_wwvh_power_db: Optional[float]  # Power (dB)
-```
-
-### `NPZArchive`
-
-**Location:** `src/signal_recorder/interfaces/data_models.py`
-
-```python
-@dataclass
-class NPZArchive:
-    file_path: Path
-    iq_samples: np.ndarray         # Complex IQ samples
-    rtp_timestamp: int             # RTP timestamp of first sample
-    sample_rate: int               # Sample rate (Hz)
-    unix_timestamp: float          # File creation time (UTC)
-    packets_received: int          # Packets successfully received
-    packets_expected: int          # Expected packets
-    gaps_filled: int               # Samples filled due to gaps
-    gaps_count: int                # Number of gaps
-    # ... gap details arrays ...
+    # Timing tones
+    minute_timestamp: float
+    wwv_detected: bool
+    wwvh_detected: bool
+    wwv_power_db: float
+    wwvh_power_db: float
+    power_ratio_db: float
+    differential_delay_ms: Optional[float]
     
-    @classmethod
-    def load(cls, file_path: Path) -> 'NPZArchive':
-        """Load NPZ archive from disk"""
-```
-
-### `DecimatedArchive`
-
-**Location:** `src/signal_recorder/drf_writer_service.py`
-
-```python
-@dataclass
-class DecimatedArchive:
-    file_path: Path
-    iq_samples: np.ndarray         # Decimated IQ samples (10 Hz)
-    rtp_timestamp: int             # RTP timestamp (original rate)
-    sample_rate_original: int      # Original rate (16000 Hz)
-    sample_rate_decimated: int     # Decimated rate (10 Hz)
-    decimation_factor: int         # Ratio (1600)
-    created_timestamp: float       # Creation time (UTC)
-    source_file: str               # Original filename
+    # 440 Hz station ID
+    tone_440hz_detected: bool
+    tone_440hz_wwv_power_db: Optional[float]
+    tone_440hz_wwvh_power_db: Optional[float]
     
-    # Optional metadata (future expansion)
-    timing_metadata: Optional[Dict]
-    quality_metadata: Optional[Dict]
-    discrimination_metadata: Optional[Dict]
+    # Tick windows
+    tick_windows: List[Dict]
     
-    @classmethod
-    def load(cls, file_path: Path) -> 'DecimatedArchive':
-        """Load 10 Hz decimated NPZ file"""
-```
-
-### `TimeSnapReference`
-
-**Location:** `src/signal_recorder/drf_writer_service.py`
-
-```python
-@dataclass
-class TimeSnapReference:
-    rtp_timestamp: int      # RTP timestamp at tone onset
-    utc_timestamp: float    # UTC timestamp at tone onset
-    sample_rate: int        # Sample rate for RTP conversion
-    source: str             # "WWV" or "CHU"
-    confidence: float       # Detection confidence
-    station: str            # Station identifier
+    # BCD discrimination
+    bcd_wwv_amplitude: float
+    bcd_wwvh_amplitude: float
+    bcd_differential_delay_ms: Optional[float]
+    bcd_correlation_quality: Optional[float]
+    bcd_windows: List[Dict]
     
-    def calculate_sample_time(self, rtp_timestamp: int) -> float:
-        """Convert RTP timestamp to UTC using this time_snap"""
+    # Final discrimination
+    dominant_station: str              # "WWV", "WWVH", "BALANCED", "UNKNOWN"
+    confidence: str                    # "HIGH", "MEDIUM", "LOW"
 ```
 
 ---
 
-## Configuration
+## Directory Structure Reference
 
-### Station Config Dictionary
+See `DIRECTORY_STRUCTURE.md` for complete path specifications.
 
-Required for both Analytics and DRF Writer services:
+**Key Directories:**
+- `archives/{CHANNEL}/` - Raw 16 kHz IQ NPZ files
+- `analytics/{CHANNEL}/decimated/` - 10 Hz decimated NPZ
+- `analytics/{CHANNEL}/tone_detections/` - Tone detection CSVs
+- `analytics/{CHANNEL}/tick_windows/` - Tick analysis CSVs
+- `analytics/{CHANNEL}/station_id_440hz/` - 440 Hz ID CSVs
+- `analytics/{CHANNEL}/bcd_discrimination/` - BCD CSVs
+- `analytics/{CHANNEL}/discrimination/` - Final voting CSVs
 
-```python
-station_config = {
-    'callsign': 'W1ABC',                      # Station callsign
-    'grid_square': 'FN42',                    # Maidenhead grid square
-    'receiver_name': 'grape_v2_receiver_1',   # Unique receiver name
-    'psws_station_id': 'station_001',         # PSWS/HamSCI station ID
-    'psws_instrument_id': 'grape_v2'          # Instrument type ID
-}
-```
-
-### File Naming Conventions
-
-**Raw NPZ Archives:**
-```
-{YYYYMMDDTHHMMSS}Z_{frequency_hz}_iq.npz
-Example: 20251116T120000Z_5000000_iq.npz
-```
-
-**Decimated NPZ Archives:**
-```
-{YYYYMMDDTHHMMSS}Z_{frequency_hz}_iq_10hz.npz
-Example: 20251116T120000Z_5000000_iq_10hz.npz
-```
-
-**Discrimination CSV:**
-```
-{channel_name}_discrimination_{YYYYMMDD}.csv
-Example: WWV_5_MHz_discrimination_20251116.csv
-```
-
-### Directory Structure
-
-```
-/tmp/grape-test/
-├── archives/
-│   └── WWV_5_MHz/
-│       ├── 20251116T120000Z_5000000_iq.npz       # Raw 16 kHz
-│       └── 20251116T120000Z_5000000_iq_10hz.npz  # Decimated 10 Hz
-├── analytics/
-│   └── WWV_5_MHz/
-│       ├── analytics_state.json                   # Time_snap, state
-│       ├── discrimination_logs/
-│       │   └── WWV_5_MHz_discrimination_20251116.csv
-│       └── status_WWV_5_MHz.json                  # Live status
-└── digital_rf/
-    └── WWV_5_MHz/
-        └── 20251116/                              # Daily directories
-            ├── rf_data/                           # IQ samples
-            └── metadata/                          # Metadata channels
-                ├── timing_quality/
-                ├── data_quality/
-                └── wwvh_discrimination/
-```
+**File Naming:**
+- Archives: `YYYYMMDDTHHMMSSZ_{FREQ}_iq.npz`
+- Analytics: `{CHANNEL}_{METHOD}_YYYYMMDD.csv`
+- **NO time-range suffixes** - One file per day per method
 
 ---
 
-## Quick Reference
+## Usage Examples
 
-### Minimal Working Example - Full Pipeline
+### Complete Workflow
 
 ```python
-from pathlib import Path
-from signal_recorder.tone_detector import MultiStationToneDetector
 from signal_recorder.wwvh_discrimination import WWVHDiscriminator
-from signal_recorder.interfaces.data_models import NPZArchive
-
-# Configuration
-channel_name = "WWV 5 MHz"
-archive_file = Path("/tmp/grape-test/archives/WWV_5_MHz/20251116T120100Z_5000000_iq.npz")
-
-# Initialize components
-detector = MultiStationToneDetector(channel_name)
-discriminator = WWVHDiscriminator(channel_name)
-
-# Load data
-archive = NPZArchive.load(archive_file)
-
-# Detect tones
-detections = detector.detect_tones(
-    iq_samples=archive.iq_samples,
-    sample_rate=archive.sample_rate,
-    minute_timestamp=archive.unix_timestamp
-)
-
-# Discriminate WWV/WWVH (includes 440 Hz analysis)
-discrimination = discriminator.analyze_minute_with_440hz(
-    iq_samples=archive.iq_samples,
-    sample_rate=archive.sample_rate,
-    minute_timestamp=archive.unix_timestamp,
-    detections=detections
-)
-
-# Results
-print(f"Detections: {len(detections)}")
-for det in detections:
-    print(f"  {det.station.value}: {det.timing_error_ms:+.1f}ms, SNR={det.snr_db:.1f}dB")
-
-print(f"\nDiscrimination:")
-print(f"  WWV: {discrimination.wwv_detected}, WWVH: {discrimination.wwvh_detected}")
-print(f"  Power ratio: {discrimination.power_ratio_db:+.1f} dB")
-print(f"  Dominant: {discrimination.dominant_station} ({discrimination.confidence})")
-print(f"  440 Hz WWV: {discrimination.tone_440hz_wwv_detected}")
-print(f"  440 Hz WWVH: {discrimination.tone_440hz_wwvh_detected}")
-```
-
----
-
-## Common Patterns
-
-### Pattern 1: Check if WWVH detection is enabled
-
-```python
-detector = MultiStationToneDetector("WWV 5 MHz")
-has_wwvh = StationType.WWVH in detector.templates
-# True for 2.5, 5, 10, 15 MHz; False for 20, 25 MHz
-```
-
-### Pattern 2: Load time_snap from analytics state
-
-```python
-import json
-from signal_recorder.drf_writer_service import TimeSnapReference
-
-state_file = Path("/tmp/grape-test/analytics/WWV_5_MHz/analytics_state.json")
-if state_file.exists():
-    with open(state_file) as f:
-        state = json.load(f)
-        if 'time_snap' in state:
-            ts = state['time_snap']
-            time_snap = TimeSnapReference(
-                rtp_timestamp=ts['rtp_timestamp'],
-                utc_timestamp=ts['utc_timestamp'],
-                sample_rate=ts['sample_rate'],
-                source=ts['source'],
-                confidence=ts['confidence'],
-                station=ts['station']
-            )
-```
-
-### Pattern 3: Batch process archives
-
-```python
-from pathlib import Path
+from signal_recorder.discrimination_csv_writers import DiscriminationCSVWriters
+from signal_recorder.paths import GRAPEPaths
+from datetime import datetime, timezone, date
 import numpy as np
 
-archive_dir = Path("/tmp/grape-test/archives/WWV_5_MHz")
-detector = MultiStationToneDetector("WWV 5 MHz")
+# Initialize
+paths = GRAPEPaths("/tmp/grape-test")
+discriminator = WWVHDiscriminator("WWV 5 MHz")
+writers = DiscriminationCSVWriters("/tmp/grape-test", "WWV 5 MHz")
 
-for npz_file in sorted(archive_dir.glob("*_iq.npz")):
-    archive = NPZArchive.load(npz_file)
-    detections = detector.detect_tones(
-        archive.iq_samples,
-        archive.sample_rate,
-        archive.unix_timestamp
-    )
-    print(f"{npz_file.name}: {len(detections)} detections")
+# Load NPZ
+archive_path = paths.get_archive_dir("WWV 5 MHz") / "20251119T120000Z_5000000_iq.npz"
+data = np.load(archive_path)
+iq_samples = data['iq']
+sample_rate = int(data['sample_rate'])
+minute_timestamp = float(data['unix_timestamp'])
+
+# Run all 5 methods
+wwv_pwr, wwvh_pwr, delay, tones = discriminator.detect_timing_tones(
+    iq_samples, sample_rate, minute_timestamp
+)
+tick_windows = discriminator.detect_tick_windows(iq_samples, sample_rate)
+minute_num = datetime.fromtimestamp(minute_timestamp, tz=timezone.utc).minute
+detected_440, power_440 = discriminator.detect_440hz_tone(
+    iq_samples, sample_rate, minute_num
+)
+wwv_amp, wwvh_amp, bcd_delay, quality, bcd_windows = discriminator.detect_bcd_discrimination(
+    iq_samples, sample_rate, minute_timestamp
+)
+result = discriminator.analyze_minute_with_440hz(
+    iq_samples, sample_rate, minute_timestamp
+)
+
+# Write CSVs
+today = date.fromtimestamp(minute_timestamp)
+writers.append_tone_detections([...], today)
+writers.append_tick_windows([...], today)
+writers.append_440hz_detections([...], today)
+writers.append_bcd_windows([...], today)
+writers.append_discrimination_results([result], today)
 ```
 
 ---
 
-## Version History
+## See Also
 
-- **v1.0** (2025-11-16): Initial API reference
-  - Frequency-aware WWVH detection
-  - 440 Hz integration
-  - Complete discrimination pipeline
+- `DIRECTORY_STRUCTURE.md` - Complete path specifications
+- `src/signal_recorder/paths.py` - Path management implementation
+- `src/signal_recorder/wwvh_discrimination.py` - Discrimination implementation
+- `src/signal_recorder/tone_detector.py` - Tone detection implementation
+- `src/signal_recorder/discrimination_csv_writers.py` - CSV writers
+- `scripts/validate_api_compliance.py` - API compliance validator

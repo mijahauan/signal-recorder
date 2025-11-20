@@ -4,6 +4,23 @@
 # Instructions: Paste this entire file at the start of any new chat session
 # to provide ground-truth context for the GRAPE Signal Recorder project.
 
+## 0. 📜 CRITICAL: Canonical Contracts (NEW - 2025-11-20)
+
+**Before writing ANY code, consult these contracts:**
+
+1. **`CANONICAL_CONTRACTS.md`** - Overview of project standards
+2. **`DIRECTORY_STRUCTURE.md`** - WHERE data goes, HOW to name files
+3. **`docs/API_REFERENCE.md`** - WHAT functions exist, HOW to call them
+4. **`ARCHITECTURE.md`** - WHY the system is designed this way
+
+**Enforcement:** `scripts/validate_api_compliance.py` (must pass before commit)
+
+**Key Rules:**
+- ✅ ALL path operations use `GRAPEPaths` API - NO direct path construction
+- ✅ ALL function calls match signatures in `API_REFERENCE.md`
+- ✅ ALL files follow naming convention: `{CHANNEL}_{METHOD}_YYYYMMDD.csv`
+- ✅ NO time-range suffixes on daily files
+
 ## 1. 🎯 Core Mission & Objectives
 
 * **Project:** GRAPE Signal Recorder (Global Radio Amateur Propagation Experiment)
@@ -101,7 +118,8 @@ This is a high-level map of the project's most important, stable interfaces.
 
 * **`src/signal_recorder/decimation.py`**:
   * `decimate_for_upload(iq, input_rate, output_rate)`: 16 kHz → 10 Hz decimation
-  * Three-stage anti-aliased FIR filtering (scipy.signal.decimate)
+  * Optimized 3-stage pipeline: CIC (16kHz→400Hz) → compensation FIR (flatten passband) → final FIR (400Hz→ 10Hz)
+  * Preserves ±0.1 Hz Doppler resolution with flat passband and >90 dB stopband attenuation
 
 ### Web UI Backend (Node.js)
 
@@ -129,11 +147,15 @@ This is a high-level map of the project's most important, stable interfaces.
 
 ## 4. ⚡ Recent Sessions Summary
 
-**SESSION_2025-11-17_FINAL_SUMMARY.md**: Tone detector fix, carrier time basis
+**SESSION_2025-11-17_FINAL_SUMMARY.md**: Tone detector fix
 - ✅ Fixed 30-second timing bug in tone detector
-- ✅ Verified carrier channels recording valid data (PT 97)
-- ✅ **DECISION**: Carrier channels use NTP_SYNCED timing (±10ms, adequate for ±0.1 Hz Doppler)
 - ✅ RTP offset correlation proven UNSTABLE (std dev 1.2B samples - independent clocks per channel)
+
+**SESSION_2025-11-18_CARRIER_REMOVAL.md**: Focus on wide channel optimization
+- ✅ Removed 9 carrier channels (200 Hz) - cannot correlate using time_snap
+- ✅ Implemented optimized 3-stage decimation: CIC → compensation FIR → final FIR
+- ✅ Preserves Doppler precision with flat passband (0-5 Hz within 0.1 dB)
+- ✅ All channels now 16 kHz wide channels with WWV/CHU tone detection
 
 **SESSION_2025-11-17_WEB_UI_SYNC.md**: Web-UI/Analytics synchronization
 - ✅ Added missing `decimated_dir` to GRAPEPaths API (Python + JavaScript)
@@ -142,12 +164,12 @@ This is a high-level map of the project's most important, stable interfaces.
 - ✅ Documented comprehensive sync protocol: `WEB_UI_ANALYTICS_SYNC_PROTOCOL.md`
 - ✅ **PROTOCOL**: Always update both Python and JavaScript paths simultaneously
 
-**CARRIER_CHANNEL_ANALYTICS_IMPLEMENTATION.md**: Carrier channel support
-- ✅ Implemented unified metadata structure (wide + carrier channels)
-- ✅ Carrier channels use NTP_SYNCED timing (±10ms, no tone detection)
-- ✅ Same decimated NPZ format: timing_metadata, quality_metadata, gap analysis
-- ✅ Decimation: 200 Hz → 10 Hz (factor 20, automatic multi-stage)
-- ✅ **NO BREAKING CHANGES**: Wide channels continue with TONE_LOCKED timing
+**DECIMATION_OPTIMIZATION.md**: Multi-stage decimation for Doppler precision
+- ✅ Scientifically-rigorous 3-stage pipeline (16 kHz → 10 Hz, factor 1600)
+- ✅ Stage 1: CIC filter (R=40, efficient coarse decimation, no multipliers)
+- ✅ Stage 2: Compensation FIR (inverse sinc correction, flattens ±5 Hz passband)
+- ✅ Stage 3: Final FIR (sharp cutoff at 5 Hz, >90 dB stopband attenuation)
+- ✅ Design goals: ±0.1 Hz Doppler resolution, flat passband, eliminate artifacts
 
 ---
 
@@ -200,13 +222,11 @@ This is a high-level map of the project's most important, stable interfaces.
 ### Timing Quality Hierarchy
 
 1. **TONE_LOCKED** (±1ms): time_snap from WWV/CHU tone detection
-   - **Wide channels (16 kHz)**: Always use this method (tone detection available)
+   - All 16 kHz channels use this method (tone detection available)
    - Anchors RTP timestamp to UTC via tone rising edge at :00.000
    
 2. **NTP_SYNCED** (±10ms): System clock NTP-synchronized (offset <100ms, stratum ≤4)
-   - **Carrier channels (200 Hz)**: Use this method (no tone detection due to narrow bandwidth)
-   - Adequate for ±0.1 Hz Doppler measurement goal
-   - RTP correlation proven unstable (independent clocks per channel)
+   - Fallback when tone detection unavailable (propagation fades)
    
 3. **WALL_CLOCK** (±seconds): Unsynchronized fallback (recommend reprocessing)
 

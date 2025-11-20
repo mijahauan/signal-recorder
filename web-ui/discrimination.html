@@ -206,11 +206,29 @@
                     </p>
                 </div>
                 <div class="info-card hz440">
-                    <h3 style="color: #f59e0b;">440 Hz Discrimination (NEW)</h3>
+                    <h3 style="color: #f59e0b;">440 Hz Discrimination</h3>
                     <p>
                         <span class="highlight">Minute 1:</span> WWVH-only 440 Hz tone<br>
                         <span class="highlight">Minute 2:</span> WWV-only 440 Hz tone<br>
                         <strong>Purpose:</strong> Confirms station identity when both present
+                    </p>
+                </div>
+                <div class="info-card" style="border-color: #06b6d4;">
+                    <h3 style="color: #06b6d4;">5ms Tick Discrimination</h3>
+                    <p>
+                        <span class="highlight">1000 Hz vs 1200 Hz ticks:</span> Every second (except :00)<br>
+                        <span class="highlight">Coherent integration:</span> 10-second phase-aligned stacking<br>
+                        <strong>Time resolution:</strong> 6× faster than 800ms tone (6/min vs 1/min)<br>
+                        <strong>Purpose:</strong> Track rapid propagation changes
+                    </p>
+                </div>
+                <div class="info-card" style="border-color: #ec4899;">
+                    <h3 style="color: #ec4899;">100 Hz BCD Discrimination (NEWEST)</h3>
+                    <p>
+                        <span class="highlight">Matched filtering:</span> 15-second sliding windows<br>
+                        <span class="highlight">Integration:</span> 3000× longer than 5ms ticks<br>
+                        <strong>Time resolution:</strong> ~45 measurements/minute (1-second steps)<br>
+                        <strong>Purpose:</strong> High SNR + captures ionospheric coherence time (Tc)
                     </p>
                 </div>
             </div>
@@ -235,17 +253,20 @@
             <div class="placeholder">
                 <h3>📊 Select a date and channel to view discrimination data</h3>
                 <p>
-                    This display shows 4 analysis panels:<br><br>
+                    This display shows 7 analysis panels:<br><br>
                     <strong>Panel 1:</strong> SNR comparison (1000 Hz WWV vs 1200 Hz WWVH)<br>
-                    <strong>Panel 2:</strong> Power ratio (relative strength)<br>
-                    <strong>Panel 3:</strong> Differential delay (propagation path difference)<br>
-                    <strong>Panel 4:</strong> 440 Hz detection (station-specific tones)
+                    <strong>Panel 2:</strong> 440 Hz detection (station-specific tones)<br>
+                    <strong>Panel 3:</strong> Power ratio (relative strength)<br>
+                    <strong>Panel 4:</strong> Station dominance timeline<br>
+                    <strong>Panel 5:</strong> 5ms tick coherent integration<br>
+                    <strong>Panel 6:</strong> 100 Hz BCD amplitude time series (NEWEST)<br>
+                    <strong>Panel 7:</strong> 100 Hz BCD differential delay (NEWEST)
                 </p>
             </div>
         </div>
 
         <div class="legend-panel">
-            <h3>📖 Four-Panel Analysis Guide</h3>
+            <h3>📖 Seven-Panel Analysis Guide</h3>
             <div class="legend-grid">
                 <div class="legend-item panel1">
                     <h4 style="color: #10b981;">Panel 1: SNR Comparison</h4>
@@ -255,24 +276,57 @@
                     </p>
                 </div>
                 <div class="legend-item panel2">
-                    <h4 style="color: #8b5cf6;">Panel 2: Power Ratio</h4>
+                    <h4 style="color: #a78bfa;">Panel 2: 440 Hz Station ID</h4>
+                    <p>
+                        WWV minute 2 (purple) vs WWVH minute 1 (cyan) 440 Hz tone detection.<br>
+                        Confirms station identity when both 1000 Hz and 1200 Hz are received.
+                    </p>
+                </div>
+                <div class="legend-item panel3">
+                    <h4 style="color: #8b5cf6;">Panel 3: Power Ratio</h4>
                     <p>
                         WWV power minus WWVH power in dB.<br>
                         Positive = WWV dominant | Negative = WWVH dominant | Near zero = Balanced
                     </p>
                 </div>
-                <div class="legend-item panel3">
-                    <h4 style="color: #f59e0b;">Panel 3: Differential Delay</h4>
+                <div class="legend-item panel4">
+                    <h4 style="color: #f59e0b;">Panel 4: Station Dominance</h4>
                     <p>
-                        Time difference between WWV and WWVH signal arrivals.<br>
-                        Typically 100-300ms. Variations indicate ionospheric path changes.
+                        Timeline showing which station dominates (WWV green, WWVH red).<br>
+                        Based on SNR difference: >3dB = dominant, 0-3dB = slight edge.
                     </p>
                 </div>
-                <div class="legend-item panel4">
-                    <h4 style="color: #06b6d4;">Panel 4: 440 Hz Station ID</h4>
+                <div class="legend-item" style="border-color: #06b6d4;">
+                    <h4 style="color: #06b6d4;">Panel 5: 5ms Tick Discrimination</h4>
                     <p>
-                        WWV minute 2 (purple) vs WWVH minute 1 (cyan) 440 Hz tone detection.<br>
-                        Confirms station identity when both 1000 Hz and 1200 Hz are received.
+                        Mirrored view: WWV ticks above zero (green), WWVH below (red).<br>
+                        Uses coherent integration (~10dB gain) on 10-second tick windows.<br>
+                        High time resolution: 6 measurements/minute vs 1/minute for 800ms tone.<br>
+                        <strong>Filter:</strong> 1 Hz frequency resolution (zero-padded FFT), 5 Hz effective bandwidth.<br>
+                        <strong>Toggle overlays:</strong> Click legend to show/hide:<br>
+                        • Difference (purple) - WWV - WWVH<br>
+                        • N₀ (yellow) - Noise power density (825-875 Hz)<br>
+                        • Coherence (cyan/pink) - Phase stability (1.0 = stable, 0 = random). Low coherence indicates multipath fading.
+                    </p>
+                </div>
+                <div class="legend-item" style="border-color: #ec4899;">
+                    <h4 style="color: #ec4899;">Panel 6: 100 Hz BCD Amplitude (NEWEST)</h4>
+                    <p>
+                        Time-series of WWV (green) vs WWVH (red) correlation peak amplitudes.<br>
+                        15-second sliding windows with 1-second steps → ~45 data points/minute.<br>
+                        Matched filtering on BCD time code provides massive SNR gain (15s integration).<br>
+                        <strong>Purpose:</strong> Observe rapid fading, TIDs, selective fading within ionospheric coherence time.<br>
+                        No carrier separation needed - works on 100 Hz only!
+                    </p>
+                </div>
+                <div class="legend-item" style="border-color: #a855f7;">
+                    <h4 style="color: #a855f7;">Panel 7: BCD Differential Delay (NEWEST)</h4>
+                    <p>
+                        Time-of-arrival (TOA) difference between WWV and WWVH (milliseconds).<br>
+                        Derived from peak separation in BCD cross-correlation.<br>
+                        <strong>Typical range:</strong> 5-30ms (ionospheric path length difference).<br>
+                        <strong>Variations:</strong> Track ionospheric height changes, multipath evolution.<br>
+                        High temporal resolution reveals rapid propagation mode transitions.
                     </p>
                 </div>
             </div>

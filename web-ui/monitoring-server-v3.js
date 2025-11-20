@@ -4,12 +4,13 @@
  * 
  * 3-Screen Monitoring Interface:
  * 1. Summary - System status, channel status, station info
- * 2. Carrier - 10 Hz carrier analysis (9 channels)
- * 3. Discrimination - WWV/WWVH propagation analysis (4 channels)
+ * 2. Carrier - 10 Hz decimated analysis (9 channels, all 16 kHz → 10 Hz)
+ * 3. Discrimination - WWV/WWVH propagation analysis (shared frequency channels)
  * 
  * Architecture:
  * - Uses centralized GRAPEPaths API for all file access
  * - RESTful API with individual + aggregated endpoints
+ * - All channels now 16 kHz wide channels with WWV/CHU tone detection
  * - No authentication (monitoring only)
  * - No configuration editing (use TOML files directly)
  */
@@ -674,7 +675,8 @@ async function getChannelStatuses(paths) {
 }
 
 /**
- * Get carrier quality metrics for all channels on a specific date
+ * Get channel quality metrics for all channels on a specific date
+ * All channels are now 16 kHz wide channels with WWV/CHU tone detection
  */
 async function getCarrierQuality(paths, date) {
   const channels = paths.discoverChannels();
@@ -683,42 +685,21 @@ async function getCarrierQuality(paths, date) {
   // Check NTP status once for all channels
   const ntpStatus = await getNTPStatus();
   
-  // Group channels by base frequency to show both versions
-  const channelGroups = {};
-  for (const channelName of channels) {
-    const baseName = channelName.replace(/ carrier$/, '');
-    if (!channelGroups[baseName]) {
-      channelGroups[baseName] = { wide: null, carrier: null };
-    }
-    if (channelName.includes('carrier')) {
-      channelGroups[baseName].carrier = channelName;
-    } else {
-      channelGroups[baseName].wide = channelName;
-    }
-  }
-  
-  // Process each base frequency (show both wide and carrier versions)
+  // Process each channel (all are 16 kHz wide channels)
   for (const channelName of channels) {
     try {
-      // Detect if this is a carrier channel
-      const isCarrierChannel = channelName.includes('carrier');
-      
       const statusFile = paths.getAnalyticsStatusFile(channelName);
       
-      // Construct spectrogram URL with new directory structure
-      // Wide channels: wide-decimated/WWV_5_MHz_10Hz_from_16kHz.png
-      // Carrier channels: native-carrier/WWV_5_MHz_carrier_10Hz_from_200Hz.png
+      // Construct spectrogram URL using unified path structure
+      // Format: spectrograms/{date}/{channel}_{date}_decimated_spectrogram.png
       const safe_channel_name = channelName.replace(/ /g, '_');
-      const subdirectory = isCarrierChannel ? 'native-carrier' : 'wide-decimated';
-      const spectrogramFilename = isCarrierChannel 
-        ? `${safe_channel_name}_10Hz_from_200Hz.png`
-        : `${safe_channel_name}_10Hz_from_16kHz.png`;
+      const spectrogramFilename = `${safe_channel_name}_${date}_decimated_spectrogram.png`;
       
       let quality = {
         name: channelName,
-        channel_type: isCarrierChannel ? 'carrier' : 'wide',
-        sample_rate: isCarrierChannel ? '200 Hz (native)' : '16 kHz (decimated)',
-        source_type: isCarrierChannel ? 'Native 200 Hz carrier' : 'Wide 16 kHz decimated',
+        channel_type: 'wide',
+        sample_rate: '16 kHz',
+        source_type: '16 kHz → 10 Hz decimated',
         completeness_pct: null,
         timing_quality: 'WALL_CLOCK',
         time_snap_age_minutes: null,
@@ -727,7 +708,7 @@ async function getCarrierQuality(paths, date) {
         upload_status: 'unknown',
         upload_lag_seconds: null,
         alerts: [],
-        spectrogram_url: `/spectrograms/${date}/${subdirectory}/${spectrogramFilename}`
+        spectrogram_url: `/spectrograms/${date}/${spectrogramFilename}`
       };
       
       if (fs.existsSync(statusFile)) {
@@ -747,25 +728,18 @@ async function getCarrierQuality(paths, date) {
             quality.packet_loss_pct = channelData.quality_metrics.last_packet_loss_pct || null;
           }
           
-          // Timing quality
-          if (isCarrierChannel) {
-            // Carrier channels use NTP timing (no tone detection at ~98 Hz bandwidth)
-            quality.timing_quality = ntpStatus.synchronized ? 'NTP_SYNCED' : 'WALL_CLOCK';
-            quality.time_snap_age_minutes = null; // Not applicable
-          } else {
-            // Wide channels use time_snap from WWV tone detection
-            if (channelData.time_snap && channelData.time_snap.established) {
-              const ageMinutes = (Date.now() / 1000 - channelData.time_snap.utc_timestamp) / 60;
-              quality.time_snap_age_minutes = Math.round(ageMinutes);
-              
-              if (ageMinutes < 5) {
-                quality.timing_quality = 'GPS_LOCKED';
-              } else {
-                quality.timing_quality = ntpStatus.synchronized ? 'NTP_SYNCED' : 'WALL_CLOCK';
-              }
+          // Timing quality (all channels use time_snap from WWV/CHU tone detection)
+          if (channelData.time_snap && channelData.time_snap.established) {
+            const ageMinutes = (Date.now() / 1000 - channelData.time_snap.utc_timestamp) / 60;
+            quality.time_snap_age_minutes = Math.round(ageMinutes);
+            
+            if (ageMinutes < 5) {
+              quality.timing_quality = 'TONE_LOCKED';
             } else {
               quality.timing_quality = ntpStatus.synchronized ? 'NTP_SYNCED' : 'WALL_CLOCK';
             }
+          } else {
+            quality.timing_quality = ntpStatus.synchronized ? 'NTP_SYNCED' : 'WALL_CLOCK';
           }
           
           // SNR (if available)
@@ -837,15 +811,6 @@ async function getCarrierQuality(paths, date) {
             });
           }
         }
-      } else if (isCarrierChannel) {
-        // Carrier channels may not have analytics status files yet
-        // Set timing based on NTP for now
-        quality.timing_quality = ntpStatus.synchronized ? 'NTP_SYNCED' : 'WALL_CLOCK';
-        quality.alerts.push({
-          severity: 'info',
-          type: 'carrier_channel',
-          message: 'Carrier channel (~98 Hz, Doppler analysis)'
-        });
       }
       
       channelQuality.push(quality);
@@ -1132,12 +1097,137 @@ app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) =
     //             wwv_power_db,wwvh_power_db,power_ratio_db,differential_delay_ms,
     //             tone_440hz_wwv_detected,tone_440hz_wwv_power_db,
     //             tone_440hz_wwvh_detected,tone_440hz_wwvh_power_db,
-    //             dominant_station,confidence
+    //             dominant_station,confidence,tick_windows_10sec
     const data = [];
     for (let i = 1; i < lines.length; i++) {
-      const parts = lines[i].split(',');
-      if (parts.length >= 15) {
-        // New format with 440 Hz analysis (15 fields)
+      // Handle quoted JSON field in last column - CSV parser with escaped quotes
+      let line = lines[i];
+      const parts = [];
+      let inQuotes = false;
+      let current = '';
+      
+      for (let j = 0; j < line.length; j++) {
+        const char = line[j];
+        const nextChar = j < line.length - 1 ? line[j + 1] : null;
+        
+        if (char === '"' && nextChar === '"' && inQuotes) {
+          // Escaped quote "" inside quoted field -> add single quote
+          current += '"';
+          j++; // Skip next quote
+        } else if (char === '"') {
+          // Start or end of quoted field
+          inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+          // Field separator outside quotes
+          parts.push(current);
+          current = '';
+        } else {
+          // Regular character
+          current += char;
+        }
+      }
+      parts.push(current); // Last field
+      
+      if (parts.length >= 21) {
+        // New format with tick windows AND BCD discrimination (21 fields)
+        if (i === 1) console.log(`DEBUG: First data row has ${parts.length} parts`);
+        let timestamp = parts[0].trim();
+        if (timestamp.endsWith('+00:00')) {
+          timestamp = timestamp.replace('+00:00', 'Z');
+        }
+        
+        // Parse tick windows JSON (already unescaped by CSV parser)
+        let tick_windows = null;
+        if (parts[15] && parts[15].trim() !== '') {
+          try {
+            tick_windows = JSON.parse(parts[15].trim());
+            if (i === 1) console.log(`DEBUG: tick_windows parsed, count: ${tick_windows ? tick_windows.length : 'null'}`);
+          } catch (e) {
+            console.warn(`Failed to parse tick_windows_10sec JSON at line ${i}:`, e);
+            if (i === 1) console.log('DEBUG: parts[15] =', parts[15].substring(0, 100));
+          }
+        } else {
+          if (i === 1) console.log('DEBUG: parts[15] is empty or missing');
+        }
+        
+        // Parse BCD windows JSON (field 20, index 20 in 0-indexed array)
+        let bcd_windows = null;
+        if (parts[20] && parts[20].trim() !== '') {
+          try {
+            bcd_windows = JSON.parse(parts[20].trim());
+            if (i === 1) console.log(`DEBUG: bcd_windows parsed, count: ${bcd_windows ? bcd_windows.length : 'null'}`);
+          } catch (e) {
+            console.warn(`Failed to parse bcd_windows JSON at line ${i}:`, e);
+            if (i === 1) console.log('DEBUG: parts[20] =', parts[20].substring(0, 100));
+          }
+        }
+        
+        data.push({
+          timestamp_utc: timestamp,
+          minute_timestamp: parseInt(parts[1]),
+          minute_number: parseInt(parts[2]),
+          wwv_detected: parts[3] === '1',
+          wwvh_detected: parts[4] === '1',
+          wwv_snr_db: parseFloat(parts[5]),
+          wwvh_snr_db: parseFloat(parts[6]),
+          power_ratio_db: parseFloat(parts[7]),
+          differential_delay_ms: parts[8] !== '' ? parseFloat(parts[8]) : null,
+          tone_440hz_wwv_detected: parts[9] === '1',
+          tone_440hz_wwv_power_db: parts[10] !== '' ? parseFloat(parts[10]) : null,
+          tone_440hz_wwvh_detected: parts[11] === '1',
+          tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
+          dominant_station: parts[13],
+          confidence: parts[14],
+          tick_windows_10sec: tick_windows,
+          bcd_wwv_amplitude: parts[16] !== '' ? parseFloat(parts[16]) : null,
+          bcd_wwvh_amplitude: parts[17] !== '' ? parseFloat(parts[17]) : null,
+          bcd_differential_delay_ms: parts[18] !== '' ? parseFloat(parts[18]) : null,
+          bcd_correlation_quality: parts[19] !== '' ? parseFloat(parts[19]) : null,
+          bcd_windows: bcd_windows
+        });
+      } else if (parts.length >= 16) {
+        // Format with tick windows but no BCD (16 fields) - backwards compatibility
+        if (i === 1) console.log(`DEBUG: First data row has ${parts.length} parts (legacy format)`);
+        let timestamp = parts[0].trim();
+        if (timestamp.endsWith('+00:00')) {
+          timestamp = timestamp.replace('+00:00', 'Z');
+        }
+        
+        // Parse tick windows JSON
+        let tick_windows = null;
+        if (parts[15] && parts[15].trim() !== '') {
+          try {
+            tick_windows = JSON.parse(parts[15].trim());
+          } catch (e) {
+            console.warn(`Failed to parse tick_windows_10sec JSON at line ${i}:`, e);
+          }
+        }
+        
+        data.push({
+          timestamp_utc: timestamp,
+          minute_timestamp: parseInt(parts[1]),
+          minute_number: parseInt(parts[2]),
+          wwv_detected: parts[3] === '1',
+          wwvh_detected: parts[4] === '1',
+          wwv_snr_db: parseFloat(parts[5]),
+          wwvh_snr_db: parseFloat(parts[6]),
+          power_ratio_db: parseFloat(parts[7]),
+          differential_delay_ms: parts[8] !== '' ? parseFloat(parts[8]) : null,
+          tone_440hz_wwv_detected: parts[9] === '1',
+          tone_440hz_wwv_power_db: parts[10] !== '' ? parseFloat(parts[10]) : null,
+          tone_440hz_wwvh_detected: parts[11] === '1',
+          tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
+          dominant_station: parts[13],
+          confidence: parts[14],
+          tick_windows_10sec: tick_windows,
+          bcd_wwv_amplitude: null,
+          bcd_wwvh_amplitude: null,
+          bcd_differential_delay_ms: null,
+          bcd_correlation_quality: null,
+          bcd_windows: null
+        });
+      } else if (parts.length >= 15) {
+        // Format with 440 Hz but no tick windows (15 fields) - backwards compatibility
         let timestamp = parts[0].trim();
         if (timestamp.endsWith('+00:00')) {
           timestamp = timestamp.replace('+00:00', 'Z');
@@ -1158,7 +1248,8 @@ app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) =
           tone_440hz_wwvh_detected: parts[11] === '1',
           tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
           dominant_station: parts[13],
-          confidence: parts[14]
+          confidence: parts[14],
+          tick_windows_10sec: null
         });
       } else if (parts.length >= 10) {
         // Old format without 440 Hz analysis (10 fields) - for backwards compatibility
@@ -1314,32 +1405,38 @@ app.get('/api/monitoring/timing-quality', async (req, res) => {
           const content = fs.readFileSync(statusFile, 'utf8');
           const analyticsStatus = JSON.parse(content);
           
-          if (!channelData[channelName]) {
-            channelData[channelName] = {};
-          }
+          // Analytics status has channels object with channel name as key
+          const channelAnalytics = analyticsStatus.channels?.[channelName];
           
-          // Merge analytics data
-          Object.assign(channelData[channelName], {
-            wwvDetections: analyticsStatus.tone_detections?.wwv || 0,
-            wwvhDetections: analyticsStatus.tone_detections?.wwvh || 0,
-            chuDetections: analyticsStatus.tone_detections?.chu || 0,
-            npzProcessed: analyticsStatus.npz_files_processed || 0,
-            digitalRfSamples: analyticsStatus.digital_rf?.samples_written || 0
-          });
-          
-          // Track time_snap status
-          if (analyticsStatus.time_snap && analyticsStatus.time_snap.established && !timeSnapStatus) {
-            timeSnapStatus = {
-              established: true,
-              source: channelName,
-              station: analyticsStatus.time_snap.station,
-              confidence: analyticsStatus.time_snap.confidence,
-              age: analyticsStatus.time_snap.age_minutes,
-              status: analyticsStatus.time_snap.source
-            };
+          if (channelAnalytics) {
+            if (!channelData[channelName]) {
+              channelData[channelName] = {};
+            }
+            
+            // Merge analytics data from the nested channel object
+            Object.assign(channelData[channelName], {
+              wwvDetections: channelAnalytics.tone_detections?.wwv || 0,
+              wwvhDetections: channelAnalytics.tone_detections?.wwvh || 0,
+              chuDetections: channelAnalytics.tone_detections?.chu || 0,
+              npzProcessed: channelAnalytics.npz_files_processed || 0,
+              digitalRfSamples: channelAnalytics.digital_rf?.samples_written || 0
+            });
+            
+            // Track time_snap status
+            if (channelAnalytics.time_snap && channelAnalytics.time_snap.established && !timeSnapStatus) {
+              timeSnapStatus = {
+                established: true,
+                source: channelName,
+                station: channelAnalytics.time_snap.station,
+                confidence: channelAnalytics.time_snap.confidence,
+                age: channelAnalytics.time_snap.age_minutes,
+                status: channelAnalytics.time_snap.source
+              };
+            }
           }
         } catch (err) {
           // Skip invalid status file
+          console.error(`Error reading analytics status for ${channelName}:`, err.message);
         }
       }
     }

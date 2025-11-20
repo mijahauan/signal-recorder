@@ -45,134 +45,6 @@ from .interfaces.data_models import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class RTPOffsetTracker:
-    """
-    Track RTP timestamp offset between paired channels (wide + carrier)
-    
-    Channels tuned to same frequency but different bandwidths share the same
-    hardware timing. Their RTP timestamps differ by a constant offset, allowing
-    time_snap from wide channel to be applied to carrier channel.
-    """
-    wide_channel_name: str
-    carrier_channel_name: str
-    frequency_hz: float
-    
-    # RTP offset: rtp_carrier = rtp_wide + offset
-    measured_offset: Optional[int] = None
-    offset_measurements: List[Tuple[float, int]] = field(default_factory=list)  # (timestamp, offset)
-    max_history: int = 100
-    
-    # Statistics
-    offset_mean: Optional[float] = None
-    offset_std: Optional[float] = None
-    last_update: Optional[float] = None
-    
-    def add_measurement(self, wide_rtp: int, carrier_rtp: int, wall_time: float):
-        """Add a new RTP offset measurement from simultaneous packets"""
-        offset = carrier_rtp - wide_rtp
-        
-        self.offset_measurements.append((wall_time, offset))
-        if len(self.offset_measurements) > self.max_history:
-            self.offset_measurements.pop(0)
-        
-        # Update statistics
-        offsets = [o for _, o in self.offset_measurements]
-        self.offset_mean = np.mean(offsets)
-        self.offset_std = np.std(offsets)
-        self.measured_offset = int(self.offset_mean)
-        self.last_update = wall_time
-        
-        # Compare RTP stability to NTP
-        if len(self.offset_measurements) >= 10:
-            # Get NTP offset for comparison
-            ntp_offset = self._get_ntp_offset()
-            
-            # Log comparison
-            logger.info(f"RTP offset stability: std={self.offset_std:.3f} samples "
-                       f"(~{self.offset_std/16000*1000:.3f} ms @ 16kHz)")
-            if ntp_offset is not None:
-                logger.info(f"NTP offset: {ntp_offset*1000:.3f} ms (for comparison)")
-            
-            # Warn if offset varies significantly
-            if self.offset_std > 100:  # More than 100 sample variation
-                logger.warning(f"⚠️  RTP offset unstable: mean={self.offset_mean:.0f}, "
-                             f"std={self.offset_std:.1f} samples (expected <10)")
-            elif self.offset_std < 1:
-                logger.info(f"✅ RTP offset extremely stable: std={self.offset_std:.3f} samples "
-                           f"(better than NTP!)")
-    
-    def _get_ntp_offset(self) -> Optional[float]:
-        """Get NTP offset in seconds (for comparison with RTP stability)"""
-        try:
-            # Try chronyc first
-            result = subprocess.run(['chronyc', 'tracking'], 
-                                   capture_output=True, text=True, timeout=2)
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if 'System time' in line:
-                        # Parse: "System time     : 0.000012345 seconds slow of NTP time"
-                        parts = line.split(':')
-                        if len(parts) >= 2:
-                            offset_str = parts[1].strip().split()[0]
-                            return abs(float(offset_str))
-        except:
-            pass
-        
-        try:
-            # Try ntpq as fallback
-            result = subprocess.run(['ntpq', '-c', 'rv'], 
-                                   capture_output=True, text=True, timeout=2)
-            if result.returncode == 0:
-                for item in result.stdout.split(','):
-                    if 'offset=' in item:
-                        offset_ms = float(item.split('=')[1].strip())
-                        return abs(offset_ms / 1000.0)  # Convert ms to seconds
-        except:
-            pass
-        
-        return None
-    
-    def translate_time_snap(self, wide_time_snap: TimeSnapReference, carrier_rtp: int, 
-                           wide_sample_rate: int) -> Optional[float]:
-        """
-        Translate carrier RTP timestamp to UTC using wide channel's time_snap
-        
-        Args:
-            wide_time_snap: Time snap from wide channel
-            carrier_rtp: Carrier channel RTP timestamp to translate
-            wide_sample_rate: Wide channel sample rate (for UTC calculation)
-            
-        Returns:
-            UTC timestamp for carrier RTP, or None if offset not established
-        """
-        if self.measured_offset is None:
-            return None
-        
-        # Translate carrier RTP to equivalent wide RTP
-        equivalent_wide_rtp = carrier_rtp - self.measured_offset
-        
-        # Apply wide channel's time_snap
-        samples_from_snap = equivalent_wide_rtp - wide_time_snap.rtp_timestamp
-        utc = wide_time_snap.utc_timestamp + (samples_from_snap / wide_sample_rate)
-        
-        return utc
-    
-    def get_status(self) -> Dict:
-        """Get current offset tracking status"""
-        return {
-            'wide_channel': self.wide_channel_name,
-            'carrier_channel': self.carrier_channel_name,
-            'frequency_mhz': self.frequency_hz / 1e6,
-            'offset_established': self.measured_offset is not None,
-            'measured_offset': self.measured_offset,
-            'offset_mean': self.offset_mean,
-            'offset_std': self.offset_std,
-            'measurements': len(self.offset_measurements),
-            'last_update': self.last_update
-        }
-
-
 class TimingQuality(Enum):
     """
     Quality levels for timestamp accuracy in Digital RF data
@@ -1018,17 +890,10 @@ class AnalyticsService:
         """
         Determine timing quality for this archive and create annotation
         
-        Timing hierarchy depends on channel type:
-        
-        WIDE CHANNELS (16 kHz):
+        Timing hierarchy for 16 kHz channels:
         1. time_snap from WWV/CHU tone (best: ±1ms)
         2. NTP-synchronized system clock (good: ±10ms)
         3. Unsynchronized wall clock (fallback: ±seconds)
-        
-        CARRIER CHANNELS (200 Hz):
-        1. NTP-synchronized system clock (primary: ±10ms, adequate for ±0.1 Hz Doppler)
-        2. Unsynchronized wall clock (fallback: ±seconds)
-        Note: Carrier channels cannot use time_snap (insufficient bandwidth for tone detection)
         
         Always returns an annotation - never skips upload.
         
@@ -1036,31 +901,6 @@ class AnalyticsService:
             TimingAnnotation with quality level and metadata
         """
         current_time = time.time()
-        channel_type = self._get_channel_type(self.channel_name)
-        
-        # CARRIER CHANNELS: Use NTP as primary (no tone detection possible)
-        if channel_type == 'carrier':
-            ntp_synced, ntp_offset = self._validate_ntp_sync()
-            utc_timestamp = archive.calculate_utc_timestamp(None)  # Wall clock basis
-            
-            if ntp_synced:
-                return TimingAnnotation(
-                    quality=TimingQuality.NTP_SYNCED,
-                    utc_timestamp=utc_timestamp,
-                    ntp_offset_ms=ntp_offset,
-                    reprocessing_recommended=False,
-                    notes=f"Carrier channel: NTP timing (±10ms, adequate for ±0.1 Hz Doppler)"
-                )
-            
-            # Fallback: Unsynchronized wall clock
-            return TimingAnnotation(
-                quality=TimingQuality.WALL_CLOCK,
-                utc_timestamp=utc_timestamp,
-                reprocessing_recommended=True,
-                notes="Carrier channel: Wall clock only - NTP sync recommended"
-            )
-        
-        # WIDE CHANNELS: Use time_snap if available, fall back to NTP
         time_snap = self.state.time_snap  # Capture reference to avoid race conditions
         if time_snap:
             try:
@@ -1074,7 +914,7 @@ class AnalyticsService:
                         utc_timestamp=utc_timestamp,
                         time_snap_age_seconds=time_snap_age,
                         reprocessing_recommended=False,
-                        notes=f"Wide channel: WWV/CHU time_snap from {time_snap.station.value}"
+                        notes=f"WWV/CHU time_snap from {time_snap.station.value}"
                     )
                 # Aged time_snap (>5 min): fall through to NTP/wall clock
             except (ValueError, AttributeError) as e:
@@ -1091,7 +931,7 @@ class AnalyticsService:
                 utc_timestamp=utc_timestamp,
                 ntp_offset_ms=ntp_offset,
                 reprocessing_recommended=False,
-                notes="Wide channel: System clock NTP-synchronized"
+                notes="System clock NTP-synchronized"
             )
         
         # Fallback: Unsynchronized wall clock (mark for reprocessing)
@@ -1099,7 +939,7 @@ class AnalyticsService:
             quality=TimingQuality.WALL_CLOCK,
             utc_timestamp=utc_timestamp,
             reprocessing_recommended=True,
-            notes="Wide channel: Wall clock only - reprocessing recommended when time_snap available"
+            notes="Wall clock only - reprocessing recommended when time_snap available"
         )
     
     # Digital RF writing methods removed - moved to drf_writer_service.py
@@ -1110,18 +950,16 @@ class AnalyticsService:
         """
         Decimate IQ samples to 10 Hz and write NPZ file with embedded metadata
         
-        Supports both wide and carrier channels:
-        - Wide (16 kHz): Decimates 16000 Hz → 10 Hz (factor 1600)
-        - Carrier (200 Hz): Decimates 200 Hz → 10 Hz (factor 20)
+        Decimates 16 kHz → 10 Hz (factor 1600)
         
         This 10Hz NPZ serves as input for:
         1. DRF Writer Service → Digital RF HDF5 for upload
-        2. Spectrogram Generator → PNG for web UI carrier display
+        2. Spectrogram Generator → PNG for web UI display
         
         Args:
-            archive: Source NPZ archive (16 kHz for wide, 200 Hz for carrier)
+            archive: Source NPZ archive (16 kHz)
             timing: Timing annotation for this archive (TONE_LOCKED or NTP_SYNCED)
-            detections: Tone detection results for metadata (empty list for carrier)
+            detections: Tone detection results for metadata
             
         Returns:
             Number of decimated samples written
@@ -1234,35 +1072,15 @@ class AnalyticsService:
                 f.write(f"    RTP timestamp: {disc.rtp_timestamp_before} → {disc.rtp_timestamp_after}\n")
                 f.write(f"    Explanation: {disc.explanation}\n\n")
     
-    def _get_channel_type(self, channel_name: str) -> str:
-        """Determine if channel is wide bandwidth or carrier (narrow)
-        
-        Args:
-            channel_name: Channel identifier (e.g., 'WWV 10 MHz' or 'WWV 10 MHz carrier')
-            
-        Returns:
-            'carrier' or 'wide'
-        """
-        if 'carrier' in channel_name.lower():
-            return 'carrier'
-        return 'wide'
-    
     def _is_tone_detection_channel(self, channel_name: str) -> bool:
         """Check if channel is capable of tone detection
-        
-        Only wide channels (16 kHz) can detect tones. Carrier channels (200 Hz)
-        have insufficient bandwidth to capture 1000 Hz or 1200 Hz tones.
         
         Args:
             channel_name: Channel identifier
             
         Returns:
-            True if wide channel with WWV/CHU/WWVH, False for carrier channels
+            True if WWV/CHU/WWVH channel, False otherwise
         """
-        # Must be wide bandwidth channel
-        if self._get_channel_type(channel_name) != 'wide':
-            return False
-        
         # Must be WWV/CHU/WWVH frequency
         tone_keywords = ['WWV', 'CHU', 'WWVH']
         result = any(kw in channel_name.upper() for kw in tone_keywords)
@@ -1308,7 +1126,7 @@ class AnalyticsService:
                            'differential_delay_ms,'
                            'tone_440hz_wwv_detected,tone_440hz_wwv_power_db,'
                            'tone_440hz_wwvh_detected,tone_440hz_wwvh_power_db,'
-                           'dominant_station,confidence\n')
+                           'dominant_station,confidence,tick_windows_10sec\n')
                 
                 # Format data with all fields including 440 Hz detection
                 minute_number = dt.minute
@@ -1321,13 +1139,19 @@ class AnalyticsService:
                 tone_440_wwv_power_str = f'{result.tone_440hz_wwv_power_db:.2f}' if result.tone_440hz_wwv_power_db is not None else ''
                 tone_440_wwvh_power_str = f'{result.tone_440hz_wwvh_power_db:.2f}' if result.tone_440hz_wwvh_power_db is not None else ''
                 
+                # Serialize tick windows to JSON (quote for CSV safety)
+                import json
+                tick_windows_str = ''
+                if result.tick_windows_10sec:
+                    tick_windows_str = json.dumps(result.tick_windows_10sec).replace('"', '""')  # Escape quotes for CSV
+                
                 f.write(f'{dt.isoformat()},{result.minute_timestamp},{minute_number},'
                        f'{int(result.wwv_detected)},{int(result.wwvh_detected)},'
                        f'{wwv_power_str},{wwvh_power_str},{power_ratio_str},{diff_delay_str},'
                        f'{int(result.tone_440hz_wwv_detected)},{tone_440_wwv_power_str},'
                        f'{int(result.tone_440hz_wwvh_detected)},{tone_440_wwvh_power_str},'
                        f'{result.dominant_station if result.dominant_station else ""},'
-                       f'{result.confidence}\n')
+                       f'{result.confidence},"{tick_windows_str}"\n')
                        
         except Exception as e:
             logger.warning(f"Failed to log discrimination: {e}")

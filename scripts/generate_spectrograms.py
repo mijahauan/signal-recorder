@@ -301,8 +301,10 @@ def main():
     
     logger.info(f"Generating spectrograms for date: {date_display}")
     
-    # Setup paths
-    archive_base = Path(args.data_root) / 'archives'
+    # Setup paths using GRAPEPaths
+    from signal_recorder.paths import GRAPEPaths
+    paths = GRAPEPaths(args.data_root)
+    archive_base = Path(args.data_root) / 'archives'  # For iteration only
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
@@ -333,9 +335,8 @@ def main():
             logger.info(f"Processing: {channel_name}")
             logger.info(f"{'='*60}")
             
-            # Find archive directory (convert spaces to underscores)
-            archive_dir_name = channel_name.replace(' ', '_')
-            archive_dir = archive_base / archive_dir_name
+            # Find archive directory 
+            archive_dir = paths.get_archive_dir(channel_name)
             if not archive_dir.exists():
                 logger.warning(f"Skipping {channel_name} - archive directory not found: {archive_dir}")
                 continue
@@ -354,8 +355,8 @@ def main():
             
             timestamps, iq_samples, sample_rate = result
             
-            # Generate spectrogram
-            output_filename = f"{archive_dir_name}_{date_str}_spectrogram.png"
+            # Generate spectrogram (unified path format: decimated from 16 kHz)
+            output_filename = f"{archive_dir_name}_{date_str}_decimated_spectrogram.png"
             output_path = output_dir / date_str / output_filename
             
             generate_spectrogram(

@@ -76,14 +76,24 @@ function calculateEnhancedStats(data) {
     };
     
     // BCD Joint Least Squares results (Improvement #1)
-    const bcdValid = data.filter(d => d.bcd_wwv_amplitude > 0 && d.bcd_wwvh_amplitude > 0);
+    // Extract from bcd_windows field (individual windows, not aggregated)
     let bcdRatios = [];
-    if (bcdValid.length > 0) {
-        bcdRatios = bcdValid.map(d => 20 * Math.log10(d.bcd_wwv_amplitude / d.bcd_wwvh_amplitude));
-    }
+    data.forEach(d => {
+        if (d.bcd_windows && typeof d.bcd_windows === 'string') {
+            try {
+                const windows = JSON.parse(d.bcd_windows);
+                windows.forEach(w => {
+                    if (w.wwv_amplitude > 0 && w.wwvh_amplitude > 0) {
+                        const ratio = 20 * Math.log10(w.wwv_amplitude / w.wwvh_amplitude);
+                        bcdRatios.push(ratio);
+                    }
+                });
+            } catch (e) {}
+        }
+    });
     
     const bcdStats = {
-        count: bcdValid.length,
+        count: bcdRatios.length,
         mean: bcdRatios.length > 0 ? bcdRatios.reduce((a,b) => a+b) / bcdRatios.length : 0,
         std: bcdRatios.length > 0 ? Math.sqrt(bcdRatios.reduce((a,b) => a + Math.pow(b - (bcdRatios.reduce((x,y) => x+y) / bcdRatios.length), 2), 0) / bcdRatios.length) : 0,
         significant: bcdRatios.filter(r => Math.abs(r) >= 3).length
@@ -180,6 +190,10 @@ function renderStatsDashboard(stats, channel, date) {
 function renderImprovementPlots(data, channel, date) {
     const plots = document.getElementById('plots-container');
     
+    // Set consistent time range for all plots (full day 00:00-23:59 UTC)
+    const dayStart = new Date(date + 'T00:00:00Z');
+    const dayEnd = new Date(date + 'T23:59:59Z');
+    
     // Plot 1: BCD Joint Least Squares Amplitude Ratios (Improvement #1)
     plots.innerHTML += `
         <div class="plot-container">
@@ -190,7 +204,7 @@ function renderImprovementPlots(data, channel, date) {
             <div id="plot-bcd-ratios" style="height: 500px;"></div>
         </div>
     `;
-    plotBCDRatios(data);
+    plotBCDRatios(data, dayStart, dayEnd);
     
     // Plot 2: Weighted Voting Timeline (Improvement #5)
     plots.innerHTML += `
@@ -199,10 +213,10 @@ function renderImprovementPlots(data, channel, date) {
                 Improvement #5: Weighted Voting Discrimination Timeline
                 <span class="plot-badge">NEW</span>
             </div>
-            <div id="plot-voting" style="height: 400px;"></div>
+            <div id="plot-voting" style="height: 200px;"></div>
         </div>
     `;
-    plotWeightedVoting(data);
+    plotWeightedVotingBar(data, dayStart, dayEnd);
     
     // Plot 3: SNR-Based Coherence Selection (Improvement #2)
     plots.innerHTML += `
@@ -214,7 +228,7 @@ function renderImprovementPlots(data, channel, date) {
             <div id="plot-coherence" style="height: 500px;"></div>
         </div>
     `;
-    plotCoherenceSelection(data);
+    plotCoherenceSelection(data, dayStart, dayEnd);
     
     // Plot 4: 440 Hz Tone with Improved Noise Floor (Improvement #4)
     plots.innerHTML += `
@@ -226,7 +240,7 @@ function renderImprovementPlots(data, channel, date) {
             <div id="plot-440hz" style="height: 400px;"></div>
         </div>
     `;
-    plot440HzTone(data);
+    plot440HzTone(data, dayStart, dayEnd);
     
     // Plot 5: Confidence Distribution
     plots.innerHTML += `
@@ -241,19 +255,64 @@ function renderImprovementPlots(data, channel, date) {
     plotConfidenceDistribution(data);
 }
 
-function plotBCDRatios(data) {
+function plotBCDRatios(data, dayStart, dayEnd) {
     const timestamps = [];
     const ratios = [];
     const colors = [];
     
+    console.log('BCD Debug: Total data points:', data.length);
+    let totalWindows = 0;
+    let validWindows = 0;
+    
+    // Extract BCD ratios from individual windows (not aggregated fields)
     data.forEach(d => {
-        if (d.bcd_wwv_amplitude > 0 && d.bcd_wwvh_amplitude > 0) {
-            timestamps.push(new Date(d.timestamp_utc));
-            const ratio = 20 * Math.log10(d.bcd_wwv_amplitude / d.bcd_wwvh_amplitude);
-            ratios.push(ratio);
-            colors.push(ratio > 0 ? '#10b981' : '#ef4444');
+        if (d.bcd_windows) {
+            // Handle both string and already-parsed object
+            let windows = d.bcd_windows;
+            if (typeof windows === 'string') {
+                try {
+                    windows = JSON.parse(windows);
+                } catch (e) {
+                    console.warn('Failed to parse bcd_windows for', d.timestamp_utc, e);
+                    return;
+                }
+            }
+            
+            if (Array.isArray(windows)) {
+                totalWindows += windows.length;
+                windows.forEach(w => {
+                    if (w.wwv_amplitude > 0 && w.wwvh_amplitude > 0) {
+                        validWindows++;
+                        // Create timestamp for this window
+                        const ts = new Date(d.timestamp_utc);
+                        ts.setSeconds(w.window_start_sec);
+                        
+                        timestamps.push(ts);
+                        const ratio = 20 * Math.log10(w.wwv_amplitude / w.wwvh_amplitude);
+                        ratios.push(ratio);
+                        colors.push(ratio > 0 ? '#10b981' : '#ef4444');
+                    }
+                });
+            }
         }
     });
+    
+    console.log('BCD Debug: Total BCD windows found:', totalWindows);
+    console.log('BCD Debug: Valid windows (amp > 0):', validWindows);
+    console.log('BCD Debug: Ratios extracted:', ratios.length);
+    
+    // Check if we have data
+    if (timestamps.length === 0) {
+        document.getElementById('plot-bcd-ratios').innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #a78bfa;">
+                <p>No BCD amplitude data available for this day</p>
+                <p style="font-size: 12px; color: #94a3b8; margin-top: 10px;">
+                    BCD discrimination requires valid 100 Hz subcarrier correlation
+                </p>
+            </div>
+        `;
+        return;
+    }
     
     const trace = {
         x: timestamps,
@@ -266,14 +325,18 @@ function plotBCDRatios(data) {
             color: colors,
             line: { width: 1, color: '#fff' }
         },
-        hovertemplate: 'Ratio: %{y:+.2f} dB<br>%{x|%H:%M} UTC<extra></extra>'
+        hovertemplate: 'Ratio: %{y:+.2f} dB<br>%{x|%H:%M:%S} UTC<extra></extra>'
     };
     
     const layout = {
         paper_bgcolor: 'rgba(0,0,0,0)',
         plot_bgcolor: 'rgba(0,0,0,0)',
         font: { color: '#e0e0e0' },
-        xaxis: { title: 'Time (UTC)', gridcolor: 'rgba(139, 92, 246, 0.1)' },
+        xaxis: { 
+            title: 'Time (UTC)', 
+            gridcolor: 'rgba(139, 92, 246, 0.1)',
+            range: [dayStart, dayEnd]
+        },
         yaxis: {
             title: 'WWV/WWVH Amplitude Ratio (dB)',
             gridcolor: 'rgba(139, 92, 246, 0.1)',
@@ -281,15 +344,15 @@ function plotBCDRatios(data) {
             zerolinecolor: 'rgba(255, 255, 255, 0.3)'
         },
         shapes: [
-            { type: 'line', x0: timestamps[0], x1: timestamps[timestamps.length-1], y0: 3, y1: 3,
+            { type: 'line', x0: dayStart, x1: dayEnd, y0: 3, y1: 3,
               line: { color: 'rgba(16, 185, 129, 0.3)', dash: 'dash' } },
-            { type: 'line', x0: timestamps[0], x1: timestamps[timestamps.length-1], y0: -3, y1: -3,
+            { type: 'line', x0: dayStart, x1: dayEnd, y0: -3, y1: -3,
               line: { color: 'rgba(239, 68, 68, 0.3)', dash: 'dash' } }
         ],
         annotations: [
-            { x: timestamps[0], y: 3, text: '+3 dB (WWV dominant)', showarrow: false,
+            { x: dayStart, y: 3, text: '+3 dB (WWV dominant)', showarrow: false,
               xanchor: 'left', font: { color: '#10b981', size: 10 } },
-            { x: timestamps[0], y: -3, text: '-3 dB (WWVH dominant)', showarrow: false,
+            { x: dayStart, y: -3, text: '-3 dB (WWVH dominant)', showarrow: false,
               xanchor: 'left', font: { color: '#ef4444', size: 10 } }
         ],
         margin: { t: 20, r: 20, b: 60, l: 70 }
@@ -298,66 +361,184 @@ function plotBCDRatios(data) {
     Plotly.newPlot('plot-bcd-ratios', [trace], layout, {responsive: true, displayModeBar: false});
 }
 
-function plotWeightedVoting(data) {
+function plotWeightedVotingBar(data, dayStart, dayEnd) {
+    // Create bar chart timeline showing dominant station by minute
     const timestamps = [];
-    const dominant = [];
-    const confidenceColors = [];
+    const colors = [];
+    const text = [];
+    const yValues = [];
     
-    const stationMap = { 'WWV': 1, 'BALANCED': 0, 'WWVH': -1, 'NONE': null };
-    const confMap = { 'high': '#10b981', 'medium': '#f59e0b', 'low': '#ef4444' };
+    // Color map for clear visualization
+    const colorMap = {
+        'WWV_high': '#10b981',      // Bright green
+        'WWV_medium': '#84cc16',    // Yellow-green
+        'WWV_low': '#bef264',       // Light green
+        'BALANCED_high': '#8b5cf6', // Purple
+        'BALANCED_medium': '#a78bfa', // Light purple
+        'BALANCED_low': '#c4b5fd',  // Very light purple
+        'WWVH_high': '#ef4444',     // Bright red
+        'WWVH_medium': '#f87171',   // Light red
+        'WWVH_low': '#fca5a5',      // Very light red
+        'NONE': '#1e293b'           // Dark gray
+    };
     
     data.forEach(d => {
-        if (stationMap[d.dominant_station] !== undefined) {
-            timestamps.push(new Date(d.timestamp_utc));
-            dominant.push(stationMap[d.dominant_station]);
-            confidenceColors.push(confMap[d.confidence] || '#94a3b8');
-        }
+        timestamps.push(new Date(d.timestamp_utc));
+        const key = d.dominant_station === 'NONE' ? 'NONE' : `${d.dominant_station}_${d.confidence}`;
+        colors.push(colorMap[key] || '#64748b');
+        text.push(`${d.dominant_station} (${d.confidence})`);
+        yValues.push(1); // All bars same height for timeline view
     });
     
     const trace = {
         x: timestamps,
-        y: dominant,
-        mode: 'markers',
-        type: 'scatter',
-        name: 'Dominant Station',
+        y: yValues,
+        type: 'bar',
         marker: {
-            size: 8,
-            color: confidenceColors,
-            symbol: 'square',
-            line: { width: 1, color: '#fff' }
+            color: colors,
+            line: { width: 0 }
         },
         hovertemplate: '%{text}<br>%{x|%H:%M} UTC<extra></extra>',
-        text: data.map(d => `${d.dominant_station} (${d.confidence})`)
+        text: text,
+        showlegend: false
     };
     
     const layout = {
         paper_bgcolor: 'rgba(0,0,0,0)',
         plot_bgcolor: 'rgba(0,0,0,0)',
         font: { color: '#e0e0e0' },
-        xaxis: { title: 'Time (UTC)', gridcolor: 'rgba(139, 92, 246, 0.1)' },
-        yaxis: {
-            title: 'Dominant Station',
+        xaxis: { 
+            title: 'Time (UTC)', 
             gridcolor: 'rgba(139, 92, 246, 0.1)',
-            tickvals: [-1, 0, 1],
-            ticktext: ['WWVH', 'BALANCED', 'WWV'],
-            range: [-1.5, 1.5]
+            range: [dayStart, dayEnd]
         },
-        margin: { t: 20, r: 20, b: 60, l: 70 }
+        yaxis: {
+            visible: false,
+            range: [0, 1.2]
+        },
+        margin: { t: 10, r: 20, b: 60, l: 20 },
+        bargap: 0.05,
+        annotations: [
+            { x: 0.02, y: 0.95, xref: 'paper', yref: 'paper', text: 'Green=WWV  Purple=BALANCED  Red=WWVH  Dark=NONE',
+              showarrow: false, font: { size: 11, color: '#a78bfa' }, xanchor: 'left' }
+        ]
     };
     
     Plotly.newPlot('plot-voting', [trace], layout, {responsive: true, displayModeBar: false});
 }
 
-function plotCoherenceSelection(data) {
+// Keep old function for reference but renamed
+function plotWeightedVotingOld(data, dayStart, dayEnd) {
+    // Create separate traces for each combination of station and confidence
+    const wwvHigh = [], wwvMed = [], wwvLow = [];
+    const balHigh = [], balMed = [], balLow = [];
+    const wwvhHigh = [], wwvhMed = [], wwvhLow = [];
+    const noneData = [];
+    
+    const stationMap = { 'WWV': 1, 'BALANCED': 0, 'WWVH': -1 };
+    
+    data.forEach(d => {
+        const ts = new Date(d.timestamp_utc);
+        const y = stationMap[d.dominant_station];
+        
+        if (d.dominant_station === 'WWV') {
+            if (d.confidence === 'high') wwvHigh.push({x: ts, y: y, text: `WWV (high)`});
+            else if (d.confidence === 'medium') wwvMed.push({x: ts, y: y, text: `WWV (medium)`});
+            else wwvLow.push({x: ts, y: y, text: `WWV (low)`});
+        } else if (d.dominant_station === 'BALANCED') {
+            if (d.confidence === 'high') balHigh.push({x: ts, y: y, text: `BALANCED (high)`});
+            else if (d.confidence === 'medium') balMed.push({x: ts, y: y, text: `BALANCED (medium)`});
+            else balLow.push({x: ts, y: y, text: `BALANCED (low)`});
+        } else if (d.dominant_station === 'WWVH') {
+            if (d.confidence === 'high') wwvhHigh.push({x: ts, y: y, text: `WWVH (high)`});
+            else if (d.confidence === 'medium') wwvhMed.push({x: ts, y: y, text: `WWVH (medium)`});
+            else wwvhLow.push({x: ts, y: y, text: `WWVH (low)`});
+        } else if (d.dominant_station === 'NONE') {
+            noneData.push({x: ts, y: -2, text: 'No detection'});
+        }
+    });
+    
+    const createTrace = (data, name, color, symbol) => ({
+        x: data.map(p => p.x),
+        y: data.map(p => p.y),
+        mode: 'markers',
+        type: 'scatter',
+        name: name,
+        marker: {
+            size: 10,
+            color: color,
+            symbol: symbol,
+            line: { width: 1, color: '#fff' }
+        },
+        hovertemplate: '%{text}<br>%{x|%H:%M} UTC<extra></extra>',
+        text: data.map(p => p.text)
+    });
+    
+    const traces = [
+        createTrace(wwvHigh, 'WWV High', '#10b981', 'circle'),
+        createTrace(wwvMed, 'WWV Medium', '#84cc16', 'circle'),
+        createTrace(wwvLow, 'WWV Low', '#a3e635', 'circle'),
+        createTrace(balHigh, 'BALANCED High', '#8b5cf6', 'square'),
+        createTrace(balMed, 'BALANCED Medium', '#a78bfa', 'square'),
+        createTrace(balLow, 'BALANCED Low', '#c4b5fd', 'square'),
+        createTrace(wwvhHigh, 'WWVH High', '#ef4444', 'diamond'),
+        createTrace(wwvhMed, 'WWVH Medium', '#f87171', 'diamond'),
+        createTrace(wwvhLow, 'WWVH Low', '#fca5a5', 'diamond'),
+        createTrace(noneData, 'No Detection', '#64748b', 'x')
+    ].filter(t => t.x.length > 0); // Only include traces with data
+    
+    const layout = {
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        font: { color: '#e0e0e0' },
+        xaxis: { 
+            title: 'Time (UTC)', 
+            gridcolor: 'rgba(139, 92, 246, 0.1)',
+            range: [dayStart, dayEnd]
+        },
+        yaxis: {
+            title: 'Dominant Station',
+            gridcolor: 'rgba(139, 92, 246, 0.1)',
+            tickvals: [-2, -1, 0, 1],
+            ticktext: ['NONE', 'WWVH', 'BALANCED', 'WWV'],
+            range: [-2.5, 1.5]
+        },
+        margin: { t: 20, r: 20, b: 60, l: 80 },
+        showlegend: true,
+        legend: {
+            x: 1.02,
+            y: 1,
+            bgcolor: 'rgba(30, 41, 59, 0.8)',
+            bordercolor: 'rgba(139, 92, 246, 0.3)',
+            borderwidth: 1
+        }
+    };
+    
+    Plotly.newPlot('plot-voting', traces, layout, {responsive: true, displayModeBar: false});
+}
+
+function plotCoherenceSelection(data, dayStart, dayEnd) {
     const coherentTimes = [];
     const coherentSNR = [];
     const incoherentTimes = [];
     const incoherentSNR = [];
     
+    console.log('Coherence Debug: Processing', data.length, 'data points');
+    
     data.forEach(d => {
-        if (d.tick_windows_10sec && typeof d.tick_windows_10sec === 'string') {
-            try {
-                const windows = JSON.parse(d.tick_windows_10sec);
+        if (d.tick_windows_10sec) {
+            // Handle both string and already-parsed array
+            let windows = d.tick_windows_10sec;
+            if (typeof windows === 'string') {
+                try {
+                    windows = JSON.parse(windows);
+                } catch (e) {
+                    console.warn('Failed to parse tick_windows_10sec:', e);
+                    return;
+                }
+            }
+            
+            if (Array.isArray(windows)) {
                 windows.forEach(w => {
                     const ts = new Date(d.timestamp_utc);
                     ts.setSeconds(w.second);
@@ -370,9 +551,25 @@ function plotCoherenceSelection(data) {
                         incoherentSNR.push(w.wwv_snr_db);
                     }
                 });
-            } catch (e) {}
+            }
         }
     });
+    
+    console.log('Coherence Debug: Coherent points:', coherentTimes.length);
+    console.log('Coherence Debug: Incoherent points:', incoherentTimes.length);
+    
+    // Check if we have any data
+    if (coherentTimes.length === 0 && incoherentTimes.length === 0) {
+        document.getElementById('plot-coherence').innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #a78bfa;">
+                <p>No coherence selection data available</p>
+                <p style="font-size: 12px; color: #94a3b8; margin-top: 10px;">
+                    Requires tick detection windows with integration method data
+                </p>
+            </div>
+        `;
+        return;
+    }
     
     const traces = [
         {
@@ -381,7 +578,7 @@ function plotCoherenceSelection(data) {
             mode: 'markers',
             type: 'scatter',
             name: 'Coherent Integration',
-            marker: { size: 5, color: '#10b981', opacity: 0.7 },
+            marker: { size: 8, color: '#10b981', opacity: 0.8 },
             hovertemplate: 'Coherent SNR: %{y:.1f} dB<br>%{x|%H:%M:%S}<extra></extra>'
         },
         {
@@ -390,16 +587,20 @@ function plotCoherenceSelection(data) {
             mode: 'markers',
             type: 'scatter',
             name: 'Incoherent Integration',
-            marker: { size: 5, color: '#ef4444', opacity: 0.7 },
+            marker: { size: 8, color: '#ef4444', opacity: 0.8 },
             hovertemplate: 'Incoherent SNR: %{y:.1f} dB<br>%{x|%H:%M:%S}<extra></extra>'
         }
-    ];
+    ].filter(t => t.x.length > 0); // Only include traces with data
     
     const layout = {
         paper_bgcolor: 'rgba(0,0,0,0)',
         plot_bgcolor: 'rgba(0,0,0,0)',
         font: { color: '#e0e0e0' },
-        xaxis: { title: 'Time (UTC)', gridcolor: 'rgba(139, 92, 246, 0.1)' },
+        xaxis: { 
+            title: 'Time (UTC)', 
+            gridcolor: 'rgba(139, 92, 246, 0.1)',
+            range: [dayStart, dayEnd]
+        },
         yaxis: { title: 'WWV SNR (dB)', gridcolor: 'rgba(139, 92, 246, 0.1)' },
         margin: { t: 20, r: 20, b: 60, l: 70 },
         showlegend: true,
@@ -409,7 +610,7 @@ function plotCoherenceSelection(data) {
     Plotly.newPlot('plot-coherence', traces, layout, {responsive: true, displayModeBar: false});
 }
 
-function plot440HzTone(data) {
+function plot440HzTone(data, dayStart, dayEnd) {
     const minutes1 = data.filter(d => new Date(d.timestamp_utc).getMinutes() === 1);
     const minutes2 = data.filter(d => new Date(d.timestamp_utc).getMinutes() === 2);
     
@@ -458,7 +659,11 @@ function plot440HzTone(data) {
         paper_bgcolor: 'rgba(0,0,0,0)',
         plot_bgcolor: 'rgba(0,0,0,0)',
         font: { color: '#e0e0e0' },
-        xaxis: { title: 'Time (UTC)', gridcolor: 'rgba(139, 92, 246, 0.1)' },
+        xaxis: { 
+            title: 'Time (UTC)', 
+            gridcolor: 'rgba(139, 92, 246, 0.1)',
+            range: [dayStart, dayEnd]
+        },
         yaxis: { title: '440 Hz Power (dB)', gridcolor: 'rgba(139, 92, 246, 0.1)' },
         margin: { t: 20, r: 20, b: 60, l: 70 },
         showlegend: true,

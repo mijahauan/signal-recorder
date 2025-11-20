@@ -30,7 +30,7 @@
  *   // Get paths
  *   const archiveDir = paths.getArchiveDir('WWV 10 MHz');
  *   const drfDir = paths.getDigitalRFDir('WWV 10 MHz');
- *   const specPath = paths.getSpectrogramPath('WWV 10 MHz', '20251115', 'carrier');
+ *   const specPath = paths.getSpectrogramPath('WWV 10 MHz', '20251115', 'decimated');
  */
 
 import { join, dirname } from 'path';
@@ -233,10 +233,10 @@ class GRAPEPaths {
      * 
      * @param {string} channelName - Channel name
      * @param {string} date - Date in YYYYMMDD format
-     * @param {string} specType - Type ('carrier', 'archive', etc.)
+     * @param {string} specType - Type ('decimated', 'archive', etc.) - decimated = from 10 Hz NPZ
      * @returns {string} Path: {data_root}/spectrograms/{YYYYMMDD}/{CHANNEL}_{YYYYMMDD}_{type}_spectrogram.png
      */
-    getSpectrogramPath(channelName, date, specType = 'carrier') {
+    getSpectrogramPath(channelName, date, specType = 'decimated') {
         const channelDir = channelNameToDir(channelName);
         const filename = `${channelDir}_${date}_${specType}_spectrogram.png`;
         return join(this.getSpectrogramsDateDir(date), filename);

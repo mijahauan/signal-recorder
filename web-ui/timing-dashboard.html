@@ -546,9 +546,9 @@
             // Analytics Summary (WWV/WWVH discrimination)
             const analyticsHtml = renderAnalyticsSummary(data.channels);
             
-            // Quality Analysis (NEW - decimation & timing comparison)
-            const qualityData = await fetchQualityAnalysis();
-            const qualityHtml = renderQualityAnalysis(qualityData);
+            // Timing Quality Analysis (tone detection statistics)
+            const timingQualityData = await fetchTimingQualityData();
+            const timingQualityHtml = renderTimingQualityAnalysis(timingQualityData);
             
             // Channel table
             const channelTableHtml = renderChannelTable(data.channels);
@@ -559,7 +559,7 @@
             container.innerHTML = `
                 ${systemStatusHtml}
                 ${analyticsHtml}
-                ${qualityHtml}
+                ${timingQualityHtml}
                 ${channelTableHtml}
                 ${alertsHtml}
             `;
@@ -767,58 +767,67 @@
             `;
         }
         
-        async function fetchQualityAnalysis() {
+        async function fetchTimingQualityData() {
             try {
-                const response = await fetch('/quality-analysis/quality_report_latest.json');
+                const response = await fetch('/api/monitoring/timing-quality');
                 if (!response.ok) return null;
                 const data = await response.json();
                 return data;
             } catch (error) {
-                console.error('Quality analysis not available:', error);
+                console.error('Timing quality data not available:', error);
                 return null;
             }
         }
         
-        function renderQualityAnalysis(qualityData) {
-            if (!qualityData || !qualityData.summary) {
+        function renderTimingQualityAnalysis(timingData) {
+            if (!timingData || !timingData.channels) {
                 return ''; // Skip section if no data
             }
             
-            const summary = qualityData.summary;
-            const channels = qualityData.channels;
+            const channels = timingData.channels;
             
-            // Format timestamp
-            const reportTime = new Date(qualityData.generated_at).toLocaleString('en-US', {
-                timeZone: 'UTC',
-                hour12: false,
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
+            // Calculate overall statistics
+            const channelStats = Object.entries(channels).map(([name, data]) => {
+                const wwvDetections = data.wwvDetections || 0;
+                const chuDetections = data.chuDetections || 0;
+                const totalDetections = wwvDetections + chuDetections;
+                
+                // Assume up to 1440 detections per day (1 per minute)
+                // This is a simplified estimate for current/recent data
+                const detectionRate = totalDetections > 0 ? Math.min(100, (totalDetections / 1440) * 100) : 0;
+                
+                return {
+                    name,
+                    wwv: wwvDetections,
+                    chu: chuDetections,
+                    total: totalDetections,
+                    rate: detectionRate,
+                    station: name.includes('CHU') ? 'CHU' : 'WWV'
+                };
             });
             
-            // Decimation quality
-            const snrAdvantage = summary.mean_snr_advantage_db || 0;
-            const jitterRatio = summary.mean_jitter_ratio || 1.0;
-            const carrierBetter = jitterRatio > 1.0;
-            
-            // Timing quality
-            const toneLockedPct = summary.mean_tone_locked_pct || 0;
-            const ntpSyncedPct = summary.mean_ntp_synced_pct || 0;
+            // Overall metrics
+            const totalWWV = channelStats.reduce((sum, s) => sum + s.wwv, 0);
+            const totalCHU = channelStats.reduce((sum, s) => sum + s.chu, 0);
+            const totalDetections = totalWWV + totalCHU;
+            const avgRate = channelStats.length > 0 
+                ? channelStats.reduce((sum, s) => sum + s.rate, 0) / channelStats.length 
+                : 0;
             
             // Per-channel cards
-            const channelCards = Object.entries(channels).map(([chanName, chanData]) => {
-                const freq = chanName.replace(/_/g, ' ');
-                const dec = chanData.decimation_quality;
-                const jitterRatio = dec?.comparison?.phase_jitter_ratio || 1.0;
-                const timingDist = chanData.timing_quality?.wide?.timing_distribution || {};
-                const toneLocked = timingDist.tone_locked || 0;
+            const channelCards = channelStats.map(stat => {
+                const rateColor = stat.rate > 80 ? '#10b981' : stat.rate > 50 ? '#f59e0b' : '#ef4444';
+                const rateLabel = stat.rate > 80 ? 'Excellent' : stat.rate > 50 ? 'Good' : 'Poor';
                 
                 return `
-                    <div class="quality-channel-item">
-                        <div class="quality-channel-name">${freq}</div>
-                        <div class="quality-channel-stat">Jitter: ${jitterRatio.toFixed(2)}x</div>
-                        <div class="quality-channel-stat">Tone: ${toneLocked.toFixed(0)}%</div>
+                    <div class="quality-channel-item" style="padding: 15px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+                        <div class="quality-channel-name" style="margin-bottom: 8px;">${stat.name}</div>
+                        <div style="font-size: 24px; font-weight: 700; color: ${rateColor}; margin-bottom: 5px;">
+                            ${stat.total}
+                        </div>
+                        <div style="font-size: 11px; color: #94a3b8;">
+                            ${stat.station === 'CHU' ? 'CHU' : 'WWV/WWVH'} detections
+                        </div>
                     </div>
                 `;
             }).join('');
@@ -826,84 +835,52 @@
             return `
                 <div class="quality-analysis-section">
                     <div class="time-snap-header" style="color: #fff;">
-                        📊 Decimation & Timing Quality Analysis
+                        📊 Timing Quality & Tone Detection Analysis
                         <span style="margin-left: auto; font-size: 12px; color: #94a3b8; font-weight: normal;">
-                            Updated: ${reportTime} UTC
+                            Live Data
                         </span>
                     </div>
                     
-                    <div class="quality-metrics-grid">
-                        <!-- Phase Jitter -->
+                    <div class="quality-metrics-grid" style="grid-template-columns: repeat(2, 1fr);">
+                        <!-- Total Detections -->
                         <div class="quality-metric-card">
-                            <div class="quality-metric-title">Phase Jitter Ratio (Wide/Carrier)</div>
-                            <div class="quality-metric-value">${jitterRatio.toFixed(2)}x</div>
+                            <div class="quality-metric-title">Total Tone Detections</div>
+                            <div class="quality-metric-value" style="color: #3b82f6;">
+                                ${totalDetections.toLocaleString()}
+                            </div>
                             <div class="quality-metric-comparison">
-                                ${carrierBetter ? 
-                                    '<span class="quality-badge better">Carrier Cleaner</span>' :
-                                    '<span class="quality-badge worse">Wide Cleaner</span>'
-                                }
-                                <span>200Hz→10Hz vs 16kHz→10Hz</span>
+                                <span style="color: #10b981;">${totalWWV} WWV/WWVH</span> • 
+                                <span style="color: #8b5cf6;">${totalCHU} CHU</span>
                             </div>
                         </div>
                         
-                        <!-- SNR -->
+                        <!-- Timing Precision -->
                         <div class="quality-metric-card">
-                            <div class="quality-metric-title">SNR Difference (Carrier - Wide)</div>
-                            <div class="quality-metric-value" style="color: ${Math.abs(snrAdvantage) < 2 ? '#3b82f6' : snrAdvantage > 0 ? '#10b981' : '#94a3b8'};">
-                                ${snrAdvantage > 0 ? '+' : ''}${snrAdvantage.toFixed(1)} dB
+                            <div class="quality-metric-title">Timing Precision Available</div>
+                            <div class="quality-metric-value" style="color: #10b981;">
+                                ±1ms
                             </div>
                             <div class="quality-metric-comparison">
-                                ${Math.abs(snrAdvantage) < 2 ? 
-                                    '<span class="quality-badge neutral">Equivalent</span>' :
-                                    snrAdvantage > 0 ? 
-                                        '<span class="quality-badge better">Carrier Advantage</span>' :
-                                        '<span class="quality-badge neutral">Wide Stronger</span>'
-                                }
-                                <span>Due to bandwidth difference</span>
-                            </div>
-                        </div>
-                        
-                        <!-- Tone-Locked -->
-                        <div class="quality-metric-card">
-                            <div class="quality-metric-title">Tone-Locked Coverage</div>
-                            <div class="quality-metric-value" style="color: ${toneLockedPct > 80 ? '#10b981' : toneLockedPct > 50 ? '#f59e0b' : '#ef4444'};">
-                                ${toneLockedPct.toFixed(1)}%
-                            </div>
-                            <div class="quality-metric-comparison">
-                                ${toneLockedPct > 80 ? 
-                                    '<span class="quality-badge better">Excellent</span>' :
-                                    toneLockedPct > 50 ?
-                                        '<span class="quality-badge neutral">Good</span>' :
-                                        '<span class="quality-badge worse">Poor</span>'
-                                }
-                                <span>±1ms WWV/CHU timing (wide)</span>
-                            </div>
-                        </div>
-                        
-                        <!-- NTP-Synced -->
-                        <div class="quality-metric-card">
-                            <div class="quality-metric-title">NTP-Synced Coverage</div>
-                            <div class="quality-metric-value" style="color: ${ntpSyncedPct > 95 ? '#10b981' : ntpSyncedPct > 80 ? '#f59e0b' : '#ef4444'};">
-                                ${ntpSyncedPct.toFixed(1)}%
-                            </div>
-                            <div class="quality-metric-comparison">
-                                ${ntpSyncedPct > 95 ? 
-                                    '<span class="quality-badge better">Excellent</span>' :
-                                    ntpSyncedPct > 80 ?
-                                        '<span class="quality-badge neutral">Good</span>' :
-                                        '<span class="quality-badge worse">Poor</span>'
-                                }
-                                <span>±10ms system clock (carrier)</span>
+                                <span class="quality-badge better">TONE_LOCKED</span>
+                                <span style="color: #94a3b8;">WWV/CHU verified</span>
                             </div>
                         </div>
                     </div>
                     
-                    <div style="margin-top: 20px;">
-                        <div style="font-size: 14px; font-weight: 600; color: #cbd5e1; margin-bottom: 12px;">
-                            Per-Channel Metrics (${summary.channels_analyzed} analyzed)
+                    <div style="margin-top: 25px;">
+                        <div style="font-size: 14px; font-weight: 600; color: #cbd5e1; margin-bottom: 15px;">
+                            Per-Channel Tone Detections (${channelStats.length} channels)
                         </div>
-                        <div class="quality-channel-list">
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px;">
                             ${channelCards}
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 20px; padding: 15px; background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; border-radius: 6px;">
+                        <div style="font-size: 13px; color: #cbd5e1; line-height: 1.6;">
+                            <strong>📡 Tone Detection = Time Precision:</strong> Each detected WWV/CHU tone provides a time_snap reference with ±1ms accuracy.
+                            Detection success depends on ionospheric propagation (time of day, season, solar activity).
+                            Missing detections are normal during poor propagation — system falls back to NTP (±10ms).
                         </div>
                     </div>
                 </div>
