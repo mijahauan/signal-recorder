@@ -147,44 +147,69 @@ This is a high-level map of the project's most important, stable interfaces.
 
 ## 4. ⚡ Recent Sessions Summary
 
-**SESSION_2025-11-17_FINAL_SUMMARY.md**: Tone detector fix
-- ✅ Fixed 30-second timing bug in tone detector
-- ✅ RTP offset correlation proven UNSTABLE (std dev 1.2B samples - independent clocks per channel)
+**SESSION_2025-11-20_CANONICAL_CONTRACTS.md**: Established foundational contracts ⭐ CRITICAL
+- ✅ Created CANONICAL_CONTRACTS.md - Project standards overview
+- ✅ Created DIRECTORY_STRUCTURE.md - Complete path specifications and naming conventions
+- ✅ Unified docs/API_REFERENCE.md - Single API source of truth (Path Management, Tone Detection, Discrimination, CSV Writers, Data Models)
+- ✅ Enhanced GRAPEPaths API with 4 new methods for separated discrimination directories
+- ✅ Fixed all 14 path violations to use GRAPEPaths API
+- ✅ Created validate_api_compliance.py - Automated enforcement tool
+- ✅ Consolidated ARCHITECTURE.md - Single definitive architecture document
+- ✅ **KEY RULES**: ALL paths via GRAPEPaths, ALL functions in API_REFERENCE.md, NO time-range suffixes on daily files
 
-**SESSION_2025-11-18_CARRIER_REMOVAL.md**: Focus on wide channel optimization
+**5 Independent Discrimination Methods** (Nov 2025):
+- ✅ Method 1: Timing Tones (1000/1200 Hz) → tone_detections/{CHANNEL}_tones_YYYYMMDD.csv
+- ✅ Method 2: Tick Windows (5ms ticks) → tick_windows/{CHANNEL}_ticks_YYYYMMDD.csv
+- ✅ Method 3: Station ID (440 Hz) → station_id_440hz/{CHANNEL}_440hz_YYYYMMDD.csv
+- ✅ Method 4: BCD (100 Hz subcarrier) → bcd_discrimination/{CHANNEL}_bcd_YYYYMMDD.csv
+- ✅ Method 5: Weighted Voting (final) → discrimination/{CHANNEL}_discrimination_YYYYMMDD.csv
+- ✅ Each method independently reprocessable with dedicated CSV output
+- ✅ Separated outputs enable clear provenance and isolated testing
+
+**SESSION_2025-11-18_CARRIER_REMOVAL.md**: Wide channel optimization
 - ✅ Removed 9 carrier channels (200 Hz) - cannot correlate using time_snap
 - ✅ Implemented optimized 3-stage decimation: CIC → compensation FIR → final FIR
 - ✅ Preserves Doppler precision with flat passband (0-5 Hz within 0.1 dB)
 - ✅ All channels now 16 kHz wide channels with WWV/CHU tone detection
 
-**SESSION_2025-11-17_WEB_UI_SYNC.md**: Web-UI/Analytics synchronization
-- ✅ Added missing `decimated_dir` to GRAPEPaths API (Python + JavaScript)
-- ✅ Deprecated old `monitoring-server.js` (hardcoded paths)
-- ✅ Created automated validation: `scripts/validate-paths-sync.sh`
-- ✅ Documented comprehensive sync protocol: `WEB_UI_ANALYTICS_SYNC_PROTOCOL.md`
-- ✅ **PROTOCOL**: Always update both Python and JavaScript paths simultaneously
-
-**DECIMATION_OPTIMIZATION.md**: Multi-stage decimation for Doppler precision
-- ✅ Scientifically-rigorous 3-stage pipeline (16 kHz → 10 Hz, factor 1600)
-- ✅ Stage 1: CIC filter (R=40, efficient coarse decimation, no multipliers)
-- ✅ Stage 2: Compensation FIR (inverse sinc correction, flattens ±5 Hz passband)
-- ✅ Stage 3: Final FIR (sharp cutoff at 5 Hz, >90 dB stopband attenuation)
-- ✅ Design goals: ±0.1 Hz Doppler resolution, flat passband, eliminate artifacts
+**SESSION_2025-11-17_TONE_DETECTOR_FIX.md**: Timing bug fix
+- ✅ Fixed 30-second timing offset bug in tone detector (onset_time calculation)
+- ✅ RTP offset correlation proven UNSTABLE (std dev 1.2B samples - independent clocks per channel)
 
 ---
 
 ## 📍 Quick Reference
 
-### File Locations (Test Mode)
+### File Locations (Test Mode) - Use GRAPEPaths API!
 
-- **Raw archives (16 kHz):** `/tmp/grape-test/archives/{channel}/*_iq.npz`
-- **Decimated (10 Hz):** `/tmp/grape-test/analytics/{channel}/decimated/*_iq_10hz.npz`
-- **Digital RF:** `/tmp/grape-test/analytics/{channel}/digital_rf/`
-- **Discrimination CSV:** `/tmp/grape-test/analytics/{channel}/discrimination/`
-- **Quality CSV:** `/tmp/grape-test/analytics/{channel}/quality/`
+**Archives (16 kHz):**
+- Path: `/tmp/grape-test/archives/{channel}/*_iq.npz`
+- API: `paths.get_archive_dir(channel_name)`
+
+**Analytics (10 Hz + CSVs):**
+- Decimated: `/tmp/grape-test/analytics/{channel}/decimated/*_iq_10hz.npz`
+  - API: `paths.get_decimated_dir(channel_name)`
+- Tone Detections: `/tmp/grape-test/analytics/{channel}/tone_detections/{CHANNEL}_tones_YYYYMMDD.csv`
+  - API: `paths.get_tone_detections_dir(channel_name)`
+- Tick Windows: `/tmp/grape-test/analytics/{channel}/tick_windows/{CHANNEL}_ticks_YYYYMMDD.csv`
+  - API: `paths.get_tick_windows_dir(channel_name)`
+- Station ID (440 Hz): `/tmp/grape-test/analytics/{channel}/station_id_440hz/{CHANNEL}_440hz_YYYYMMDD.csv`
+  - API: `paths.get_station_id_440hz_dir(channel_name)`
+- BCD Discrimination: `/tmp/grape-test/analytics/{channel}/bcd_discrimination/{CHANNEL}_bcd_YYYYMMDD.csv`
+  - API: `paths.get_bcd_discrimination_dir(channel_name)`
+- Final Discrimination: `/tmp/grape-test/analytics/{channel}/discrimination/{CHANNEL}_discrimination_YYYYMMDD.csv`
+  - API: `paths.get_discrimination_dir(channel_name)`
+- Quality: `/tmp/grape-test/analytics/{channel}/quality/{CHANNEL}_quality_YYYYMMDD.csv`
+  - API: `paths.get_quality_dir(channel_name)`
+- Digital RF: `/tmp/grape-test/analytics/{channel}/digital_rf/`
+  - API: `paths.get_digital_rf_dir(channel_name)`
+
+**Other:**
 - **Spectrograms:** `/tmp/grape-test/spectrograms/{YYYYMMDD}/`
 - **State:** `/tmp/grape-test/state/analytics-{channel}.json` (time_snap stored here)
 - **Config:** `config/grape-config.toml`
+
+**CRITICAL:** Never construct paths directly - always use GRAPEPaths API methods!
 
 ### Station Frequencies
 
@@ -204,20 +229,54 @@ This is a high-level map of the project's most important, stable interfaces.
 - 1000 Hz tone (0.5s duration)
 - Different timing pattern than WWV
 
-### Discrimination Methods (Shared WWV/WWVH Frequencies)
+### 5 Independent Discrimination Methods (Nov 2025)
 
-1. **Power Ratio:** 1000 Hz (WWV) vs 1200 Hz (WWVH) signal strength
-2. **Differential Delay:** Time difference in arrival (ionospheric path)
-3. **440 Hz Station ID:** Minute 1 = WWVH only, Minute 2 = WWV only
+**Method 1: Timing Tones (1000/1200 Hz)**
+- WWV: 1000 Hz (0.8s), WWVH: 1200 Hz (0.8s)
+- Power ratio, differential delay (ms)
+- CSV: `tone_detections/{CHANNEL}_tones_YYYYMMDD.csv`
+- API: `WWVHDiscriminator.detect_timing_tones(iq, sr, ts)` → `(wwv_pwr, wwvh_pwr, delay, detections)`
 
-### Essential Documentation
+**Method 2: Tick Windows (5ms Tick Analysis)**
+- Coherent/incoherent integration of 5ms tick marks
+- 6 windows per minute (every 10 seconds)
+- CSV: `tick_windows/{CHANNEL}_ticks_YYYYMMDD.csv`
+- API: `WWVHDiscriminator.detect_tick_windows(iq, sr)` → `List[Dict]`
 
-- **`ARCHITECTURE_OVERVIEW.md`** - Complete system architecture (START HERE)
-- **`docs/API_QUICK_REFERENCE.md`** - API contracts and data flow
-- **`docs/API_REFERENCE.md`** - Complete function signatures
-- **`WWVH_DISCRIMINATION_QUICKREF.md`** - WWV-H discrimination details
-- **`web-ui/TIMING-DASHBOARD-IMPLEMENTATION.md`** - Quality dashboard docs
-- **`DECIMATION_PIPELINE_COMPLETE.md`** - Recent 10 Hz NPZ implementation
+**Method 3: Station ID (440 Hz Tones)**
+- Minute 1: WWVH only (voice ID)
+- Minute 2: WWV only (voice ID)
+- CSV: `station_id_440hz/{CHANNEL}_440hz_YYYYMMDD.csv`
+- API: `WWVHDiscriminator.detect_440hz_tone(iq, sr, minute_num)` → `(detected, power_db)`
+
+**Method 4: BCD Discrimination (100 Hz Subcarrier)**
+- Sliding window analysis of 100 Hz BCD time code
+- WWV/WWVH amplitude, differential delay, correlation quality
+- CSV: `bcd_discrimination/{CHANNEL}_bcd_YYYYMMDD.csv`
+- API: `WWVHDiscriminator.detect_bcd_discrimination(iq, sr, ts)` → `(wwv_amp, wwvh_amp, delay, quality, windows)`
+
+**Method 5: Weighted Voting (Final Determination)**
+- Combines all 4 methods with confidence levels
+- Dominant station: WWV/WWVH/BALANCED/UNKNOWN
+- CSV: `discrimination/{CHANNEL}_discrimination_YYYYMMDD.csv`
+- API: `WWVHDiscriminator.analyze_minute_with_440hz(iq, sr, ts, detections)` → `DiscriminationResult`
+
+### Essential Documentation (Nov 2025 Canonical Contracts)
+
+**⭐ THE FOUR PILLARS (Consult Before All Code Changes):**
+- **`CANONICAL_CONTRACTS.md`** - Project standards overview (START HERE)
+- **`DIRECTORY_STRUCTURE.md`** - WHERE data goes, HOW to name files
+- **`docs/API_REFERENCE.md`** - WHAT functions exist, HOW to call them
+- **`ARCHITECTURE.md`** - WHY the system is designed this way
+
+**Enforcement & Validation:**
+- **`scripts/validate_api_compliance.py`** - Automated path/API compliance checker (must pass)
+
+**Implementation Details:**
+- **`SESSION_2025-11-20_CANONICAL_CONTRACTS.md`** - Complete session summary
+- **`WWV_WWVH_DISCRIMINATION_METHODS.md`** - 5 discrimination methods explained
+- **`BCD_DISCRIMINATION_IMPLEMENTATION.md`** - BCD analysis details
+- **`COHERENT_TICK_REPROCESSING_STATUS.md`** - Tick analysis implementation
 
 ### Timing Quality Hierarchy
 

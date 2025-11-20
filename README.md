@@ -12,7 +12,9 @@ The [HamSCI GRAPE project](https://hamsci.org/grape) studies **ionospheric distu
 
 This recorder:
 - ✅ Captures **high-precision IQ data** from ka9q-radio
-- ✅ Processes to **10 Hz Digital RF format** for timing analysis  
+- ✅ Archives **16 kHz NPZ** for reprocessability
+- ✅ Analyzes via **5 independent discrimination methods**
+- ✅ Decimates to **10 Hz Digital RF** for timing analysis
 - ✅ Monitors **data quality metrics** (completeness, timing drift, packet loss)
 - ✅ Uploads to **HamSCI PSWS repository** via rsync
 - ✅ Provides **web-based management** and real-time monitoring
@@ -141,14 +143,18 @@ The system uses a **three-service architecture** for scientific reliability and 
 └─────────────────────────────────────────────────────────────┘
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ 2. Analytics Service (Tone Detection + Decimation)          │
-│    ├→ WWV/WWVH/CHU Tone Detection (1000/1200 Hz)           │
+│ 2. Analytics Service (5 Discrimination Methods + Decimation)│
+│    ├→ Method 1: Timing Tones (1000/1200 Hz power, delay)   │
+│    ├→ Method 2: Tick Windows (5ms tick coherent analysis)   │
+│    ├→ Method 3: Station ID (440 Hz minute 1=WWVH, 2=WWV)   │
+│    ├→ Method 4: BCD (100 Hz subcarrier discrimination)      │
+│    ├→ Method 5: Weighted Voting (final determination)       │
 │    ├→ Time_snap Establishment (GPS-quality timestamps)      │
 │    ├→ Quality Metrics (completeness, packet loss, gaps)     │
-│    ├→ WWV-H Discrimination (with 440 Hz station ID)         │
 │    └→ Decimation (16 kHz → 10 Hz with metadata)            │
 │         ↓                                                    │
 │    {timestamp}_iq_10hz.npz (10 Hz + embedded metadata)      │
+│    + Separated CSVs per method in analytics/{channel}/      │
 │    Location: analytics/{channel}/decimated/                 │
 └─────────────────────────────────────────────────────────────┘
                            ↓
@@ -167,18 +173,29 @@ The system uses a **three-service architecture** for scientific reliability and 
 
 **Key Design Principles:**
 
-1. **Separation of Concerns:**
+1. **Canonical Contracts (Nov 2025):**
+   - All paths via `GRAPEPaths` API (no direct construction)
+   - All functions documented in `docs/API_REFERENCE.md`
+   - Consistent naming: `{CHANNEL}_{METHOD}_YYYYMMDD.csv`
+   - Automated validation: `scripts/validate_api_compliance.py`
+
+2. **Separation of Concerns:**
    - Core recorder: Focus on complete, timestamped data capture
    - Analytics: Can restart/update without data loss
    - DRF/Spectrogram: Independent downstream consumers
 
-2. **10 Hz Decimated NPZ as Pivot Point:**
+3. **10 Hz Decimated NPZ as Pivot Point:**
    - Single decimation (not multiple per consumer)
    - Embedded timing/quality/tone metadata
    - Enables carrier analysis (Doppler shifts ±5 Hz)
    - 1600x smaller than 16 kHz for efficient processing
 
-3. **Reprocessability:**
+4. **5 Independent Discrimination Methods:**
+   - Separated CSVs per method for independent reprocessing
+   - Weighted voting for robust final determination
+   - Each testable in isolation
+
+5. **Reprocessability:**
    - Original 16 kHz archives preserved forever
    - Analytics can rerun with improved algorithms
    - 10 Hz files can be regenerated if needed
@@ -235,16 +252,21 @@ All metrics logged to JSON and displayed in web UI.
 
 ## Documentation
 
+### Essential Documentation
+- **[CANONICAL_CONTRACTS.md](CANONICAL_CONTRACTS.md)** - ⭐ Project standards (START HERE)
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design & rationale (WHY)
+- **[DIRECTORY_STRUCTURE.md](DIRECTORY_STRUCTURE.md)** - File paths & naming (WHERE)
+- **[docs/API_REFERENCE.md](docs/API_REFERENCE.md)** - Function signatures (WHAT)
+
 ### Getting Started
 - **[INSTALLATION.md](INSTALLATION.md)** - Detailed setup guide
 - **[Configuration Guide](docs/configuration.md)** - TOML reference
 - **[Web UI Guide](web-ui/README.md)** - Interface walkthrough
 
 ### Technical Details
-- **[OPERATIONAL_SUMMARY.md](OPERATIONAL_SUMMARY.md)** - Current system configuration (18 channels, 5 data products)
+- **[OPERATIONAL_SUMMARY.md](OPERATIONAL_SUMMARY.md)** - Current system configuration
 - **[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md)** - Developer quick reference
-- **[PROJECT_NARRATIVE.md](PROJECT_NARRATIVE.md)** - Complete project history and lessons learned
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design & rationale
+- **[PROJECT_NARRATIVE.md](PROJECT_NARRATIVE.md)** - Project history & lessons
 - **[GRAPE Digital RF Format](docs/GRAPE_DIGITAL_RF_RECORDER.md)** - Output specification
 - **[PSWS Upload Setup](docs/PSWS_SETUP_GUIDE.md)** - rsync configuration
 
