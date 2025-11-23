@@ -1294,6 +1294,217 @@ app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) =
 });
 
 /**
+ * GET /api/v1/channels/:channelName/discrimination/:date/metrics
+ * Get per-method performance metrics for discrimination analysis
+ */
+app.get('/api/v1/channels/:channelName/discrimination/:date/metrics', async (req, res) => {
+  try {
+    const { channelName, date } = req.params;
+    const fileChannelName = channelName.replace(/ /g, '_');
+    const fileName = `${fileChannelName}_discrimination_${date}.csv`;
+    const filePath = join(paths.getDiscriminationDir(channelName), fileName);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.json({
+        date: date,
+        channel: channelName,
+        message: 'No data for this date'
+      });
+    }
+    
+    // Read and parse CSV
+    const csvContent = fs.readFileSync(filePath, 'utf8');
+    const lines = csvContent.trim().split('\n');
+    
+    // Calculate metrics by parsing all rows
+    let totalMinutes = 0;
+    let wwvDetections = 0;
+    let wwvhDetections = 0;
+    let bothDetected = 0;
+    let hz440WwvDetections = 0;
+    let hz440WwvhDetections = 0;
+    let bcdValidWindows = 0;
+    let bcdTotalWindows = 0;
+    let tickCoherentCount = 0;
+    let tickIncoherentCount = 0;
+    let tickTotalWindows = 0;
+    let highConfidence = 0;
+    let mediumConfidence = 0;
+    let lowConfidence = 0;
+    let wwvDominant = 0;
+    let wwvhDominant = 0;
+    let balanced = 0;
+    
+    const powerRatios = [];
+    const differentialDelays = [];
+    const bcdQuality = [];
+    
+    // Parse each row
+    for (let i = 1; i < lines.length; i++) {
+      let line = lines[i];
+      const parts = [];
+      let inQuotes = false;
+      let current = '';
+      
+      for (let j = 0; j < line.length; j++) {
+        const char = line[j];
+        const nextChar = j < line.length - 1 ? line[j + 1] : null;
+        
+        if (char === '"' && nextChar === '"' && inQuotes) {
+          current += '"';
+          j++;
+        } else if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+          parts.push(current);
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      parts.push(current);
+      
+      if (parts.length >= 15) {
+        totalMinutes++;
+        
+        // Method 3: Timing Tones
+        if (parts[3] === '1') wwvDetections++;
+        if (parts[4] === '1') wwvhDetections++;
+        if (parts[3] === '1' && parts[4] === '1') bothDetected++;
+        
+        const powerRatio = parseFloat(parts[7]);
+        if (!isNaN(powerRatio)) powerRatios.push(powerRatio);
+        
+        const diffDelay = parts[8] !== '' ? parseFloat(parts[8]) : null;
+        if (diffDelay !== null && !isNaN(diffDelay)) differentialDelays.push(diffDelay);
+        
+        // Method 1: 440 Hz
+        if (parts[9] === '1') hz440WwvDetections++;
+        if (parts[11] === '1') hz440WwvhDetections++;
+        
+        // Method 5: Weighted Voting
+        const confidence = parts[14];
+        if (confidence === 'high') highConfidence++;
+        else if (confidence === 'medium') mediumConfidence++;
+        else if (confidence === 'low') lowConfidence++;
+        
+        const dominant = parts[13];
+        if (dominant === 'WWV') wwvDominant++;
+        else if (dominant === 'WWVH') wwvhDominant++;
+        else if (dominant === 'BALANCED') balanced++;
+        
+        // Method 4: Tick Windows
+        if (parts[15] && parts[15].trim() !== '') {
+          try {
+            const tickWindows = JSON.parse(parts[15].trim());
+            if (tickWindows && Array.isArray(tickWindows)) {
+              tickWindows.forEach(win => {
+                tickTotalWindows++;
+                if (win.integration_method === 'coherent') tickCoherentCount++;
+                else if (win.integration_method === 'incoherent') tickIncoherentCount++;
+              });
+            }
+          } catch (e) {
+            // Ignore parse errors
+          }
+        }
+        
+        // Method 2: BCD
+        if (parts.length >= 21 && parts[20] && parts[20].trim() !== '') {
+          try {
+            const bcdWindows = JSON.parse(parts[20].trim());
+            if (bcdWindows && Array.isArray(bcdWindows)) {
+              bcdTotalWindows += bcdWindows.length;
+              bcdValidWindows += bcdWindows.filter(w => w.correlation_quality > 0).length;
+              bcdWindows.forEach(w => {
+                if (w.correlation_quality && !isNaN(w.correlation_quality)) {
+                  bcdQuality.push(w.correlation_quality);
+                }
+              });
+            }
+          } catch (e) {
+            // Ignore parse errors
+          }
+        }
+      }
+    }
+    
+    // Calculate statistics
+    const meanPowerRatio = powerRatios.length > 0 
+      ? powerRatios.reduce((a,b) => a+b) / powerRatios.length : 0;
+    const stdPowerRatio = powerRatios.length > 0
+      ? Math.sqrt(powerRatios.reduce((sum, val) => sum + Math.pow(val - meanPowerRatio, 2), 0) / powerRatios.length) : 0;
+    
+    const meanDiffDelay = differentialDelays.length > 0
+      ? differentialDelays.reduce((a,b) => a+b) / differentialDelays.length : 0;
+    const stdDiffDelay = differentialDelays.length > 0
+      ? Math.sqrt(differentialDelays.reduce((sum, val) => sum + Math.pow(val - meanDiffDelay, 2), 0) / differentialDelays.length) : 0;
+    
+    const meanBcdQuality = bcdQuality.length > 0
+      ? bcdQuality.reduce((a,b) => a+b) / bcdQuality.length : 0;
+    
+    res.json({
+      date: date,
+      channel: channelName,
+      total_minutes: totalMinutes,
+      method_1_hz440: {
+        name: "440 Hz ID Tones",
+        temporal_resolution: "2/hour",
+        wwv_detections: hz440WwvDetections,
+        wwvh_detections: hz440WwvhDetections,
+        total_possible: 48, // 24 hours × 2 per hour
+        detection_rate: (hz440WwvDetections + hz440WwvhDetections) / 48
+      },
+      method_2_bcd: {
+        name: "BCD Correlation",
+        temporal_resolution: "~15/minute",
+        total_windows: bcdTotalWindows,
+        valid_windows: bcdValidWindows,
+        mean_correlation_quality: meanBcdQuality.toFixed(2),
+        minutes_with_bcd: Math.floor(bcdTotalWindows / 15)
+      },
+      method_3_timing_tones: {
+        name: "Timing Tones (1000/1200 Hz)",
+        temporal_resolution: "1/minute",
+        wwv_detections: wwvDetections,
+        wwvh_detections: wwvhDetections,
+        both_detected: bothDetected,
+        detection_rate: bothDetected / totalMinutes,
+        mean_power_ratio_db: meanPowerRatio.toFixed(1),
+        std_power_ratio_db: stdPowerRatio.toFixed(1),
+        mean_differential_delay_ms: meanDiffDelay.toFixed(1),
+        std_differential_delay_ms: stdDiffDelay.toFixed(1)
+      },
+      method_4_ticks: {
+        name: "Tick Windows",
+        temporal_resolution: "6/minute",
+        total_windows: tickTotalWindows,
+        coherent_integration: tickCoherentCount,
+        incoherent_integration: tickIncoherentCount,
+        coherent_rate: tickTotalWindows > 0 ? (tickCoherentCount / tickTotalWindows).toFixed(2) : 0
+      },
+      method_5_voting: {
+        name: "Weighted Voting",
+        temporal_resolution: "1/minute",
+        wwv_dominant: wwvDominant,
+        wwvh_dominant: wwvhDominant,
+        balanced: balanced,
+        high_confidence: highConfidence,
+        medium_confidence: mediumConfidence,
+        low_confidence: lowConfidence,
+        high_confidence_rate: totalMinutes > 0 ? (highConfidence / totalMinutes).toFixed(2) : 0
+      }
+    });
+  } catch (error) {
+    console.error('Failed to get discrimination metrics:', error);
+    res.status(500).json({
+      error: 'Failed to get discrimination metrics',
+      details: error.message
+    });
+  }
+});
+
+/**
  * GET /api/monitoring/station-info
  * Station configuration and server uptime (for timing dashboard)
  */

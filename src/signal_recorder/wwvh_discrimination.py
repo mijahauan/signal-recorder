@@ -936,7 +936,7 @@ class WWVHDiscriminator:
         sample_rate: int,
         minute_timestamp: float,
         window_seconds: int = 10,
-        step_seconds: int = 1,
+        step_seconds: int = 3,
         adaptive: bool = True
     ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], List[Dict[str, float]]]:
         """
@@ -946,10 +946,11 @@ class WWVHDiscriminator:
         By cross-correlating the received 100 Hz signal against the expected template,
         we get two peaks separated by the ionospheric differential delay (~10-20ms).
         
-        CRITICAL: Uses sliding windows (default 10 sec with 1 sec steps) to balance SNR gain
-        with temporal resolution. 10 seconds is the sweet spot: below typical HF coherence time
-        (Tc ~15-20s) for stable correlation, while providing 10x SNR improvement over 1-second
-        integration. Heavy overlap (1-second steps) captures rapid ionospheric variations.
+        OPTIMIZED: Uses sliding windows (default 10 sec with 3 sec steps) to balance SNR gain,
+        temporal resolution, and computational performance. 10 seconds is the sweet spot: below
+        typical HF coherence time (Tc ~15-20s) for stable correlation, while providing 10x SNR
+        improvement over 1-second integration. 3-second steps provide ~15 data points per minute,
+        capturing ionospheric variations >3 seconds while reducing computational load by 3x.
         
         ADAPTIVE WINDOWING (enabled by default):
         - Similar amplitudes (<3 dB difference): Recommend expanding to 15s for better discrimination

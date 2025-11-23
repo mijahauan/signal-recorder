@@ -168,6 +168,128 @@
         .legend-item.panel3 { border-color: #f59e0b; }
         .legend-item.panel4 { border-color: #06b6d4; }
         .footer { text-align: center; padding: 20px; color: #64748b; font-size: 13px; }
+        
+        /* Method Reference Panel */
+        .method-reference-panel {
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 25px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+        .method-cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .method-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 2px solid rgba(139, 92, 246, 0.3);
+            border-radius: 10px;
+            padding: 18px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        .method-card:hover {
+            border-color: rgba(139, 92, 246, 0.6);
+            background: rgba(255, 255, 255, 0.05);
+            transform: translateY(-2px);
+        }
+        .method-card.highlight-bcd {
+            border-color: rgba(139, 92, 246, 0.6);
+            background: rgba(139, 92, 246, 0.08);
+        }
+        .method-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .method-badge {
+            background: linear-gradient(135deg, #8b5cf6, #6366f1);
+            color: white;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 14px;
+        }
+        .method-header h3 {
+            flex: 1;
+            font-size: 16px;
+            font-weight: 600;
+            color: #e0e0e0;
+            margin: 0;
+        }
+        .method-resolution {
+            background: rgba(139, 92, 246, 0.2);
+            color: #c4b5fd;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .method-desc {
+            font-size: 13px;
+            line-height: 1.5;
+            color: #94a3b8;
+            margin-bottom: 12px;
+        }
+        .method-strength {
+            font-size: 12px;
+            font-weight: 600;
+            color: #10b981;
+            padding: 8px 12px;
+            background: rgba(16, 185, 129, 0.1);
+            border-radius: 6px;
+            border-left: 3px solid #10b981;
+        }
+        
+        /* Statistics Cards */
+        .method-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: rgba(30, 41, 59, 0.6);
+            border: 2px solid rgba(139, 92, 246, 0.3);
+            border-radius: 10px;
+            padding: 16px;
+            text-align: center;
+        }
+        .stat-card.highlight {
+            border-color: rgba(139, 92, 246, 0.6);
+            background: rgba(139, 92, 246, 0.08);
+        }
+        .stat-icon {
+            font-size: 32px;
+            margin-bottom: 8px;
+        }
+        .stat-name {
+            font-size: 13px;
+            color: #94a3b8;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #e0e0e0;
+            margin-bottom: 4px;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: #64748b;
+        }
     </style>
 </head>
 <body>
@@ -231,6 +353,108 @@
                         <strong>Purpose:</strong> High SNR + captures ionospheric coherence time (Tc)
                     </p>
                 </div>
+            </div>
+        </div>
+
+        <!-- Method Reference Panel -->
+        <div class="method-reference-panel">
+            <h2 style="color: #c4b5fd; font-size: 20px; margin-bottom: 15px;">🔬 Five Discrimination Methods</h2>
+            <div class="method-cards-grid">
+                <div class="method-card" data-method="1">
+                    <div class="method-header">
+                        <span class="method-badge">1</span>
+                        <h3>440 Hz ID Tones</h3>
+                        <span class="method-resolution">2/hour</span>
+                    </div>
+                    <p class="method-desc">
+                        Hourly calibration reference. WWVH transmits minute 1, WWV minute 2.
+                        Clean measurement, no harmonic contamination.
+                    </p>
+                    <div class="method-strength">✅ Highest confidence for calibration</div>
+                </div>
+                
+                <div class="method-card highlight-bcd" data-method="2">
+                    <div class="method-header">
+                        <span class="method-badge">2</span>
+                        <h3>BCD Correlation</h3>
+                        <span class="method-resolution">15/min</span>
+                    </div>
+                    <p class="method-desc">
+                        100 Hz carrier analysis with sliding windows. Both stations transmit
+                        identical BCD code - correlation finds two peaks separated by propagation delay.
+                    </p>
+                    <div class="method-strength">🚀 Primary method - highest temporal resolution</div>
+                </div>
+                
+                <div class="method-card" data-method="3">
+                    <div class="method-header">
+                        <span class="method-badge">3</span>
+                        <h3>Timing Tones</h3>
+                        <span class="method-resolution">1/min</span>
+                    </div>
+                    <p class="method-desc">
+                        Power ratio of 1000 Hz (WWV) vs 1200 Hz (WWVH) identification tones.
+                        Baseline measurement, works even with weak signals.
+                    </p>
+                    <div class="method-strength">✅ Reliable baseline</div>
+                </div>
+                
+                <div class="method-card" data-method="4">
+                    <div class="method-header">
+                        <span class="method-badge">4</span>
+                        <h3>Tick Windows</h3>
+                        <span class="method-resolution">6/min</span>
+                    </div>
+                    <p class="method-desc">
+                        Per-second tick analysis in 10-second windows. Adaptive coherent/incoherent
+                        integration based on phase stability.
+                    </p>
+                    <div class="method-strength">✅ Sub-minute dynamics</div>
+                </div>
+                
+                <div class="method-card" data-method="5">
+                    <div class="method-header">
+                        <span class="method-badge">5</span>
+                        <h3>Weighted Voting</h3>
+                        <span class="method-resolution">1/min</span>
+                    </div>
+                    <p class="method-desc">
+                        Combines all methods with minute-specific weighting. 440 Hz highest weight
+                        in minutes 1-2, BCD highest weight in minutes 0/8-10/29-30.
+                    </p>
+                    <div class="method-strength">📊 Final determination</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistics Cards -->
+        <div class="method-stats-grid" id="stats-container" style="display: none;">
+            <div class="stat-card method-1">
+                <div class="stat-icon">🎺</div>
+                <div class="stat-name">440 Hz Tones</div>
+                <div class="stat-value" id="stat-hz440-count">--</div>
+                <div class="stat-label">detections (of 48 possible)</div>
+            </div>
+            
+            <div class="stat-card method-2 highlight">
+                <div class="stat-icon">📊</div>
+                <div class="stat-name">BCD Correlation</div>
+                <div class="stat-value" id="stat-bcd-windows">--</div>
+                <div class="stat-label">high-res windows analyzed</div>
+            </div>
+            
+            <div class="stat-card method-4">
+                <div class="stat-icon">⚡</div>
+                <div class="stat-name">Tick Coherence</div>
+                <div class="stat-value" id="stat-tick-coherent">--</div>
+                <div class="stat-label">coherent integration rate</div>
+            </div>
+            
+            <div class="stat-card method-5">
+                <div class="stat-icon">✅</div>
+                <div class="stat-name">High Confidence</div>
+                <div class="stat-value" id="stat-high-conf">--</div>
+                <div class="stat-label">minutes with strong discrimination</div>
             </div>
         </div>
 

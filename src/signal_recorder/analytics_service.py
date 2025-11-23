@@ -1126,7 +1126,9 @@ class AnalyticsService:
                            'differential_delay_ms,'
                            'tone_440hz_wwv_detected,tone_440hz_wwv_power_db,'
                            'tone_440hz_wwvh_detected,tone_440hz_wwvh_power_db,'
-                           'dominant_station,confidence,tick_windows_10sec\n')
+                           'dominant_station,confidence,tick_windows_10sec,'
+                           'bcd_wwv_amplitude,bcd_wwvh_amplitude,'
+                           'bcd_differential_delay_ms,bcd_correlation_quality,bcd_windows\n')
                 
                 # Format data with all fields including 440 Hz detection
                 minute_number = dt.minute
@@ -1145,13 +1147,26 @@ class AnalyticsService:
                 if result.tick_windows_10sec:
                     tick_windows_str = json.dumps(result.tick_windows_10sec).replace('"', '""')  # Escape quotes for CSV
                 
+                # Serialize BCD windows to JSON
+                bcd_windows_str = ''
+                if result.bcd_windows:
+                    bcd_windows_str = json.dumps(result.bcd_windows).replace('"', '""')  # Escape quotes for CSV
+                
+                # Format BCD fields
+                bcd_wwv_amp_str = f'{result.bcd_wwv_amplitude:.2f}' if result.bcd_wwv_amplitude is not None else ''
+                bcd_wwvh_amp_str = f'{result.bcd_wwvh_amplitude:.2f}' if result.bcd_wwvh_amplitude is not None else ''
+                bcd_delay_str = f'{result.bcd_differential_delay_ms:.2f}' if result.bcd_differential_delay_ms is not None else ''
+                bcd_quality_str = f'{result.bcd_correlation_quality:.2f}' if result.bcd_correlation_quality is not None else ''
+                
                 f.write(f'{dt.isoformat()},{result.minute_timestamp},{minute_number},'
                        f'{int(result.wwv_detected)},{int(result.wwvh_detected)},'
                        f'{wwv_power_str},{wwvh_power_str},{power_ratio_str},{diff_delay_str},'
                        f'{int(result.tone_440hz_wwv_detected)},{tone_440_wwv_power_str},'
                        f'{int(result.tone_440hz_wwvh_detected)},{tone_440_wwvh_power_str},'
                        f'{result.dominant_station if result.dominant_station else ""},'
-                       f'{result.confidence},"{tick_windows_str}"\n')
+                       f'{result.confidence},"{tick_windows_str}",'
+                       f'{bcd_wwv_amp_str},{bcd_wwvh_amp_str},'
+                       f'{bcd_delay_str},{bcd_quality_str},"{bcd_windows_str}"\n')
                        
         except Exception as e:
             logger.warning(f"Failed to log discrimination: {e}")

@@ -45,6 +45,9 @@ async function loadData() {
         // Render the plots
         renderDiscriminationPlots(result, date, channel);
         
+        // Load and display statistics
+        loadMethodMetrics(date, channel);
+        
         document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
         
     } catch (error) {
@@ -569,7 +572,7 @@ function renderDiscriminationPlots(result, date, channel) {
             domain: [0, 1], anchor: 'y'
         },
         yaxis: {
-            title: 'SNR Ratio (dB)<br><sub>WWV - WWVH</sub>',
+            title: '<b>Method 3:</b> Timing Tones (1/min)<br>SNR Ratio (dB) <sub>WWV - WWVH</sub>',
             gridcolor: 'rgba(255,255,255,0.08)', color: '#94a3b8',
             domain: [0.88, 1.0], anchor: 'x',
             zeroline: true, zerolinecolor: 'rgba(255,255,255,0.3)', zerolinewidth: 2
@@ -582,7 +585,7 @@ function renderDiscriminationPlots(result, date, channel) {
             domain: [0, 1], anchor: 'y2'
         },
         yaxis2: {
-            title: '440 Hz Power (dB)',
+            title: '<b>Method 1:</b> 440 Hz ID Tones (2/hour)<br>Power (dB)',
             gridcolor: 'rgba(255,255,255,0.08)', color: '#94a3b8',
             domain: [0.76, 0.86], anchor: 'x2'
         },
@@ -594,7 +597,7 @@ function renderDiscriminationPlots(result, date, channel) {
             domain: [0, 1], anchor: 'y3'
         },
         yaxis3: {
-            title: 'Power Ratio (dB)<br><sub>+WWV / -WWVH</sub>',
+            title: '<b>Method 3:</b> Power Ratio (1/min)<br>(dB) <sub>+WWV / -WWVH</sub>',
             gridcolor: 'rgba(255,255,255,0.08)', color: '#94a3b8',
             domain: [0.62, 0.74], anchor: 'x3',
             zeroline: true, zerolinecolor: 'rgba(255,255,255,0.3)', zerolinewidth: 2
@@ -607,7 +610,7 @@ function renderDiscriminationPlots(result, date, channel) {
             domain: [0, 1], anchor: 'y4'
         },
         yaxis4: {
-            title: 'Station Dominance',
+            title: '<b>Method 5:</b> Weighted Voting (1/min)<br>Station Dominance',
             gridcolor: 'rgba(255,255,255,0.08)', color: '#94a3b8',
             domain: [0.48, 0.60], anchor: 'x4',
             tickvals: [-2, -1, 0, 1, 2],
@@ -622,7 +625,7 @@ function renderDiscriminationPlots(result, date, channel) {
             domain: [0, 1], anchor: 'y5'
         },
         yaxis5: {
-            title: '5ms Tick SNR (dB)<br><sub>WWV above / WWVH below</sub>',
+            title: '<b>Method 4:</b> Tick Windows (6/min)<br>SNR (dB) <sub>WWV above / WWVH below</sub>',
             gridcolor: 'rgba(255,255,255,0.08)', color: '#94a3b8',
             domain: [0.32, 0.46], anchor: 'x5',
             zeroline: true, 
@@ -637,7 +640,7 @@ function renderDiscriminationPlots(result, date, channel) {
             domain: [0, 1], anchor: 'y6'
         },
         yaxis6: {
-            title: 'BCD Amplitude<br><sub>WWV above / WWVH below</sub>',
+            title: '<b>Method 2:</b> BCD Correlation (15/min) 🚀<br>Amplitude <sub>WWV above / WWVH below</sub>',
             gridcolor: 'rgba(255,255,255,0.08)', color: '#94a3b8',
             domain: [0.16, 0.30], anchor: 'x6',
             zeroline: true,
@@ -653,7 +656,7 @@ function renderDiscriminationPlots(result, date, channel) {
             domain: [0, 1], anchor: 'y7'
         },
         yaxis7: {
-            title: 'BCD Delay (ms)<br><sub>TOA Difference</sub>',
+            title: '<b>Method 2:</b> BCD Differential Delay (15/min)<br>(ms) <sub>TOA Difference</sub>',
             gridcolor: 'rgba(255,255,255,0.08)', color: '#94a3b8',
             domain: [0.0, 0.14], anchor: 'x7'
         },
@@ -680,3 +683,46 @@ function renderDiscriminationPlots(result, date, channel) {
     
     Plotly.newPlot('discrimination-plot', traces, layout, config);
 }
+
+async function loadMethodMetrics(date, channel) {
+    try {
+        const dateStr = date.replace(/-/g, '');
+        const url = `/api/v1/channels/${encodeURIComponent(channel)}/discrimination/${dateStr}/metrics`;
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            console.warn('Metrics not available:', response.statusText);
+            return;
+        }
+        
+        const metrics = await response.json();
+        
+        // Show stats container
+        document.getElementById('stats-container').style.display = 'grid';
+        
+        // 440 Hz Tones
+        const hz440Total = metrics.method_1_hz440.wwv_detections + metrics.method_1_hz440.wwvh_detections;
+        document.getElementById('stat-hz440-count').textContent = `${hz440Total} / 48`;
+        
+        // BCD Correlation
+        document.getElementById('stat-bcd-windows').textContent = 
+            metrics.method_2_bcd.total_windows.toLocaleString();
+        
+        // Tick Coherence
+        const coherentPct = (parseFloat(metrics.method_4_ticks.coherent_rate) * 100).toFixed(0);
+        document.getElementById('stat-tick-coherent').textContent = `${coherentPct}%`;
+        
+        // High Confidence
+        const highConfPct = (parseFloat(metrics.method_5_voting.high_confidence_rate) * 100).toFixed(0);
+        document.getElementById('stat-high-conf').textContent = 
+            `${metrics.method_5_voting.high_confidence} / ${metrics.total_minutes} (${highConfPct}%)`;
+        
+    } catch (error) {
+        console.error('Error loading metrics:', error);
+    }
+}
+
+// Load data on page load and when date/channel changes
+document.getElementById('date-selector').addEventListener('change', loadData);
+document.getElementById('channel-selector').addEventListener('change', loadData);
+loadData();

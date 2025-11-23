@@ -80,6 +80,42 @@ ka9q-radio (RTP multicast) → Core Recorder → Analytics → DRF Writer/Upload
 - **Packet Loss:** <1% healthy (indicates network issues)
 - **Time_snap Quality:** TONE_LOCKED (±1ms) > NTP_SYNCED (±10ms) > WALL_CLOCK (±seconds)
 
+## 🔬 WWV/WWVH Discrimination (5 Methods)
+
+Separate WWV (Fort Collins) and WWVH (Kauai) signals on shared frequencies (2.5, 5, 10, 15 MHz) using complementary measurement techniques:
+
+**Method 1: 440 Hz ID Tones** (2/hour)  
+Unambiguous station identification. WWVH transmits minute 1, WWV minute 2.  
+✅ Highest confidence - ground truth calibration
+
+**Method 2: BCD Correlation** (15/min) 🚀 PRIMARY  
+Cross-correlation of 100 Hz BCD time code finds two peaks = two stations.  
+✅ Highest temporal resolution - captures ionospheric dynamics  
+✅ Measures amplitude AND differential delay simultaneously  
+✅ Optimized performance: 3-second steps (Nov 2025)
+
+**Method 3: Timing Tones** (1/min)  
+Power ratio of 1000 Hz (WWV) vs 1200 Hz (WWVH) marker tones.  
+✅ Reliable baseline - works even with weak signals
+
+**Method 4: Tick Windows** (6/min)  
+Per-second tick analysis with adaptive coherent/incoherent integration.  
+✅ Sub-minute dynamics - tracks rapid propagation changes
+
+**Method 5: Weighted Voting** (1/min)  
+Combines all methods with minute-specific weighting for final determination.  
+✅ Robust - leverages strengths of each method
+
+**Why 5 Methods?**
+- **Redundancy:** Multiple independent measurements validate each other
+- **Adaptability:** Different methods excel under different propagation conditions  
+- **Temporal Coverage:** From hourly calibration to sub-second dynamics
+- **Cross-Validation:** Agreement confirms accuracy, disagreement reveals complexity
+
+**Quick Check:** View `http://localhost:3000/discrimination.html` for 7-panel analysis with method labels and performance statistics.
+
+**Learn More:** [docs/WWV_WWVH_DISCRIMINATION_USER_GUIDE.md](docs/WWV_WWVH_DISCRIMINATION_USER_GUIDE.md)
+
 ## Web UI
 
 **Configuration:** Station setup, channel presets, PSWS credentials, TOML export  
