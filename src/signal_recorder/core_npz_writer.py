@@ -134,6 +134,23 @@ class CoreNPZWriter:
             self._reset_minute_buffer(next_minute, next_rtp)
         
         return completed_minute
+
+    def update_time_snap(self, new_time_snap: 'StartupTimeSnap'):
+        """
+        Update the time_snap reference with a new, more accurate one.
+
+        This is called by the ChannelProcessor after a periodic tone check
+        finds a better timing reference than the one established at startup.
+
+        Args:
+            new_time_snap: The new StartupTimeSnap object.
+        """
+        logger.info(
+            f"{self.channel_name}: Updating time_snap "
+            f"(source: {self.time_snap.source} -> {new_time_snap.source}, "
+            f"confidence: {self.time_snap.confidence:.2f} -> {new_time_snap.confidence:.2f})"
+        )
+        self.time_snap = new_time_snap
     
     def _reset_minute_buffer(self, minute_timestamp: datetime, rtp_start: int):
         """Reset buffer for new minute"""

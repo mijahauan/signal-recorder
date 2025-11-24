@@ -6,7 +6,7 @@ Command Line Interface for Signal Recorder
 import sys
 import logging
 import argparse
-from .grape_recorder import GRAPERecorderManager
+from .core_recorder import CoreRecorder
 
 def main():
     """Main entry point for signal-recorder command"""
@@ -120,17 +120,109 @@ def main():
     
     # Handle commands
     if args.command == 'daemon':
+        import toml
+        # Load configuration
+        try:
+            with open(args.config, 'r') as f:
+                config = toml.load(f)
+        except FileNotFoundError:
+            print(f"❌ Configuration file not found: {args.config}")
+            print(f"   Use --config to specify a different file")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error loading configuration: {e}")
+            sys.exit(1)
+
+        # Build config for CoreRecorder
+        # Determine output directory based on mode
+        recorder_section = config.get('recorder', {})
+        mode = recorder_section.get('mode', 'test')
+        
+        if mode == 'test':
+            output_dir = recorder_section.get('test_data_root', '/tmp/grape-test')
+        else:
+            output_dir = recorder_section.get('production_data_root', '/var/lib/signal-recorder')
+        
+        recorder_config = {
+            'multicast_address': config.get('ka9q', {}).get('data_address', '239.103.26.231'),
+            'port': 5004,
+            'output_dir': output_dir,
+            'station': config.get('station', {}),
+            'channels': recorder_section.get('channels', []),
+            'status_address': config.get('ka9q', {}).get('status_address', '239.192.152.141')
+        }
+        
         # Start daemon mode
-        manager = GRAPERecorderManager(config_file=args.config)
-        manager.run()
+        recorder = CoreRecorder(recorder_config)
+        recorder.run()
     elif args.command == 'discover':
+        import toml
+        from .channel_manager import ChannelManager
+        
+        # Load configuration
+        try:
+            with open(args.config, 'r') as f:
+                config = toml.load(f)
+        except FileNotFoundError:
+            print(f"❌ Configuration file not found: {args.config}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error loading configuration: {e}")
+            sys.exit(1)
+        
         # Discovery mode
-        manager = GRAPERecorderManager(config_file=args.config)
-        manager.discover_channels(radiod_address=args.radiod)
+        status_address = args.radiod or config.get('ka9q', {}).get('status_address', '239.192.152.141')
+        manager = ChannelManager(status_address)
+        channels = manager.discover_channels()
+        
+        print(f"\n📡 Discovered {len(channels)} channels from radiod at {status_address}:")
+        for ch in channels:
+            print(f"  • SSRC {ch['ssrc']:08x}: {ch.get('frequency_hz', 0)/1e6:.3f} MHz - {ch.get('description', 'Unknown')}")
     elif args.command == 'create-channels':
+        import toml
+        from .channel_manager import ChannelManager
+        
+        # Load configuration
+        try:
+            with open(args.config, 'r') as f:
+                config = toml.load(f)
+        except FileNotFoundError:
+            print(f"❌ Configuration file not found: {args.config}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error loading configuration: {e}")
+            sys.exit(1)
+        
         # Create channels mode
-        manager = GRAPERecorderManager(config_file=args.config)
-        manager.create_channels()
+        status_address = config.get('ka9q', {}).get('status_address', '239.192.152.141')
+        manager = ChannelManager(status_address)
+        
+        # Build channel specifications
+        required_channels = []
+        for ch_cfg in config.get('recorder', {}).get('channels', []):
+            if ch_cfg.get('enabled', True):
+                required_channels.append({
+                    'ssrc': ch_cfg['ssrc'],
+                    'frequency_hz': ch_cfg['frequency_hz'],
+                    'preset': ch_cfg.get('preset', 'iq'),
+                    'sample_rate': ch_cfg.get('sample_rate', 16000),
+                    'agc': ch_cfg.get('agc', 0),
+                    'gain': ch_cfg.get('gain', 0),
+                    'description': ch_cfg['description']
+                })
+        
+        if not required_channels:
+            print("❌ No enabled channels found in configuration")
+            sys.exit(1)
+        
+        print(f"\n🔧 Creating {len(required_channels)} channels in radiod at {status_address}...")
+        success = manager.ensure_channels_exist(required_channels, update_existing=False)
+        
+        if success:
+            print("✅ All channels created successfully")
+        else:
+            print("⚠️ Some channels may have failed to create")
+            sys.exit(1)
     elif args.command == 'data':
         # Data management mode
         from .data_management import DataManager

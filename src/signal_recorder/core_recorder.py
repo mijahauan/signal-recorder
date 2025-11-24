@@ -400,7 +400,7 @@ class ChannelProcessor:
         
         # Startup buffering state
         self.startup_mode = True
-        self.startup_buffer = []  # List of (rtp_timestamp, samples) tuples
+        self.startup_buffer = []  # List of (rtp_timestamp, samples, gap_info) tuples
         self.startup_buffer_start_time = None
         self.startup_buffer_first_rtp = None
         self.startup_buffer_duration = 120  # seconds (2 minutes)
@@ -504,7 +504,7 @@ class ChannelProcessor:
             
             # Handle startup buffering vs normal operation
             if self.startup_mode:
-                self._handle_startup_buffering(timestamp, output_samples)
+                self._handle_startup_buffering(timestamp, output_samples, gap_info)
             else:
                 # This is the main processing loop after startup
                 gap_record = None
@@ -540,7 +540,7 @@ class ChannelProcessor:
             # NEVER crash - just log error and continue
             logger.error(f"{self.description}: Error processing packet: {e}", exc_info=True)
     
-    def _handle_startup_buffering(self, rtp_timestamp: int, samples: np.ndarray):
+    def _handle_startup_buffering(self, rtp_timestamp: int, samples: np.ndarray, gap_info):
         """Buffer samples during startup to establish time_snap"""
         # Track first RTP timestamp and wall clock time
         if self.startup_buffer_start_time is None:
@@ -549,7 +549,7 @@ class ChannelProcessor:
             logger.info(f"{self.description}: Starting startup buffer...")
         
         # Add to buffer
-        self.startup_buffer.append((rtp_timestamp, samples))
+        self.startup_buffer.append((rtp_timestamp, samples, gap_info))
         
         # Check if we have enough data
         elapsed_time = time.time() - self.startup_buffer_start_time
@@ -564,8 +564,24 @@ class ChannelProcessor:
             
             # Process buffered samples through NPZ writer
             logger.info(f"{self.description}: Processing {len(self.startup_buffer)} buffered packets...")
-            for buffered_rtp, buffered_samples in self.startup_buffer:
-                self._handle_normal_operation(buffered_rtp, buffered_samples, gap_info=None)
+            for buffered_rtp, buffered_samples, buffered_gap_info in self.startup_buffer:
+                # Re-run the main processing logic for each buffered packet
+                gap_record = None
+                if buffered_gap_info:
+                    gap_record = GapRecord(
+                        rtp_timestamp=buffered_gap_info.expected_timestamp,
+                        sample_index=self.current_sample_index,
+                        samples_filled=buffered_gap_info.gap_samples,
+                        packets_lost=buffered_gap_info.gap_packets
+                    )
+                
+                # Write to NPZ archive
+                self.npz_writer.add_samples(
+                    rtp_timestamp=buffered_rtp,
+                    samples=buffered_samples,
+                    gap_record=gap_record
+                )
+                self.current_sample_index += len(buffered_samples)
             
             # Clear buffer
             self.startup_buffer = []
@@ -575,7 +591,7 @@ class ChannelProcessor:
     def _establish_time_snap(self):
         """Establish time_snap from buffered samples"""
         # Concatenate all buffered samples
-        all_samples = np.concatenate([samples for _, samples in self.startup_buffer])
+        all_samples = np.concatenate([samples for _, samples, _ in self.startup_buffer])
         
         # Run tone detection
         self.time_snap = self.tone_detector.detect_time_snap(
@@ -711,7 +727,8 @@ class ChannelProcessor:
         new_time_snap = self.tone_detector.detect_time_snap(
             iq_samples=all_samples,
             first_rtp_timestamp=first_rtp,
-            wall_clock_start=time.time() - len(all_samples)/self.sample_rate
+            # Use the RTP timestamp of the first sample in the buffer for a more accurate wall_clock_start
+            wall_clock_start=time.time() - (current_rtp_timestamp - first_rtp) / self.sample_rate
         )
         
         # Update if better detection found

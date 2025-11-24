@@ -155,7 +155,7 @@ class StartupToneDetector:
             det_1000 = all_detections.get(1000, {})
             det_1200 = all_detections.get(1200, {})
             
-            if det_1000.get('detected', True) and det_1200.get('detected', True):
+            if det_1000.get('detected', False) and det_1200.get('detected', False):
                 # Both tones detected - check if simultaneous (within tone duration)
                 peak_1000 = det_1000.get('precise_sample', 0.0)
                 peak_1200 = det_1200.get('precise_sample', 0.0)
@@ -179,9 +179,18 @@ class StartupToneDetector:
                 else:
                     logger.warning(f"   Tones from different seconds ({time_diff_ms:.0f}ms apart > {tone_duration_ms:.0f}ms tone duration)")
             
+            # Calculate UTC timestamp at detected tone
+            # The detected RTP timestamp marks the start of a minute (tone rising edge)
+            samples_from_start = best_detection['rtp_timestamp'] - first_rtp_timestamp
+            elapsed_time = samples_from_start / self.sample_rate
+            utc_at_detection = wall_clock_start + elapsed_time
+            
+            # Round to nearest minute (tone marks minute boundary)
+            utc_minute = round(utc_at_detection / 60.0) * 60.0
+            
             result = StartupTimeSnap(
                 rtp_timestamp=best_detection['rtp_timestamp'],
-                utc_timestamp=best_detection['utc_timestamp'],
+                utc_timestamp=utc_minute,
                 sample_rate=self.sample_rate,
                 source=source,
                 confidence=best_detection['confidence'],
