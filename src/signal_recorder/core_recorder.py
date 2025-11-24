@@ -24,15 +24,17 @@ import os
 import time
 import json
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import subprocess
 
 from .grape_rtp_recorder import RTPReceiver  # Reuse existing RTP receiver
 from .packet_resequencer import PacketResequencer, RTPPacket, GapInfo
 from .core_npz_writer import CoreNPZWriter, GapRecord
 from .channel_manager import ChannelManager
 from .radiod_health import RadiodHealthChecker
+from .startup_tone_detector import StartupToneDetector, StartupTimeSnap
 
 logger = logging.getLogger(__name__)
 
@@ -379,26 +381,43 @@ class ChannelProcessor:
     
     def __init__(self, ssrc: int, frequency_hz: float, sample_rate: int,
                  description: str, output_dir: Path, station_config: dict):
-        """Initialize channel processor"""
+        """Initialize channel processor with startup buffering"""
         self.ssrc = ssrc
         self.frequency_hz = frequency_hz
         self.sample_rate = sample_rate
         self.description = description
+        self.output_dir = output_dir
+        self.station_config = station_config
         
-        # Components
+        # Components (resequencer starts immediately)
         self.resequencer = PacketResequencer(
             buffer_size=64,
             samples_per_packet=320  # Standard for 16 kHz IQ
         )
         
-        self.npz_writer = CoreNPZWriter(
-            output_dir=output_dir,
-            channel_name=description,
-            frequency_hz=frequency_hz,
+        # NPZ writer created AFTER time_snap established
+        self.npz_writer = None
+        
+        # Startup buffering state
+        self.startup_mode = True
+        self.startup_buffer = []  # List of (rtp_timestamp, samples) tuples
+        self.startup_buffer_start_time = None
+        self.startup_buffer_first_rtp = None
+        self.startup_buffer_duration = 120  # seconds (2 minutes)
+        self.time_snap = None
+        self.time_snap_age = 0.0  # Seconds since last update
+        self.last_time_snap_check = None
+        
+        # Tone detector for startup and periodic checks
+        self.tone_detector = StartupToneDetector(
             sample_rate=sample_rate,
-            ssrc=ssrc,
-            station_config=station_config
+            frequency_hz=frequency_hz
         )
+        
+        # Periodic tone detection buffer (60 seconds for minute boundary detection)
+        self.tone_check_buffer = []
+        self.tone_check_buffer_duration = 60.0  # seconds
+        self.tone_check_interval = 300.0  # Check every 5 minutes
         
         # State
         self.packets_received = 0
@@ -406,6 +425,7 @@ class ChannelProcessor:
         self.last_packet_time = 0  # For health monitoring
         
         logger.info(f"ChannelProcessor initialized: {description} (SSRC {ssrc})")
+        logger.info(f"  Startup mode: Buffering {self.startup_buffer_duration}s for time_snap establishment")
     
     def process_rtp_packet(self, header, payload: bytes):
         """
@@ -482,37 +502,255 @@ class ChannelProcessor:
                 # Buffering - no output yet
                 return
             
-            # Create gap record if gap was detected
-            gap_record = None
-            if gap_info:
-                gap_record = GapRecord(
-                    rtp_timestamp=gap_info.expected_timestamp,
-                    sample_index=self.current_sample_index,
-                    samples_filled=gap_info.gap_samples,
-                    packets_lost=gap_info.gap_packets
+            # Handle startup buffering vs normal operation
+            if self.startup_mode:
+                self._handle_startup_buffering(timestamp, output_samples)
+            else:
+                # This is the main processing loop after startup
+                gap_record = None
+                if gap_info:
+                    gap_record = GapRecord(
+                        rtp_timestamp=gap_info.expected_timestamp,
+                        sample_index=self.current_sample_index,
+                        samples_filled=gap_info.gap_samples,
+                        packets_lost=gap_info.gap_packets
+                    )
+                
+                # Write to NPZ archive
+                result = self.npz_writer.add_samples(
+                    rtp_timestamp=timestamp,
+                    samples=output_samples,
+                    gap_record=gap_record
                 )
-            
-            # Write to NPZ archive
-            result = self.npz_writer.add_samples(
-                rtp_timestamp=timestamp,
-                samples=output_samples,
-                gap_record=gap_record
-            )
-            
-            # Update sample index
-            self.current_sample_index += len(output_samples)
-            
-            if result:
-                minute_ts, file_path = result
-                logger.debug(f"{self.description}: Wrote {file_path.name}")
+                
+                # Update sample index
+                self.current_sample_index += len(output_samples)
+
+                # Maintain rolling buffer for periodic tone checks
+                self._update_tone_check_buffer(timestamp, output_samples)
+
+                # Periodically check tone to update time_snap
+                self._periodic_tone_check(timestamp)
+
+                if result:
+                    minute_ts, file_path = result
+                    logger.debug(f"{self.description}: Wrote {file_path.name}")
         
         except Exception as e:
             # NEVER crash - just log error and continue
             logger.error(f"{self.description}: Error processing packet: {e}", exc_info=True)
     
+    def _handle_startup_buffering(self, rtp_timestamp: int, samples: np.ndarray):
+        """Buffer samples during startup to establish time_snap"""
+        # Track first RTP timestamp and wall clock time
+        if self.startup_buffer_start_time is None:
+            self.startup_buffer_start_time = time.time()
+            self.startup_buffer_first_rtp = rtp_timestamp
+            logger.info(f"{self.description}: Starting startup buffer...")
+        
+        # Add to buffer
+        self.startup_buffer.append((rtp_timestamp, samples))
+        
+        # Check if we have enough data
+        elapsed_time = time.time() - self.startup_buffer_start_time
+        
+        if elapsed_time >= self.startup_buffer_duration:
+            # Buffering complete - establish time_snap
+            logger.info(f"{self.description}: Startup buffer complete ({elapsed_time:.1f}s), establishing time_snap...")
+            self._establish_time_snap()
+            
+            # Transition to normal operation
+            self.startup_mode = False
+            
+            # Process buffered samples through NPZ writer
+            logger.info(f"{self.description}: Processing {len(self.startup_buffer)} buffered packets...")
+            for buffered_rtp, buffered_samples in self.startup_buffer:
+                self._handle_normal_operation(buffered_rtp, buffered_samples, gap_info=None)
+            
+            # Clear buffer
+            self.startup_buffer = []
+            
+            logger.info(f"{self.description}: Startup complete, normal recording started")
+    
+    def _establish_time_snap(self):
+        """Establish time_snap from buffered samples"""
+        # Concatenate all buffered samples
+        all_samples = np.concatenate([samples for _, samples in self.startup_buffer])
+        
+        # Run tone detection
+        self.time_snap = self.tone_detector.detect_time_snap(
+            iq_samples=all_samples,
+            first_rtp_timestamp=self.startup_buffer_first_rtp,
+            wall_clock_start=self.startup_buffer_start_time
+        )
+        
+        if self.time_snap:
+            logger.info(f"{self.description}: ✅ time_snap established")
+            logger.info(f"  Source: {self.time_snap.source}")
+            logger.info(f"  Station: {self.time_snap.station}")
+            logger.info(f"  Confidence: {self.time_snap.confidence:.2f}")
+            logger.info(f"  SNR: {self.time_snap.detection_snr_db:.1f} dB")
+        else:
+            # Fallback to NTP or wall clock
+            logger.warning(f"{self.description}: No tone detected, checking NTP...")
+            ntp_synced, ntp_offset_ms = self._check_ntp_sync()
+            
+            if ntp_synced:
+                logger.info(f"{self.description}: Using NTP sync (offset={ntp_offset_ms:.1f}ms)")
+                self.time_snap = self.tone_detector.create_ntp_time_snap(
+                    first_rtp_timestamp=self.startup_buffer_first_rtp,
+                    ntp_synced=True,
+                    ntp_offset_ms=ntp_offset_ms
+                )
+            else:
+                logger.warning(f"{self.description}: No NTP sync, using wall clock (low accuracy)")
+                self.time_snap = self.tone_detector.create_wall_clock_time_snap(
+                    first_rtp_timestamp=self.startup_buffer_first_rtp
+                )
+        
+        # Create NPZ writer with established time_snap
+        self.npz_writer = CoreNPZWriter(
+            output_dir=self.output_dir,
+            channel_name=self.description,
+            frequency_hz=self.frequency_hz,
+            sample_rate=self.sample_rate,
+            ssrc=self.ssrc,
+            time_snap=self.time_snap,
+            station_config=self.station_config
+        )
+        
+        # Initialize periodic tone checking
+        self.last_time_snap_check = time.time()
+    
+    def _check_ntp_sync(self) -> Tuple[bool, Optional[float]]:
+        """Check if system clock is NTP-synchronized"""
+        try:
+            # Try ntpq first (ntpd)
+            result = subprocess.run(
+                ['ntpq', '-c', 'rv'],
+                capture_output=True, text=True, timeout=2
+            )
+            
+            if result.returncode == 0:
+                offset_ms = None
+                stratum = None
+                
+                for line in result.stdout.split(','):
+                    if 'offset=' in line:
+                        offset_ms = float(line.split('=')[1].strip())
+                    elif 'stratum=' in line:
+                        stratum = int(line.split('=')[1].strip())
+                
+                if offset_ms is not None and stratum is not None:
+                    if abs(offset_ms) > 100 or stratum > 4:
+                        return False, offset_ms
+                    return True, offset_ms
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        
+        try:
+            # Try chronyc (chrony)
+            result = subprocess.run(
+                ['chronyc', 'tracking'],
+                capture_output=True, text=True, timeout=2
+            )
+            
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'System time' in line:
+                        parts = line.split(':')[1].strip().split()
+                        offset_sec = float(parts[0])
+                        offset_ms = offset_sec * 1000
+                        
+                        if abs(offset_ms) > 100:
+                            return False, offset_ms
+                        return True, offset_ms
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        return False, None
+    
+    def _update_tone_check_buffer(self, rtp_timestamp: int, samples: np.ndarray):
+        """Maintain rolling 60-second buffer for periodic tone detection"""
+        # Add samples to buffer
+        self.tone_check_buffer.append((rtp_timestamp, samples))
+        
+        # Calculate total buffered duration
+        total_samples = sum(len(s) for _, s in self.tone_check_buffer)
+        buffered_duration = total_samples / self.sample_rate
+        
+        # Trim buffer if too long
+        while buffered_duration > self.tone_check_buffer_duration and len(self.tone_check_buffer) > 1:
+            self.tone_check_buffer.pop(0)
+            total_samples = sum(len(s) for _, s in self.tone_check_buffer)
+            buffered_duration = total_samples / self.sample_rate
+    
+    def _periodic_tone_check(self, current_rtp_timestamp: int):
+        """Periodically run tone detection to update time_snap"""
+        if self.last_time_snap_check is None:
+            return
+        
+        # Check if it's time for another tone check
+        time_since_last_check = time.time() - self.last_time_snap_check
+        if time_since_last_check < self.tone_check_interval:
+            return
+        
+        # Need enough buffered data
+        if len(self.tone_check_buffer) < 2:
+            logger.debug(f"{self.description}: Insufficient buffer for tone check")
+            self.last_time_snap_check = time.time()
+            return
+        
+        logger.info(f"{self.description}: Running periodic tone check (age={time_since_last_check/60:.1f} min)...")
+        
+        # Concatenate buffered samples
+        all_samples = np.concatenate([samples for _, samples in self.tone_check_buffer])
+        first_rtp = self.tone_check_buffer[0][0]
+        
+        # Run tone detection
+        new_time_snap = self.tone_detector.detect_time_snap(
+            iq_samples=all_samples,
+            first_rtp_timestamp=first_rtp,
+            wall_clock_start=time.time() - len(all_samples)/self.sample_rate
+        )
+        
+        # Update if better detection found
+        if new_time_snap:
+            # Compare with current time_snap
+            should_update = False
+            
+            if self.time_snap.source in ['ntp', 'wall_clock']:
+                # Always update if we have a tone-based time_snap now
+                should_update = True
+                logger.info(f"{self.description}: ✅ Upgrading from {self.time_snap.source} to {new_time_snap.source}")
+            elif new_time_snap.confidence > self.time_snap.confidence:
+                # Update if better confidence
+                should_update = True
+                logger.info(f"{self.description}: ✅ Better tone detection (conf {self.time_snap.confidence:.2f} → {new_time_snap.confidence:.2f})")
+            elif new_time_snap.detection_snr_db > self.time_snap.detection_snr_db + 3.0:
+                # Update if significantly better SNR
+                should_update = True
+                logger.info(f"{self.description}: ✅ Stronger tone (SNR {self.time_snap.detection_snr_db:.1f} → {new_time_snap.detection_snr_db:.1f} dB)")
+            
+            if should_update:
+                self.time_snap = new_time_snap
+                self.npz_writer.update_time_snap(new_time_snap)
+                logger.info(f"{self.description}: time_snap updated - {new_time_snap.station} @ {new_time_snap.detection_snr_db:.1f}dB")
+            else:
+                logger.debug(f"{self.description}: Current time_snap still best")
+        else:
+            logger.debug(f"{self.description}: No tone detected in periodic check")
+        
+        self.last_time_snap_check = time.time()
+    
     def flush(self):
         """Flush remaining data (for shutdown)"""
         logger.info(f"{self.description}: Flushing remaining data...")
+        
+        # Skip flush if still in startup mode
+        if self.startup_mode:
+            logger.warning(f"{self.description}: Still in startup mode, cannot flush properly")
+            return
         
         # Flush resequencer
         buffered = self.resequencer.flush()
@@ -540,11 +778,11 @@ class ChannelProcessor:
         logger.info(f"{self.description}: Flush complete")
     
     def get_stats(self) -> dict:
-        """Get channel statistics (for logging)"""
+        """Get current statistics"""
         reseq_stats = self.resequencer.get_stats()
         return {
             'packets_received': self.packets_received,
-            'minutes_written': self.npz_writer.minutes_written,
+            'minutes_written': self.npz_writer.minutes_written if self.npz_writer else 0,
             'gaps_detected': reseq_stats['gaps_detected'],
             'samples_filled': reseq_stats['samples_filled']
         }
@@ -555,13 +793,12 @@ class ChannelProcessor:
         last_packet_time = datetime.fromtimestamp(self.last_packet_time, timezone.utc).isoformat() if self.last_packet_time > 0 else None
         
         return {
-            'ssrc': hex(self.ssrc),
-            'channel_name': self.description,
+            'description': self.description,
             'frequency_hz': self.frequency_hz,
             'sample_rate': self.sample_rate,
             'packets_received': self.packets_received,
-            'npz_files_written': self.npz_writer.minutes_written,
-            'last_npz_file': str(self.npz_writer.last_file_written) if hasattr(self.npz_writer, 'last_file_written') else None,
+            'npz_files_written': self.npz_writer.minutes_written if self.npz_writer else 0,
+            'last_npz_file': str(self.npz_writer.last_file_written) if self.npz_writer and hasattr(self.npz_writer, 'last_file_written') else None,
             'gaps_detected': reseq_stats['gaps_detected'],
             'total_gap_samples': reseq_stats['samples_filled'],
             'status': 'recording' if self.packets_received > 0 else 'idle',
