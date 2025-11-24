@@ -23,8 +23,10 @@ from scipy.fft import rfft, rfftfreq
 from scipy.signal import iirnotch, filtfilt
 
 from .interfaces.data_models import ToneDetectionResult, StationType
-from .wwv_bcd_encoder import WWVBCDEncoder
 from .tone_detector import MultiStationToneDetector
+from .wwv_bcd_encoder import WWVBCDEncoder
+from .wwv_geographic_predictor import WWVGeographicPredictor
+from .wwv_test_signal import WWVTestSignalDetector, TestSignalDetection
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,13 @@ class DiscriminationResult:
     bcd_differential_delay_ms: Optional[float] = None
     bcd_correlation_quality: Optional[float] = None
     bcd_windows: Optional[List[Dict[str, float]]] = None  # Time-series data from sliding windows
+    # Test signal discrimination (minute 8/44 scientific modulation test)
+    test_signal_detected: bool = False
+    test_signal_station: Optional[str] = None  # 'WWV' or 'WWVH'
+    test_signal_confidence: Optional[float] = None
+    test_signal_multitone_score: Optional[float] = None
+    test_signal_chirp_score: Optional[float] = None
+    test_signal_snr_db: Optional[float] = None
     
     def to_dict(self) -> Dict:
         """Convert to dictionary for logging/storage"""
@@ -106,12 +115,19 @@ class WWVHDiscriminator:
     3. 440 Hz tone presence in minutes 1 and 2
     """
     
-    def __init__(self, channel_name: str):
+    def __init__(
+        self,
+        channel_name: str,
+        receiver_grid: Optional[str] = None,
+        history_dir: Optional[str] = None
+    ):
         """
         Initialize discriminator
         
         Args:
             channel_name: Channel name for logging
+            receiver_grid: Maidenhead grid square (e.g., "EM38ww") for geographic ToA prediction
+            history_dir: Directory for persisting ToA history (optional)
         """
         self.channel_name = channel_name
         self.measurements: List[DiscriminationResult] = []
@@ -121,6 +137,27 @@ class WWVHDiscriminator:
         
         # Initialize BCD encoder for template generation
         self.bcd_encoder = WWVBCDEncoder(sample_rate=16000)
+        
+        # Initialize test signal detector for minute 8/44 discrimination
+        self.test_signal_detector = WWVTestSignalDetector(sample_rate=16000)
+        logger.info(f"{channel_name}: Test signal detector initialized for minutes 8/44")
+        
+        # Initialize geographic predictor if grid square provided
+        self.geo_predictor: Optional[WWVGeographicPredictor] = None
+        if receiver_grid:
+            from pathlib import Path
+            history_file = None
+            if history_dir:
+                history_file = Path(history_dir) / f"toa_history_{channel_name.replace(' ', '_')}.json"
+            
+            self.geo_predictor = WWVGeographicPredictor(
+                receiver_grid=receiver_grid,
+                history_file=history_file,
+                max_history=1000
+            )
+            logger.info(f"{channel_name}: Geographic ToA prediction enabled for {receiver_grid}")
+        else:
+            logger.info(f"{channel_name}: Geographic ToA prediction disabled (no grid square configured)")
         
         logger.info(f"{channel_name}: WWVHDiscriminator initialized")
     
@@ -625,30 +662,34 @@ class WWVHDiscriminator:
     def detect_tick_windows(
         self,
         iq_samples: np.ndarray,
-        sample_rate: int
+        sample_rate: int,
+        window_seconds: int = 60
     ) -> List[Dict[str, float]]:
         """
-        Detect 5ms tick tones in 10-second windows with coherent integration
+        Detect 5ms tick tones with coherent integration
+        
+        DISCRIMINATION-FIRST PHILOSOPHY:
+        Default uses 60-second window (full minute) for maximum tick stacking.
+        This provides √59 ≈ 7.7x SNR improvement over 10-second windows (+8.9 dB).
         
         Implements true coherent integration with phase tracking:
-        - Coherent: Phase-aligned amplitude sum → 10 dB gain (N)
-        - Incoherent: Power sum → 5 dB gain (√N)
+        - Coherent: Phase-aligned amplitude sum → 10*log10(N) dB gain
+        - Incoherent: Power sum → 5*log10(N) dB gain
         - Automatically selects best method based on phase stability
         
         Args:
             iq_samples: Full minute of complex IQ samples at sample_rate
             sample_rate: Sample rate in Hz (typically 16000)
+            window_seconds: Integration window (60=full minute baseline, 10=legacy)
             
         Returns:
-            List of 6 dictionaries, one per 10-second window:
+            List of dictionaries (1 for 60s, 6 for 10s windows):
             {
-                'second': start second in minute (1, 11, 21, 31, 41, 51),
+                'second': start second in minute (1 for 60s, varies for 10s),
                     NOTE: Second 0 is EXCLUDED (contains 800ms tone marker)
-                    Windows: 1-10, 11-20, 21-30, 31-40, 41-50, 51-59
-                    Last window has only 9 ticks (51-59)
-                'coherent_wwv_snr_db': Coherent integration SNR (10 dB gain),
+                'coherent_wwv_snr_db': Coherent integration SNR,
                 'coherent_wwvh_snr_db': Coherent integration SNR,
-                'incoherent_wwv_snr_db': Incoherent integration SNR (5 dB gain),
+                'incoherent_wwv_snr_db': Incoherent integration SNR,
                 'incoherent_wwvh_snr_db': Incoherent integration SNR,
                 'coherence_quality_wwv': Phase stability metric (0-1),
                 'coherence_quality_wwvh': Phase stability metric (0-1),
@@ -656,7 +697,7 @@ class WWVHDiscriminator:
                 'wwv_snr_db': Best SNR (from chosen method),
                 'wwvh_snr_db': Best SNR (from chosen method),
                 'ratio_db': wwv_snr - wwvh_snr,
-                'tick_count': number of ticks analyzed (10 for windows 0-4, 9 for window 5)
+                'tick_count': number of ticks analyzed (59 for 60s, 10 or 9 for 10s)
             }
         """
         # AM demodulation for entire minute
@@ -683,28 +724,37 @@ class WWVHDiscriminator:
         b_600, a_600 = iirnotch(600, 20, sample_rate)
         audio_signal = filtfilt(b_600, a_600, audio_signal)
         
-        window_seconds = 10
         samples_per_window = window_seconds * sample_rate
         
         # CRITICAL: Skip second 0 (contains 800ms tone marker)
-        # Windows: 1-10, 11-20, 21-30, 31-40, 41-50, 51-59
-        # Note: Last window has only 9 ticks (51-59)
-        num_windows = 6
+        # For 60s: Single window covering seconds 1-59 (59 ticks)
+        # For 10s: Six windows 1-10, 11-20, 21-30, 31-40, 41-50, 51-59
+        if window_seconds >= 60:
+            num_windows = 1
+        else:
+            num_windows = 6  # Legacy 10-second windows
         
         results = []
         
         for window_idx in range(num_windows):
             # Start at second 1 (not 0) to avoid 800ms tone marker
-            window_start_second = 1 + (window_idx * window_seconds)
-            window_start_sample = window_start_second * sample_rate
-            
-            # Last window is only 9 seconds (51-59)
-            if window_idx == 5:
-                window_end_second = 60  # Up to but not including next minute
-                actual_window_seconds = 9  # 51-59 = 9 ticks
+            if window_seconds >= 60:
+                # Full minute: seconds 1-59 (59 ticks)
+                window_start_second = 1
+                window_end_second = 60
+                actual_window_seconds = 59
             else:
-                window_end_second = window_start_second + window_seconds
-                actual_window_seconds = window_seconds
+                # Legacy 10-second windows
+                window_start_second = 1 + (window_idx * window_seconds)
+                # Last window is only 9 seconds (51-59)
+                if window_idx == 5:
+                    window_end_second = 60
+                    actual_window_seconds = 9
+                else:
+                    window_end_second = window_start_second + window_seconds
+                    actual_window_seconds = window_seconds
+                    
+            window_start_sample = window_start_second * sample_rate
             
             window_end_sample = window_end_second * sample_rate
             
@@ -924,20 +974,21 @@ class WWVHDiscriminator:
                     'coherence_quality_wwvh': 0.0,
                     'integration_method': 'none',
                     'tick_count': 0,
-                    'noise_power_density_db': -100.0,
-                    'signal_bandwidth_hz': 5.0
+                    'noise_power_density_db': -100.0
                 })
         
         return results
     
-    def detect_bcd_discrimination(
+    def bcd_correlation_discrimination(
         self,
         iq_samples: np.ndarray,
         sample_rate: int,
         minute_timestamp: float,
-        window_seconds: int = 10,
-        step_seconds: int = 3,
-        adaptive: bool = True
+        frequency_mhz: Optional[float] = None,
+        window_seconds: float = 10,
+        step_seconds: float = 3,
+        adaptive: bool = True,
+        enable_single_station_detection: bool = True
     ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], List[Dict[str, float]]]:
         """
         Discriminate WWV/WWVH using 100 Hz BCD cross-correlation with sliding windows
@@ -946,17 +997,21 @@ class WWVHDiscriminator:
         By cross-correlating the received 100 Hz signal against the expected template,
         we get two peaks separated by the ionospheric differential delay (~10-20ms).
         
-        OPTIMIZED: Uses sliding windows (default 10 sec with 3 sec steps) to balance SNR gain,
-        temporal resolution, and computational performance. 10 seconds is the sweet spot: below
-        typical HF coherence time (Tc ~15-20s) for stable correlation, while providing 10x SNR
-        improvement over 1-second integration. 3-second steps provide ~15 data points per minute,
-        capturing ionospheric variations >3 seconds while reducing computational load by 3x.
+        DISCRIMINATION-FIRST PHILOSOPHY:
+        Default uses 60-second windows (full minute) for maximum discrimination sensitivity.
+        This provides √36 = 6x SNR improvement over 10-second windows (+7.8 dB), critical for
+        weak signal discrimination. Temporal resolution is secondary to confident discrimination.
         
-        ADAPTIVE WINDOWING (enabled by default):
-        - Similar amplitudes (<3 dB difference): Recommend expanding to 15s for better discrimination
-        - One station dominant (>10 dB difference): Recommend tightening to 5s for better resolution
-        - Weak signals (quality <3.0): Recommend expanding to 15-20s for better SNR
-        - Logs recommendations for operator to adjust window_seconds parameter
+        BASELINE (60 seconds):
+        - Maximizes SNR for weak signal discrimination
+        - Single measurement per minute (non-overlapping)
+        - Aligns with station timing (full BCD time code)
+        - All 60 second-ticks available for correlation
+        
+        FUTURE ADAPTIVE WINDOWING:
+        Once confident discrimination established (confidence >0.7 for 5+ minutes),
+        system may progressively shorten windows (60→30→20→15→10 sec) to increase
+        granularity while monitoring confidence. Reverts to 60 sec if confidence drops.
         
         This method completely avoids the 1000/1200 Hz time marker tone separation problem!
         The 100 Hz BCD signal is the actual carrier.
@@ -965,9 +1020,11 @@ class WWVHDiscriminator:
             iq_samples: Full minute of complex IQ samples
             sample_rate: Sample rate in Hz (typically 16000)
             minute_timestamp: UTC timestamp of minute boundary
+            frequency_mhz: Operating frequency for geographic ToA prediction (optional)
             window_seconds: Integration window length (default 10s, adjust based on conditions)
-            step_seconds: Sliding step size (default 1s, heavy overlap for temporal resolution)
+            step_seconds: Sliding step size (default 3s for efficiency)
             adaptive: Enable adaptive window recommendations (default True)
+            enable_single_station_detection: Use geographic predictor for single peaks (default True)
             
         Returns:
             Tuple of (wwv_amp_mean, wwvh_amp_mean, delay_mean, quality_mean, windows_list)
@@ -1042,7 +1099,9 @@ class WWVHDiscriminator:
                     prominence=std_corr * 0.5
                 )
                 
+                # Handle both dual-peak (both stations) and single-peak (one station) scenarios
                 if len(peaks) >= 2:
+                    # DUAL PEAK: Both WWV and WWVH detected
                     peak_heights = properties['peak_heights']
                     sorted_indices = np.argsort(peak_heights)[-2:]
                     sorted_indices = np.sort(sorted_indices)
@@ -1122,8 +1181,65 @@ class WWVHDiscriminator:
                             'wwv_amplitude': wwv_amp,
                             'wwvh_amplitude': wwvh_amp,
                             'differential_delay_ms': float(delay_ms),
-                            'correlation_quality': float(quality)
+                            'correlation_quality': float(quality),
+                            'detection_type': 'dual_peak'
                         })
+                        
+                        # Update geographic predictor history if available
+                        if self.geo_predictor and frequency_mhz:
+                            # Convert peak times to absolute delays from correlation zero
+                            peak1_delay_ms = peak1_time * 1000
+                            peak2_delay_ms = peak2_time * 1000
+                            self.geo_predictor.update_dual_peak_history(
+                                frequency_mhz,
+                                peak1_delay_ms, peak2_delay_ms,
+                                wwv_amp, wwvh_amp
+                            )
+                
+                elif len(peaks) == 1 and enable_single_station_detection and self.geo_predictor and frequency_mhz:
+                    # SINGLE PEAK: Try to classify using geographic ToA prediction
+                    peak_idx = 0
+                    peak_time = peaks[peak_idx] / sample_rate
+                    peak_delay_ms = peak_time * 1000
+                    peak_height = float(peak_heights[peak_idx])
+                    
+                    # Normalize amplitude
+                    R_0 = float(np.sum(template_window**2))
+                    if R_0 > 0:
+                        peak_amplitude = peak_height / np.sqrt(R_0)
+                    else:
+                        continue  # Skip if template energy is zero
+                    
+                    # Quality from SNR
+                    noise_floor = np.median(correlation)
+                    quality = peak_height / noise_floor if noise_floor > 0 else 0.0
+                    
+                    # Classify the single peak
+                    station = self.geo_predictor.classify_single_peak(
+                        peak_delay_ms, peak_amplitude, frequency_mhz, quality
+                    )
+                    
+                    if station == 'WWV':
+                        windows_data.append({
+                            'window_start_sec': float(window_start_time),
+                            'wwv_amplitude': peak_amplitude,
+                            'wwvh_amplitude': 0.0,
+                            'differential_delay_ms': None,
+                            'correlation_quality': float(quality),
+                            'detection_type': 'single_peak_wwv',
+                            'peak_delay_ms': float(peak_delay_ms)
+                        })
+                    elif station == 'WWVH':
+                        windows_data.append({
+                            'window_start_sec': float(window_start_time),
+                            'wwv_amplitude': 0.0,
+                            'wwvh_amplitude': peak_amplitude,
+                            'differential_delay_ms': None,
+                            'correlation_quality': float(quality),
+                            'detection_type': 'single_peak_wwvh',
+                            'peak_delay_ms': float(peak_delay_ms)
+                        })
+                    # else: station is None (ambiguous/unclassified), skip this window
             
             # Step 5: Compute summary statistics from all valid windows
             if not windows_data:
@@ -1186,6 +1302,40 @@ class WWVHDiscriminator:
             logger.error(traceback.format_exc())
             return None, None, None, None, None
     
+    def detect_bcd_discrimination(
+        self,
+        iq_samples: np.ndarray,
+        sample_rate: int,
+        minute_timestamp: float,
+        frequency_mhz: Optional[float] = None
+    ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], List[Dict[str, float]]]:
+        """
+        Wrapper method for BCD discrimination (for backward compatibility)
+        
+        Calls bcd_correlation_discrimination with geographic ToA prediction enabled.
+        
+        Args:
+            iq_samples: Full minute of complex IQ samples
+            sample_rate: Sample rate in Hz
+            minute_timestamp: UTC timestamp of minute boundary
+            frequency_mhz: Operating frequency for geographic ToA prediction
+            
+        Returns:
+            Tuple of (wwv_amp_mean, wwvh_amp_mean, delay_mean, quality_mean, windows_list)
+        """
+        # DISCRIMINATION-FIRST: Use 60-second windows for maximum sensitivity
+        # Priority: Confident discrimination > temporal granularity
+        return self.bcd_correlation_discrimination(
+            iq_samples=iq_samples,
+            sample_rate=sample_rate,
+            minute_timestamp=minute_timestamp,
+            frequency_mhz=frequency_mhz,
+            window_seconds=60,  # Full minute for maximum SNR
+            step_seconds=60,    # Non-overlapping (1 measurement per minute)
+            adaptive=False,     # Fixed baseline, adaptive windowing is future work
+            enable_single_station_detection=True
+        )
+    
     def _generate_bcd_template(
         self,
         minute_timestamp: float,
@@ -1220,6 +1370,7 @@ class WWVHDiscriminator:
         iq_samples: np.ndarray,
         sample_rate: int,
         minute_timestamp: float,
+        frequency_mhz: Optional[float] = None,
         detections: Optional[List[ToneDetectionResult]] = None
     ) -> Optional[DiscriminationResult]:
         """
@@ -1232,6 +1383,7 @@ class WWVHDiscriminator:
             iq_samples: Full minute of IQ samples (typically 16 kHz, 60 seconds)
             sample_rate: Sample rate in Hz
             minute_timestamp: UTC timestamp of minute boundary
+            frequency_mhz: Operating frequency for geographic ToA prediction (optional)
             detections: DEPRECATED - Optional external tone detections (for backward compatibility).
                        If None, will detect tones internally using detect_timing_tones().
             
@@ -1280,11 +1432,11 @@ class WWVHDiscriminator:
             if detected and result.confidence == 'low':
                 result.confidence = 'medium'
         
-        # PHASE 3: Detect 5ms tick marks with coherent integration (10-second windows)
-        # Provides 6x better time resolution than minute-long tones
+        # PHASE 3: Detect 5ms tick marks with coherent integration (60-second baseline)
+        # DISCRIMINATION-FIRST: Use full minute for maximum tick stacking sensitivity
         try:
-            tick_windows = self.detect_tick_windows(iq_samples, sample_rate)
-            result.tick_windows_10sec = tick_windows
+            tick_windows = self.detect_tick_windows(iq_samples, sample_rate, window_seconds=60)
+            result.tick_windows_10sec = tick_windows  # Field name unchanged for compatibility
             
             # Log summary with coherent integration statistics
             good_windows = [w for w in tick_windows if w['wwv_snr_db'] > 0 or w['wwvh_snr_db'] > 0]
@@ -1294,7 +1446,7 @@ class WWVHDiscriminator:
                 avg_coherence_wwv = np.mean([w.get('coherence_quality_wwv', 0) for w in good_windows])
                 avg_coherence_wwvh = np.mean([w.get('coherence_quality_wwvh', 0) for w in good_windows])
                 
-                logger.info(f"{self.channel_name}: Tick analysis - {len(good_windows)}/6 windows valid, "
+                logger.info(f"{self.channel_name}: Tick analysis - {len(good_windows)}/{len(tick_windows)} windows valid, "
                            f"{coherent_count}/{len(good_windows)} coherent, avg ratio: {avg_ratio:+.1f}dB, "
                            f"coherence: WWV={avg_coherence_wwv:.2f} WWVH={avg_coherence_wwvh:.2f}")
         except Exception as e:
@@ -1306,7 +1458,7 @@ class WWVHDiscriminator:
         # Amplitudes measured directly from 100 Hz BCD signal correlation peaks
         try:
             bcd_wwv, bcd_wwvh, bcd_delay, bcd_quality, bcd_windows = self.detect_bcd_discrimination(
-                iq_samples, sample_rate, minute_timestamp
+                iq_samples, sample_rate, minute_timestamp, frequency_mhz
             )
             
             # Log 440 Hz reference measurements when available (hourly calibration anchor)
@@ -1329,6 +1481,38 @@ class WWVHDiscriminator:
             result.bcd_differential_delay_ms = None
             result.bcd_correlation_quality = None
             result.bcd_windows = None
+        
+        # PHASE 4.5: Test Signal Discrimination (minutes 8 and 44 only)
+        # Scientific modulation test provides strongest discrimination when present
+        # Minute 8 = WWV, Minute 44 = WWVH
+        if minute_number in [8, 44]:
+            try:
+                test_detection = self.test_signal_detector.detect(
+                    iq_samples, minute_number, sample_rate
+                )
+                
+                result.test_signal_detected = test_detection.detected
+                result.test_signal_station = test_detection.station
+                result.test_signal_confidence = test_detection.confidence
+                result.test_signal_multitone_score = test_detection.multitone_score
+                result.test_signal_chirp_score = test_detection.chirp_score
+                result.test_signal_snr_db = test_detection.snr_db
+                
+                if test_detection.detected:
+                    logger.info(f"{self.channel_name}: ✨ Test signal detected! "
+                               f"Station={test_detection.station}, "
+                               f"confidence={test_detection.confidence:.3f}, "
+                               f"SNR={test_detection.snr_db:.1f}dB")
+                    
+                    # High-confidence test signal overrides other methods
+                    if test_detection.confidence > 0.7:
+                        result.dominant_station = test_detection.station
+                        result.confidence = 'high'
+                        logger.info(f"{self.channel_name}: Test signal confidence high, "
+                                   f"overriding other discriminators → {test_detection.station}")
+                        
+            except Exception as e:
+                logger.warning(f"{self.channel_name}: Test signal detection failed: {e}")
         
         # PHASE 5: Finalize discrimination with weighted voting combiner
         result = self.finalize_discrimination(

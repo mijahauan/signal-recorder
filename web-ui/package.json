@@ -4,8 +4,8 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "dev": "node simple-server.js",
-    "start": "node simple-server.js",
+    "dev": "node monitoring-server-v3.js",
+    "start": "node monitoring-server-v3.js",
     "build": "echo 'Frontend build not needed with simplified server'",
     "check": "echo 'TypeScript check not needed with simplified server'",
     "format": "prettier --write .",

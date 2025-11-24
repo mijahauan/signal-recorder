@@ -47,6 +47,8 @@ These are the non-negotiable rules for all development.
 * **Monotonic indexing:** No backwards time, even during NTP adjustments
 * **Quality annotation:** Always upload, annotate timing quality (tone_locked/ntp_synced/wall_clock)
 
+**⚠️ KNOWN BUG (2025-11-23):** Core recorder (`core_npz_writer.py` lines 98-110) uses wall clock minute boundaries to write files instead of waiting for full sample count. This causes NPZ files to contain only ~23 seconds of data instead of 60 seconds. The wall clock check should be removed; files should only be written when `samples_per_minute` is reached. Priority: HIGH - blocks 60-second discrimination baseline.
+
 ### Code Style:
 * Follow PEP 8 for Python code
 * Type hints required for all public functions

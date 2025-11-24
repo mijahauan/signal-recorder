@@ -243,8 +243,19 @@ class AnalyticsService:
         # WWV/H discriminator (for channels that see both WWV and WWVH)
         self.wwvh_discriminator: Optional[WWVHDiscriminator] = None
         if self._is_wwv_wwvh_channel(channel_name):
-            self.wwvh_discriminator = WWVHDiscriminator(channel_name=channel_name)
-            logger.info("✅ WWVHDiscriminator initialized for dual-station channel")
+            # Extract grid square from station config for geographic ToA prediction
+            receiver_grid = self.station_config.get('grid_square')
+            history_dir = str(self.output_dir / 'toa_history') if receiver_grid else None
+            
+            self.wwvh_discriminator = WWVHDiscriminator(
+                channel_name=channel_name,
+                receiver_grid=receiver_grid,
+                history_dir=history_dir
+            )
+            if receiver_grid:
+                logger.info(f"✅ WWVHDiscriminator initialized with geographic ToA prediction ({receiver_grid})")
+            else:
+                logger.info("✅ WWVHDiscriminator initialized (geographic ToA disabled - no grid_square in config)")
         
         # Digital RF writing has been moved to standalone drf_writer_service.py
         # This service now only does tone detection, decimation, and outputs 10Hz NPZ files
@@ -715,10 +726,12 @@ class AnalyticsService:
             
             # Run FULL discrimination analysis including 440 Hz detection
             # This requires the complete minute of IQ samples from the archive
+            frequency_mhz = archive.frequency_hz / 1e6  # Convert Hz to MHz for geographic predictor
             discrimination = self.wwvh_discriminator.analyze_minute_with_440hz(
                 iq_samples=archive.iq_samples,
                 sample_rate=archive.sample_rate,
                 minute_timestamp=minute_timestamp,
+                frequency_mhz=frequency_mhz,
                 detections=detections
             )
             
@@ -1128,7 +1141,9 @@ class AnalyticsService:
                            'tone_440hz_wwvh_detected,tone_440hz_wwvh_power_db,'
                            'dominant_station,confidence,tick_windows_10sec,'
                            'bcd_wwv_amplitude,bcd_wwvh_amplitude,'
-                           'bcd_differential_delay_ms,bcd_correlation_quality,bcd_windows\n')
+                           'bcd_differential_delay_ms,bcd_correlation_quality,bcd_windows,'
+                           'test_signal_detected,test_signal_station,test_signal_confidence,'
+                           'test_signal_multitone_score,test_signal_chirp_score,test_signal_snr_db\n')
                 
                 # Format data with all fields including 440 Hz detection
                 minute_number = dt.minute
@@ -1158,6 +1173,14 @@ class AnalyticsService:
                 bcd_delay_str = f'{result.bcd_differential_delay_ms:.2f}' if result.bcd_differential_delay_ms is not None else ''
                 bcd_quality_str = f'{result.bcd_correlation_quality:.2f}' if result.bcd_correlation_quality is not None else ''
                 
+                # Format test signal fields
+                test_signal_detected_str = str(int(result.test_signal_detected))
+                test_signal_station_str = result.test_signal_station if result.test_signal_station else ''
+                test_signal_conf_str = f'{result.test_signal_confidence:.3f}' if result.test_signal_confidence is not None else ''
+                test_signal_multitone_str = f'{result.test_signal_multitone_score:.3f}' if result.test_signal_multitone_score is not None else ''
+                test_signal_chirp_str = f'{result.test_signal_chirp_score:.3f}' if result.test_signal_chirp_score is not None else ''
+                test_signal_snr_str = f'{result.test_signal_snr_db:.1f}' if result.test_signal_snr_db is not None else ''
+                
                 f.write(f'{dt.isoformat()},{result.minute_timestamp},{minute_number},'
                        f'{int(result.wwv_detected)},{int(result.wwvh_detected)},'
                        f'{wwv_power_str},{wwvh_power_str},{power_ratio_str},{diff_delay_str},'
@@ -1166,7 +1189,9 @@ class AnalyticsService:
                        f'{result.dominant_station if result.dominant_station else ""},'
                        f'{result.confidence},"{tick_windows_str}",'
                        f'{bcd_wwv_amp_str},{bcd_wwvh_amp_str},'
-                       f'{bcd_delay_str},{bcd_quality_str},"{bcd_windows_str}"\n')
+                       f'{bcd_delay_str},{bcd_quality_str},"{bcd_windows_str}",'
+                       f'{test_signal_detected_str},{test_signal_station_str},{test_signal_conf_str},'
+                       f'{test_signal_multitone_str},{test_signal_chirp_str},{test_signal_snr_str}\n')
                        
         except Exception as e:
             logger.warning(f"Failed to log discrimination: {e}")

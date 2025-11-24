@@ -1055,6 +1055,209 @@ app.get('/api/v1/carrier/available-dates', async (req, res) => {
   }
 });
 
+function loadDiscriminationRecords(channelName, date) {
+  const fileChannelName = channelName.replace(/ /g, '_');
+  const fileName = `${fileChannelName}_discrimination_${date}.csv`;
+  const filePath = join(paths.getDiscriminationDir(channelName), fileName);
+  
+  if (!fs.existsSync(filePath)) {
+    return { filePath, records: null };
+  }
+  
+  const csvContent = fs.readFileSync(filePath, 'utf8').trim();
+  if (!csvContent) {
+    return { filePath, records: [] };
+  }
+  
+  const lines = csvContent.split('\n');
+  const records = [];
+  
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    const parts = [];
+    let inQuotes = false;
+    let current = '';
+    
+    for (let j = 0; j < line.length; j++) {
+      const char = line[j];
+      const nextChar = j < line.length - 1 ? line[j + 1] : null;
+      
+      if (char === '"' && nextChar === '"' && inQuotes) {
+        current += '"';
+        j++;
+      } else if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        parts.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    parts.push(current);
+    
+    if (parts.length >= 21) {
+      let timestamp = parts[0].trim();
+      if (timestamp.endsWith('+00:00')) {
+        timestamp = timestamp.replace('+00:00', 'Z');
+      }
+      
+      let tick_windows = null;
+      if (parts[15] && parts[15].trim() !== '') {
+        try {
+          tick_windows = JSON.parse(parts[15].trim());
+        } catch (e) {
+          console.warn(`Failed to parse tick_windows_10sec JSON at line ${i}:`, e);
+        }
+      }
+      
+      let bcd_windows = null;
+      if (parts[20] && parts[20].trim() !== '') {
+        try {
+          bcd_windows = JSON.parse(parts[20].trim());
+        } catch (e) {
+          console.warn(`Failed to parse bcd_windows JSON at line ${i}:`, e);
+        }
+      }
+      
+      records.push({
+        timestamp_utc: timestamp,
+        minute_timestamp: parseInt(parts[1]),
+        minute_number: parseInt(parts[2]),
+        wwv_detected: parts[3] === '1',
+        wwvh_detected: parts[4] === '1',
+        wwv_power_db: parts[5] !== '' ? parseFloat(parts[5]) : null,
+        wwvh_power_db: parts[6] !== '' ? parseFloat(parts[6]) : null,
+        power_ratio_db: parts[7] !== '' ? parseFloat(parts[7]) : null,
+        differential_delay_ms: parts[8] !== '' ? parseFloat(parts[8]) : null,
+        tone_440hz_wwv_detected: parts[9] === '1',
+        tone_440hz_wwv_power_db: parts[10] !== '' ? parseFloat(parts[10]) : null,
+        tone_440hz_wwvh_detected: parts[11] === '1',
+        tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
+        dominant_station: parts[13],
+        confidence: parts[14],
+        tick_windows_10sec: tick_windows,
+        bcd_wwv_amplitude: parts[16] !== '' ? parseFloat(parts[16]) : null,
+        bcd_wwvh_amplitude: parts[17] !== '' ? parseFloat(parts[17]) : null,
+        bcd_differential_delay_ms: parts[18] !== '' ? parseFloat(parts[18]) : null,
+        bcd_correlation_quality: parts[19] !== '' ? parseFloat(parts[19]) : null,
+        bcd_windows: bcd_windows
+      });
+    } else if (parts.length >= 16) {
+      let timestamp = parts[0].trim();
+      if (timestamp.endsWith('+00:00')) {
+        timestamp = timestamp.replace('+00:00', 'Z');
+      }
+      
+      let tick_windows = null;
+      if (parts[15] && parts[15].trim() !== '') {
+        try {
+          tick_windows = JSON.parse(parts[15].trim());
+        } catch (e) {
+          console.warn(`Failed to parse tick_windows_10sec JSON at line ${i}:`, e);
+        }
+      }
+      
+      records.push({
+        timestamp_utc: timestamp,
+        minute_timestamp: parseInt(parts[1]),
+        minute_number: parseInt(parts[2]),
+        wwv_detected: parts[3] === '1',
+        wwvh_detected: parts[4] === '1',
+        wwv_snr_db: parts[5] !== '' ? parseFloat(parts[5]) : null,
+        wwvh_snr_db: parts[6] !== '' ? parseFloat(parts[6]) : null,
+        power_ratio_db: parts[7] !== '' ? parseFloat(parts[7]) : null,
+        differential_delay_ms: parts[8] !== '' ? parseFloat(parts[8]) : null,
+        tone_440hz_wwv_detected: parts[9] === '1',
+        tone_440hz_wwv_power_db: parts[10] !== '' ? parseFloat(parts[10]) : null,
+        tone_440hz_wwvh_detected: parts[11] === '1',
+        tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
+        dominant_station: parts[13],
+        confidence: parts[14],
+        tick_windows_10sec: tick_windows,
+        bcd_wwv_amplitude: null,
+        bcd_wwvh_amplitude: null,
+        bcd_differential_delay_ms: null,
+        bcd_correlation_quality: null,
+        bcd_windows: null
+      });
+    } else if (parts.length >= 15) {
+      let timestamp = parts[0].trim();
+      if (timestamp.endsWith('+00:00')) {
+        timestamp = timestamp.replace('+00:00', 'Z');
+      }
+      
+      records.push({
+        timestamp_utc: timestamp,
+        minute_timestamp: parseInt(parts[1]),
+        minute_number: parseInt(parts[2]),
+        wwv_detected: parts[3] === '1',
+        wwvh_detected: parts[4] === '1',
+        wwv_snr_db: parts[5] !== '' ? parseFloat(parts[5]) : null,
+        wwvh_snr_db: parts[6] !== '' ? parseFloat(parts[6]) : null,
+        power_ratio_db: parts[7] !== '' ? parseFloat(parts[7]) : null,
+        differential_delay_ms: parts[8] !== '' ? parseFloat(parts[8]) : null,
+        tone_440hz_wwv_detected: parts[9] === '1',
+        tone_440hz_wwv_power_db: parts[10] !== '' ? parseFloat(parts[10]) : null,
+        tone_440hz_wwvh_detected: parts[11] === '1',
+        tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
+        dominant_station: parts[13],
+        confidence: parts[14],
+        tick_windows_10sec: null
+      });
+    } else if (parts.length >= 10) {
+      let timestamp = parts[0].trim();
+      if (timestamp.endsWith('+00:00')) {
+        timestamp = timestamp.replace('+00:00', 'Z');
+      }
+      
+      records.push({
+        timestamp_utc: timestamp,
+        minute_timestamp: parseInt(parts[1]),
+        minute_number: null,
+        wwv_detected: parts[2] === '1',
+        wwvh_detected: parts[3] === '1',
+        wwv_snr_db: parts[4] !== '' ? parseFloat(parts[4]) : null,
+        wwvh_snr_db: parts[5] !== '' ? parseFloat(parts[5]) : null,
+        power_ratio_db: parts[6] !== '' ? parseFloat(parts[6]) : null,
+        differential_delay_ms: parts[7] !== '' ? parseFloat(parts[7]) : null,
+        tone_440hz_wwv_detected: false,
+        tone_440hz_wwv_power_db: null,
+        tone_440hz_wwvh_detected: false,
+        tone_440hz_wwvh_power_db: null,
+        dominant_station: parts[8],
+        confidence: parts[9]
+      });
+    }
+  }
+  
+  return { filePath, records };
+}
+
+function computeDominanceValue(record) {
+  if (record.wwv_detected && !record.wwvh_detected) return 2;
+  if (!record.wwv_detected && record.wwvh_detected) return -2;
+  if (!record.wwv_detected && !record.wwvh_detected) return 0;
+  const wwv = record.wwv_power_db ?? record.wwv_snr_db ?? 0;
+  const wwvh = record.wwvh_power_db ?? record.wwvh_snr_db ?? 0;
+  const diff = wwv - wwvh;
+  if (diff > 3) return 2;
+  if (diff < -3) return -2;
+  if (diff > 0) return 1;
+  if (diff < 0) return -1;
+  return 0;
+}
+
+function calculateRatioDb(wwvAmp, wwvhAmp) {
+  if (typeof wwvAmp !== 'number' || typeof wwvhAmp !== 'number') {
+    return null;
+  }
+  if (wwvAmp <= 0 || wwvhAmp <= 0) {
+    return null;
+  }
+  return 20 * Math.log10(wwvAmp / wwvhAmp);
+}
+
 /**
  * GET /api/v1/channels/:channelName/discrimination/:date
  * Get discrimination time-series data for a channel and date
@@ -1062,232 +1265,277 @@ app.get('/api/v1/carrier/available-dates', async (req, res) => {
 app.get('/api/v1/channels/:channelName/discrimination/:date', async (req, res) => {
   try {
     const { channelName, date } = req.params;
+    const parsed = loadDiscriminationRecords(channelName, date);
     
-    // Map channel names to their actual directory names
-    const dirMap = {
-      'WWV 2.5 MHz': 'WWV_2.5_MHz',
-      'WWV 5 MHz': 'WWV_5_MHz',
-      'WWV 10 MHz': 'WWV_10_MHz',
-      'WWV 15 MHz': 'WWV_15_MHz'
-    };
-    
-    const channelDirName = dirMap[channelName] || channelName.replace(/ /g, '_');
-    const fileChannelName = channelName.replace(/ /g, '_');
-    const fileName = `${fileChannelName}_discrimination_${date}.csv`;
-    
-    // Use GRAPEPaths to get discrimination file path
-    const filePath = join(paths.getDiscriminationDir(channelName), fileName);
-    
-    // Check if file exists
-    if (!fs.existsSync(filePath)) {
+    if (!parsed.records) {
       return res.json({
-        date: date,
+        date,
         channel: channelName,
         data: [],
         message: 'No data for this date'
       });
     }
     
-    // Read CSV file
-    const csvContent = fs.readFileSync(filePath, 'utf8');
-    const lines = csvContent.trim().split('\n');
-    
-    // Parse CSV (skip header)
-    // CSV format: timestamp_utc,minute_timestamp,minute_number,wwv_detected,wwvh_detected,
-    //             wwv_power_db,wwvh_power_db,power_ratio_db,differential_delay_ms,
-    //             tone_440hz_wwv_detected,tone_440hz_wwv_power_db,
-    //             tone_440hz_wwvh_detected,tone_440hz_wwvh_power_db,
-    //             dominant_station,confidence,tick_windows_10sec
-    const data = [];
-    for (let i = 1; i < lines.length; i++) {
-      // Handle quoted JSON field in last column - CSV parser with escaped quotes
-      let line = lines[i];
-      const parts = [];
-      let inQuotes = false;
-      let current = '';
-      
-      for (let j = 0; j < line.length; j++) {
-        const char = line[j];
-        const nextChar = j < line.length - 1 ? line[j + 1] : null;
-        
-        if (char === '"' && nextChar === '"' && inQuotes) {
-          // Escaped quote "" inside quoted field -> add single quote
-          current += '"';
-          j++; // Skip next quote
-        } else if (char === '"') {
-          // Start or end of quoted field
-          inQuotes = !inQuotes;
-        } else if (char === ',' && !inQuotes) {
-          // Field separator outside quotes
-          parts.push(current);
-          current = '';
-        } else {
-          // Regular character
-          current += char;
-        }
-      }
-      parts.push(current); // Last field
-      
-      if (parts.length >= 21) {
-        // New format with tick windows AND BCD discrimination (21 fields)
-        if (i === 1) console.log(`DEBUG: First data row has ${parts.length} parts`);
-        let timestamp = parts[0].trim();
-        if (timestamp.endsWith('+00:00')) {
-          timestamp = timestamp.replace('+00:00', 'Z');
-        }
-        
-        // Parse tick windows JSON (already unescaped by CSV parser)
-        let tick_windows = null;
-        if (parts[15] && parts[15].trim() !== '') {
-          try {
-            tick_windows = JSON.parse(parts[15].trim());
-            if (i === 1) console.log(`DEBUG: tick_windows parsed, count: ${tick_windows ? tick_windows.length : 'null'}`);
-          } catch (e) {
-            console.warn(`Failed to parse tick_windows_10sec JSON at line ${i}:`, e);
-            if (i === 1) console.log('DEBUG: parts[15] =', parts[15].substring(0, 100));
-          }
-        } else {
-          if (i === 1) console.log('DEBUG: parts[15] is empty or missing');
-        }
-        
-        // Parse BCD windows JSON (field 20, index 20 in 0-indexed array)
-        let bcd_windows = null;
-        if (parts[20] && parts[20].trim() !== '') {
-          try {
-            bcd_windows = JSON.parse(parts[20].trim());
-            if (i === 1) console.log(`DEBUG: bcd_windows parsed, count: ${bcd_windows ? bcd_windows.length : 'null'}`);
-          } catch (e) {
-            console.warn(`Failed to parse bcd_windows JSON at line ${i}:`, e);
-            if (i === 1) console.log('DEBUG: parts[20] =', parts[20].substring(0, 100));
-          }
-        }
-        
-        data.push({
-          timestamp_utc: timestamp,
-          minute_timestamp: parseInt(parts[1]),
-          minute_number: parseInt(parts[2]),
-          wwv_detected: parts[3] === '1',
-          wwvh_detected: parts[4] === '1',
-          wwv_snr_db: parseFloat(parts[5]),
-          wwvh_snr_db: parseFloat(parts[6]),
-          power_ratio_db: parseFloat(parts[7]),
-          differential_delay_ms: parts[8] !== '' ? parseFloat(parts[8]) : null,
-          tone_440hz_wwv_detected: parts[9] === '1',
-          tone_440hz_wwv_power_db: parts[10] !== '' ? parseFloat(parts[10]) : null,
-          tone_440hz_wwvh_detected: parts[11] === '1',
-          tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
-          dominant_station: parts[13],
-          confidence: parts[14],
-          tick_windows_10sec: tick_windows,
-          bcd_wwv_amplitude: parts[16] !== '' ? parseFloat(parts[16]) : null,
-          bcd_wwvh_amplitude: parts[17] !== '' ? parseFloat(parts[17]) : null,
-          bcd_differential_delay_ms: parts[18] !== '' ? parseFloat(parts[18]) : null,
-          bcd_correlation_quality: parts[19] !== '' ? parseFloat(parts[19]) : null,
-          bcd_windows: bcd_windows
-        });
-      } else if (parts.length >= 16) {
-        // Format with tick windows but no BCD (16 fields) - backwards compatibility
-        if (i === 1) console.log(`DEBUG: First data row has ${parts.length} parts (legacy format)`);
-        let timestamp = parts[0].trim();
-        if (timestamp.endsWith('+00:00')) {
-          timestamp = timestamp.replace('+00:00', 'Z');
-        }
-        
-        // Parse tick windows JSON
-        let tick_windows = null;
-        if (parts[15] && parts[15].trim() !== '') {
-          try {
-            tick_windows = JSON.parse(parts[15].trim());
-          } catch (e) {
-            console.warn(`Failed to parse tick_windows_10sec JSON at line ${i}:`, e);
-          }
-        }
-        
-        data.push({
-          timestamp_utc: timestamp,
-          minute_timestamp: parseInt(parts[1]),
-          minute_number: parseInt(parts[2]),
-          wwv_detected: parts[3] === '1',
-          wwvh_detected: parts[4] === '1',
-          wwv_snr_db: parseFloat(parts[5]),
-          wwvh_snr_db: parseFloat(parts[6]),
-          power_ratio_db: parseFloat(parts[7]),
-          differential_delay_ms: parts[8] !== '' ? parseFloat(parts[8]) : null,
-          tone_440hz_wwv_detected: parts[9] === '1',
-          tone_440hz_wwv_power_db: parts[10] !== '' ? parseFloat(parts[10]) : null,
-          tone_440hz_wwvh_detected: parts[11] === '1',
-          tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
-          dominant_station: parts[13],
-          confidence: parts[14],
-          tick_windows_10sec: tick_windows,
-          bcd_wwv_amplitude: null,
-          bcd_wwvh_amplitude: null,
-          bcd_differential_delay_ms: null,
-          bcd_correlation_quality: null,
-          bcd_windows: null
-        });
-      } else if (parts.length >= 15) {
-        // Format with 440 Hz but no tick windows (15 fields) - backwards compatibility
-        let timestamp = parts[0].trim();
-        if (timestamp.endsWith('+00:00')) {
-          timestamp = timestamp.replace('+00:00', 'Z');
-        }
-        
-        data.push({
-          timestamp_utc: timestamp,
-          minute_timestamp: parseInt(parts[1]),
-          minute_number: parseInt(parts[2]),
-          wwv_detected: parts[3] === '1',
-          wwvh_detected: parts[4] === '1',
-          wwv_snr_db: parseFloat(parts[5]),
-          wwvh_snr_db: parseFloat(parts[6]),
-          power_ratio_db: parseFloat(parts[7]),
-          differential_delay_ms: parts[8] !== '' ? parseFloat(parts[8]) : null,
-          tone_440hz_wwv_detected: parts[9] === '1',
-          tone_440hz_wwv_power_db: parts[10] !== '' ? parseFloat(parts[10]) : null,
-          tone_440hz_wwvh_detected: parts[11] === '1',
-          tone_440hz_wwvh_power_db: parts[12] !== '' ? parseFloat(parts[12]) : null,
-          dominant_station: parts[13],
-          confidence: parts[14],
-          tick_windows_10sec: null
-        });
-      } else if (parts.length >= 10) {
-        // Old format without 440 Hz analysis (10 fields) - for backwards compatibility
-        let timestamp = parts[0].trim();
-        if (timestamp.endsWith('+00:00')) {
-          timestamp = timestamp.replace('+00:00', 'Z');
-        }
-        
-        data.push({
-          timestamp_utc: timestamp,
-          minute_timestamp: parseInt(parts[1]),
-          minute_number: null,
-          wwv_detected: parts[2] === '1',
-          wwvh_detected: parts[3] === '1',
-          wwv_snr_db: parseFloat(parts[4]),
-          wwvh_snr_db: parseFloat(parts[5]),
-          power_ratio_db: parseFloat(parts[6]),
-          differential_delay_ms: parts[7] !== '' ? parseFloat(parts[7]) : null,
-          tone_440hz_wwv_detected: false,
-          tone_440hz_wwv_power_db: null,
-          tone_440hz_wwvh_detected: false,
-          tone_440hz_wwvh_power_db: null,
-          dominant_station: parts[8],
-          confidence: parts[9]
-        });
-      }
-    }
-    
     res.json({
-      date: date,
+      date,
       channel: channelName,
-      data: data,
-      count: data.length
+      data: parsed.records,
+      count: parsed.records.length
     });
   } catch (error) {
     console.error('Failed to get discrimination data:', error);
     res.status(500).json({
       error: 'Failed to get discrimination data',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/v1/channels/:channelName/discrimination/:date/dashboard
+ * Aggregated dashboard data for redesigned discrimination page
+ */
+app.get('/api/v1/channels/:channelName/discrimination/:date/dashboard', async (req, res) => {
+  try {
+    const { channelName, date } = req.params;
+    const parsed = loadDiscriminationRecords(channelName, date);
+    
+    if (!parsed.records) {
+      return res.json({
+        date,
+        channel: channelName,
+        timeline: [],
+        message: 'No data for this date'
+      });
+    }
+    
+    const records = parsed.records;
+    if (records.length === 0) {
+      return res.json({
+        date,
+        channel: channelName,
+        timeline: [],
+        message: 'No data for this date'
+      });
+    }
+    
+    let wwvDetected = 0;
+    let wwvhDetected = 0;
+    let hz440Wwv = 0;
+    let hz440Wwvh = 0;
+    let bothDetected = 0;
+    const dominanceCounts = { wwv: 0, wwvh: 0, balanced: 0 };
+    
+    const timeline = records.map(record => {
+      if (record.wwv_detected) wwvDetected++;
+      if (record.wwvh_detected) wwvhDetected++;
+      if (record.wwv_detected && record.wwvh_detected) bothDetected++;
+      if (record.tone_440hz_wwv_detected) hz440Wwv++;
+      if (record.tone_440hz_wwvh_detected) hz440Wwvh++;
+      
+      const dominanceValue = computeDominanceValue(record);
+      if (dominanceValue > 0) dominanceCounts.wwv++;
+      else if (dominanceValue < 0) dominanceCounts.wwvh++;
+      else dominanceCounts.balanced++;
+      
+      const wwvPower = record.wwv_power_db ?? record.wwv_snr_db ?? null;
+      const wwvhPower = record.wwvh_power_db ?? record.wwvh_snr_db ?? null;
+      const snrDiff = (wwvPower !== null && wwvhPower !== null) ? (wwvPower - wwvhPower) : null;
+      
+      return {
+        timestamp_utc: record.timestamp_utc,
+        minute_timestamp: record.minute_timestamp,
+        wwv_power_db: wwvPower,
+        wwvh_power_db: wwvhPower,
+        power_ratio_db: record.power_ratio_db,
+        snr_difference_db: snrDiff,
+        differential_delay_ms: record.differential_delay_ms,
+        dominant_station: record.dominant_station,
+        confidence: record.confidence,
+        dominance_value: dominanceValue
+      };
+    });
+    
+    // Collect BCD samples, tick windows, and method parameters
+    const bcdSamples = [];
+    const tickSamples = [];
+    let wwvAmpSum = 0;
+    let wwvhAmpSum = 0;
+    let wwvAmpCount = 0;
+    let wwvhAmpCount = 0;
+    const ratioValues = [];
+    const qualityValues = [];
+    const bcdWindowsPerMinute = [];
+    const tickWindowsPerMinute = [];
+    
+    records.forEach(record => {
+      let bcdCount = 0;
+      let tickCount = 0;
+      
+      // BCD windows
+      if (Array.isArray(record.bcd_windows)) {
+        const baseTime = new Date(record.timestamp_utc);
+        bcdCount = record.bcd_windows.length;
+        
+        record.bcd_windows.forEach(win => {
+          if (!baseTime || isNaN(baseTime.getTime())) {
+            return;
+          }
+          const windowOffset = typeof win.window_start_sec === 'number' ? win.window_start_sec : 0;
+          const sampleTime = new Date(baseTime.getTime() + windowOffset * 1000);
+          const ratioDb = calculateRatioDb(win.wwv_amplitude, win.wwvh_amplitude);
+          
+          if (typeof win.wwv_amplitude === 'number' && isFinite(win.wwv_amplitude)) {
+            wwvAmpSum += win.wwv_amplitude;
+            wwvAmpCount++;
+          }
+          if (typeof win.wwvh_amplitude === 'number' && isFinite(win.wwvh_amplitude)) {
+            wwvhAmpSum += win.wwvh_amplitude;
+            wwvhAmpCount++;
+          }
+          if (ratioDb !== null && isFinite(ratioDb)) {
+            ratioValues.push(ratioDb);
+          }
+          if (typeof win.correlation_quality === 'number' && isFinite(win.correlation_quality)) {
+            qualityValues.push(win.correlation_quality);
+          }
+          
+          bcdSamples.push({
+            timestamp_utc: sampleTime.toISOString(),
+            minute_timestamp: record.minute_timestamp,
+            wwv_amplitude: win.wwv_amplitude ?? null,
+            wwvh_amplitude: win.wwvh_amplitude ?? null,
+            ratio_db: ratioDb,
+            differential_delay_ms: win.differential_delay_ms ?? null,
+            correlation_quality: win.correlation_quality ?? null
+          });
+        });
+      }
+      
+      // Tick windows
+      if (Array.isArray(record.tick_windows_10sec)) {
+        const baseTime = new Date(record.timestamp_utc);
+        tickCount = record.tick_windows_10sec.length;
+        
+        record.tick_windows_10sec.forEach(win => {
+          if (!baseTime || isNaN(baseTime.getTime())) return;
+          const windowOffset = typeof win.second === 'number' ? win.second : 0;
+          const sampleTime = new Date(baseTime.getTime() + windowOffset * 1000);
+          
+          tickSamples.push({
+            timestamp_utc: sampleTime.toISOString(),
+            minute_timestamp: record.minute_timestamp,
+            wwv_coherent_snr: win.coherent_wwv_snr_db ?? null,
+            wwvh_coherent_snr: win.coherent_wwvh_snr_db ?? null,
+            wwv_incoherent_snr: win.incoherent_wwv_snr_db ?? null,
+            wwvh_incoherent_snr: win.incoherent_wwvh_snr_db ?? null,
+            coherence_quality_wwv: win.coherence_quality_wwv ?? null,
+            coherence_quality_wwvh: win.coherence_quality_wwvh ?? null
+          });
+        });
+      }
+      
+      if (bcdCount > 0) bcdWindowsPerMinute.push(bcdCount);
+      if (tickCount > 0) tickWindowsPerMinute.push(tickCount);
+    });
+    
+    const mean = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+    const stddev = (arr) => {
+      if (arr.length === 0) return 0;
+      const avg = mean(arr);
+      const variance = arr.reduce((sum, val) => sum + Math.pow(val - avg, 2), 0) / arr.length;
+      return Math.sqrt(variance);
+    };
+    
+    const bcdSummary = {
+      total_windows: bcdSamples.length,
+      wwv_amplitude_mean: wwvAmpCount ? wwvAmpSum / wwvAmpCount : 0,
+      wwvh_amplitude_mean: wwvhAmpCount ? wwvhAmpSum / wwvhAmpCount : 0,
+      ratio_mean_db: ratioValues.length ? mean(ratioValues) : 0,
+      ratio_std_db: ratioValues.length ? stddev(ratioValues) : 0,
+      quality_mean: qualityValues.length ? mean(qualityValues) : 0
+    };
+    
+    const votingSeries = records.map(record => ({
+      timestamp_utc: record.timestamp_utc,
+      dominant_station: record.dominant_station || 'NONE',
+      confidence: record.confidence || 'low',
+      dominance_value: computeDominanceValue(record)
+    }));
+    
+    const votingCounts = {
+      wwv: votingSeries.filter(v => v.dominant_station === 'WWV').length,
+      wwvh: votingSeries.filter(v => v.dominant_station === 'WWVH').length,
+      balanced: votingSeries.filter(v => v.dominant_station === 'BALANCED').length,
+      none: votingSeries.filter(v => !v.dominant_station || v.dominant_station === 'NONE').length
+    };
+    
+    const totalMinutes = records.length || 1;
+    
+    // Calculate method parameters
+    const methodParams = {
+      bcd_windows_per_minute: bcdWindowsPerMinute.length ? mean(bcdWindowsPerMinute).toFixed(1) : 0,
+      tick_windows_per_minute: tickWindowsPerMinute.length ? mean(tickWindowsPerMinute).toFixed(1) : 0,
+      hz440_samples_per_hour: 2, // Fixed: WWV minute 2, WWVH minute 1
+      per_minute_tone_samples: 1, // Fixed: 1000/1200 Hz tones at :00
+      minutes_with_bcd: bcdWindowsPerMinute.length,
+      minutes_with_ticks: tickWindowsPerMinute.length
+    };
+    
+    // Determine UTC day range
+    const timestamps = records.map(r => new Date(r.timestamp_utc).getTime()).filter(t => !isNaN(t));
+    const minTime = timestamps.length ? Math.min(...timestamps) : null;
+    const maxTime = timestamps.length ? Math.max(...timestamps) : null;
+    const dayStart = minTime ? new Date(new Date(minTime).setUTCHours(0, 0, 0, 0)).toISOString() : null;
+    const dayEnd = minTime ? new Date(new Date(minTime).setUTCHours(23, 59, 59, 999)).toISOString() : null;
+    
+    const summary = {
+      total_minutes: records.length,
+      wwv_detected: wwvDetected,
+      wwvh_detected: wwvhDetected,
+      both_detected: bothDetected,
+      hz440_wwv_detections: hz440Wwv,
+      hz440_wwvh_detections: hz440Wwvh,
+      dominance_pct: {
+        wwv: ((dominanceCounts.wwv / totalMinutes) * 100).toFixed(1),
+        wwvh: ((dominanceCounts.wwvh / totalMinutes) * 100).toFixed(1),
+        balanced: ((dominanceCounts.balanced / totalMinutes) * 100).toFixed(1)
+      },
+      bcd_windows: bcdSamples.length,
+      bcd_ratio_mean_db: bcdSummary.ratio_mean_db,
+      bcd_ratio_std_db: bcdSummary.ratio_std_db,
+      bcd_quality_mean: bcdSummary.quality_mean
+    };
+    
+    res.json({
+      date,
+      channel: channelName,
+      summary,
+      timeline,
+      time_range: {
+        day_start_utc: dayStart,
+        day_end_utc: dayEnd,
+        data_start_utc: minTime ? new Date(minTime).toISOString() : null,
+        data_end_utc: maxTime ? new Date(maxTime).toISOString() : null
+      },
+      method_params: methodParams,
+      bcd: {
+        samples: bcdSamples,
+        summary: bcdSummary
+      },
+      ticks: {
+        samples: tickSamples,
+        windows_per_minute: methodParams.tick_windows_per_minute
+      },
+      voting: {
+        series: votingSeries,
+        counts: votingCounts
+      }
+    });
+  } catch (error) {
+    console.error('Failed to get discrimination dashboard data:', error);
+    res.status(500).json({
+      error: 'Failed to get discrimination dashboard data',
       details: error.message
     });
   }
