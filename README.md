@@ -182,6 +182,37 @@ enabled = false  # Set true after PSWS credentials configured
 
 See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
+## Recent Updates
+
+**November 24, 2025 - Analytics Metadata Integration** ✅
+- Analytics now reads and validates recorder-provided time_snap metadata
+- Archive time_snap adoption: Analytics automatically uses superior timing references from NPZ files
+- Tone power cross-validation: Compares recorder startup measurements with analytics detections
+- Complete metadata flow verified: Recorder → NPZ → Analytics → Decimated NPZ → DRF/Upload
+- All 6 analytics pipelines tested and validated end-to-end
+- See [SESSION_2025-11-24_ANALYTICS_METADATA_INTEGRATION.md](SESSION_2025-11-24_ANALYTICS_METADATA_INTEGRATION.md) for details
+
+**November 20, 2025 - DRF Writer Production Ready** ✅
+- Digital RF output now fully wsprdaemon-compatible (PSWS upload ready)
+- Two modes: wsprdaemon-compatible (default) or enhanced metadata
+- Float32 I/Q pairs with is_complex=True flag
+- Proper writer lifecycle with explicit close after each file
+- See [SESSION_2025-11-20_WSPRDAEMON_DRF_COMPATIBILITY.md](SESSION_2025-11-20_WSPRDAEMON_DRF_COMPATIBILITY.md)
+
+**November 20, 2025 - Canonical Contracts** ✅
+- Established project-wide standards and enforcement
+- GRAPEPaths API mandatory for all file operations
+- Unified API_REFERENCE.md with complete function signatures
+- Validation tool: scripts/validate_api_compliance.py
+- See [CANONICAL_CONTRACTS.md](CANONICAL_CONTRACTS.md)
+
+**November 23, 2025 - Core Recorder Timing Fix** ✅
+- Fixed incomplete NPZ files caused by wall clock boundary check
+- RTP timestamp now primary reference (sample count = sole trigger)
+- Files correctly contain 960,000 samples (60 seconds @ 16 kHz)
+- Embedded time_snap, tone powers, and gap metadata in all NPZ files
+- See [CORE_RECORDER_BUG_NOTES.md](CORE_RECORDER_BUG_NOTES.md)
+
 ## Credits & Support
 
 **Credits:** Phil Karn/KA9Q (ka9q-radio), MIT Haystack (Digital RF), Nathaniel Frissell/W2NAF (HamSCI GRAPE), Rob Robinett/AI6VN (wsprdaemon inspiration), Michael Hauan/AC0G (this implementation)

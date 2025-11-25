@@ -47,7 +47,7 @@ These are the non-negotiable rules for all development.
 * **Monotonic indexing:** No backwards time, even during NTP adjustments
 * **Quality annotation:** Always upload, annotate timing quality (tone_locked/ntp_synced/wall_clock)
 
-**⚠️ KNOWN BUG (2025-11-23):** Core recorder (`core_npz_writer.py` lines 98-110) uses wall clock minute boundaries to write files instead of waiting for full sample count. This causes NPZ files to contain only ~23 seconds of data instead of 60 seconds. The wall clock check should be removed; files should only be written when `samples_per_minute` is reached. Priority: HIGH - blocks 60-second discrimination baseline.
+**✅ FIXED (2025-11-23):** Core recorder now uses RTP timestamp as primary reference with timing hierarchy (time_snap > NTP > wall_clock). Files written when sample count reaches 960,000 (60 seconds @ 16kHz). See `CORE_RECORDER_BUG_NOTES.md` for fix details.
 
 ### Code Style:
 * Follow PEP 8 for Python code
@@ -125,6 +125,18 @@ This is a high-level map of the project's most important, stable interfaces.
 
 ## 4. ⚡ Recent Sessions Summary
 
+**SESSION_2025-11-24_ANALYTICS_METADATA_INTEGRATION.md**: Analytics Metadata Integration Complete ⭐⭐
+- ✅ Analytics now reads and uses time_snap metadata from recorder NPZ files
+- ✅ Archive time_snap adoption: Analytics automatically adopts recorder-provided time_snap when superior
+- ✅ Tone power comparison: Cross-validates analytics detections against recorder startup measurements
+- ✅ All 6 analytics pipelines validated end-to-end with comprehensive test suite
+- ✅ NPZArchive extended with new fields: time_snap_rtp/utc/source/confidence/station, tone_power_1000/1200_hz_db
+- ✅ Methods added: _store_time_snap(), _maybe_adopt_archive_time_snap(), _compare_recorder_tones()
+- ✅ Metadata flow verified: Recorder → NPZ → Analytics → Decimated 10Hz NPZ → DRF/Upload
+- 📁 Modified: src/signal_recorder/analytics_service.py (lines 111-122, 147-156, 178-224, 410-440, 811-878, 945-946, 1041-1042)
+- 🧪 Test script: /tmp/test_analytics_pipelines.py (comprehensive validation of all pipelines)
+- **Next:** Web UI integration to display real-time quality metrics, timing status, tone detections, and discrimination results
+
 **SESSION_2025-11-20_WSPRDAEMON_DRF_COMPATIBILITY.md**: DRF Writer Production Ready ⭐
 - ✅ Digital RF output now matches wsprdaemon format exactly (PSWS-compatible)
 - ✅ Two modes: wsprdaemon-compatible (default) | enhanced metadata (optional)
@@ -150,6 +162,48 @@ This is a high-level map of the project's most important, stable interfaces.
 - Optimized 3-stage decimation: CIC → compensation FIR → final FIR (flat passband 0-5 Hz)
 - Fixed 30-second timing offset bug in tone detector
 - RTP offset correlation proven UNSTABLE (independent clocks per channel)
+
+## 5. 🎯 Next Project: Web UI Analytics Display
+
+**Objective:** Create real-time web displays for quality metrics, timing status, tone detections, and discrimination results.
+
+**Current State:**
+- ✅ Recorder produces NPZ with complete metadata (time_snap, tone_power, gaps)
+- ✅ Analytics ingests metadata and validates/cross-checks measurements
+- ✅ All 6 analytics pipelines functional and tested
+- ✅ Data written to CSVs (quality, discrimination, tone detections, etc.)
+- ✅ Web UI server exists (`monitoring-server-v3.js`) with basic endpoints
+
+**Available Data for Display:**
+1. **Quality Metrics** (`analytics/{channel}/quality/`) - Completeness %, packet loss, gap analysis
+2. **Timing Status** (from analytics state files) - Current time_snap, confidence, source (tone_locked/NTP/wall_clock)
+3. **Tone Detections** (`analytics/{channel}/tone_detections/`) - WWV/WWVH/CHU tones, SNR, timing errors
+4. **Discrimination Results** (`analytics/{channel}/discrimination/`) - WWV vs WWVH analysis, power ratios, delays
+5. **BCD Analysis** (`analytics/{channel}/bcd_discrimination/`) - 100 Hz correlation results
+6. **440 Hz Station ID** (`analytics/{channel}/station_id_440hz/`) - Hourly station identification
+
+**Implementation Requirements:**
+- Use `GRAPEPaths` API for all file paths (Python and JavaScript)
+- Follow existing web UI architecture (`monitoring-server-v3.js`, existing HTML pages)
+- Real-time updates (poll CSV files, WebSocket optional for future)
+- Visualize time-series data (quality over time, tone SNR trends, discrimination confidence)
+- Display current timing status prominently (tone-locked indicator, time_snap age)
+- Show cross-validation results (recorder vs analytics tone power comparison)
+
+**Key Files to Examine:**
+- `web-ui/monitoring-server-v3.js` - Express server with existing endpoints
+- `web-ui/grape-paths.js` - JavaScript paths API
+- `web-ui/pages/summary.html` - Main dashboard template
+- `web-ui/pages/discrimination.html` - WWV/WWVH analysis template
+- `src/signal_recorder/paths.py` - Python paths API
+- `analytics_service.py` - Data generation logic
+
+**Design Considerations:**
+- Separate displays for each discrimination method (5 methods = 5 potential panels)
+- Weighted voting display should show contributions from each method
+- Gap visualization (timeline showing packet loss/discontinuities)
+- Timing quality indicator (green=tone_locked, yellow=NTP, red=wall_clock)
+- Archive time_snap adoption events (log when analytics adopts recorder time_snap)
 
 ---
 

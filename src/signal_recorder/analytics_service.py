@@ -108,6 +108,18 @@ class NPZArchive:
     # Provenance
     recorder_version: str
     created_timestamp: float
+
+    # Embedded time_snap metadata (new NPZ fields)
+    time_snap_rtp: Optional[int] = None
+    time_snap_utc: Optional[float] = None
+    time_snap_source: Optional[str] = None
+    time_snap_confidence: Optional[float] = None
+    time_snap_station: Optional[str] = None
+
+    # Recorder-side tone measurements
+    tone_power_1000_hz_db: Optional[float] = None
+    tone_power_1200_hz_db: Optional[float] = None
+    wwvh_differential_delay_ms: Optional[float] = None
     
     @classmethod
     def load(cls, file_path: Path) -> 'NPZArchive':
@@ -132,7 +144,15 @@ class NPZArchive:
             gap_samples_filled=data['gap_samples_filled'],
             gap_packets_lost=data['gap_packets_lost'],
             recorder_version=str(data['recorder_version']),
-            created_timestamp=float(data['created_timestamp'])
+            created_timestamp=float(data['created_timestamp']),
+            time_snap_rtp=cls._get_optional_scalar(data, 'time_snap_rtp', int),
+            time_snap_utc=cls._get_optional_scalar(data, 'time_snap_utc', float),
+            time_snap_source=cls._get_optional_scalar(data, 'time_snap_source', str),
+            time_snap_confidence=cls._get_optional_scalar(data, 'time_snap_confidence', float),
+            time_snap_station=cls._get_optional_scalar(data, 'time_snap_station', str),
+            tone_power_1000_hz_db=cls._get_optional_scalar(data, 'tone_power_1000_hz_db', float),
+            tone_power_1200_hz_db=cls._get_optional_scalar(data, 'tone_power_1200_hz_db', float),
+            wwvh_differential_delay_ms=cls._get_optional_scalar(data, 'wwvh_differential_delay_ms', float)
         )
     
     def calculate_utc_timestamp(self, time_snap: Optional[TimeSnapReference]) -> float:
@@ -155,6 +175,53 @@ class NPZArchive:
         else:
             # Fall back to wall clock (approximate, will be marked as low quality)
             return self.unix_timestamp
+
+    @staticmethod
+    def _get_optional_scalar(data, key: str, cast):
+        """Safely extract optional scalar field from NPZ archive"""
+        if key not in data:
+            return None
+        value = data[key]
+        if isinstance(value, np.ndarray) and value.shape == ():
+            value = value.item()
+        try:
+            return cast(value)
+        except (TypeError, ValueError):
+            return None
+
+    def embedded_time_snap(self) -> Optional[TimeSnapReference]:
+        """Build TimeSnapReference from embedded NPZ metadata if available"""
+        if self.time_snap_rtp is None or self.time_snap_utc is None:
+            return None
+
+        station = None
+        if self.time_snap_station:
+            try:
+                station = StationType(self.time_snap_station)
+            except ValueError:
+                station = None
+        if station is None:
+            station = StationType.WWV if 'CHU' not in (self.channel_name or '').upper() else StationType.CHU
+
+        return TimeSnapReference(
+            rtp_timestamp=int(self.time_snap_rtp),
+            utc_timestamp=float(self.time_snap_utc),
+            sample_rate=self.sample_rate,
+            source=str(self.time_snap_source or 'archive_time_snap'),
+            confidence=float(self.time_snap_confidence or 0.0),
+            station=station,
+            established_at=float(self.created_timestamp)
+        )
+
+    def startup_tone_snapshot(self) -> Optional[Dict[str, float]]:
+        """Return recorder-side tone power measurements if present"""
+        if self.tone_power_1000_hz_db is None and self.tone_power_1200_hz_db is None:
+            return None
+        return {
+            'tone_power_1000_hz_db': self.tone_power_1000_hz_db,
+            'tone_power_1200_hz_db': self.tone_power_1200_hz_db,
+            'wwvh_differential_delay_ms': self.wwvh_differential_delay_ms
+        }
 
 
 @dataclass
@@ -339,7 +406,39 @@ class AnalyticsService:
                 logger.info(f"Loaded state from {self.state_file}")
             except Exception as e:
                 logger.warning(f"Failed to load state: {e}")
-    
+
+    def _store_time_snap(self, new_time_snap: TimeSnapReference):
+        """Persist a new time_snap reference and trim history."""
+        self.state.time_snap = new_time_snap
+        self.state.time_snap_history.append(new_time_snap)
+        if len(self.state.time_snap_history) > ProcessingState.MAX_TIME_SNAP_HISTORY:
+            self.state.time_snap_history = self.state.time_snap_history[-ProcessingState.MAX_TIME_SNAP_HISTORY:]
+
+    def _maybe_adopt_archive_time_snap(self, archive: NPZArchive) -> Optional[TimeSnapReference]:
+        """Adopt time_snap embedded in NPZ if it improves current state."""
+        archive_time_snap = archive.embedded_time_snap()
+        if not archive_time_snap:
+            return self.state.time_snap
+
+        current = self.state.time_snap
+        should_adopt = False
+
+        if current is None:
+            should_adopt = True
+        elif current.source in ('ntp', 'wall_clock'):
+            should_adopt = True
+        elif archive_time_snap.utc_timestamp > current.utc_timestamp and archive_time_snap.confidence >= (current.confidence or 0.0) - 0.05:
+            should_adopt = True
+
+        if should_adopt:
+            self._store_time_snap(archive_time_snap)
+            logger.info(
+                f"Adopted archive time_snap ({archive_time_snap.source}) from {archive.file_path.name}"
+            )
+            return archive_time_snap
+
+        return current
+
     def _save_state(self):
         """Save persistent state to file"""
         if self.state_file:
@@ -719,6 +818,8 @@ class AnalyticsService:
                 logger.info(f"  {det.station.value}: {det.timing_error_ms:+.1f}ms, "
                            f"SNR={det.snr_db:.1f}dB, use_for_time_snap={det.use_for_time_snap}")
         
+        self._compare_recorder_tones(archive, detections)
+        
         # Run WWV/H discrimination if this is a dual-station channel
         if self.wwvh_discriminator:
             # Get minute timestamp from timing product
@@ -747,6 +848,34 @@ class AnalyticsService:
                            f"Dominant={discrimination.dominant_station}")
         
         return detections or []
+
+    def _compare_recorder_tones(self, archive: NPZArchive, detections: List[ToneDetectionResult]):
+        """Cross-check recorder startup tone powers with analytics detections."""
+        recorder_snapshot = archive.startup_tone_snapshot()
+        if not recorder_snapshot or not detections:
+            return
+
+        detections_by_freq = {}
+        for det in detections:
+            freq_key = int(round(det.frequency_hz))
+            detections_by_freq[freq_key] = det
+
+        for freq_hz, key in [(1000, 'tone_power_1000_hz_db'), (1200, 'tone_power_1200_hz_db')]:
+            recorder_power = recorder_snapshot.get(key)
+            if recorder_power is None or recorder_power <= -998:
+                continue
+            detection = detections_by_freq.get(freq_hz)
+            if detection:
+                delta = detection.snr_db - recorder_power
+                logger.debug(
+                    f"Startup tone check {freq_hz}Hz: recorder={recorder_power:.1f}dB, "
+                    f"analytics={detection.snr_db:.1f}dB, delta={delta:+.1f}dB"
+                )
+            else:
+                logger.debug(
+                    f"Startup tone {freq_hz}Hz present in metadata ({recorder_power:.1f}dB) "
+                    "but not detected in analytics buffer"
+                )
     
     def _update_time_snap(
         self,
@@ -814,12 +943,7 @@ class AnalyticsService:
         
         # Update state
         old_time_snap = self.state.time_snap
-        self.state.time_snap = new_time_snap
-        self.state.time_snap_history.append(new_time_snap)
-        
-        # Keep last 100 time_snap updates
-        if len(self.state.time_snap_history) > 100:
-            self.state.time_snap_history = self.state.time_snap_history[-100:]
+        self._store_time_snap(new_time_snap)
         
         logger.info(f"Time snap {'updated' if old_time_snap else 'established'}: "
                    f"{best.station.value}, confidence={best.confidence:.2f}, "
@@ -914,11 +1038,12 @@ class AnalyticsService:
             TimingAnnotation with quality level and metadata
         """
         current_time = time.time()
-        time_snap = self.state.time_snap  # Capture reference to avoid race conditions
+        time_snap = self._maybe_adopt_archive_time_snap(archive)
         if time_snap:
             try:
                 # Calculate age of time_snap
-                time_snap_age = current_time - time_snap.utc_timestamp
+                age_reference = getattr(time_snap, 'established_at', None) or time_snap.utc_timestamp
+                time_snap_age = current_time - age_reference
                 utc_timestamp = archive.calculate_utc_timestamp(time_snap)
                 
                 if time_snap_age < 300:  # < 5 minutes
