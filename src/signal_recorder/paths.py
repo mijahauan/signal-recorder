@@ -200,6 +200,20 @@ class GRAPEPaths:
         """
         return self.get_analytics_dir(channel_name) / 'bcd_discrimination'
     
+    def get_test_signal_dir(self, channel_name: str) -> Path:
+        """Get test signal directory (minutes 8 and 44 scientific modulation test).
+        
+        Returns: {data_root}/analytics/{CHANNEL}/test_signal/
+        """
+        return self.get_analytics_dir(channel_name) / 'test_signal'
+    
+    def get_timing_dir(self, channel_name: str) -> Path:
+        """Get timing metrics directory (time_snap status, drift, transitions).
+        
+        Returns: {data_root}/analytics/{CHANNEL}/timing/
+        """
+        return self.get_analytics_dir(channel_name) / 'timing'
+    
     def get_quality_dir(self, channel_name: str) -> Path:
         """Get quality metrics directory.
         

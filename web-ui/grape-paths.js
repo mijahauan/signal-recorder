@@ -146,13 +146,73 @@ class GRAPEPaths {
     }
     
     /**
-     * Get WWV/WWVH discrimination directory.
+     * Get discrimination directory (final weighted voting results).
      * 
      * @param {string} channelName - Channel name
      * @returns {string} Path: {data_root}/analytics/{CHANNEL}/discrimination/
      */
     getDiscriminationDir(channelName) {
         return join(this.getAnalyticsDir(channelName), 'discrimination');
+    }
+    
+    /**
+     * Get tone detections directory (1000/1200 Hz timing tones).
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/tone_detections/
+     */
+    getToneDetectionsDir(channelName) {
+        return join(this.getAnalyticsDir(channelName), 'tone_detections');
+    }
+    
+    /**
+     * Get tick windows directory (5ms tick analysis, 10-sec coherent integration).
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/tick_windows/
+     */
+    getTickWindowsDir(channelName) {
+        return join(this.getAnalyticsDir(channelName), 'tick_windows');
+    }
+    
+    /**
+     * Get 440 Hz station ID directory.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/station_id_440hz/
+     */
+    getStationId440HzDir(channelName) {
+        return join(this.getAnalyticsDir(channelName), 'station_id_440hz');
+    }
+    
+    /**
+     * Get BCD discrimination directory (100 Hz subcarrier analysis).
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/bcd_discrimination/
+     */
+    getBcdDiscriminationDir(channelName) {
+        return join(this.getAnalyticsDir(channelName), 'bcd_discrimination');
+    }
+    
+    /**
+     * Get test signal directory (minutes 8 and 44 scientific modulation test).
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/test_signal/
+     */
+    getTestSignalDir(channelName) {
+        return join(this.getAnalyticsDir(channelName), 'test_signal');
+    }
+    
+    /**
+     * Get timing metrics directory (time_snap status, drift, transitions).
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/timing/
+     */
+    getTimingDir(channelName) {
+        return join(this.getAnalyticsDir(channelName), 'timing');
     }
     
     /**

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GRAPE Monitor - Discrimination</title>
+  <title>GRAPE - WWV/WWVH Discrimination Analysis</title>
   <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
   <style>
     * {
@@ -20,46 +20,8 @@
     }
 
     .container {
-      max-width: 1400px;
+      max-width: 1600px;
       margin: 0 auto;
-    }
-
-    header {
-      background: #2c3e50;
-      color: white;
-      padding: 15px 20px;
-      border-radius: 8px;
-      margin-bottom: 20px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    header h1 {
-      font-size: 24px;
-      font-weight: 600;
-    }
-
-    .nav-links {
-      display: flex;
-      gap: 15px;
-    }
-
-    .nav-links a {
-      color: #ecf0f1;
-      text-decoration: none;
-      padding: 8px 16px;
-      border-radius: 4px;
-      transition: background 0.2s;
-    }
-
-    .nav-links a:hover {
-      background: #34495e;
-    }
-
-    .nav-links a.active {
-      background: #3498db;
-      font-weight: 600;
     }
 
     .section {
@@ -153,30 +115,50 @@
       color: #95a5a6;
     }
 
-    .charts-grid {
+    .methods-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      grid-template-columns: repeat(2, 1fr);
       gap: 20px;
+      margin-bottom: 20px;
     }
-
-    .chart-card {
-      background: #fff;
+    
+    .method-card {
+      background: white;
       border-radius: 8px;
-      border: 1px solid #e5e9f2;
-      padding: 15px;
-      min-height: 320px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      padding: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-
-    .chart-card h3 {
-      font-size: 16px;
+    
+    .method-card.full-width {
+      grid-column: 1 / -1;
+    }
+    
+    .method-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid #e5e9f2;
+    }
+    
+    .method-title {
+      font-size: 18px;
+      font-weight: 600;
       color: #2c3e50;
-      margin-bottom: 10px;
     }
-
-    .chart-card p {
-      font-size: 13px;
-      color: #7f8c8d;
+    
+    .method-badge {
+      background: #3498db;
+      color: white;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    
+    .chart-container {
+      min-height: 350px;
       margin-bottom: 10px;
     }
 
@@ -236,16 +218,8 @@
 </head>
 <body>
   <div class="container">
-    <header>
-      <h1>📡 WWV/WWVH Discrimination</h1>
-      <nav class="nav-links">
-        <a href="/summary.html">Summary</a>
-        <a href="/carrier.html">Carrier</a>
-        <a href="/discrimination.html" class="active">Discrimination</a>
-        <a href="/timing-dashboard.html">Timing Dashboard</a>
-        <a href="/analysis.html">Analysis</a>
-      </nav>
-    </header>
+    <!-- Unified Navigation -->
+    <div id="grape-navigation"></div>
 
     <section class="section">
       <div class="section-title">Data Selection</div>
@@ -270,17 +244,22 @@
       </div>
     </section>
 
-    <div id="data-container">
+    <!-- Discrimination Methods Grid -->
+    <div class="methods-grid" id="methods-container">
       <div class="placeholder">
         <h3>Select a date and channel to begin</h3>
         <p>
-          This dashboard surfaces the most important discrimination insights:
+          This page shows all 5 WWV/WWVH discrimination methods:
           <br><br>
-          • Per-station 100 Hz BCD amplitudes and their relative dB difference
+          <strong>Method 1:</strong> Timing Tones (1000/1200 Hz power analysis)
           <br>
-          • Weighted-voting decisions with confidence and method agreement
+          <strong>Method 2:</strong> Tick Windows (10-second coherent integration)
           <br>
-          • Differential propagation delays and amplitude distributions
+          <strong>Method 3:</strong> Station ID (440 Hz identification tones)
+          <br>
+          <strong>Method 4:</strong> BCD Analysis (100 Hz time code discrimination)
+          <br>
+          <strong>Method 5:</strong> Weighted Voting (final station determination)
         </p>
       </div>
     </div>
@@ -290,6 +269,11 @@
     </footer>
   </div>
 
-  <script src="/discrimination.js"></script>
+  <script>
+    // Set current page for navigation
+    window.GRAPE_CURRENT_PAGE = 'discrimination';
+  </script>
+  <script src="/components/navigation.js"></script>
+  <script src="/components/discrimination-charts.js"></script>
 </body>
 </html>

@@ -16,13 +16,22 @@
  */
 
 import express from 'express';
+import cors from 'cors';
 import fs from 'fs';
-import { join, dirname } from 'path';
+import { join, basename, dirname } from 'path';
+import { parse as csvParse } from 'csv-parse/sync';
 import { fileURLToPath } from 'url';
 import toml from 'toml';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { GRAPEPaths } from './grape-paths.js';
+import {
+  getPrimaryTimeReference,
+  getTimingHealthSummary,
+  getTimingMetrics,
+  getTimingTransitions,
+  getTimingTimeline
+} from './utils/timing-analysis-helpers.js';
 
 const execAsync = promisify(exec);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -128,7 +137,6 @@ async function getRadiodStatus(paths) {
     if (!fs.existsSync(radiodStatusFile)) {
       // Fallback: try to detect radiod process directly
       try {
-        const { execSync } = require('child_process');
         const result = execSync('pgrep -x radiod', { encoding: 'utf8' }).trim();
         const running = result.length > 0;
         return {
@@ -628,16 +636,24 @@ async function getChannelStatuses(paths) {
           
           // Determine time basis
           // Priority: TONE_LOCKED > NTP_SYNCED > WALL_CLOCK
+          // Use same logic as timing dashboard for consistency
           if (channelData?.time_snap?.established) {
             const age = Date.now() / 1000 - channelData.time_snap.utc_timestamp;
             timeSnapAge = age;
             
-            if (age < 10800) {
-              // time_snap within 3 hours = tone-locked
-              // (Propagation varies naturally, but time_snap remains scientifically valid)
+            const source = channelData.time_snap.source || '';
+            const isToneSource = source.includes('wwv') || source.includes('chu') || 
+                                source === 'wwv_startup' || source === 'chu_startup' || 
+                                source === 'wwvh_startup';
+            
+            if (isToneSource && age < 300) {
+              // Fresh tone detection (< 5 minutes) = actively tone-locked
               timeBasis = 'TONE_LOCKED';
+            } else if (isToneSource && age < 3600) {
+              // Aged tone reference (5 min - 1 hour) = interpolated (still valid but aging)
+              timeBasis = 'INTERPOLATED';
             } else if (ntpStatus.synchronized) {
-              // Very aged time_snap (>3 hours), fall back to NTP if available
+              // Very aged or NTP source
               timeBasis = 'NTP_SYNCED';
             }
             // else: WALL_CLOCK (default)
@@ -2273,6 +2289,481 @@ function analyzeConfidenceVsSNR(discriminationData) {
 }
 
 // ============================================================================
+// NEW ANALYTICS ENDPOINTS - Priority 1 Implementation
+// ============================================================================
+
+/**
+ * GET /api/v1/timing/status
+ * Real-time timing status with time_snap details
+ */
+app.get('/api/v1/timing/status', async (req, res) => {
+  try {
+    const timingStatus = await getTimingStatus(paths);
+    res.json(timingStatus);
+  } catch (err) {
+    console.error('Error getting timing status:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// TIMING ANALYSIS API (New - for comprehensive timing dashboard)
+// ============================================================================
+
+/**
+ * GET /api/v1/timing/primary-reference
+ * Get the system's primary (best) time reference
+ */
+app.get('/api/v1/timing/primary-reference', async (req, res) => {
+  try {
+    const primaryRef = await getPrimaryTimeReference(paths, config);
+    res.json(primaryRef);
+  } catch (err) {
+    console.error('Error getting primary reference:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/health-summary
+ * System-wide timing health metrics
+ */
+app.get('/api/v1/timing/health-summary', async (req, res) => {
+  try {
+    const health = await getTimingHealthSummary(paths, config);
+    res.json(health);
+  } catch (err) {
+    console.error('Error getting timing health:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/metrics?channel=WWV%2010%20MHz&date=20251126&hours=24
+ * Timing metrics time series for drift analysis
+ */
+app.get('/api/v1/timing/metrics', async (req, res) => {
+  try {
+    const { channel, date, hours = 24 } = req.query;
+    const metrics = await getTimingMetrics(channel, date, parseInt(hours), paths);
+    res.json(metrics);
+  } catch (err) {
+    console.error('Error getting timing metrics:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/transitions?channel=all&hours=24
+ * Time source transition events
+ */
+app.get('/api/v1/timing/transitions', async (req, res) => {
+  try {
+    const { channel = 'all', hours = 24 } = req.query;
+    const transitions = await getTimingTransitions(channel, parseInt(hours), paths, config);
+    res.json(transitions);
+  } catch (err) {
+    console.error('Error getting transitions:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/timeline?channel=all&hours=24
+ * Time source timeline for visualization
+ */
+app.get('/api/v1/timing/timeline', async (req, res) => {
+  try {
+    const { channel = 'all', hours = 24 } = req.query;
+    const timeline = await getTimingTimeline(channel, parseInt(hours), paths);
+    res.json(timeline);
+  } catch (err) {
+    console.error('Error getting timeline:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/tones/current
+ * Current tone power levels for all channels
+ */
+app.get('/api/v1/tones/current', async (req, res) => {
+  try {
+    const tonePowers = await getCurrentTonePowers(paths);
+    res.json(tonePowers);
+  } catch (err) {
+    console.error('Error getting tone powers:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/channels/:channelName/discrimination/:date/methods
+ * Enhanced discrimination data with all 5 methods
+ */
+app.get('/api/v1/channels/:channelName/discrimination/:date/methods', async (req, res) => {
+  try {
+    const { channelName, date } = req.params;
+    const allMethods = await loadAllDiscriminationMethods(channelName, date, paths);
+    res.json(allMethods);
+  } catch (err) {
+    console.error('Error loading enhanced discrimination:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// HELPER FUNCTIONS - NEW ANALYTICS
+// ============================================================================
+
+/**
+ * Get comprehensive timing status across all channels
+ */
+async function getTimingStatus(paths) {
+  const channels = config.recorder?.channels || [];
+  const enabledChannels = channels.filter(ch => ch.enabled);
+  
+  let primaryReference = null;
+  let channelBreakdown = {
+    tone_locked: 0,
+    ntp_synced: 0,
+    interpolated: 0,
+    wall_clock: 0
+  };
+  let recentAdoptions = [];
+  
+  // Scan all enabled channels for timing status
+  for (const channel of enabledChannels) {
+    const channelName = channel.description || `Channel ${channel.ssrc}`;
+    // Convert "WWV 10 MHz" to "wwv10" for state file naming
+    const channelKey = channelName.toLowerCase().replace(' mhz', '').replace(/ /g, '');
+    const stateFile = join(paths.getStateDir(), `analytics-${channelKey}.json`);
+    
+    if (!fs.existsSync(stateFile)) continue;
+    
+    try {
+      const content = fs.readFileSync(stateFile, 'utf8');
+      const state = JSON.parse(content);
+      
+      // Extract time_snap info
+      if (state.time_snap) {
+        // Use established_at if last_update not available
+        const lastUpdate = state.time_snap.last_update || state.time_snap.established_at;
+        const ageSeconds = Date.now() / 1000 - lastUpdate;
+        const source = state.time_snap.source || 'UNKNOWN';
+        const confidence = state.time_snap.confidence || 0;
+        
+        // Classify timing quality
+        let timingClass;
+        if (source === 'TONE_DETECTED' && ageSeconds < 300) {
+          timingClass = 'TONE_LOCKED';
+          channelBreakdown.tone_locked++;
+        } else if (source === 'NTP_SYNCED' || (source === 'TONE_DETECTED' && ageSeconds < 3600)) {
+          timingClass = 'NTP_SYNCED';
+          channelBreakdown.ntp_synced++;
+        } else if (ageSeconds < 3600) {
+          timingClass = 'INTERPOLATED';
+          channelBreakdown.interpolated++;
+        } else {
+          timingClass = 'WALL_CLOCK';
+          channelBreakdown.wall_clock++;
+        }
+        
+        // Select best reference (highest confidence, newest, tone-locked preferred)
+        if (!primaryReference || 
+            (timingClass === 'TONE_LOCKED' && 
+             (primaryReference.timing_class !== 'TONE_LOCKED' || 
+              confidence > (primaryReference.confidence || 0)))) {
+          primaryReference = {
+            channel: channelName,
+            station: state.time_snap.station || 'UNKNOWN',
+            time_snap_rtp: state.time_snap.rtp_timestamp,
+            time_snap_utc: new Date(state.time_snap.utc_timestamp * 1000).toISOString(),
+            source: source,
+            confidence: confidence,
+            age_seconds: Math.round(ageSeconds),
+            timing_class: timingClass
+          };
+        }
+      }
+      
+      // Check for recent adoptions (if history exists)
+      if (state.time_snap_history && Array.isArray(state.time_snap_history)) {
+        const recentHistory = state.time_snap_history
+          .filter(h => h.event_type === 'ARCHIVE_ADOPTION')
+          .slice(-3); // Last 3 adoptions
+        
+        recentAdoptions.push(...recentHistory.map(h => ({
+          timestamp: new Date(h.timestamp * 1000).toISOString(),
+          channel: channelName,
+          reason: h.reason || 'Archive time_snap adopted',
+          improvement_ms: h.improvement_ms || null
+        })));
+      }
+    } catch (err) {
+      console.error(`Error reading state for ${channelName}:`, err);
+    }
+  }
+  
+  // Determine overall status
+  let overallStatus = 'WALL_CLOCK';
+  let precisionEstimateMs = 1000;
+  
+  if (channelBreakdown.tone_locked > 0) {
+    overallStatus = 'TONE_LOCKED';
+    precisionEstimateMs = 1.0;
+  } else if (channelBreakdown.ntp_synced > 0) {
+    overallStatus = 'NTP_SYNCED';
+    precisionEstimateMs = 10.0;
+  } else if (channelBreakdown.interpolated > 0) {
+    overallStatus = 'INTERPOLATED';
+    precisionEstimateMs = 100.0;
+  }
+  
+  // Sort adoptions by timestamp (newest first)
+  recentAdoptions.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  
+  return {
+    overall_status: overallStatus,
+    precision_estimate_ms: precisionEstimateMs,
+    primary_reference: primaryReference,
+    channel_breakdown: channelBreakdown,
+    total_channels: enabledChannels.length,
+    recent_adoptions: recentAdoptions.slice(0, 5), // Top 5 most recent
+    last_updated: new Date().toISOString()
+  };
+}
+
+/**
+ * Get current tone power levels for all enabled channels
+ */
+async function getCurrentTonePowers(paths) {
+  const channels = config.recorder?.channels || [];
+  const enabledChannels = channels.filter(ch => ch.enabled);
+  const result = [];
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  
+  for (const channel of enabledChannels) {
+    const channelName = channel.description || `Channel ${channel.ssrc}`;
+    const fileChannelName = channelName.replace(/ /g, '_');
+    
+    // Read from combined discrimination CSV
+    const csvPath = join(
+      paths.getDiscriminationDir(channelName),
+      `${fileChannelName}_discrimination_${today}.csv`
+    );
+    
+    if (!fs.existsSync(csvPath)) {
+      result.push({
+        channel: channelName,
+        tone_1000_hz_db: null,
+        tone_1200_hz_db: null,
+        status: 'NO_DATA'
+      });
+      continue;
+    }
+    
+    try {
+      // Read last line of CSV for most recent data
+      const content = fs.readFileSync(csvPath, 'utf8');
+      const lines = content.trim().split('\n');
+      
+      if (lines.length < 2) {
+        result.push({
+          channel: channelName,
+          tone_1000_hz_db: null,
+          tone_1200_hz_db: null,
+          status: 'EMPTY'
+        });
+        continue;
+      }
+      
+      // Parse CSV header
+      const header = lines[0].split(',');
+      const wwvPowerIdx = header.indexOf('wwv_power_db');
+      const wwvhPowerIdx = header.indexOf('wwvh_power_db');
+      const ratioIdx = header.indexOf('power_ratio_db');
+      
+      // Get most recent line (last non-empty line)
+      const lastLine = lines[lines.length - 1];
+      const fields = lastLine.split(',');
+      
+      const wwvPower = fields[wwvPowerIdx] ? parseFloat(fields[wwvPowerIdx]) : null;
+      const wwvhPower = fields[wwvhPowerIdx] ? parseFloat(fields[wwvhPowerIdx]) : null;
+      const ratio = fields[ratioIdx] ? parseFloat(fields[ratioIdx]) : null;
+      
+      result.push({
+        channel: channelName,
+        tone_1000_hz_db: wwvPower,
+        tone_1200_hz_db: wwvhPower,
+        ratio_db: ratio,
+        status: 'OK'
+      });
+      
+    } catch (err) {
+      console.error(`Error reading tones for ${channelName}:`, err);
+      result.push({
+        channel: channelName,
+        tone_1000_hz_db: null,
+        tone_1200_hz_db: null,
+        status: 'ERROR'
+      });
+    }
+  }
+  
+  return {
+    channels: result,
+    last_updated: new Date().toISOString()
+  };
+}
+
+/**
+ * Load all 5 discrimination methods for a channel and date
+ * 
+ * Now reads from separate CSV files per method:
+ * - tone_detections/{channel}_tones_{date}.csv
+ * - tick_windows/{channel}_ticks_{date}.csv
+ * - station_id_440hz/{channel}_440hz_{date}.csv
+ * - bcd_discrimination/{channel}_bcd_{date}.csv
+ * - discrimination/{channel}_discrimination_{date}.csv
+ */
+async function loadAllDiscriminationMethods(channelName, date, paths) {
+  const fileChannelName = channelName.replace(/ /g, '_');
+  const result = {
+    channel: channelName,
+    date: date,
+    methods: {}
+  };
+  
+  // Helper function to parse CSV using proper parser
+  const parseCSV = (filePath) => {
+    if (!fs.existsSync(filePath)) {
+      return { status: 'NO_DATA', records: [], count: 0 };
+    }
+    
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      
+      // Use csv-parse for proper CSV parsing (handles quoted fields, etc.)
+      const records = csvParse(content, {
+        columns: true,
+        skip_empty_lines: true,
+        relax_column_count: true,
+        trim: true
+      });
+      
+      return {
+        status: 'OK',
+        records: records,
+        count: records.length
+      };
+    } catch (err) {
+      console.error(`Error parsing ${filePath}:`, err);
+      return { status: 'ERROR', error: err.message, records: [], count: 0 };
+    }
+  };
+  
+  // Use GRAPEPaths API for all method-specific directories (matches Python paths.py)
+  
+  // 1. Load 1000/1200 Hz tone detections
+  const tonesPath = join(paths.getToneDetectionsDir(channelName), `${fileChannelName}_tones_${date}.csv`);
+  const tonesData = parseCSV(tonesPath);
+  result.methods.timing_tones = {
+    status: tonesData.status,
+    records: tonesData.records.map(r => ({
+      timestamp_utc: r.timestamp_utc,
+      station: r.station,
+      frequency_hz: parseFloat(r.frequency_hz),
+      tone_power_db: parseFloat(r.tone_power_db),
+      snr_db: parseFloat(r.snr_db)
+    })),
+    count: tonesData.count
+  };
+  
+  // 2. Load tick windows (10-sec coherent integration)
+  const ticksPath = join(paths.getTickWindowsDir(channelName), `${fileChannelName}_ticks_${date}.csv`);
+  const ticksData = parseCSV(ticksPath);
+  result.methods.tick_windows = {
+    status: ticksData.status,
+    records: ticksData.records.map(r => ({
+      timestamp_utc: r.timestamp_utc,
+      window_second: parseInt(r.window_second),
+      wwv_snr_db: parseFloat(r.wwv_snr_db),
+      wwvh_snr_db: parseFloat(r.wwvh_snr_db),
+      ratio_db: parseFloat(r.ratio_db),
+      integration_method: r.integration_method
+    })),
+    count: ticksData.count
+  };
+  
+  // 3. Load 440 Hz station ID detections
+  const id440Path = join(paths.getStationId440HzDir(channelName), `${fileChannelName}_440hz_${date}.csv`);
+  const id440Data = parseCSV(id440Path);
+  result.methods.station_id = {
+    status: id440Data.status,
+    records: id440Data.records.map(r => ({
+      timestamp_utc: r.timestamp_utc,
+      minute_number: parseInt(r.minute_number),
+      wwv_detected: r.wwv_detected === '1',
+      wwvh_detected: r.wwvh_detected === '1',
+      wwv_power_db: r.wwv_power_db ? parseFloat(r.wwv_power_db) : null,
+      wwvh_power_db: r.wwvh_power_db ? parseFloat(r.wwvh_power_db) : null
+    })),
+    count: id440Data.count
+  };
+  
+  // 3.5. Load test signal detections (minutes 8 and 44)
+  const testSignalPath = join(paths.getTestSignalDir(channelName), `${fileChannelName}_test_signal_${date}.csv`);
+  const testSignalData = parseCSV(testSignalPath);
+  result.methods.test_signal = {
+    status: testSignalData.status,
+    records: testSignalData.records.map(r => ({
+      timestamp_utc: r.timestamp_utc,
+      minute_number: parseInt(r.minute_number),
+      detected: r.detected === '1',
+      station: r.station || null,
+      confidence: parseFloat(r.confidence),
+      multitone_score: parseFloat(r.multitone_score),
+      chirp_score: parseFloat(r.chirp_score),
+      snr_db: r.snr_db ? parseFloat(r.snr_db) : null
+    })),
+    count: testSignalData.count
+  };
+  
+  // 4. Load BCD discrimination windows
+  const bcdPath = join(paths.getBcdDiscriminationDir(channelName), `${fileChannelName}_bcd_${date}.csv`);
+  const bcdData = parseCSV(bcdPath);
+  result.methods.bcd = {
+    status: bcdData.status,
+    records: bcdData.records.map(r => ({
+      timestamp_utc: r.timestamp_utc,
+      window_start_sec: parseFloat(r.window_start_sec),
+      wwv_amplitude: parseFloat(r.wwv_amplitude),
+      wwvh_amplitude: parseFloat(r.wwvh_amplitude),
+      differential_delay_ms: parseFloat(r.differential_delay_ms),
+      correlation_quality: parseFloat(r.correlation_quality)
+    })),
+    count: bcdData.count
+  };
+  
+  // 5. Load final weighted voting results
+  const discPath = join(paths.getDiscriminationDir(channelName), `${fileChannelName}_discrimination_${date}.csv`);
+  const discData = parseCSV(discPath);
+  result.methods.weighted_voting = {
+    status: discData.status,
+    records: discData.records.map(r => ({
+      timestamp_utc: r.timestamp_utc,
+      dominant_station: r.dominant_station,
+      confidence: r.confidence,
+      method_weights: r.method_weights
+    })),
+    count: discData.count
+  };
+  
+  return result;
+}
+
+// ============================================================================
 // HEALTH CHECK
 // ============================================================================
 
@@ -2304,5 +2795,9 @@ app.listen(PORT, () => {
   console.log(`   Carrier Analysis:`);
   console.log(`     GET /api/v1/carrier/quality?date=YYYYMMDD`);
   console.log(`     GET /spectrograms/{date}/{filename}`);
+  console.log(`   ⏱️  Timing & Analytics (NEW):`);
+  console.log(`     GET /api/v1/timing/status`);
+  console.log(`     GET /api/v1/tones/current`);
+  console.log(`     GET /api/v1/channels/:name/discrimination/:date/methods`);
   console.log(``);
 });

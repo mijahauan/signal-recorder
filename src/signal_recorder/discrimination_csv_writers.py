@@ -79,6 +79,19 @@ class BCDWindowRecord:
 
 
 @dataclass
+class TestSignalRecord:
+    """Record from test signal detection (minutes 8 and 44)"""
+    timestamp_utc: str
+    minute_number: int
+    detected: bool
+    station: Optional[str]  # 'WWV' or 'WWVH' if detected
+    confidence: float
+    multitone_score: float
+    chirp_score: float
+    snr_db: Optional[float]
+
+
+@dataclass
 class DiscriminationRecord:
     """Record from final weighted voting"""
     timestamp_utc: str
@@ -112,6 +125,7 @@ class DiscriminationCSVWriters:
         self.tick_dir = self.paths.get_tick_windows_dir(channel_name)
         self.id_440_dir = self.paths.get_station_id_440hz_dir(channel_name)
         self.bcd_dir = self.paths.get_bcd_discrimination_dir(channel_name)
+        self.test_signal_dir = self.paths.get_test_signal_dir(channel_name)
         self.disc_dir = self.paths.get_discrimination_dir(channel_name)
         
         # Channel directory name for file naming
@@ -119,7 +133,7 @@ class DiscriminationCSVWriters:
         
         # Ensure directories exist
         for directory in [self.tone_dir, self.tick_dir, self.id_440_dir, 
-                         self.bcd_dir, self.disc_dir]:
+                         self.bcd_dir, self.test_signal_dir, self.disc_dir]:
             directory.mkdir(parents=True, exist_ok=True)
     
     def _get_csv_path(self, directory: Path, prefix: str, timestamp: float) -> Path:
@@ -231,6 +245,32 @@ class DiscriminationCSVWriters:
                 'wwvh_detected': '1' if record.wwvh_detected else '0',
                 'wwv_power_db': f"{record.wwv_power_db:.2f}" if record.wwv_power_db is not None else '',
                 'wwvh_power_db': f"{record.wwvh_power_db:.2f}" if record.wwvh_power_db is not None else ''
+            })
+    
+    def write_test_signal(self, record: TestSignalRecord):
+        """Write test signal detection record (minutes 8 and 44)"""
+        timestamp = datetime.fromisoformat(record.timestamp_utc.replace('Z', '+00:00')).timestamp()
+        csv_path = self._get_csv_path(self.test_signal_dir, f"{self.channel_dir}_test_signal", timestamp)
+        
+        fieldnames = ['timestamp_utc', 'minute_number', 'detected', 'station',
+                     'confidence', 'multitone_score', 'chirp_score', 'snr_db']
+        
+        file_exists = csv_path.exists()
+        
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            
+            writer.writerow({
+                'timestamp_utc': record.timestamp_utc,
+                'minute_number': record.minute_number,
+                'detected': '1' if record.detected else '0',
+                'station': record.station if record.station else '',
+                'confidence': f"{record.confidence:.4f}",
+                'multitone_score': f"{record.multitone_score:.4f}",
+                'chirp_score': f"{record.chirp_score:.4f}",
+                'snr_db': f"{record.snr_db:.2f}" if record.snr_db is not None else ''
             })
     
     def write_bcd_windows(self, timestamp_utc: str, windows: List[Dict[str, Any]]):

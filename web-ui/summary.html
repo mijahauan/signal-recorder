@@ -3,7 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GRAPE Monitor - Summary</title>
+  <title>GRAPE - System Summary</title>
+  <script>
+    // Set current page for navigation
+    window.GRAPE_CURRENT_PAGE = 'summary';
+  </script>
   <style>
     * {
       margin: 0;
@@ -309,16 +313,12 @@
 </head>
 <body>
   <div class="container">
-    <header>
-      <h1>🍇 GRAPE Signal Recorder</h1>
-      <nav class="nav-links">
-        <a href="/summary.html" class="active">Summary</a>
-        <a href="/carrier.html">Carrier</a>
-        <a href="/discrimination.html">Discrimination</a>
-        <a href="/timing-dashboard.html">Timing Dashboard</a>
-        <a href="/analysis.html">Analysis</a>
-      </nav>
-    </header>
+    <!-- Unified Navigation -->
+    <div id="grape-navigation"></div>
+    
+    <!-- New Analytics Components -->
+    <div id="timingStatus" style="margin-bottom: 20px;"></div>
+    <div id="tonePowers" style="margin-bottom: 20px;"></div>
     
     <div id="content">
       <div class="loading">Loading...</div>
@@ -567,6 +567,9 @@
         if (ch.time_basis === 'TONE_LOCKED') {
           timingClass = 'timing-tone';
           shortBasis = 'TONE';
+        } else if (ch.time_basis === 'INTERPOLATED') {
+          timingClass = 'timing-ntp';
+          shortBasis = 'INTERP';
         } else if (ch.time_basis === 'NTP_SYNCED') {
           timingClass = 'timing-ntp';
           shortBasis = 'NTP';
@@ -654,6 +657,24 @@
     // Initial load
     updateSummary();
     startAutoRefresh();
+  </script>
+  
+  <!-- Load new analytics components -->
+  <script src="components/navigation.js"></script>
+  <script src="components/timing-status-widget.js"></script>
+  <script src="components/tone-power-display.js"></script>
+  <script>
+    // Initialize timing status widget
+    const timingWidget = new TimingStatusWidget('timingStatus', {
+      updateInterval: 10000,  // 10 seconds
+      showAdoptions: true
+    });
+    
+    // Initialize tone power display
+    const tonePowerDisplay = new TonePowerDisplay('tonePowers', {
+      updateInterval: 30000,  // 30 seconds
+      showChannelNames: true
+    });
   </script>
 </body>
 </html>
