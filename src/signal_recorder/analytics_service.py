@@ -33,6 +33,14 @@ from enum import Enum
 from .tone_detector import MultiStationToneDetector
 from .wwvh_discrimination import WWVHDiscriminator, DiscriminationResult
 from .decimation import decimate_for_upload
+from .discrimination_csv_writers import (
+    DiscriminationCSVWriters,
+    ToneDetectionRecord,
+    StationID440HzRecord,
+    TestSignalRecord,
+    DiscriminationRecord
+)
+from .timing_metrics_writer import TimingMetricsWriter
 from .interfaces.data_models import (
     TimeSnapReference, 
     QualityInfo, 
@@ -121,6 +129,10 @@ class NPZArchive:
     tone_power_1200_hz_db: Optional[float] = None
     wwvh_differential_delay_ms: Optional[float] = None
     
+    # NTP wall clock time (independent reference for drift measurement)
+    ntp_wall_clock_time: Optional[float] = None  # Wall clock time when archive created
+    ntp_offset_ms: Optional[float] = None        # NTP offset at creation time
+    
     @classmethod
     def load(cls, file_path: Path) -> 'NPZArchive':
         """Load NPZ archive from file"""
@@ -152,7 +164,9 @@ class NPZArchive:
             time_snap_station=cls._get_optional_scalar(data, 'time_snap_station', str),
             tone_power_1000_hz_db=cls._get_optional_scalar(data, 'tone_power_1000_hz_db', float),
             tone_power_1200_hz_db=cls._get_optional_scalar(data, 'tone_power_1200_hz_db', float),
-            wwvh_differential_delay_ms=cls._get_optional_scalar(data, 'wwvh_differential_delay_ms', float)
+            wwvh_differential_delay_ms=cls._get_optional_scalar(data, 'wwvh_differential_delay_ms', float),
+            ntp_wall_clock_time=cls._get_optional_scalar(data, 'ntp_wall_clock_time', float),
+            ntp_offset_ms=cls._get_optional_scalar(data, 'ntp_offset_ms', float)
         )
     
     def calculate_utc_timestamp(self, time_snap: Optional[TimeSnapReference]) -> float:
@@ -350,6 +364,27 @@ class AnalyticsService:
         self.buffer_max_samples = int(30 * 3000)  # 30 seconds at 3 kHz
         self.discrimination_log_dir = self.output_dir / 'discrimination'
         self.discrimination_log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize separate CSV writers for each discrimination method
+        # CSVWriters expects the root data directory (e.g., /tmp/grape-test)
+        # output_dir is /tmp/grape-test/analytics/WWV_10_MHz, so go up 2 levels
+        data_root = output_dir.parent.parent
+        self.csv_writers = DiscriminationCSVWriters(
+            data_root=str(data_root),
+            channel_name=channel_name
+        )
+        
+        # Timing metrics writer for web-UI timing analysis
+        timing_dir = output_dir / 'timing'
+        timing_dir.mkdir(parents=True, exist_ok=True)
+        self.timing_writer = TimingMetricsWriter(
+            output_dir=timing_dir,
+            channel_name=channel_name
+        )
+        
+        # Track last timing metrics write time
+        self.last_timing_metrics_write = 0.0
+        self.timing_metrics_interval = 60.0  # Write every 60 seconds
         
         # Per-channel statistics
         self.stats = {
@@ -611,6 +646,8 @@ class AnalyticsService:
             self._write_quality_metrics(archive, quality)
             
             # Step 2: Calculate timing product ONCE for all consumers
+            # Note: _get_timing_annotation() calls _maybe_adopt_archive_time_snap()
+            # which extracts the tone-detected time_snap from NPZ metadata
             timing = self._get_timing_annotation(archive)
             results['timing_quality'] = timing.quality.value
             results['timing_annotation'] = {
@@ -619,6 +656,49 @@ class AnalyticsService:
                 'ntp_offset_ms': timing.ntp_offset_ms,
                 'reprocessing_recommended': timing.reprocessing_recommended
             }
+            
+            # Step 2.5: Write timing metrics for web-UI (every 60 seconds)
+            current_time = time.time()
+            if current_time - self.last_timing_metrics_write >= self.timing_metrics_interval:
+                # Use archive's embedded time_snap if available (self-contained reference)
+                # This works across RTP session boundaries (core recorder restarts)
+                if archive.time_snap_rtp is not None and archive.time_snap_utc is not None:
+                    # Create TimeSnapReference from archive's embedded metadata
+                    archive_time_snap = TimeSnapReference(
+                        rtp_timestamp=archive.time_snap_rtp,
+                        utc_timestamp=archive.time_snap_utc,
+                        sample_rate=archive.sample_rate,
+                        source=archive.time_snap_source or 'unknown',
+                        confidence=archive.time_snap_confidence or 0.0,
+                        station=archive.time_snap_station or 'unknown',
+                        established_at=archive.created_timestamp
+                    )
+                    
+                    # Use archive's stored NTP offset (quality at recording time)
+                    ntp_offset = archive.ntp_offset_ms
+                    ntp_synced = (ntp_offset is not None and abs(ntp_offset) < 100)  # Synced if < 100ms offset
+                    
+                    # CRITICAL: Use archive's NTP wall clock time (independent reference)
+                    # This is THE KEY to proper drift measurement:
+                    # - RTP predicted: time_snap.calculate_time(rtp) = ADC clock says
+                    # - NTP wall clock: archive.ntp_wall_clock_time = Reference says
+                    # - Drift = NTP - RTP_predicted = ADC clock error
+                    if archive.ntp_wall_clock_time is not None:
+                        # Archive has independent NTP reference - PERFECT!
+                        self.timing_writer.write_snapshot(
+                            time_snap=archive_time_snap,
+                            current_rtp=archive.rtp_timestamp,
+                            current_utc=archive.ntp_wall_clock_time,  # INDEPENDENT NTP reference
+                            ntp_offset_ms=ntp_offset,
+                            ntp_synced=ntp_synced
+                        )
+                        self.last_timing_metrics_write = current_time
+                    else:
+                        # Old archive format without NTP time - skip drift measurement
+                        # (Can still use tone-to-tone for RTP characterization)
+                        logger.debug(f"{self.channel_name}: Archive lacks ntp_wall_clock_time - "
+                                   f"skipping drift measurement (use tone-to-tone instead)")
+                        self.last_timing_metrics_write = current_time
             
             # Step 3: Tone detection (if applicable) - uses timing product
             if self._is_tone_detection_channel(archive.channel_name):
@@ -1237,86 +1317,103 @@ class AnalyticsService:
     
     def _log_discrimination(self, result: 'DiscriminationResult'):
         """
-        Log discrimination result to daily CSV file
+        Log discrimination results to separate CSV files per method
         
-        Format includes:
-        - 1000 Hz vs 1200 Hz power analysis
-        - Differential propagation delay
-        - 440 Hz tone detection (minute 1 = WWVH, minute 2 = WWV)
-        - Dominant station determination and confidence
+        Writes to 5 separate files:
+        1. Tone detections (1000/1200 Hz power analysis)
+        2. Tick windows (10-sec coherent integration)
+        3. Station ID (440 Hz identification)
+        4. BCD discrimination (100 Hz time code)
+        5. Final weighted voting (dominant station)
         """
         try:
-            # Get date for filename
             dt = datetime.fromtimestamp(result.minute_timestamp, timezone.utc)
-            date_str = dt.strftime('%Y%m%d')
+            timestamp_utc = dt.isoformat()
             
-            # Create daily log file
-            log_file = self.discrimination_log_dir / f'{self.channel_name.replace(" ", "_")}_discrimination_{date_str}.csv'
+            # 1. Write 1000/1200 Hz tone power data (if available)
+            if result.wwv_power_db is not None or result.wwvh_power_db is not None:
+                # Create records for each detected station
+                if result.wwv_detected and result.wwv_power_db is not None:
+                    tone_record = ToneDetectionRecord(
+                        timestamp_utc=timestamp_utc,
+                        station='WWV',
+                        frequency_hz=1000.0,
+                        duration_sec=0.8,  # 800ms tones
+                        timing_error_ms=0.0,  # Not tracked at discrimination level
+                        snr_db=result.wwv_power_db,  # Using power as proxy for SNR
+                        tone_power_db=result.wwv_power_db,
+                        confidence=1.0 if result.confidence == 'high' else 0.5,
+                        use_for_time_snap=False  # Discrimination-level, not individual tone
+                    )
+                    self.csv_writers.write_tone_detection(tone_record)
+                
+                if result.wwvh_detected and result.wwvh_power_db is not None:
+                    tone_record = ToneDetectionRecord(
+                        timestamp_utc=timestamp_utc,
+                        station='WWVH',
+                        frequency_hz=1200.0,
+                        duration_sec=0.8,
+                        timing_error_ms=0.0,
+                        snr_db=result.wwvh_power_db,
+                        tone_power_db=result.wwvh_power_db,
+                        confidence=1.0 if result.confidence == 'high' else 0.5,
+                        use_for_time_snap=False
+                    )
+                    self.csv_writers.write_tone_detection(tone_record)
             
-            # Write header if new file
-            write_header = not log_file.exists()
+            # 2. Write tick windows data (if available)
+            if result.tick_windows_10sec:
+                self.csv_writers.write_tick_windows(timestamp_utc, result.tick_windows_10sec)
             
-            with open(log_file, 'a') as f:
-                if write_header:
-                    f.write('timestamp_utc,minute_timestamp,minute_number,'
-                           'wwv_detected,wwvh_detected,'
-                           'wwv_power_db,wwvh_power_db,power_ratio_db,'
-                           'differential_delay_ms,'
-                           'tone_440hz_wwv_detected,tone_440hz_wwv_power_db,'
-                           'tone_440hz_wwvh_detected,tone_440hz_wwvh_power_db,'
-                           'dominant_station,confidence,tick_windows_10sec,'
-                           'bcd_wwv_amplitude,bcd_wwvh_amplitude,'
-                           'bcd_differential_delay_ms,bcd_correlation_quality,bcd_windows,'
-                           'test_signal_detected,test_signal_station,test_signal_confidence,'
-                           'test_signal_multitone_score,test_signal_chirp_score,test_signal_snr_db\n')
-                
-                # Format data with all fields including 440 Hz detection
-                minute_number = dt.minute
-                
-                # Format optional float fields
-                wwv_power_str = f'{result.wwv_power_db:.2f}' if result.wwv_power_db is not None else ''
-                wwvh_power_str = f'{result.wwvh_power_db:.2f}' if result.wwvh_power_db is not None else ''
-                power_ratio_str = f'{result.power_ratio_db:.2f}' if result.power_ratio_db is not None else ''
-                diff_delay_str = f'{result.differential_delay_ms:.2f}' if result.differential_delay_ms is not None else ''
-                tone_440_wwv_power_str = f'{result.tone_440hz_wwv_power_db:.2f}' if result.tone_440hz_wwv_power_db is not None else ''
-                tone_440_wwvh_power_str = f'{result.tone_440hz_wwvh_power_db:.2f}' if result.tone_440hz_wwvh_power_db is not None else ''
-                
-                # Serialize tick windows to JSON (quote for CSV safety)
+            # 3. Write 440 Hz station ID data (if detected)
+            if result.tone_440hz_wwv_detected or result.tone_440hz_wwvh_detected:
+                id_record = StationID440HzRecord(
+                    timestamp_utc=timestamp_utc,
+                    minute_number=dt.minute,
+                    wwv_detected=result.tone_440hz_wwv_detected,
+                    wwvh_detected=result.tone_440hz_wwvh_detected,
+                    wwv_power_db=result.tone_440hz_wwv_power_db,
+                    wwvh_power_db=result.tone_440hz_wwvh_power_db
+                )
+                self.csv_writers.write_440hz_detection(id_record)
+            
+            # 3.5. Write test signal detection data (minutes 8 and 44)
+            if result.test_signal_detected or dt.minute in [8, 44]:
+                test_signal_record = TestSignalRecord(
+                    timestamp_utc=timestamp_utc,
+                    minute_number=dt.minute,
+                    detected=result.test_signal_detected,
+                    station=result.test_signal_station,
+                    confidence=result.test_signal_confidence or 0.0,
+                    multitone_score=result.test_signal_multitone_score or 0.0,
+                    chirp_score=result.test_signal_chirp_score or 0.0,
+                    snr_db=result.test_signal_snr_db
+                )
+                self.csv_writers.write_test_signal(test_signal_record)
+            
+            # 4. Write BCD discrimination windows (if available)
+            if result.bcd_windows:
+                self.csv_writers.write_bcd_windows(timestamp_utc, result.bcd_windows)
+            
+            # 5. Write final weighted voting result
+            if result.dominant_station:
                 import json
-                tick_windows_str = ''
-                if result.tick_windows_10sec:
-                    tick_windows_str = json.dumps(result.tick_windows_10sec).replace('"', '""')  # Escape quotes for CSV
+                method_weights = {
+                    'timing_tones': 1.0 if (result.wwv_detected or result.wwvh_detected) else 0.0,
+                    'tick_windows': 1.0 if result.tick_windows_10sec else 0.0,
+                    'station_id_440hz': 1.0 if (result.tone_440hz_wwv_detected or result.tone_440hz_wwvh_detected) else 0.0,
+                    'bcd': 1.0 if result.bcd_windows else 0.0,
+                    'test_signal': 1.0 if result.test_signal_detected else 0.0
+                }
                 
-                # Serialize BCD windows to JSON
-                bcd_windows_str = ''
-                if result.bcd_windows:
-                    bcd_windows_str = json.dumps(result.bcd_windows).replace('"', '""')  # Escape quotes for CSV
-                
-                # Format BCD fields
-                bcd_wwv_amp_str = f'{result.bcd_wwv_amplitude:.2f}' if result.bcd_wwv_amplitude is not None else ''
-                bcd_wwvh_amp_str = f'{result.bcd_wwvh_amplitude:.2f}' if result.bcd_wwvh_amplitude is not None else ''
-                bcd_delay_str = f'{result.bcd_differential_delay_ms:.2f}' if result.bcd_differential_delay_ms is not None else ''
-                bcd_quality_str = f'{result.bcd_correlation_quality:.2f}' if result.bcd_correlation_quality is not None else ''
-                
-                # Format test signal fields
-                test_signal_detected_str = str(int(result.test_signal_detected))
-                test_signal_station_str = result.test_signal_station if result.test_signal_station else ''
-                test_signal_conf_str = f'{result.test_signal_confidence:.3f}' if result.test_signal_confidence is not None else ''
-                test_signal_multitone_str = f'{result.test_signal_multitone_score:.3f}' if result.test_signal_multitone_score is not None else ''
-                test_signal_chirp_str = f'{result.test_signal_chirp_score:.3f}' if result.test_signal_chirp_score is not None else ''
-                test_signal_snr_str = f'{result.test_signal_snr_db:.1f}' if result.test_signal_snr_db is not None else ''
-                
-                f.write(f'{dt.isoformat()},{result.minute_timestamp},{minute_number},'
-                       f'{int(result.wwv_detected)},{int(result.wwvh_detected)},'
-                       f'{wwv_power_str},{wwvh_power_str},{power_ratio_str},{diff_delay_str},'
-                       f'{int(result.tone_440hz_wwv_detected)},{tone_440_wwv_power_str},'
-                       f'{int(result.tone_440hz_wwvh_detected)},{tone_440_wwvh_power_str},'
-                       f'{result.dominant_station if result.dominant_station else ""},'
-                       f'{result.confidence},"{tick_windows_str}",'
-                       f'{bcd_wwv_amp_str},{bcd_wwvh_amp_str},'
-                       f'{bcd_delay_str},{bcd_quality_str},"{bcd_windows_str}",'
-                       f'{test_signal_detected_str},{test_signal_station_str},{test_signal_conf_str},'
-                       f'{test_signal_multitone_str},{test_signal_chirp_str},{test_signal_snr_str}\n')
+                disc_record = DiscriminationRecord(
+                    timestamp_utc=timestamp_utc,
+                    dominant_station=result.dominant_station,
+                    confidence=result.confidence,
+                    method_weights=json.dumps(method_weights),
+                    minute_type='standard'  # Can be extended later
+                )
+                self.csv_writers.write_discrimination_result(disc_record)
                        
         except Exception as e:
             logger.warning(f"Failed to log discrimination: {e}")

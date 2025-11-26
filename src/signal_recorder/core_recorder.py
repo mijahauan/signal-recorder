@@ -23,6 +23,7 @@ import sys
 import os
 import time
 import json
+import threading
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
@@ -103,7 +104,8 @@ class CoreRecorder:
                 sample_rate=ch_cfg['sample_rate'],
                 description=ch_cfg['description'],
                 output_dir=self.output_dir,
-                station_config=station_config
+                station_config=station_config,
+                get_ntp_status=self.get_ntp_status  # Pass NTP status accessor
             )
             self.channels[ch_cfg['ssrc']] = processor
             
@@ -114,6 +116,11 @@ class CoreRecorder:
             )
         
         logger.info(f"CoreRecorder initialized: {len(self.channels)} channels")
+        
+        # Centralized NTP status cache (shared by all channels)
+        # Updated periodically in main loop to avoid subprocess calls in critical path
+        self.ntp_status = {'offset_ms': None, 'synced': False, 'last_update': 0}
+        self.ntp_status_lock = threading.Lock()
         
         # Status tracking
         self.start_time = time.time()
@@ -151,8 +158,10 @@ class CoreRecorder:
                 time.sleep(1)
                 now = time.time()
                 
-                # Periodic status update (every 10 seconds)
+                # Update NTP status cache (every 10 seconds)
+                # This is the ONLY place NTP subprocess calls happen
                 if now - last_status_time >= 10:
+                    self._update_ntp_status()
                     self._write_status()
                     last_status_time = now
                 
@@ -226,6 +235,84 @@ class CoreRecorder:
                 f"{stats['packets_received']} packets, "
                 f"{stats['gaps_detected']} gaps"
             )
+    
+    def _update_ntp_status(self):
+        """
+        Update centralized NTP status cache (called every 10 seconds in main loop).
+        
+        This is the ONLY place where NTP subprocess calls happen, eliminating
+        redundant calls from ChannelProcessor and CoreNPZWriter critical paths.
+        """
+        try:
+            offset_ms = self._get_ntp_offset_subprocess()
+            
+            with self.ntp_status_lock:
+                self.ntp_status = {
+                    'offset_ms': offset_ms,
+                    'synced': (offset_ms is not None and abs(offset_ms) < 100),
+                    'last_update': time.time()
+                }
+                
+        except Exception as e:
+            logger.warning(f"NTP status update failed: {e}")
+    
+    def get_ntp_status(self):
+        """
+        Thread-safe accessor for NTP status (used by ChannelProcessors).
+        
+        Returns:
+            dict with keys: offset_ms, synced, last_update
+        """
+        with self.ntp_status_lock:
+            return self.ntp_status.copy()
+    
+    @staticmethod
+    def _get_ntp_offset_subprocess() -> Optional[float]:
+        """
+        Get NTP offset in milliseconds via subprocess call.
+        
+        Called ONLY from _update_ntp_status() every 10 seconds.
+        
+        Returns:
+            NTP offset in ms (positive = system ahead of NTP)
+            None if NTP not available
+        """
+        try:
+            # Try chronyc first
+            result = subprocess.run(
+                ['chronyc', 'tracking'],
+                capture_output=True, text=True, timeout=2
+            )
+            
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'System time' in line:
+                        # Parse "System time : 0.000012345 seconds fast of NTP time"
+                        parts = line.split(':')
+                        if len(parts) >= 2:
+                            offset_str = parts[1].strip().split()[0]
+                            offset_seconds = float(offset_str)
+                            return offset_seconds * 1000.0  # Convert to ms
+        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+            pass
+        
+        try:
+            # Try ntpq as fallback
+            result = subprocess.run(
+                ['ntpq', '-c', 'rv 0 offset'],
+                capture_output=True, text=True, timeout=2
+            )
+            
+            if result.returncode == 0:
+                # Parse "offset=-0.123"
+                for part in result.stdout.split(','):
+                    if 'offset=' in part:
+                        offset_str = part.split('=')[1].strip()
+                        return float(offset_str)  # Already in ms
+        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+            pass
+        
+        return None
     
     def _ensure_channels_exist(self):
         """
@@ -380,14 +467,22 @@ class ChannelProcessor:
     """
     
     def __init__(self, ssrc: int, frequency_hz: float, sample_rate: int,
-                 description: str, output_dir: Path, station_config: dict):
-        """Initialize channel processor with startup buffering"""
+                 description: str, output_dir: Path, station_config: dict,
+                 get_ntp_status: callable = None):
+        """
+        Initialize channel processor with startup buffering
+        
+        Args:
+            get_ntp_status: Callable that returns centralized NTP status dict
+                           (avoids subprocess calls in critical path)
+        """
         self.ssrc = ssrc
         self.frequency_hz = frequency_hz
         self.sample_rate = sample_rate
         self.description = description
         self.output_dir = output_dir
         self.station_config = station_config
+        self.get_ntp_status = get_ntp_status  # Centralized NTP accessor
         
         # Components (resequencer starts immediately)
         self.resequencer = PacketResequencer(
@@ -424,120 +519,130 @@ class ChannelProcessor:
         self.current_sample_index = 0
         self.last_packet_time = 0  # For health monitoring
         
+        # Thread safety lock (CRITICAL: RTP packets arrive from receiver thread)
+        self._lock = threading.Lock()
+        
         logger.info(f"ChannelProcessor initialized: {description} (SSRC {ssrc})")
         logger.info(f"  Startup mode: Buffering {self.startup_buffer_duration}s for time_snap establishment")
     
     def process_rtp_packet(self, header, payload: bytes):
         """
-        Process incoming RTP packet
+        Process incoming RTP packet (thread-safe)
         
         This is the callback registered with RTPReceiver.
         Never crashes - just logs errors and continues.
+        
+        CRITICAL: This method is called from RTPReceiver's thread, so all
+        shared state access must be protected by self._lock.
         
         Args:
             header: RTPHeader object from grape_rtp_recorder.py
             payload: RTP payload bytes (IQ samples)
         """
         try:
-            self.packets_received += 1
-            self.last_packet_time = time.time()  # Update health timestamp
-            
-            # Extract header fields
-            sequence = header.sequence
-            timestamp = header.timestamp
-            ssrc = header.ssrc
-            
-            # Verify SSRC (should match due to callback registration, but check anyway)
-            if ssrc != self.ssrc:
-                logger.warning(f"{self.description}: SSRC mismatch {ssrc} != {self.ssrc}")
-                return
-            
-            # Convert to complex IQ samples based on payload type
-            # PT 120 = int16 IQ (interleaved I, Q, I, Q, ...) - ka9q-radio IQ format (16 kHz channels)
-            # PT 97 = int16 IQ (same format) - ka9q-radio IQ format (carrier/narrow channels)
-            # PT 11 = float32 IQ (interleaved I, Q, I, Q, ...)
-            payload_type = header.payload_type
-            
-            if payload_type == 120 or payload_type == 97:
-                # int16 format: 2 bytes per sample (I or Q)
-                if len(payload) % 4 != 0:
-                    logger.warning(f"{self.description}: Invalid payload length {len(payload)} for PT {payload_type}")
+            # CRITICAL: Lock must protect ALL shared state access throughout entire method
+            with self._lock:
+                self.packets_received += 1
+                self.last_packet_time = time.time()  # Update health timestamp
+                
+                # Extract header fields
+                sequence = header.sequence
+                timestamp = header.timestamp
+                ssrc = header.ssrc
+                
+                # Verify SSRC (should match due to callback registration, but check anyway)
+                if ssrc != self.ssrc:
+                    logger.warning(f"{self.description}: SSRC mismatch {ssrc} != {self.ssrc}")
                     return
                 
-                # Parse as int16 and normalize to float range [-1.0, 1.0]
-                samples_int16 = np.frombuffer(payload, dtype=np.int16)
-                samples = samples_int16.astype(np.float32) / 32768.0
+                # Convert to complex IQ samples based on payload type
+                # PT 120 = int16 IQ (interleaved I, Q, I, Q, ...) - ka9q-radio IQ format (16 kHz channels)
+                # PT 97 = int16 IQ (same format) - ka9q-radio IQ format (carrier/narrow channels)
+                # PT 11 = float32 IQ (interleaved I, Q, I, Q, ...)
+                payload_type = header.payload_type
                 
-            elif payload_type == 11:
-                # float32 format: 4 bytes per sample (I or Q)
-                if len(payload) % 8 != 0:
-                    logger.warning(f"{self.description}: Invalid payload length {len(payload)} for PT 11")
-                    return
+                if payload_type == 120 or payload_type == 97:
+                    # int16 format: 2 bytes per sample (I or Q)
+                    if len(payload) % 4 != 0:
+                        logger.warning(f"{self.description}: Invalid payload length {len(payload)} for PT {payload_type}")
+                        return
+                    
+                    # Parse as int16 and normalize to float range [-1.0, 1.0]
+                    samples_int16 = np.frombuffer(payload, dtype=np.int16)
+                    samples = samples_int16.astype(np.float32) / 32768.0
+                    
+                elif payload_type == 11:
+                    # float32 format: 4 bytes per sample (I or Q)
+                    if len(payload) % 8 != 0:
+                        logger.warning(f"{self.description}: Invalid payload length {len(payload)} for PT 11")
+                        return
+                    
+                    samples = np.frombuffer(payload, dtype=np.float32)
+                    
+                else:
+                    logger.warning(f"{self.description}: Unknown payload type {payload_type}, assuming float32")
+                    if len(payload) % 8 != 0:
+                        logger.warning(f"{self.description}: Invalid payload length {len(payload)}")
+                        return
+                    samples = np.frombuffer(payload, dtype=np.float32)
                 
-                samples = np.frombuffer(payload, dtype=np.float32)
+                i_samples = samples[0::2]
+                q_samples = samples[1::2]
+                iq_samples = (i_samples + 1j * q_samples).astype(np.complex64)
                 
-            else:
-                logger.warning(f"{self.description}: Unknown payload type {payload_type}, assuming float32")
-                if len(payload) % 8 != 0:
-                    logger.warning(f"{self.description}: Invalid payload length {len(payload)}")
-                    return
-                samples = np.frombuffer(payload, dtype=np.float32)
-            
-            i_samples = samples[0::2]
-            q_samples = samples[1::2]
-            iq_samples = (i_samples + 1j * q_samples).astype(np.complex64)
-            
-            # Create RTP packet object
-            rtp_pkt = RTPPacket(
-                sequence=sequence,
-                timestamp=timestamp,
-                ssrc=ssrc,
-                samples=iq_samples
-            )
-            
-            # Resequence (handles out-of-order, detects gaps)
-            output_samples, gap_info = self.resequencer.process_packet(rtp_pkt)
-            
-            if output_samples is None:
-                # Buffering - no output yet
-                return
-            
-            # Handle startup buffering vs normal operation
-            if self.startup_mode:
-                self._handle_startup_buffering(timestamp, output_samples, gap_info)
-            else:
-                # This is the main processing loop after startup
-                gap_record = None
-                if gap_info:
-                    gap_record = GapRecord(
-                        rtp_timestamp=gap_info.expected_timestamp,
-                        sample_index=self.current_sample_index,
-                        samples_filled=gap_info.gap_samples,
-                        packets_lost=gap_info.gap_packets
-                    )
-                
-                # Write to NPZ archive
-                result = self.npz_writer.add_samples(
-                    rtp_timestamp=timestamp,
-                    samples=output_samples,
-                    gap_record=gap_record
+                # Create RTP packet object
+                rtp_pkt = RTPPacket(
+                    sequence=sequence,
+                    timestamp=timestamp,
+                    ssrc=ssrc,
+                    samples=iq_samples
                 )
                 
-                # Update sample index
-                self.current_sample_index += len(output_samples)
+                # Resequence (handles out-of-order, detects gaps)
+                # Note: resequencer has internal state, protected by our lock
+                output_samples, gap_info = self.resequencer.process_packet(rtp_pkt)
+                
+                if output_samples is None:
+                    # Buffering - no output yet
+                    return
+                
+                # Handle startup buffering vs normal operation
+                if self.startup_mode:
+                    self._handle_startup_buffering(timestamp, output_samples, gap_info)
+                else:
+                    # This is the main processing loop after startup
+                    gap_record = None
+                    if gap_info:
+                        gap_record = GapRecord(
+                            rtp_timestamp=gap_info.expected_timestamp,
+                            sample_index=self.current_sample_index,
+                            samples_filled=gap_info.gap_samples,
+                            packets_lost=gap_info.gap_packets
+                        )
+                    
+                    # Write to NPZ archive (npz_writer has its own lock - safe to call)
+                    result = self.npz_writer.add_samples(
+                        rtp_timestamp=timestamp,
+                        samples=output_samples,
+                        gap_record=gap_record
+                    )
+                    
+                    # Update sample index
+                    self.current_sample_index += len(output_samples)
 
-                # Maintain rolling buffer for periodic tone checks
-                self._update_tone_check_buffer(timestamp, output_samples)
+                    # Maintain rolling buffer for periodic tone checks
+                    self._update_tone_check_buffer(timestamp, output_samples)
 
-                # Periodically check tone to update time_snap
-                self._periodic_tone_check(timestamp)
+                    # Periodically check tone to update time_snap
+                    self._periodic_tone_check(timestamp)
 
-                if result:
-                    minute_ts, file_path = result
-                    logger.debug(f"{self.description}: Wrote {file_path.name}")
+                    if result:
+                        minute_ts, file_path = result
+                        logger.debug(f"{self.description}: Wrote {file_path.name}")
         
         except Exception as e:
             # NEVER crash - just log error and continue
+            # Error logging outside lock is fine
             logger.error(f"{self.description}: Error processing packet: {e}", exc_info=True)
     
     def _handle_startup_buffering(self, rtp_timestamp: int, samples: np.ndarray, gap_info):
@@ -608,8 +713,17 @@ class ChannelProcessor:
             logger.info(f"  SNR: {self.time_snap.detection_snr_db:.1f} dB")
         else:
             # Fallback to NTP or wall clock
-            logger.warning(f"{self.description}: No tone detected, checking NTP...")
-            ntp_synced, ntp_offset_ms = self._check_ntp_sync()
+            logger.warning(f"{self.description}: No tone detected, using centralized NTP status...")
+            
+            # Use centralized NTP status (no subprocess calls!)
+            if self.get_ntp_status:
+                ntp_status = self.get_ntp_status()
+                ntp_synced = ntp_status.get('synced', False)
+                ntp_offset_ms = ntp_status.get('offset_ms')
+            else:
+                # Fallback if get_ntp_status not available (testing)
+                ntp_synced = False
+                ntp_offset_ms = None
             
             if ntp_synced:
                 logger.info(f"{self.description}: Using NTP sync (offset={ntp_offset_ms:.1f}ms)")
@@ -632,59 +746,14 @@ class ChannelProcessor:
             sample_rate=self.sample_rate,
             ssrc=self.ssrc,
             time_snap=self.time_snap,
-            station_config=self.station_config
+            station_config=self.station_config,
+            get_ntp_status=self.get_ntp_status  # Pass centralized NTP accessor
         )
         
         # Initialize periodic tone checking
         self.last_time_snap_check = time.time()
     
-    def _check_ntp_sync(self) -> Tuple[bool, Optional[float]]:
-        """Check if system clock is NTP-synchronized"""
-        try:
-            # Try ntpq first (ntpd)
-            result = subprocess.run(
-                ['ntpq', '-c', 'rv'],
-                capture_output=True, text=True, timeout=2
-            )
-            
-            if result.returncode == 0:
-                offset_ms = None
-                stratum = None
-                
-                for line in result.stdout.split(','):
-                    if 'offset=' in line:
-                        offset_ms = float(line.split('=')[1].strip())
-                    elif 'stratum=' in line:
-                        stratum = int(line.split('=')[1].strip())
-                
-                if offset_ms is not None and stratum is not None:
-                    if abs(offset_ms) > 100 or stratum > 4:
-                        return False, offset_ms
-                    return True, offset_ms
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-        
-        try:
-            # Try chronyc (chrony)
-            result = subprocess.run(
-                ['chronyc', 'tracking'],
-                capture_output=True, text=True, timeout=2
-            )
-            
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if 'System time' in line:
-                        parts = line.split(':')[1].strip().split()
-                        offset_sec = float(parts[0])
-                        offset_ms = offset_sec * 1000
-                        
-                        if abs(offset_ms) > 100:
-                            return False, offset_ms
-                        return True, offset_ms
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-        return False, None
+    # OLD _check_ntp_sync() REMOVED - now using centralized CoreRecorder.get_ntp_status()
     
     def _update_tone_check_buffer(self, rtp_timestamp: int, samples: np.ndarray):
         """Maintain rolling 60-second buffer for periodic tone detection"""
@@ -761,70 +830,73 @@ class ChannelProcessor:
         self.last_time_snap_check = time.time()
     
     def flush(self):
-        """Flush remaining data (for shutdown)"""
+        """Flush remaining data (for shutdown) - thread-safe"""
         logger.info(f"{self.description}: Flushing remaining data...")
         
-        # Skip flush if still in startup mode
-        if self.startup_mode:
-            logger.warning(f"{self.description}: Still in startup mode, cannot flush properly")
-            return
-        
-        # Flush resequencer
-        buffered = self.resequencer.flush()
-        for samples, gap_info in buffered:
-            gap_record = None
-            if gap_info:
-                gap_record = GapRecord(
-                    rtp_timestamp=gap_info.expected_timestamp,
-                    sample_index=self.current_sample_index,
-                    samples_filled=gap_info.gap_samples,
-                    packets_lost=gap_info.gap_packets
+        with self._lock:
+            # Skip flush if still in startup mode
+            if self.startup_mode:
+                logger.warning(f"{self.description}: Still in startup mode, cannot flush properly")
+                return
+            
+            # Flush resequencer
+            buffered = self.resequencer.flush()
+            for samples, gap_info in buffered:
+                gap_record = None
+                if gap_info:
+                    gap_record = GapRecord(
+                        rtp_timestamp=gap_info.expected_timestamp,
+                        sample_index=self.current_sample_index,
+                        samples_filled=gap_info.gap_samples,
+                        packets_lost=gap_info.gap_packets
+                    )
+                
+                self.npz_writer.add_samples(
+                    rtp_timestamp=self.resequencer.last_output_ts or 0,
+                    samples=samples,
+                    gap_record=gap_record
                 )
+                
+                self.current_sample_index += len(samples)
             
-            self.npz_writer.add_samples(
-                rtp_timestamp=self.resequencer.last_output_ts or 0,
-                samples=samples,
-                gap_record=gap_record
-            )
-            
-            self.current_sample_index += len(samples)
-        
-        # Flush NPZ writer
-        self.npz_writer.flush()
+            # Flush NPZ writer (has its own lock)
+            self.npz_writer.flush()
         
         logger.info(f"{self.description}: Flush complete")
     
     def get_stats(self) -> dict:
-        """Get current statistics"""
-        reseq_stats = self.resequencer.get_stats()
-        return {
-            'packets_received': self.packets_received,
-            'minutes_written': self.npz_writer.minutes_written if self.npz_writer else 0,
-            'gaps_detected': reseq_stats['gaps_detected'],
-            'samples_filled': reseq_stats['samples_filled']
-        }
+        """Get current statistics (thread-safe)"""
+        with self._lock:
+            reseq_stats = self.resequencer.get_stats()
+            return {
+                'packets_received': self.packets_received,
+                'minutes_written': self.npz_writer.minutes_written if self.npz_writer else 0,
+                'gaps_detected': reseq_stats['gaps_detected'],
+                'samples_filled': reseq_stats['samples_filled']
+            }
     
     def get_status(self) -> dict:
-        """Get detailed channel status for web-ui"""
-        reseq_stats = self.resequencer.get_stats()
-        last_packet_time = datetime.fromtimestamp(self.last_packet_time, timezone.utc).isoformat() if self.last_packet_time > 0 else None
-        
-        return {
-            'description': self.description,
-            'frequency_hz': self.frequency_hz,
-            'sample_rate': self.sample_rate,
-            'packets_received': self.packets_received,
-            'npz_files_written': self.npz_writer.minutes_written if self.npz_writer else 0,
-            'last_npz_file': str(self.npz_writer.last_file_written) if self.npz_writer and hasattr(self.npz_writer, 'last_file_written') else None,
-            'gaps_detected': reseq_stats['gaps_detected'],
-            'total_gap_samples': reseq_stats['samples_filled'],
-            'status': 'recording' if self.packets_received > 0 else 'idle',
-            'last_packet_time': last_packet_time
-        }
+        """Get detailed channel status for web-ui (thread-safe)"""
+        with self._lock:
+            reseq_stats = self.resequencer.get_stats()
+            last_packet_time = datetime.fromtimestamp(self.last_packet_time, timezone.utc).isoformat() if self.last_packet_time > 0 else None
+            
+            return {
+                'description': self.description,
+                'frequency_hz': self.frequency_hz,
+                'sample_rate': self.sample_rate,
+                'packets_received': self.packets_received,
+                'npz_files_written': self.npz_writer.minutes_written if self.npz_writer else 0,
+                'last_npz_file': str(self.npz_writer.last_file_written) if self.npz_writer and hasattr(self.npz_writer, 'last_file_written') else None,
+                'gaps_detected': reseq_stats['gaps_detected'],
+                'total_gap_samples': reseq_stats['samples_filled'],
+                'status': 'recording' if self.packets_received > 0 else 'idle',
+                'last_packet_time': last_packet_time
+            }
     
     def is_healthy(self, timeout_sec: float = 120.0) -> bool:
         """
-        Check if channel is receiving packets.
+        Check if channel is receiving packets (thread-safe).
         
         Args:
             timeout_sec: Maximum silence duration before considered unhealthy
@@ -832,22 +904,25 @@ class ChannelProcessor:
         Returns:
             True if packets received within timeout, False if silent too long
         """
-        if self.last_packet_time == 0:
-            # Never received any packets - give it time to start
-            return True
-        
-        silence_duration = time.time() - self.last_packet_time
-        return silence_duration < timeout_sec
+        with self._lock:
+            if self.last_packet_time == 0:
+                # Never received any packets - give it time to start
+                return True
+            
+            silence_duration = time.time() - self.last_packet_time
+            return silence_duration < timeout_sec
     
     def get_silence_duration(self) -> float:
-        """Get seconds since last packet received"""
-        if self.last_packet_time == 0:
-            return 0.0
-        return time.time() - self.last_packet_time
+        """Get seconds since last packet received (thread-safe)"""
+        with self._lock:
+            if self.last_packet_time == 0:
+                return 0.0
+            return time.time() - self.last_packet_time
     
     def reset_health(self):
-        """Reset health timestamp (after channel recreation)"""
-        self.last_packet_time = time.time()
+        """Reset health timestamp (after channel recreation) - thread-safe"""
+        with self._lock:
+            self.last_packet_time = time.time()
         logger.debug(f"{self.description}: Health timer reset")
 
 

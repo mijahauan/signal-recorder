@@ -9,6 +9,8 @@ This is the ONLY output of the core recorder - a complete scientific record.
 import numpy as np
 import logging
 import subprocess
+import time
+import threading
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Tuple, List
@@ -43,7 +45,8 @@ class CoreNPZWriter:
     """
     
     def __init__(self, output_dir: Path, channel_name: str, frequency_hz: float,
-                 sample_rate: int, ssrc: int, time_snap: 'StartupTimeSnap', station_config: dict = None):
+                 sample_rate: int, ssrc: int, time_snap: 'StartupTimeSnap', station_config: dict = None,
+                 get_ntp_status: callable = None):
         """
         Initialize NPZ writer
         
@@ -54,6 +57,8 @@ class CoreNPZWriter:
             sample_rate: Sample rate (Hz, should be 16000 for IQ)
             ssrc: RTP SSRC identifier
             station_config: Station metadata (callsign, grid, instrument_id)
+            get_ntp_status: Callable that returns centralized NTP status dict
+                           (avoids subprocess calls - performance critical)
         """
         self.output_dir = Path(output_dir)
         self.channel_name = channel_name
@@ -61,16 +66,22 @@ class CoreNPZWriter:
         self.sample_rate = sample_rate
         self.ssrc = ssrc
         self.station_config = station_config or {}
+        self.get_ntp_status = get_ntp_status  # Centralized NTP accessor
         
         self.samples_per_minute = sample_rate * 60
         
-        # Fixed time_snap established at startup (never changes)
-        self.time_snap = time_snap
+        # Thread safety lock (critical for concurrent RTP packet processing)
+        self._lock = threading.Lock()
+        
+        # Time-snap anchors (updated at minute boundaries only)
+        self.time_snap = time_snap  # Current active anchor
+        self.pending_time_snap = None  # New anchor to apply at next boundary
         
         # Current minute accumulation
         self.current_minute_samples: List[np.complex64] = []
         self.current_minute_timestamp: Optional[datetime] = None
         self.current_minute_rtp_start: Optional[int] = None
+        self.current_minute_wall_clock_time: Optional[float] = None  # NTP time when minute detected
         self.current_minute_gaps: List[GapRecord] = []
         self.current_minute_packets_rx = 0
         self.current_minute_packets_expected = 0
@@ -88,10 +99,7 @@ class CoreNPZWriter:
     def add_samples(self, rtp_timestamp: int, samples: np.ndarray, 
                    gap_record: Optional[GapRecord] = None) -> Optional[Tuple[datetime, Path]]:
         """
-        Add samples to current minute buffer
-        
-        Uses RTP timestamp as PRIMARY reference - files written when sample count
-        reaches samples_per_minute (960,000 for 16 kHz). No wall clock boundaries.
+        Add samples to minute buffer (thread-safe)
         
         Args:
             rtp_timestamp: RTP timestamp of first sample in this batch
@@ -102,61 +110,93 @@ class CoreNPZWriter:
             If minute completed: (minute_timestamp, file_path)
             Otherwise: None
         """
-        # Initialize minute buffer on first samples
-        completed_minute = None
-        if self.current_minute_timestamp is None:
-            # Calculate UTC timestamp using timing hierarchy
-            utc_timestamp = self._calculate_utc_from_rtp(rtp_timestamp)
-            minute_boundary = datetime.fromtimestamp(utc_timestamp, tz=timezone.utc).replace(second=0, microsecond=0)
-            self._reset_minute_buffer(minute_boundary, rtp_timestamp)
-        
-        # Record gap if present
-        if gap_record:
-            self.current_minute_gaps.append(gap_record)
-        
-        # Add samples to buffer
-        self.current_minute_samples.extend(samples)
-        self.current_minute_packets_rx += 1
-        
-        # Check if minute is complete (ONLY completion trigger)
-        if len(self.current_minute_samples) >= self.samples_per_minute:
-            # Trim to exactly one minute
-            self.current_minute_samples = self.current_minute_samples[:self.samples_per_minute]
+        with self._lock:
+            # Initialize minute buffer on first samples
+            completed_minute = None
+            if self.current_minute_timestamp is None:
+                # Calculate UTC timestamp using timing hierarchy
+                utc_timestamp = self._calculate_utc_from_rtp(rtp_timestamp)
+                minute_boundary = datetime.fromtimestamp(utc_timestamp, tz=timezone.utc).replace(second=0, microsecond=0)
+                # Calculate RTP at minute boundary (round down to boundary)
+                rtp_at_boundary = rtp_timestamp - int((utc_timestamp % 60) * self.sample_rate)
+                self._reset_minute_buffer(minute_boundary, rtp_at_boundary, rtp_timestamp)
             
-            # Write file
-            file_path = self._write_minute_file()
-            completed_minute = (self.current_minute_timestamp, file_path)
+            # Record gap if present
+            if gap_record:
+                self.current_minute_gaps.append(gap_record)
             
-            # Start new minute - calculate UTC from RTP for next file
-            next_rtp = self.current_minute_rtp_start + self.samples_per_minute
-            next_utc = self._calculate_utc_from_rtp(next_rtp)
-            next_minute = datetime.fromtimestamp(next_utc, tz=timezone.utc).replace(second=0, microsecond=0)
-            self._reset_minute_buffer(next_minute, next_rtp)
-        
-        return completed_minute
+            # Add samples to buffer
+            self.current_minute_samples.extend(samples)
+            self.current_minute_packets_rx += 1
+            
+            # Check if minute is complete (ONLY completion trigger)
+            if len(self.current_minute_samples) >= self.samples_per_minute:
+                # Trim to exactly one minute
+                self.current_minute_samples = self.current_minute_samples[:self.samples_per_minute]
+                
+                # Write file with CURRENT time_snap
+                file_path = self._write_minute_file()
+                completed_minute = (self.current_minute_timestamp, file_path)
+                
+                # CRITICAL: Apply pending time_snap ONLY at minute boundary
+                # This prevents phase discontinuities mid-file
+                if self.pending_time_snap is not None:
+                    logger.info(
+                        f"{self.channel_name}: Applying pending time_snap at minute boundary "
+                        f"(source: {self.time_snap.source} -> {self.pending_time_snap.source}, "
+                        f"confidence: {self.time_snap.confidence:.2f} -> {self.pending_time_snap.confidence:.2f})"
+                    )
+                    self.time_snap = self.pending_time_snap
+                    self.pending_time_snap = None
+                
+                # Start new minute - calculate UTC from RTP for next file (using possibly updated time_snap)
+                next_rtp = self.current_minute_rtp_start + self.samples_per_minute
+                next_utc = self._calculate_utc_from_rtp(next_rtp)
+                next_minute = datetime.fromtimestamp(next_utc, tz=timezone.utc).replace(second=0, microsecond=0)
+                # At this point, next_rtp is both the boundary and current position
+                self._reset_minute_buffer(next_minute, next_rtp, next_rtp)
+            
+            return completed_minute
 
     def update_time_snap(self, new_time_snap: 'StartupTimeSnap'):
         """
-        Update the time_snap reference with a new, more accurate one.
-
-        This is called by the ChannelProcessor after a periodic tone check
-        finds a better timing reference than the one established at startup.
+        Schedule a time_snap update to be applied at the next minute boundary.
+        
+        CRITICAL: Never apply time_snap updates mid-file! This would cause
+        phase discontinuities in the RTP->UTC mapping within a single minute.
+        
+        The pending time_snap is applied in add_samples() after writing the
+        completed minute file and before starting the next minute.
 
         Args:
-            new_time_snap: The new StartupTimeSnap object.
+            new_time_snap: The new StartupTimeSnap object to apply at next boundary.
         """
-        logger.info(
-            f"{self.channel_name}: Updating time_snap "
-            f"(source: {self.time_snap.source} -> {new_time_snap.source}, "
-            f"confidence: {self.time_snap.confidence:.2f} -> {new_time_snap.confidence:.2f})"
-        )
-        self.time_snap = new_time_snap
+        with self._lock:
+            logger.info(
+                f"{self.channel_name}: Scheduling time_snap update for next minute boundary "
+                f"(source: {self.time_snap.source} -> {new_time_snap.source}, "
+                f"confidence: {self.time_snap.confidence:.2f} -> {new_time_snap.confidence:.2f})"
+            )
+            self.pending_time_snap = new_time_snap
     
-    def _reset_minute_buffer(self, minute_timestamp: datetime, rtp_start: int):
-        """Reset buffer for new minute"""
+    def _reset_minute_buffer(self, minute_timestamp: datetime, rtp_start: int, current_rtp: int):
+        """
+        Reset buffer for new minute
+        
+        Captures NTP wall clock time at the moment we detect the minute boundary.
+        There will be a small consistent delay (< 1 second for live data) due to
+        packet arrival time, but this is acceptable for drift measurement since
+        we're looking for CHANGES in drift over time, not absolute values.
+        """
         self.current_minute_samples = []
         self.current_minute_timestamp = minute_timestamp
         self.current_minute_rtp_start = rtp_start
+        
+        # Capture wall clock time NOW (when we detect boundary)
+        # This is our independent NTP reference
+        # Note: Don't back-calculate using RTP - that introduces the drift we're measuring!
+        self.current_minute_wall_clock_time = time.time()
+        
         self.current_minute_gaps = []
         self.current_minute_packets_rx = 0
         # Expected packets = samples_per_minute / samples_per_packet
@@ -166,20 +206,29 @@ class CoreNPZWriter:
     
     def _calculate_utc_from_rtp(self, rtp_timestamp: int) -> float:
         """
-        Calculate UTC timestamp from RTP timestamp using fixed time_snap.
+        Calculate UTC timestamp from RTP timestamp using current time_snap.
+        
+        Handles 32-bit RTP wraparound correctly using signed arithmetic.
+        RTP wraps at 2^32 samples, which is ~74 hours at 16kHz.
         
         Formula: utc = time_snap_utc + (rtp - time_snap_rtp) / sample_rate
         
         Returns:
             UTC timestamp (seconds since epoch)
         """
-        rtp_elapsed = (rtp_timestamp - self.time_snap.rtp_timestamp) & 0xFFFFFFFF
+        # Calculate difference using Python's natural signed arithmetic
+        rtp_diff = rtp_timestamp - self.time_snap.rtp_timestamp
         
-        # Handle RTP timestamp wrap-around (32-bit unsigned)
-        if rtp_elapsed > 0x80000000:
-            rtp_elapsed -= 0x100000000
+        # Check for 32-bit wrap-around and correct
+        # If difference is very large positive (>2^31), we missed a wrap (went backwards)
+        if rtp_diff > 0x80000000:
+            rtp_diff -= 0x100000000
+        # If difference is very large negative (<-2^31), false wrap (actually forward)
+        elif rtp_diff < -0x80000000:
+            rtp_diff += 0x100000000
         
-        elapsed_seconds = rtp_elapsed / self.time_snap.sample_rate
+        # Convert samples to seconds using sample rate from time_snap
+        elapsed_seconds = rtp_diff / self.time_snap.sample_rate
         utc = self.time_snap.utc_timestamp + elapsed_seconds
         
         return utc
@@ -238,7 +287,9 @@ class CoreNPZWriter:
             # === METADATA ===
             frequency_hz=self.frequency_hz,              # Center frequency
             channel_name=self.channel_name,              # Channel identifier
-            unix_timestamp=self.current_minute_timestamp.timestamp(),  # File timestamp
+            unix_timestamp=self.current_minute_timestamp.timestamp(),  # File timestamp (RTP-derived)
+            ntp_wall_clock_time=self.current_minute_wall_clock_time,  # Wall clock when minute detected (independent)
+            ntp_offset_ms=self._get_ntp_offset_cached(),  # NTP offset from centralized cache
             
             # === QUALITY INDICATORS ===
             gaps_filled=total_gap_samples,               # Total samples filled with zeros
@@ -274,25 +325,48 @@ class CoreNPZWriter:
         
         return file_path
     
-    def flush(self) -> Optional[Path]:
-        """Force write current buffer (for graceful shutdown)"""
-        if len(self.current_minute_samples) == 0:
+    def _get_ntp_offset_cached(self) -> Optional[float]:
+        """
+        Get NTP offset from centralized cache (no subprocess calls).
+        
+        This eliminates the performance bottleneck of calling subprocess
+        for every minute file written.
+        
+        Returns:
+            NTP offset in ms (positive = system ahead of NTP)
+            None if NTP not available or get_ntp_status not provided
+        """
+        if self.get_ntp_status is None:
+            # Fallback for testing or when CoreRecorder not available
             return None
         
-        # Pad to full minute if needed
-        samples_needed = self.samples_per_minute - len(self.current_minute_samples)
-        if samples_needed > 0:
-            # Add gap record for padding
-            gap = GapRecord(
-                rtp_timestamp=self.current_minute_rtp_start + len(self.current_minute_samples),
-                sample_index=len(self.current_minute_samples),
-                samples_filled=samples_needed,
-                packets_lost=0  # Unknown - shutdown gap
-            )
-            self.current_minute_gaps.append(gap)
+        try:
+            ntp_status = self.get_ntp_status()
+            return ntp_status.get('offset_ms')
+        except Exception as e:
+            logger.warning(f"{self.channel_name}: Failed to get NTP status: {e}")
+            return None
+    
+    def flush(self) -> Optional[Path]:
+        """Force write current buffer (for graceful shutdown) - thread-safe"""
+        with self._lock:
+            if len(self.current_minute_samples) == 0:
+                return None
             
-            # Pad with zeros
-            padding = np.zeros(samples_needed, dtype=np.complex64)
-            self.current_minute_samples.extend(padding)
-        
-        return self._write_minute_file()
+            # Pad to full minute if needed
+            samples_needed = self.samples_per_minute - len(self.current_minute_samples)
+            if samples_needed > 0:
+                # Add gap record for padding
+                gap = GapRecord(
+                    rtp_timestamp=self.current_minute_rtp_start + len(self.current_minute_samples),
+                    sample_index=len(self.current_minute_samples),
+                    samples_filled=samples_needed,
+                    packets_lost=0  # Unknown - shutdown gap
+                )
+                self.current_minute_gaps.append(gap)
+                
+                # Pad with zeros
+                padding = np.zeros(samples_needed, dtype=np.complex64)
+                self.current_minute_samples.extend(padding)
+            
+            return self._write_minute_file()
