@@ -4,7 +4,66 @@
 # Instructions: Paste this entire file at the start of any new chat session
 # to provide ground-truth context for the GRAPE Signal Recorder project.
 
-## 0. 📜 CRITICAL: Canonical Contracts (NEW - 2025-11-20)
+## � IMMEDIATE CONTEXT: Session 2025-11-26 (CRITICAL FOR NEXT SESSION)
+
+**NEXT SESSION GOAL:** Test the core recorder and analytics updates from Nov 26 session.
+
+### What Was Just Committed (2 commits on Nov 26):
+
+**Commit 1:** `acb371d` - Timing metrics system + discrimination enhancements
+- NEW: `timing_metrics_writer.py` (628 lines) - Drift, jitter, tone-to-tone measurements
+- Enhanced: `wwvh_discrimination.py` - Test signal detection (minutes 8 & 44)
+- Fixed: `monitoring-server-v3.js` - Timing quality classification (5-minute threshold)
+- Updated: Web-UI timing dashboards and discrimination display
+
+**Commit 2:** `d81efb2` - Critical thread safety + NTP centralization
+- CRITICAL: Complete thread safety in `CoreNPZWriter` and `ChannelProcessor`
+- CRITICAL: Boundary-aligned time_snap updates (prevents phase discontinuities)
+- CRITICAL: Fixed RTP wraparound handling (signed arithmetic)
+- PERFORMANCE: Centralized NTP status (90% fewer subprocess calls)
+- Removed: Dead code (`_check_ntp_sync` methods)
+
+### Testing Priorities for Next Session:
+
+1. **Start services and verify no errors:**
+   ```bash
+   cd /home/wsprdaemon/signal-recorder
+   source venv/bin/activate
+   ./start-dual-service.sh config/grape-config.toml
+   tail -f /tmp/grape-test/logs/*.log
+   ```
+
+2. **Verify thread safety works:**
+   - No deadlocks or hangs
+   - Archives written correctly
+   - No data corruption
+
+3. **Verify NTP centralization:**
+   - Look for "NTP status updated" logs every 10 seconds
+   - No subprocess calls from ChannelProcessor or CoreNPZWriter
+
+4. **Verify timing measurements:**
+   - Check `/tmp/grape-test/timing/` for drift CSV files
+   - Drift values should be realistic (< 100ms typically)
+   - Jitter values should be small (< 10ms RMS)
+
+5. **Verify discrimination:**
+   - Check `/tmp/grape-test/discrimination/` for test signal CSVs
+   - Minutes 8 and 44 should show test signal detections
+
+### Key Documentation for Testing:
+- `TIMING_TEST_PLAN.md` - Complete testing procedures
+- `CRITICAL_FIXES_IMPLEMENTED.md` - What was fixed and why
+- `API_FORMAT_ALIGNMENT.md` - NPZ format verification (27 fields)
+
+### If Issues Arise:
+- Thread safety issues → Check `CRITICAL_FIXES_IMPLEMENTED.md`
+- NTP issues → Check `NTP_CENTRALIZATION_COMPLETE.md`
+- Timing issues → Check `TWO_TIME_BASES_SOLUTION.md`
+
+---
+
+## 0. 📜 CRITICAL: Canonical Contracts
 
 **Before writing ANY code, consult these contracts:**
 
@@ -48,6 +107,13 @@ These are the non-negotiable rules for all development.
 * **Quality annotation:** Always upload, annotate timing quality (tone_locked/ntp_synced/wall_clock)
 
 **✅ FIXED (2025-11-23):** Core recorder now uses RTP timestamp as primary reference with timing hierarchy (time_snap > NTP > wall_clock). Files written when sample count reaches 960,000 (60 seconds @ 16kHz). See `CORE_RECORDER_BUG_NOTES.md` for fix details.
+
+**✅ FIXED (2025-11-26):** Critical thread safety and performance fixes:
+- **Thread Safety:** All shared state in `CoreNPZWriter` and `ChannelProcessor` protected by `threading.Lock`
+- **Phase Continuity:** Time_snap updates only applied at minute boundaries (no mid-file discontinuities)
+- **RTP Wraparound:** Fixed signed arithmetic for 32-bit RTP timestamp wraparound (~74 hours @ 16kHz)
+- **NTP Centralization:** Single subprocess call point in `CoreRecorder` (90% reduction, zero blocking in critical path)
+- See `CRITICAL_FIXES_IMPLEMENTED.md` for complete details.
 
 ### Code Style:
 * Follow PEP 8 for Python code
@@ -125,6 +191,20 @@ This is a high-level map of the project's most important, stable interfaces.
 
 ## 4. ⚡ Recent Sessions Summary
 
+**SESSION_2025-11-26**: Critical Thread Safety + Timing System ⭐⭐⭐ (JUST COMMITTED)
+- ✅ **Thread Safety:** Complete lock protection in `CoreNPZWriter` and `ChannelProcessor`
+- ✅ **Phase Continuity:** Boundary-aligned time_snap updates (no mid-file discontinuities)
+- ✅ **RTP Wraparound:** Fixed signed arithmetic for 32-bit timestamp wraparound
+- ✅ **NTP Centralization:** 90% reduction in subprocess calls, zero blocking in critical path
+- ✅ **Timing Metrics:** NEW `timing_metrics_writer.py` with drift, jitter, tone-to-tone measurements
+- ✅ **Test Signal Detection:** Enhanced discrimination for minutes 8 and 44
+- ✅ **Web-UI Fixes:** Timing quality classification, test signal display
+- 📁 Core files: `core_recorder.py`, `core_npz_writer.py`, `analytics_service.py`
+- 📁 New: `timing_metrics_writer.py` (628 lines)
+- 📁 Documentation: 16 new files including `CRITICAL_FIXES_IMPLEMENTED.md`, `TIMING_TEST_PLAN.md`
+- 🧪 **NEXT:** Test the updates - verify thread safety, timing measurements, discrimination
+- **Commits:** `acb371d` (timing/discrimination), `d81efb2` (thread safety/NTP)
+
 **SESSION_2025-11-24_ANALYTICS_METADATA_INTEGRATION.md**: Analytics Metadata Integration Complete ⭐⭐
 - ✅ Analytics now reads and uses time_snap metadata from recorder NPZ files
 - ✅ Archive time_snap adoption: Analytics automatically adopts recorder-provided time_snap when superior
@@ -135,7 +215,6 @@ This is a high-level map of the project's most important, stable interfaces.
 - ✅ Metadata flow verified: Recorder → NPZ → Analytics → Decimated 10Hz NPZ → DRF/Upload
 - 📁 Modified: src/signal_recorder/analytics_service.py (lines 111-122, 147-156, 178-224, 410-440, 811-878, 945-946, 1041-1042)
 - 🧪 Test script: /tmp/test_analytics_pipelines.py (comprehensive validation of all pipelines)
-- **Next:** Web UI integration to display real-time quality metrics, timing status, tone detections, and discrimination results
 
 **SESSION_2025-11-20_WSPRDAEMON_DRF_COMPATIBILITY.md**: DRF Writer Production Ready ⭐
 - ✅ Digital RF output now matches wsprdaemon format exactly (PSWS-compatible)
@@ -163,47 +242,77 @@ This is a high-level map of the project's most important, stable interfaces.
 - Fixed 30-second timing offset bug in tone detector
 - RTP offset correlation proven UNSTABLE (independent clocks per channel)
 
-## 5. 🎯 Next Project: Web UI Analytics Display
+## 5. 🎯 Next Session: Test Core Recorder and Analytics Updates
 
-**Objective:** Create real-time web displays for quality metrics, timing status, tone detections, and discrimination results.
+**Objective:** Verify the Nov 26 critical fixes work correctly in production.
 
-**Current State:**
-- ✅ Recorder produces NPZ with complete metadata (time_snap, tone_power, gaps)
-- ✅ Analytics ingests metadata and validates/cross-checks measurements
-- ✅ All 6 analytics pipelines functional and tested
-- ✅ Data written to CSVs (quality, discrimination, tone detections, etc.)
-- ✅ Web UI server exists (`monitoring-server-v3.js`) with basic endpoints
+**What to Test:**
 
-**Available Data for Display:**
-1. **Quality Metrics** (`analytics/{channel}/quality/`) - Completeness %, packet loss, gap analysis
-2. **Timing Status** (from analytics state files) - Current time_snap, confidence, source (tone_locked/NTP/wall_clock)
-3. **Tone Detections** (`analytics/{channel}/tone_detections/`) - WWV/WWVH/CHU tones, SNR, timing errors
-4. **Discrimination Results** (`analytics/{channel}/discrimination/`) - WWV vs WWVH analysis, power ratios, delays
-5. **BCD Analysis** (`analytics/{channel}/bcd_discrimination/`) - 100 Hz correlation results
-6. **440 Hz Station ID** (`analytics/{channel}/station_id_440hz/`) - Hourly station identification
+### 1. Thread Safety Verification
+```bash
+# Start services
+./start-dual-service.sh config/grape-config.toml
 
-**Implementation Requirements:**
-- Use `GRAPEPaths` API for all file paths (Python and JavaScript)
-- Follow existing web UI architecture (`monitoring-server-v3.js`, existing HTML pages)
-- Real-time updates (poll CSV files, WebSocket optional for future)
-- Visualize time-series data (quality over time, tone SNR trends, discrimination confidence)
-- Display current timing status prominently (tone-locked indicator, time_snap age)
-- Show cross-validation results (recorder vs analytics tone power comparison)
+# Monitor for deadlocks or errors
+tail -f /tmp/grape-test/logs/core-recorder.log | grep -E "(ERROR|WARN|Lock|Deadlock)"
 
-**Key Files to Examine:**
-- `web-ui/monitoring-server-v3.js` - Express server with existing endpoints
-- `web-ui/grape-paths.js` - JavaScript paths API
-- `web-ui/pages/summary.html` - Main dashboard template
-- `web-ui/pages/discrimination.html` - WWV/WWVH analysis template
-- `src/signal_recorder/paths.py` - Python paths API
-- `analytics_service.py` - Data generation logic
+# Verify archives being written (should see new files every minute)
+watch -n 5 'ls -la /tmp/grape-test/archives/WWV_10_MHz/*.npz | tail -5'
+```
 
-**Design Considerations:**
-- Separate displays for each discrimination method (5 methods = 5 potential panels)
-- Weighted voting display should show contributions from each method
-- Gap visualization (timeline showing packet loss/discontinuities)
-- Timing quality indicator (green=tone_locked, yellow=NTP, red=wall_clock)
-- Archive time_snap adoption events (log when analytics adopts recorder time_snap)
+### 2. NTP Centralization Verification
+```bash
+# Should see NTP status updates every 10 seconds in main loop
+grep "NTP status" /tmp/grape-test/logs/core-recorder.log
+
+# Should NOT see subprocess calls from ChannelProcessor
+grep -E "(chronyc|ntpq)" /tmp/grape-test/logs/core-recorder.log
+```
+
+### 3. Timing Metrics Verification
+```bash
+# Check timing CSV files exist
+ls -la /tmp/grape-test/timing/WWV_10_MHz/
+
+# Verify drift values are realistic (< 100ms)
+tail -20 /tmp/grape-test/timing/WWV_10_MHz/*timing*.csv
+
+# Check for tone-to-tone measurements
+grep "tone_to_tone" /tmp/grape-test/timing/WWV_10_MHz/*timing*.csv
+```
+
+### 4. Discrimination Verification
+```bash
+# Check test signal detection (minutes 8 and 44)
+ls -la /tmp/grape-test/discrimination/WWV_10_MHz/test_signal/
+
+# Verify discrimination results
+tail -20 /tmp/grape-test/discrimination/WWV_10_MHz/*discrimination*.csv
+```
+
+### 5. NPZ Format Verification
+```python
+# Quick Python check of NPZ format (27 fields expected)
+import numpy as np
+npz = np.load('/tmp/grape-test/archives/WWV_10_MHz/LATEST.npz')
+print(f"Fields: {len(npz.files)}")
+print(f"Has time_snap: {'time_snap_rtp' in npz.files}")
+print(f"Has NTP wall clock: {'ntp_wall_clock_time' in npz.files}")
+```
+
+**Success Criteria:**
+- ✅ No errors in logs
+- ✅ Archives written every minute
+- ✅ NTP status updates every 10 seconds
+- ✅ Drift values < 100ms
+- ✅ No deadlocks after 30+ minutes
+- ✅ All 27 NPZ fields present
+
+**If Issues:**
+- Thread issues → `CRITICAL_FIXES_IMPLEMENTED.md`
+- NTP issues → `NTP_CENTRALIZATION_COMPLETE.md`
+- Timing issues → `TWO_TIME_BASES_SOLUTION.md`
+- Format issues → `API_FORMAT_ALIGNMENT.md`
 
 ---
 
@@ -250,6 +359,13 @@ state/analytics-{channel}.json                                     | time_snap
 - `docs/API_REFERENCE.md` - Functions
 - `ARCHITECTURE.md` - Design rationale
 
+**⭐ Nov 26 Session Docs (for testing):**
+- `CRITICAL_FIXES_IMPLEMENTED.md` - Thread safety, phase continuity, RTP wraparound
+- `NTP_CENTRALIZATION_COMPLETE.md` - Centralized NTP status architecture
+- `TIMING_TEST_PLAN.md` - Complete testing procedures
+- `API_FORMAT_ALIGNMENT.md` - NPZ format verification (27 fields)
+- `TWO_TIME_BASES_SOLUTION.md` - Timing measurement methodology
+
 **Key Docs:**
 - `docs/DRF_WRITER_MODES.md` - Wsprdaemon vs enhanced metadata
 - `SESSION_2025-11-20_WSPRDAEMON_DRF_COMPATIBILITY.md` - DRF writer completion
@@ -260,3 +376,32 @@ state/analytics-{channel}.json                                     | time_snap
 **Timing Quality:** TONE_LOCKED (±1ms) > NTP_SYNCED (±10ms) > WALL_CLOCK (±seconds)  
 **Quality Grades:** A (95-100) excellent | B (85-94) good | C (70-84) acceptable | D (50-69) poor | F (<50) failed  
 **Weighting:** Sample integrity 40% | RTP continuity 30% | Time_snap 20% | Network 10%
+
+### Key Implementation Details (Nov 26)
+
+**Thread Safety Pattern:**
+```python
+# All shared state access in CoreNPZWriter and ChannelProcessor:
+with self._lock:
+    # Access or modify shared state
+```
+
+**NTP Status Access Pattern:**
+```python
+# In ChannelProcessor or CoreNPZWriter:
+if self.get_ntp_status:
+    ntp_status = self.get_ntp_status()  # Returns cached dict
+    offset_ms = ntp_status.get('offset_ms')
+    synced = ntp_status.get('synced')
+```
+
+**Boundary-Aligned Time_snap:**
+```python
+# In CoreNPZWriter.update_time_snap():
+self.pending_time_snap = new_time_snap  # Schedule, don't apply
+
+# In CoreNPZWriter.add_samples() after minute file written:
+if self.pending_time_snap:
+    self.time_snap = self.pending_time_snap
+    self.pending_time_snap = None
+```
