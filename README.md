@@ -184,6 +184,14 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 ## Recent Updates
 
+**November 26, 2025 - Timing Dashboard & Wall Clock Stability** ✅
+- **Fixed:** `ntp_wall_clock_time` now uses stable RTP-derived prediction instead of jittery `time.time()` capture
+- **Result:** Sub-microsecond wall clock stability (was ±2 seconds due to packet arrival jitter)
+- **New:** Interactive timing dashboard with drift analysis and time source timeline charts
+- **New:** Quality level legend explaining TONE_LOCKED, NTP_SYNCED, INTERPOLATED, WALL_CLOCK
+- **Web UI:** `http://localhost:3000/timing-dashboard-enhanced.html` - Real-time timing visualization
+- See timing documentation in `docs/TIMING_ANALYSIS_UI_DESIGN.md`
+
 **November 24, 2025 - Analytics Metadata Integration** ✅
 - Analytics now reads and validates recorder-provided time_snap metadata
 - Archive time_snap adoption: Analytics automatically uses superior timing references from NPZ files

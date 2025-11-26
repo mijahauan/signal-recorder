@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Timing Analysis Dashboard - GRAPE Signal Recorder</title>
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0a0e27;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #1e3a8a 0%, #312e81 100%);
+            padding: 20px 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+        
+        .header h1 {
+            color: #fff;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        
+        .live-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+        
+        .live-dot {
+            width: 10px;
+            height: 10px;
+            background: #10b981;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Alert Banner */
+        .alert-banner {
+            background: #dc2626;
+            color: #fff;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .alert-banner.visible {
+            display: flex;
+        }
+        
+        .alert-banner.warning {
+            background: #f59e0b;
+        }
+        
+        .alert-icon {
+            font-size: 24px;
+        }
+        
+        .alert-content {
+            flex: 1;
+        }
+        
+        .alert-title {
+            font-weight: 600;
+            font-size: 16px;
+            margin-bottom: 4px;
+        }
+        
+        .alert-message {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        
+        /* Primary Reference Hero Section */
+        .primary-reference {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border-radius: 10px;
+            padding: 30px;
+            margin-bottom: 20px;
+            border-left: 5px solid #10b981;
+        }
+        
+        .primary-reference.ntp {
+            border-left-color: #3b82f6;
+        }
+        
+        .primary-reference.degraded {
+            border-left-color: #f59e0b;
+        }
+        
+        .primary-reference.poor {
+            border-left-color: #ef4444;
+        }
+        
+        .ref-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .ref-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #fff;
+        }
+        
+        .quality-badge {
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 14px;
+            text-transform: uppercase;
+        }
+        
+        .quality-badge.tone-locked {
+            background: #10b981;
+            color: #fff;
+        }
+        
+        .quality-badge.ntp-synced {
+            background: #3b82f6;
+            color: #fff;
+        }
+        
+        .quality-badge.interpolated {
+            background: #f59e0b;
+            color: #fff;
+        }
+        
+        .quality-badge.wall-clock {
+            background: #ef4444;
+            color: #fff;
+        }
+        
+        .ref-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .ref-metric {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 15px;
+            border-radius: 8px;
+        }
+        
+        .ref-metric-label {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        
+        .ref-metric-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+        
+        .ref-metric-sub {
+            font-size: 13px;
+            color: #cbd5e1;
+        }
+        
+        .ref-details {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 6px;
+        }
+        
+        .ref-detail-item {
+            display: flex;
+            gap: 10px;
+            font-size: 13px;
+        }
+        
+        .ref-detail-label {
+            color: #94a3b8;
+            min-width: 100px;
+        }
+        
+        .ref-detail-value {
+            color: #e0e0e0;
+            font-family: 'Courier New', monospace;
+        }
+        
+        /* Health Cards Grid */
+        .health-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .health-card {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 25px;
+            border-left: 4px solid #3b82f6;
+        }
+        
+        .health-card-title {
+            font-size: 14px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+        
+        .health-card-value {
+            font-size: 36px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        
+        .health-card-percent {
+            font-size: 18px;
+            color: #cbd5e1;
+            margin-bottom: 15px;
+        }
+        
+        .health-card-quality {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+        
+        .health-card-quality.excellent {
+            background: #10b981;
+            color: #fff;
+        }
+        
+        .health-card-quality.good {
+            background: #3b82f6;
+            color: #fff;
+        }
+        
+        .health-card-quality.fair {
+            background: #f59e0b;
+            color: #fff;
+        }
+        
+        .health-card-quality.poor {
+            background: #ef4444;
+            color: #fff;
+        }
+        
+        .health-card-quality.collecting {
+            background: rgba(148, 163, 184, 0.3);
+            color: #94a3b8;
+            font-style: italic;
+        }
+        
+        .health-card-details {
+            font-size: 13px;
+            color: #cbd5e1;
+            line-height: 1.6;
+        }
+        
+        .health-card-details div {
+            margin-bottom: 4px;
+        }
+        
+        .channel-list {
+            margin-top: 10px;
+        }
+        
+        .channel-item {
+            padding: 6px 10px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+            margin-bottom: 6px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        
+        .status-dot.tone {
+            background: #10b981;
+        }
+        
+        .status-dot.ntp {
+            background: #3b82f6;
+        }
+        
+        .status-dot.wall {
+            background: #ef4444;
+        }
+        
+        /* Charts */
+        .chart-section {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+        
+        .chart-header {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+        
+        .chart-container {
+            width: 100%;
+            height: 400px;
+            background: #0f172a;
+            border-radius: 8px;
+        }
+        
+        /* Per-Channel Table */
+        .channel-table-container {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+            overflow-x: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        thead {
+            background: #0f172a;
+        }
+        
+        th {
+            padding: 12px;
+            text-align: left;
+            font-size: 11px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+        
+        td {
+            padding: 12px;
+            border-top: 1px solid #334155;
+            font-size: 14px;
+        }
+        
+        tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        
+        .health-score {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 13px;
+        }
+        
+        .health-score.excellent {
+            background: #10b981;
+            color: #fff;
+        }
+        
+        .health-score.good {
+            background: #3b82f6;
+            color: #fff;
+        }
+        
+        .health-score.fair {
+            background: #f59e0b;
+            color: #fff;
+        }
+        
+        .health-score.poor {
+            background: #ef4444;
+            color: #fff;
+        }
+        
+        /* Transitions Log */
+        .transitions-section {
+            background: #1e293b;
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+        
+        .transition-item {
+            background: rgba(255, 255, 255, 0.03);
+            border-left: 3px solid #3b82f6;
+            padding: 15px;
+            margin-bottom: 12px;
+            border-radius: 6px;
+        }
+        
+        .transition-time {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-bottom: 6px;
+        }
+        
+        .transition-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        
+        .transition-details {
+            font-size: 13px;
+            color: #cbd5e1;
+            line-height: 1.6;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #94a3b8;
+            font-size: 16px;
+        }
+        
+        .error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid #ef4444;
+            color: #fca5a5;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        
+        .refresh-countdown {
+            display: inline-block;
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <nav style="background: #1e3a8a; padding: 15px 30px; margin-bottom: 20px; border-radius: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 style="margin: 0; font-size: 20px; color: #fff;">📡 GRAPE Signal Recorder</h2>
+            <div style="display: flex; gap: 15px; align-items: center;">
+                <a href="/summary.html" style="color: rgba(255,255,255,0.8); text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: background 0.2s;">Summary</a>
+                <a href="/carrier.html" style="color: rgba(255,255,255,0.8); text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: background 0.2s;">Carrier</a>
+                <a href="/discrimination.html" style="color: rgba(255,255,255,0.8); text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: background 0.2s;">Discrimination</a>
+                <a href="/timing-dashboard-enhanced.html" style="color: #fff; background: rgba(255,255,255,0.2); text-decoration: none; padding: 8px 16px; border-radius: 4px; font-weight: 600;">Timing</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="header">
+        <h1>⏱️ Timing Analysis Dashboard</h1>
+        <div class="live-indicator">
+            <span class="live-dot"></span>
+            <span>Live Monitoring</span>
+            <span class="refresh-countdown" id="countdown-timer">Next update in 30s</span>
+        </div>
+    </div>
+
+    <!-- Alert Banner -->
+    <div class="alert-banner" id="alert-banner">
+        <span class="alert-icon">⚠️</span>
+        <div class="alert-content">
+            <div class="alert-title" id="alert-title">Critical Timing Issue</div>
+            <div class="alert-message" id="alert-message">Loading...</div>
+        </div>
+    </div>
+
+    <div id="dashboard-content">
+        <div class="loading">⏳ Loading timing analysis data...</div>
+    </div>
+
+    <script>
+        let refreshCountdown = 30;
+        let countdownInterval = null;
+        let autoRefreshInterval = null;
+        
+        function startCountdown() {
+            refreshCountdown = 30;
+            if (countdownInterval) clearInterval(countdownInterval);
+            
+            countdownInterval = setInterval(() => {
+                refreshCountdown--;
+                const timer = document.getElementById('countdown-timer');
+                if (timer) {
+                    timer.textContent = `Next update in ${refreshCountdown}s`;
+                }
+                if (refreshCountdown <= 0) {
+                    clearInterval(countdownInterval);
+                }
+            }, 1000);
+        }
+        
+        function startAutoRefresh() {
+            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+            
+            autoRefreshInterval = setInterval(async () => {
+                await loadDashboard();
+            }, 30000); // Refresh every 30 seconds
+        }
+        
+        async function loadDashboard() {
+            try {
+                // Load all data in parallel
+                const [primaryRef, healthSummary, transitions] = await Promise.all([
+                    fetch('/api/v1/timing/primary-reference').then(r => r.json()),
+                    fetch('/api/v1/timing/health-summary').then(r => r.json()),
+                    fetch('/api/v1/timing/transitions?hours=24').then(r => r.json())
+                ]);
+                
+                renderDashboard(primaryRef, healthSummary, transitions);
+                checkAlerts(primaryRef, healthSummary);
+                startCountdown();
+                
+            } catch (error) {
+                console.error('Error loading dashboard:', error);
+                document.getElementById('dashboard-content').innerHTML = `
+                    <div class="error">
+                        ❌ Failed to load timing data: ${error.message}
+                        <br><br>
+                        Please ensure analytics service is running and generating timing metrics.
+                    </div>
+                `;
+            }
+        }
+        
+        function renderDashboard(primaryRef, healthSummary, transitions) {
+            const container = document.getElementById('dashboard-content');
+            
+            // Extract channel names for chart dropdowns
+            if (healthSummary.channels && healthSummary.channels.length > 0) {
+                availableChannels = healthSummary.channels.map(ch => ch.channel);
+            }
+            
+            container.innerHTML = `
+                ${renderPrimaryReference(primaryRef)}
+                ${renderHealthCards(healthSummary)}
+                ${renderChannelTable(healthSummary)}
+                ${renderChartPlaceholders()}
+                ${renderTransitions(transitions)}
+            `;
+            
+            // Load charts after DOM is ready
+            setTimeout(() => {
+                loadCharts();
+            }, 100);
+        }
+        
+        function renderPrimaryReference(data) {
+            if (!data.available) {
+                return `
+                    <div class="primary-reference poor">
+                        <div class="ref-header">
+                            <div class="ref-title">🎯 Primary Time Reference</div>
+                            <span class="quality-badge wall-clock">No Reference</span>
+                        </div>
+                        <div style="color: #fca5a5; font-size: 14px;">
+                            No time reference available. Check core recorder status.
+                        </div>
+                    </div>
+                `;
+            }
+            
+            const qualityClass = data.quality.toLowerCase().replace('_', '-');
+            const borderClass = data.quality === 'TONE_LOCKED' ? '' :
+                               data.quality === 'NTP_SYNCED' ? 'ntp' :
+                               data.quality === 'INTERPOLATED' ? 'degraded' : 'poor';
+            
+            return `
+                <div class="primary-reference ${borderClass}">
+                    <div class="ref-header">
+                        <div class="ref-title">🎯 Primary Time Reference</div>
+                        <span class="quality-badge ${qualityClass}">${data.quality}</span>
+                    </div>
+                    
+                    <div class="ref-grid">
+                        <div class="ref-metric">
+                            <div class="ref-metric-label">Source</div>
+                            <div class="ref-metric-value">${data.source_channel}</div>
+                            <div class="ref-metric-sub">Station: ${data.station}</div>
+                        </div>
+                        
+                        <div class="ref-metric">
+                            <div class="ref-metric-label">Precision</div>
+                            <div class="ref-metric-value">
+                                ${data.precision_ms < 10 ? 
+                                  `±${data.precision_ms} ms` : 
+                                  data.precision_ms < 100 ? 
+                                  `±${data.precision_ms} ms` :
+                                  `±${(data.precision_ms/1000).toFixed(1)} sec`}
+                            </div>
+                            <div class="ref-metric-sub">
+                                ${data.snr_db ? `SNR: ${data.snr_db.toFixed(1)} dB | ` : ''}
+                                Conf: ${(data.confidence * 100).toFixed(0)}%
+                            </div>
+                        </div>
+                        
+                        <div class="ref-metric">
+                            <div class="ref-metric-label">Age</div>
+                            <div class="ref-metric-value">${formatAge(data.age_seconds)}</div>
+                            <div class="ref-metric-sub">Next check: ${formatAge(data.next_check_seconds)}</div>
+                        </div>
+                        
+                        <div class="ref-metric">
+                            <div class="ref-metric-label">Source Type</div>
+                            <div class="ref-metric-value">
+                                ${data.tone_frequency_hz ? `${data.tone_frequency_hz} Hz` : 'No Tone'}
+                            </div>
+                            <div class="ref-metric-sub">
+                                ${data.source_type.includes('wwv') && data.tone_frequency_hz ? 'WWV tone' : 
+                                  data.source_type.includes('chu') && data.tone_frequency_hz ? 'CHU tone' :
+                                  data.quality === 'WALL_CLOCK' ? 'Unsynchronized clock' :
+                                  data.quality === 'NTP_SYNCED' ? 'NTP synchronized' :
+                                  data.source_type}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="ref-details">
+                        <div class="ref-detail-item">
+                            <span class="ref-detail-label">RTP Anchor:</span>
+                            <span class="ref-detail-value">${data.rtp_anchor.toLocaleString()}</span>
+                        </div>
+                        <div class="ref-detail-item">
+                            <span class="ref-detail-label">UTC Anchor:</span>
+                            <span class="ref-detail-value">${data.utc_anchor_iso}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderHealthCards(data) {
+            const toneLockPct = parseFloat(data.tone_lock_percentage);
+            const driftQuality = data.drift.quality;
+            const jitterQuality = data.jitter.quality;
+            const stabilityQuality = data.transitions.stability;
+            
+            // Build channel list for tone-locked
+            const toneChannels = data.channels
+                .filter(ch => ch.quality === 'TONE_LOCKED')
+                .map(ch => `
+                    <div class="channel-item">
+                        <span class="status-dot tone"></span>
+                        ${ch.channel}
+                    </div>
+                `).join('');
+            
+            const ntpChannels = data.channels
+                .filter(ch => ch.quality === 'NTP_SYNCED')
+                .map(ch => `
+                    <div class="channel-item">
+                        <span class="status-dot ntp"></span>
+                        ${ch.channel}
+                    </div>
+                `).join('');
+            
+            return `
+                <div class="health-cards">
+                    <div class="health-card">
+                        <div class="health-card-title">Tone-Locked Channels</div>
+                        <div class="health-card-value">${data.tone_locked_channels}/${data.total_channels}</div>
+                        <div class="health-card-percent">${toneLockPct.toFixed(0)}%</div>
+                        <div class="channel-list">
+                            ${toneChannels}
+                            ${ntpChannels}
+                        </div>
+                    </div>
+                    
+                    <div class="health-card">
+                        <div class="health-card-title">RTP Drift (Average)</div>
+                        <div class="health-card-value">±${data.drift.average_ms} ms</div>
+                        <div class="health-card-quality ${driftQuality}">${driftQuality}</div>
+                        <div class="health-card-details">
+                            <div>Range: ${data.drift.range_ms} ms</div>
+                            <div>Max: ${data.drift.max_ms} ms</div>
+                            <div>Trend: Stable</div>
+                        </div>
+                    </div>
+                    
+                    <div class="health-card">
+                        <div class="health-card-title">Jitter (Stability)</div>
+                        <div class="health-card-value">
+                            ${parseFloat(data.jitter.average_ms) > 1000 ? 
+                              'Stabilizing...' : 
+                              `±${data.jitter.average_ms} ms`}
+                        </div>
+                        <div class="health-card-quality ${parseFloat(data.jitter.average_ms) > 1000 ? 'collecting' : jitterQuality}">
+                            ${parseFloat(data.jitter.average_ms) > 1000 ? 
+                              'collecting data' : 
+                              jitterQuality}
+                        </div>
+                        <div class="health-card-details">
+                            <div>Lower is better</div>
+                            <div>Target: < 0.5 ms</div>
+                            ${parseFloat(data.jitter.average_ms) > 1000 ? 
+                              '<div style="color: #94a3b8; font-size: 12px; margin-top: 8px;">Waiting for more timing data...</div>' : ''}
+                        </div>
+                    </div>
+                    
+                    <div class="health-card">
+                        <div class="health-card-title">Transitions (24h)</div>
+                        <div class="health-card-value">${data.transitions.last_24h}</div>
+                        <div class="health-card-quality ${stabilityQuality}">${stabilityQuality}</div>
+                        <div class="health-card-details">
+                            <div>Stability: ${stabilityQuality}</div>
+                            <div>${data.transitions.last_24h < 10 ? 'Very stable' : 
+                                       data.transitions.last_24h < 20 ? 'Stable' :
+                                       'Check propagation'}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderChannelTable(data) {
+            const rows = data.channels.map(ch => {
+                const healthClass = ch.health_score >= 90 ? 'excellent' :
+                                   ch.health_score >= 70 ? 'good' :
+                                   ch.health_score >= 50 ? 'fair' : 'poor';
+                
+                const qualityClass = ch.quality.toLowerCase().replace('_', '-');
+                
+                // Format jitter - show "stabilizing" if > 1000ms
+                const jitterDisplay = ch.jitter_ms > 1000 ? 
+                    '<span style="color: #94a3b8;">stabilizing</span>' :
+                    `${ch.jitter_ms.toFixed(3)} ms`;
+                
+                // Format drift - highlight if significant
+                const driftDisplay = Math.abs(ch.drift_ms) > 10 ?
+                    `<span style="color: #ef4444;">${ch.drift_ms.toFixed(3)} ms</span>` :
+                    `${ch.drift_ms.toFixed(3)} ms`;
+                
+                return `
+                    <tr>
+                        <td><strong>${ch.channel}</strong></td>
+                        <td><span class="quality-badge ${qualityClass}">${ch.quality}</span></td>
+                        <td style="text-align: right;">${driftDisplay}</td>
+                        <td style="text-align: right;">${jitterDisplay}</td>
+                        <td><span class="health-score ${healthClass}">${ch.health_score}/100</span></td>
+                    </tr>
+                `;
+            }).join('');
+            
+            return `
+                <div class="channel-table-container">
+                    <div class="chart-header">📋 Per-Channel Timing Detail</div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Channel</th>
+                                <th>Quality</th>
+                                <th>Drift</th>
+                                <th>Jitter</th>
+                                <th>Health Score</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+        
+        function renderChartPlaceholders() {
+            return `
+                <div class="chart-section">
+                    <div class="chart-header">
+                        📈 RTP Drift Analysis
+                        <select id="drift-channel-select" onchange="loadDriftChart()" style="margin-left: 20px; padding: 5px 10px; background: #1e293b; color: #e0e0e0; border: 1px solid #334155; border-radius: 4px;">
+                            <option value="all">All Channels</option>
+                        </select>
+                        <select id="drift-hours-select" onchange="loadDriftChart()" style="margin-left: 10px; padding: 5px 10px; background: #1e293b; color: #e0e0e0; border: 1px solid #334155; border-radius: 4px;">
+                            <option value="1">Last 1 Hour</option>
+                            <option value="6">Last 6 Hours</option>
+                            <option value="24" selected>Last 24 Hours</option>
+                        </select>
+                    </div>
+                    <div class="chart-container" id="drift-chart" style="height: 350px;"></div>
+                </div>
+                
+                <div class="chart-section">
+                    <div class="chart-header">
+                        🕐 Time Source Timeline
+                        <select id="timeline-hours-select" onchange="loadTimelineChart()" style="margin-left: 20px; padding: 5px 10px; background: #1e293b; color: #e0e0e0; border: 1px solid #334155; border-radius: 4px;">
+                            <option value="6">Last 6 Hours</option>
+                            <option value="12">Last 12 Hours</option>
+                            <option value="24" selected>Last 24 Hours</option>
+                        </select>
+                    </div>
+                    <div class="chart-container" id="timeline-chart" style="height: 400px;"></div>
+                </div>
+                
+                <!-- Quality Level Legend -->
+                <div class="chart-section" style="padding: 20px 25px;">
+                    <div class="chart-header" style="margin-bottom: 15px;">📖 Time Quality Levels</div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;">
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <span style="background: #10b981; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">TONE_LOCKED</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Locked to WWV/CHU second marker tone. Highest precision (±1ms). Time derived from detected tone edge at minute boundary.</span>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <span style="background: #3b82f6; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">NTP_SYNCED</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Using NTP-synchronized system clock. Good precision (±10ms). Fallback when tone not detected but system clock is synced.</span>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <span style="background: #f59e0b; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">INTERPOLATED</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Using aged tone reference (>5 min old). Moderate precision (±50ms). ADC clock drift may accumulate over time.</span>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <span style="background: #ef4444; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">WALL_CLOCK</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Using unsynchronized system clock. Low precision (±seconds). Only used at startup before first tone detection.</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderTransitions(data) {
+            if (data.count === 0) {
+                return `
+                    <div class="transitions-section">
+                        <div class="chart-header">🔄 Recent Time Source Transitions</div>
+                        <div style="text-align: center; padding: 40px; color: #10b981;">
+                            ✅ No transitions in the last 24 hours - excellent stability!
+                        </div>
+                    </div>
+                `;
+            }
+            
+            const items = data.transitions.slice(0, 10).map(t => {
+                return `
+                    <div class="transition-item">
+                        <div class="transition-time">${new Date(t.timestamp).toLocaleString()}</div>
+                        <div class="transition-title">
+                            ${t.channel}: ${t.from_quality} → ${t.to_quality}
+                        </div>
+                        <div class="transition-details">
+                            ├─ Reason: ${t.reason}<br>
+                            ${t.last_snr_db ? `├─ Last SNR: ${t.last_snr_db.toFixed(1)} dB<br>` : ''}
+                            ├─ Previous duration: ${t.duration_on_previous_source_minutes.toFixed(0)} minutes<br>
+                            └─ Source: ${t.from_source} → ${t.to_source}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            return `
+                <div class="transitions-section">
+                    <div class="chart-header">🔄 Recent Time Source Transitions (Last 24h: ${data.count})</div>
+                    ${items}
+                </div>
+            `;
+        }
+        
+        // Store channel list for dropdown population
+        let availableChannels = [];
+        
+        function loadCharts() {
+            // Populate channel dropdown from health summary
+            populateChannelDropdown();
+            // Load both charts
+            loadDriftChart();
+            loadTimelineChart();
+        }
+        
+        function populateChannelDropdown() {
+            const select = document.getElementById('drift-channel-select');
+            if (!select || availableChannels.length === 0) return;
+            
+            // Keep "All Channels" option
+            select.innerHTML = '<option value="all">All Channels</option>';
+            
+            // Add each channel
+            availableChannels.forEach(ch => {
+                const option = document.createElement('option');
+                option.value = ch;
+                option.textContent = ch;
+                select.appendChild(option);
+            });
+        }
+        
+        async function loadDriftChart() {
+            const channelSelect = document.getElementById('drift-channel-select');
+            const hoursSelect = document.getElementById('drift-hours-select');
+            const chartDiv = document.getElementById('drift-chart');
+            
+            if (!chartDiv) return;
+            
+            const hours = hoursSelect ? parseInt(hoursSelect.value) : 24;
+            const selectedChannel = channelSelect ? channelSelect.value : 'all';
+            const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+            
+            try {
+                // Fetch metrics for all channels or selected channel
+                const channelsToFetch = selectedChannel === 'all' ? availableChannels : [selectedChannel];
+                const traces = [];
+                const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f97316'];
+                
+                for (let i = 0; i < channelsToFetch.length; i++) {
+                    const channel = channelsToFetch[i];
+                    try {
+                        const response = await fetch(`/api/v1/timing/metrics?channel=${encodeURIComponent(channel)}&date=${today}&hours=${hours}`);
+                        const data = await response.json();
+                        
+                        if (data.available && data.metrics && data.metrics.length > 0) {
+                            const x = data.metrics.map(m => new Date(m.timestamp));
+                            const y = data.metrics.map(m => m.drift_ms);
+                            
+                            traces.push({
+                                x: x,
+                                y: y,
+                                mode: 'lines+markers',
+                                name: channel,
+                                line: { color: colors[i % colors.length], width: 2 },
+                                marker: { size: 4 }
+                            });
+                        }
+                    } catch (err) {
+                        console.warn(`Failed to load drift data for ${channel}:`, err);
+                    }
+                }
+                
+                // Add reference bands
+                const shapes = [
+                    // Excellent band (±1ms)
+                    { type: 'rect', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: -1, y1: 1,
+                      fillcolor: 'rgba(16, 185, 129, 0.1)', line: { width: 0 } },
+                    // Good band (±5ms)
+                    { type: 'rect', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: -5, y1: -1,
+                      fillcolor: 'rgba(59, 130, 246, 0.05)', line: { width: 0 } },
+                    { type: 'rect', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: 1, y1: 5,
+                      fillcolor: 'rgba(59, 130, 246, 0.05)', line: { width: 0 } }
+                ];
+                
+                const layout = {
+                    paper_bgcolor: '#0f172a',
+                    plot_bgcolor: '#0f172a',
+                    font: { color: '#e0e0e0', size: 12 },
+                    xaxis: { 
+                        gridcolor: '#334155',
+                        title: 'Time (UTC)',
+                        tickformat: '%H:%M'
+                    },
+                    yaxis: { 
+                        gridcolor: '#334155', 
+                        title: 'Drift (ms)',
+                        zeroline: true,
+                        zerolinecolor: '#64748b',
+                        zerolinewidth: 2
+                    },
+                    margin: { t: 30, r: 30, b: 50, l: 60 },
+                    legend: { 
+                        orientation: 'h', 
+                        y: -0.15,
+                        font: { size: 10 }
+                    },
+                    shapes: shapes,
+                    hovermode: 'x unified'
+                };
+                
+                if (traces.length === 0) {
+                    chartDiv.innerHTML = '<div style="text-align: center; padding: 60px; color: #94a3b8;">No drift data available for selected time range</div>';
+                } else {
+                    Plotly.newPlot('drift-chart', traces, layout, {responsive: true});
+                }
+                
+            } catch (error) {
+                console.error('Error loading drift chart:', error);
+                chartDiv.innerHTML = `<div style="text-align: center; padding: 60px; color: #ef4444;">Failed to load drift data: ${error.message}</div>`;
+            }
+        }
+        
+        async function loadTimelineChart() {
+            const hoursSelect = document.getElementById('timeline-hours-select');
+            const chartDiv = document.getElementById('timeline-chart');
+            
+            if (!chartDiv) return;
+            
+            const hours = hoursSelect ? parseInt(hoursSelect.value) : 24;
+            const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+            
+            try {
+                // Fetch metrics for all channels to build timeline
+                const traces = [];
+                const qualityColors = {
+                    'TONE_LOCKED': '#10b981',
+                    'NTP_SYNCED': '#3b82f6',
+                    'INTERPOLATED': '#f59e0b',
+                    'WALL_CLOCK': '#ef4444'
+                };
+                
+                for (let i = 0; i < availableChannels.length; i++) {
+                    const channel = availableChannels[i];
+                    try {
+                        const response = await fetch(`/api/v1/timing/metrics?channel=${encodeURIComponent(channel)}&date=${today}&hours=${hours}`);
+                        const data = await response.json();
+                        
+                        if (data.available && data.metrics && data.metrics.length > 0) {
+                            // Group consecutive records by quality
+                            const segments = [];
+                            let currentSegment = null;
+                            
+                            for (const m of data.metrics) {
+                                if (!currentSegment || currentSegment.quality !== m.quality) {
+                                    if (currentSegment) {
+                                        currentSegment.end = new Date(m.timestamp);
+                                        segments.push(currentSegment);
+                                    }
+                                    currentSegment = {
+                                        quality: m.quality,
+                                        start: new Date(m.timestamp),
+                                        end: null
+                                    };
+                                }
+                            }
+                            if (currentSegment) {
+                                currentSegment.end = new Date();
+                                segments.push(currentSegment);
+                            }
+                            
+                            // Create a trace for each quality type for this channel
+                            for (const quality of Object.keys(qualityColors)) {
+                                const qualitySegments = segments.filter(s => s.quality === quality);
+                                if (qualitySegments.length > 0) {
+                                    for (const seg of qualitySegments) {
+                                        traces.push({
+                                            x: [seg.start, seg.end],
+                                            y: [channel, channel],
+                                            mode: 'lines',
+                                            line: { color: qualityColors[quality], width: 20 },
+                                            name: quality,
+                                            legendgroup: quality,
+                                            showlegend: traces.filter(t => t.legendgroup === quality).length === 0,
+                                            hovertemplate: `${channel}<br>${quality}<br>%{x}<extra></extra>`
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        console.warn(`Failed to load timeline data for ${channel}:`, err);
+                    }
+                }
+                
+                const layout = {
+                    paper_bgcolor: '#0f172a',
+                    plot_bgcolor: '#0f172a',
+                    font: { color: '#e0e0e0', size: 12 },
+                    xaxis: { 
+                        gridcolor: '#334155',
+                        title: 'Time (UTC)',
+                        tickformat: '%H:%M'
+                    },
+                    yaxis: { 
+                        gridcolor: '#334155',
+                        title: '',
+                        automargin: true
+                    },
+                    margin: { t: 30, r: 30, b: 50, l: 120 },
+                    legend: { 
+                        orientation: 'h', 
+                        y: -0.12,
+                        font: { size: 11 }
+                    },
+                    hovermode: 'closest',
+                    barmode: 'overlay'
+                };
+                
+                if (traces.length === 0) {
+                    chartDiv.innerHTML = '<div style="text-align: center; padding: 60px; color: #94a3b8;">No timeline data available for selected time range</div>';
+                } else {
+                    Plotly.newPlot('timeline-chart', traces, layout, {responsive: true});
+                }
+                
+            } catch (error) {
+                console.error('Error loading timeline chart:', error);
+                chartDiv.innerHTML = `<div style="text-align: center; padding: 60px; color: #ef4444;">Failed to load timeline data: ${error.message}</div>`;
+            }
+        }
+        
+        function checkAlerts(primaryRef, healthSummary) {
+            const banner = document.getElementById('alert-banner');
+            const title = document.getElementById('alert-title');
+            const message = document.getElementById('alert-message');
+            
+            // Check for critical issues
+            if (!primaryRef.available) {
+                banner.className = 'alert-banner visible';
+                title.textContent = 'Critical: No Time Reference';
+                message.textContent = 'No time reference available. Check core recorder and tone detection.';
+                return;
+            }
+            
+            if (primaryRef.quality === 'WALL_CLOCK' && primaryRef.age_seconds > 300) {
+                banner.className = 'alert-banner visible';
+                title.textContent = 'Critical: Using Unsynchronized Clock';
+                message.textContent = `All channels using wall clock (±${(primaryRef.precision_ms/1000).toFixed(0)} sec precision). System has aged time_snap from startup. Waiting for fresh tone detection.`;
+                return;
+            }
+            
+            if (healthSummary.tone_locked_channels === 0) {
+                banner.className = 'alert-banner visible warning';
+                title.textContent = 'Warning: No Tone-Locked Channels';
+                message.textContent = `All ${healthSummary.total_channels} channels using NTP or wall clock. Check propagation conditions.`;
+                return;
+            }
+            
+            if (parseFloat(healthSummary.drift.average_ms) > 50) {
+                banner.className = 'alert-banner visible';
+                title.textContent = 'Critical: Excessive Drift';
+                message.textContent = `Average drift is ${healthSummary.drift.average_ms}ms. Check system clock and time_snap anchors.`;
+                return;
+            }
+            
+            if (primaryRef.quality === 'WALL_CLOCK' && primaryRef.age_seconds < 300) {
+                banner.className = 'alert-banner visible warning';
+                title.textContent = 'Info: System Stabilizing';
+                message.textContent = 'Using initial time_snap from startup. Fresh tone detection will occur at next 5-minute check. Jitter measurements stabilizing.';
+                return;
+            }
+            
+            // No critical alerts
+            banner.className = 'alert-banner';
+        }
+        
+        function formatAge(seconds) {
+            if (seconds < 0) return '0s';
+            const s = Math.floor(seconds);
+            if (s < 60) return `${s}s`;
+            if (s < 3600) return `${Math.floor(s/60)}m ${s%60}s`;
+            return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+        }
+        
+        // Initialize
+        loadDashboard();
+        startAutoRefresh();
+    </script>
+</body>
+</html>

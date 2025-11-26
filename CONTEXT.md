@@ -4,62 +4,88 @@
 # Instructions: Paste this entire file at the start of any new chat session
 # to provide ground-truth context for the GRAPE Signal Recorder project.
 
-## � IMMEDIATE CONTEXT: Session 2025-11-26 (CRITICAL FOR NEXT SESSION)
+## 🚨 IMMEDIATE CONTEXT: Session 2025-11-26 (CRITICAL FOR NEXT SESSION)
 
-**NEXT SESSION GOAL:** Test the core recorder and analytics updates from Nov 26 session.
+**NEXT SESSION GOAL:** Test and display WWV/WWVH discrimination methods on the web UI discrimination page.
 
-### What Was Just Committed (2 commits on Nov 26):
+### What Was Just Completed (Nov 26 - Timing Fixes):
 
-**Commit 1:** `acb371d` - Timing metrics system + discrimination enhancements
-- NEW: `timing_metrics_writer.py` (628 lines) - Drift, jitter, tone-to-tone measurements
-- Enhanced: `wwvh_discrimination.py` - Test signal detection (minutes 8 & 44)
-- Fixed: `monitoring-server-v3.js` - Timing quality classification (5-minute threshold)
-- Updated: Web-UI timing dashboards and discrimination display
+**Wall Clock Stability Fix:**
+- **Problem:** `ntp_wall_clock_time` in NPZ archives was unstable (±2 seconds) due to capturing `time.time()` at packet arrival, which varies with network jitter and gap-filling bursts
+- **Solution:** Predict wall clock at minute boundary using `rtp_derived_utc + ntp_offset` 
+- **Result:** Sub-microsecond stability - wall clock now phase-aligned with RTP-derived UTC
+- **Files Changed:** `core_npz_writer.py` (lines 128-173, 198-217, 226-242)
 
-**Commit 2:** `d81efb2` - Critical thread safety + NTP centralization
-- CRITICAL: Complete thread safety in `CoreNPZWriter` and `ChannelProcessor`
-- CRITICAL: Boundary-aligned time_snap updates (prevents phase discontinuities)
-- CRITICAL: Fixed RTP wraparound handling (signed arithmetic)
-- PERFORMANCE: Centralized NTP status (90% fewer subprocess calls)
-- Removed: Dead code (`_check_ntp_sync` methods)
+**Timing Dashboard Implementation:**
+- **Drift Analysis Chart:** Time series of drift_ms per channel with reference bands (±1ms excellent, ±5ms good)
+- **Time Source Timeline:** Gantt-style chart showing quality states (TONE_LOCKED/NTP_SYNCED/INTERPOLATED/WALL_CLOCK)
+- **Quality Legend:** Explains what each timing quality level means
+- **Files Changed:** `web-ui/timing-dashboard-enhanced.html` (lines 806-862, 874-1098)
 
-### Testing Priorities for Next Session:
+### Next Session: WWV/WWVH Discrimination Testing & Display
 
-1. **Start services and verify no errors:**
+**Objective:** Test all 6 discrimination methods and make them display informatively on the discrimination page.
+
+**Key Documentation:**
+- `WWV_WWVH_DISCRIMINATION_METHODS.md` - Detailed method descriptions (READ FIRST)
+- `docs/WWV_WWVH_DISCRIMINATION_USER_GUIDE.md` - User-facing guide
+
+**The 6 Discrimination Methods:**
+
+1. **440 Hz Station ID** (2/hour at minutes 1 & 2)
+   - Ground truth calibration - WWVH minute 1, WWV minute 2
+   - File: `station_id_440hz/` CSVs
+
+2. **Test Signal** (2/hour at minutes 8 & 44)
+   - Ground truth calibration - WWV minute 8, WWVH minute 44
+   - File: `test_signal/` CSVs
+
+3. **BCD Correlation** (15/min) - PRIMARY METHOD
+   - Cross-correlation of 100 Hz BCD time code finds two peaks = two stations
+   - Measures amplitude AND differential delay simultaneously
+   - File: `bcd_discrimination/` CSVs
+   - **Key insight:** 100 Hz BCD signal IS the carrier - both stations modulate it
+
+4. **Timing Tones** (1/min)
+   - Power ratio of 1000 Hz (WWV) vs 1200 Hz (WWVH) marker tones
+   - File: `tone_detections/` CSVs
+
+5. **Tick Windows** (6/min)
+   - Per-second tick analysis with adaptive coherent/incoherent integration
+   - File: `tick_windows/` CSVs
+
+6. **Weighted Voting** (1/min)
+   - Combines all methods with minute-specific weighting
+   - File: `discrimination/` CSVs (final determination)
+
+**Testing Steps:**
+
+1. **Verify data is being generated:**
    ```bash
-   cd /home/wsprdaemon/signal-recorder
-   source venv/bin/activate
-   ./start-dual-service.sh config/grape-config.toml
-   tail -f /tmp/grape-test/logs/*.log
+   ls -la /tmp/grape-test/analytics/WWV_10_MHz/bcd_discrimination/
+   ls -la /tmp/grape-test/analytics/WWV_10_MHz/station_id_440hz/
+   ls -la /tmp/grape-test/analytics/WWV_10_MHz/tick_windows/
    ```
 
-2. **Verify thread safety works:**
-   - No deadlocks or hangs
-   - Archives written correctly
-   - No data corruption
+2. **Check discrimination page:**
+   - Open `http://localhost:3000/discrimination.html`
+   - Verify each method panel shows data
+   - Check for proper labeling and statistics
 
-3. **Verify NTP centralization:**
-   - Look for "NTP status updated" logs every 10 seconds
-   - No subprocess calls from ChannelProcessor or CoreNPZWriter
+3. **Validate BCD correlation output:**
+   ```bash
+   tail -20 /tmp/grape-test/analytics/WWV_10_MHz/bcd_discrimination/*_bcd_*.csv
+   # Should show: bcd_wwv_amplitude, bcd_wwvh_amplitude, bcd_differential_delay_ms
+   ```
 
-4. **Verify timing measurements:**
-   - Check `/tmp/grape-test/timing/` for drift CSV files
-   - Drift values should be realistic (< 100ms typically)
-   - Jitter values should be small (< 10ms RMS)
+**Web UI Files to Modify:**
+- `web-ui/discrimination.html` - Main discrimination page
+- `web-ui/monitoring-server-v3.js` - API endpoints for discrimination data
 
-5. **Verify discrimination:**
-   - Check `/tmp/grape-test/discrimination/` for test signal CSVs
-   - Minutes 8 and 44 should show test signal detections
-
-### Key Documentation for Testing:
-- `TIMING_TEST_PLAN.md` - Complete testing procedures
-- `CRITICAL_FIXES_IMPLEMENTED.md` - What was fixed and why
-- `API_FORMAT_ALIGNMENT.md` - NPZ format verification (27 fields)
-
-### If Issues Arise:
-- Thread safety issues → Check `CRITICAL_FIXES_IMPLEMENTED.md`
-- NTP issues → Check `NTP_CENTRALIZATION_COMPLETE.md`
-- Timing issues → Check `TWO_TIME_BASES_SOLUTION.md`
+**Key API Endpoints:**
+- `GET /api/v1/channels/:name/discrimination/:date/methods` - All methods for a channel
+- `GET /api/v1/channels/:name/discrimination/:date/bcd` - BCD correlation data
+- `GET /api/v1/channels/:name/discrimination/:date/station_id` - 440 Hz ID data
 
 ---
 
@@ -191,7 +217,17 @@ This is a high-level map of the project's most important, stable interfaces.
 
 ## 4. ⚡ Recent Sessions Summary
 
-**SESSION_2025-11-26**: Critical Thread Safety + Timing System ⭐⭐⭐ (JUST COMMITTED)
+**SESSION_2025-11-26 (Part 2)**: Wall Clock Stability + Timing Dashboard ⭐⭐⭐
+- ✅ **Wall Clock Fix:** `ntp_wall_clock_time` now uses stable RTP-derived prediction (was ±2s jitter)
+- ✅ **Root Cause:** `time.time()` captured at packet arrival varies with network jitter and gap-filling
+- ✅ **Solution:** Predict wall clock as `rtp_derived_utc + ntp_offset` at minute boundary
+- ✅ **Result:** Sub-microsecond stability, phase-aligned with RTP-derived UTC
+- ✅ **Timing Dashboard:** Interactive drift analysis and time source timeline charts
+- ✅ **Quality Legend:** Explains TONE_LOCKED, NTP_SYNCED, INTERPOLATED, WALL_CLOCK
+- 📁 Modified: `core_npz_writer.py` (wall clock prediction), `timing-dashboard-enhanced.html` (charts)
+- 🧪 **NEXT:** Test WWV/WWVH discrimination methods and display on web UI
+
+**SESSION_2025-11-26 (Part 1)**: Critical Thread Safety + Timing System ⭐⭐⭐
 - ✅ **Thread Safety:** Complete lock protection in `CoreNPZWriter` and `ChannelProcessor`
 - ✅ **Phase Continuity:** Boundary-aligned time_snap updates (no mid-file discontinuities)
 - ✅ **RTP Wraparound:** Fixed signed arithmetic for 32-bit timestamp wraparound
@@ -202,8 +238,6 @@ This is a high-level map of the project's most important, stable interfaces.
 - 📁 Core files: `core_recorder.py`, `core_npz_writer.py`, `analytics_service.py`
 - 📁 New: `timing_metrics_writer.py` (628 lines)
 - 📁 Documentation: 16 new files including `CRITICAL_FIXES_IMPLEMENTED.md`, `TIMING_TEST_PLAN.md`
-- 🧪 **NEXT:** Test the updates - verify thread safety, timing measurements, discrimination
-- **Commits:** `acb371d` (timing/discrimination), `d81efb2` (thread safety/NTP)
 
 **SESSION_2025-11-24_ANALYTICS_METADATA_INTEGRATION.md**: Analytics Metadata Integration Complete ⭐⭐
 - ✅ Analytics now reads and uses time_snap metadata from recorder NPZ files
@@ -242,77 +276,80 @@ This is a high-level map of the project's most important, stable interfaces.
 - Fixed 30-second timing offset bug in tone detector
 - RTP offset correlation proven UNSTABLE (independent clocks per channel)
 
-## 5. 🎯 Next Session: Test Core Recorder and Analytics Updates
+## 5. 🎯 Next Session: WWV/WWVH Discrimination Testing & Web UI Display
 
-**Objective:** Verify the Nov 26 critical fixes work correctly in production.
+**Objective:** Test all 6 discrimination methods and make them display informatively on the web UI discrimination page.
 
-**What to Test:**
+### Background: The 6 Methods
 
-### 1. Thread Safety Verification
+Each method has different strengths - see `WWV_WWVH_DISCRIMINATION_METHODS.md` for full details:
+
+| Method | Rate | Strengths | Output Directory |
+|--------|------|-----------|------------------|
+| 440 Hz Station ID | 2/hour | Ground truth (min 1=WWVH, 2=WWV) | station_id_440hz/ |
+| Test Signal | 2/hour | Ground truth (min 8=WWV, 44=WWVH) | test_signal/ |
+| BCD Correlation | 15/min | Amplitude + delay, continuous | bcd_discrimination/ |
+| Timing Tones | 1/min | Reliable baseline | tone_detections/ |
+| Tick Windows | 6/min | Sub-minute dynamics | tick_windows/ |
+| Weighted Voting | 1/min | Final determination | discrimination/ |
+
+### Testing Steps
+
+**1. Verify discrimination data is being generated:**
 ```bash
-# Start services
-./start-dual-service.sh config/grape-config.toml
-
-# Monitor for deadlocks or errors
-tail -f /tmp/grape-test/logs/core-recorder.log | grep -E "(ERROR|WARN|Lock|Deadlock)"
-
-# Verify archives being written (should see new files every minute)
-watch -n 5 'ls -la /tmp/grape-test/archives/WWV_10_MHz/*.npz | tail -5'
+# Check each method's output directory
+ls -la /tmp/grape-test/analytics/WWV_10_MHz/bcd_discrimination/
+ls -la /tmp/grape-test/analytics/WWV_10_MHz/station_id_440hz/
+ls -la /tmp/grape-test/analytics/WWV_10_MHz/test_signal/
+ls -la /tmp/grape-test/analytics/WWV_10_MHz/tick_windows/
+ls -la /tmp/grape-test/analytics/WWV_10_MHz/tone_detections/
+ls -la /tmp/grape-test/analytics/WWV_10_MHz/discrimination/
 ```
 
-### 2. NTP Centralization Verification
+**2. Validate BCD correlation output (PRIMARY method):**
 ```bash
-# Should see NTP status updates every 10 seconds in main loop
-grep "NTP status" /tmp/grape-test/logs/core-recorder.log
-
-# Should NOT see subprocess calls from ChannelProcessor
-grep -E "(chronyc|ntpq)" /tmp/grape-test/logs/core-recorder.log
+tail -20 /tmp/grape-test/analytics/WWV_10_MHz/bcd_discrimination/*_bcd_*.csv
+# Expected columns: bcd_wwv_amplitude, bcd_wwvh_amplitude, bcd_differential_delay_ms, bcd_correlation_quality
 ```
 
-### 3. Timing Metrics Verification
+**3. Check 440 Hz station ID (ground truth):**
 ```bash
-# Check timing CSV files exist
-ls -la /tmp/grape-test/timing/WWV_10_MHz/
-
-# Verify drift values are realistic (< 100ms)
-tail -20 /tmp/grape-test/timing/WWV_10_MHz/*timing*.csv
-
-# Check for tone-to-tone measurements
-grep "tone_to_tone" /tmp/grape-test/timing/WWV_10_MHz/*timing*.csv
+# Should have entries at minutes 1 (WWVH) and 2 (WWV) of each hour
+tail -20 /tmp/grape-test/analytics/WWV_10_MHz/station_id_440hz/*_station_id_*.csv
 ```
 
-### 4. Discrimination Verification
+**4. View discrimination page:**
 ```bash
-# Check test signal detection (minutes 8 and 44)
-ls -la /tmp/grape-test/discrimination/WWV_10_MHz/test_signal/
-
-# Verify discrimination results
-tail -20 /tmp/grape-test/discrimination/WWV_10_MHz/*discrimination*.csv
+# Open in browser
+http://localhost:3000/discrimination.html
+# Check: Each method panel shows data, proper labeling, statistics
 ```
 
-### 5. NPZ Format Verification
-```python
-# Quick Python check of NPZ format (27 fields expected)
-import numpy as np
-npz = np.load('/tmp/grape-test/archives/WWV_10_MHz/LATEST.npz')
-print(f"Fields: {len(npz.files)}")
-print(f"Has time_snap: {'time_snap_rtp' in npz.files}")
-print(f"Has NTP wall clock: {'ntp_wall_clock_time' in npz.files}")
-```
+### Web UI Enhancement Tasks
 
-**Success Criteria:**
-- ✅ No errors in logs
-- ✅ Archives written every minute
-- ✅ NTP status updates every 10 seconds
-- ✅ Drift values < 100ms
-- ✅ No deadlocks after 30+ minutes
-- ✅ All 27 NPZ fields present
+**Files to modify:**
+- `web-ui/discrimination.html` - Main discrimination page layout
+- `web-ui/monitoring-server-v3.js` - API endpoints for discrimination data
 
-**If Issues:**
-- Thread issues → `CRITICAL_FIXES_IMPLEMENTED.md`
-- NTP issues → `NTP_CENTRALIZATION_COMPLETE.md`
-- Timing issues → `TWO_TIME_BASES_SOLUTION.md`
-- Format issues → `API_FORMAT_ALIGNMENT.md`
+**Key API endpoints:**
+- `GET /api/v1/channels/:name/discrimination/:date/methods` - All methods summary
+- `GET /api/v1/channels/:name/discrimination/:date/bcd` - BCD correlation time series
+- `GET /api/v1/channels/:name/discrimination/:date/station_id` - 440 Hz ID events
+
+**Display goals:**
+1. Show BCD correlation as primary chart (WWV vs WWVH amplitude over time)
+2. Show differential delay (ionospheric path difference)
+3. Mark 440 Hz ID events as calibration points
+4. Show timing tone ratio as secondary indicator
+5. Display weighted voting final determination
+
+### Success Criteria
+- ✅ All 6 method directories have CSV files
+- ✅ BCD shows two distinct amplitudes (WWV and WWVH)
+- ✅ 440 Hz ID detected at minutes 1 (WWVH) and 2 (WWV)
+- ✅ Test signal detected at minutes 8 (WWV) and 44 (WWVH)
+- ✅ Web UI displays all methods with proper charts
+- ✅ Differential delay values are realistic (5-30ms typical)
 
 ---
 

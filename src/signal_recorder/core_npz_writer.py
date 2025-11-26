@@ -149,12 +149,28 @@ class CoreNPZWriter:
                     self.time_snap = self.pending_time_snap
                     self.pending_time_snap = None
                 
-                # Start new minute - calculate UTC from RTP for next file (using possibly updated time_snap)
+                # Start new minute - calculate UTC from RTP for next file
                 next_rtp = self.current_minute_rtp_start + self.samples_per_minute
                 next_utc = self._calculate_utc_from_rtp(next_rtp)
                 next_minute = datetime.fromtimestamp(next_utc, tz=timezone.utc).replace(second=0, microsecond=0)
-                # At this point, next_rtp is both the boundary and current position
-                self._reset_minute_buffer(next_minute, next_rtp, next_rtp)
+                
+                # STABLE WALL CLOCK PREDICTION
+                # Instead of capturing jittery time.time() at packet arrival, we PREDICT
+                # the wall clock at the minute boundary using the stable RTP-derived time
+                # plus the NTP offset. This gives a phase-aligned reference.
+                #
+                # next_utc = RTP-derived UTC at minute boundary (stable, from tone-snap)
+                # ntp_offset = difference between system clock and NTP (typically <1ms)
+                # predicted_wall_clock = next_utc + ntp_offset
+                #
+                # This ensures ntp_wall_clock_time metadata is stable and phase-aligned
+                # with the RTP-derived unix_timestamp, so drift measurements reflect
+                # true hardware clock stability, not network/OS jitter.
+                ntp_offset_ms = self._get_ntp_offset_cached()
+                ntp_offset_s = (ntp_offset_ms / 1000.0) if ntp_offset_ms is not None else 0.0
+                predicted_wall_clock = next_utc + ntp_offset_s
+                
+                self._reset_minute_buffer_with_wall_clock(next_minute, next_rtp, predicted_wall_clock)
             
             return completed_minute
 
@@ -181,26 +197,56 @@ class CoreNPZWriter:
     
     def _reset_minute_buffer(self, minute_timestamp: datetime, rtp_start: int, current_rtp: int):
         """
-        Reset buffer for new minute
+        Reset buffer for new minute (used for first minute initialization)
         
-        Captures NTP wall clock time at the moment we detect the minute boundary.
-        There will be a small consistent delay (< 1 second for live data) due to
-        packet arrival time, but this is acceptable for drift measurement since
-        we're looking for CHANGES in drift over time, not absolute values.
+        Uses stable wall clock prediction based on RTP-derived time + NTP offset,
+        rather than jittery time.time() capture at packet arrival.
+        
+        This ensures the ntp_wall_clock_time metadata is phase-aligned with the
+        RTP-derived unix_timestamp from the start.
         """
         self.current_minute_samples = []
         self.current_minute_timestamp = minute_timestamp
         self.current_minute_rtp_start = rtp_start
         
-        # Capture wall clock time NOW (when we detect boundary)
-        # This is our independent NTP reference
-        # Note: Don't back-calculate using RTP - that introduces the drift we're measuring!
-        self.current_minute_wall_clock_time = time.time()
+        # STABLE WALL CLOCK PREDICTION for first minute
+        # Calculate the RTP-derived UTC at the minute boundary, then add NTP offset
+        minute_utc = self._calculate_utc_from_rtp(rtp_start)
+        ntp_offset_ms = self._get_ntp_offset_cached()
+        ntp_offset_s = (ntp_offset_ms / 1000.0) if ntp_offset_ms is not None else 0.0
+        self.current_minute_wall_clock_time = minute_utc + ntp_offset_s
         
         self.current_minute_gaps = []
         self.current_minute_packets_rx = 0
         # Expected packets = samples_per_minute / samples_per_packet
         # samples_per_packet scales with sample rate (320 @ 16 kHz, 4 @ 200 Hz, etc.)
+        samples_per_packet = max(1, int(320 * (self.sample_rate / 16000)))
+        self.current_minute_packets_expected = self.samples_per_minute // samples_per_packet
+    
+    def _reset_minute_buffer_with_wall_clock(self, minute_timestamp: datetime, rtp_start: int, 
+                                              wall_clock_time: float):
+        """
+        Reset buffer for new minute with predicted wall clock time.
+        
+        Used when transitioning between minutes. The wall_clock_time is the
+        PREDICTED wall clock at the minute boundary, calculated as:
+            predicted_wall_clock = rtp_derived_utc + ntp_offset
+        
+        This gives a stable, phase-aligned reference that eliminates
+        network/OS jitter from the timing measurements.
+        
+        Args:
+            minute_timestamp: The minute boundary (datetime)
+            rtp_start: RTP timestamp at minute boundary
+            wall_clock_time: Predicted wall clock at minute boundary
+        """
+        self.current_minute_samples = []
+        self.current_minute_timestamp = minute_timestamp
+        self.current_minute_rtp_start = rtp_start
+        self.current_minute_wall_clock_time = wall_clock_time
+        
+        self.current_minute_gaps = []
+        self.current_minute_packets_rx = 0
         samples_per_packet = max(1, int(320 * (self.sample_rate / 16000)))
         self.current_minute_packets_expected = self.samples_per_minute // samples_per_packet
     
