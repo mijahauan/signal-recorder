@@ -84,11 +84,26 @@ class TestSignalRecord:
     timestamp_utc: str
     minute_number: int
     detected: bool
-    station: Optional[str]  # 'WWV' or 'WWVH' if detected
+    station: Optional[str]  # 'WWV' or 'WWVH' (from schedule, not signal content)
     confidence: float
     multitone_score: float
     chirp_score: float
     snr_db: Optional[float]
+    toa_offset_ms: Optional[float] = None  # Time of arrival offset from expected
+
+
+@dataclass
+class DopplerRecord:
+    """Record from per-tick Doppler estimation (ionospheric channel characterization)"""
+    timestamp_utc: str
+    wwv_doppler_hz: float
+    wwvh_doppler_hz: float
+    wwv_doppler_std_hz: float
+    wwvh_doppler_std_hz: float
+    max_coherent_window_sec: float
+    doppler_quality: float
+    phase_variance_rad: float
+    valid_tick_count: int
 
 
 @dataclass
@@ -126,6 +141,7 @@ class DiscriminationCSVWriters:
         self.id_440_dir = self.paths.get_station_id_440hz_dir(channel_name)
         self.bcd_dir = self.paths.get_bcd_discrimination_dir(channel_name)
         self.test_signal_dir = self.paths.get_test_signal_dir(channel_name)
+        self.doppler_dir = self.paths.get_doppler_dir(channel_name)
         self.disc_dir = self.paths.get_discrimination_dir(channel_name)
         
         # Channel directory name for file naming
@@ -133,7 +149,7 @@ class DiscriminationCSVWriters:
         
         # Ensure directories exist
         for directory in [self.tone_dir, self.tick_dir, self.id_440_dir, 
-                         self.bcd_dir, self.test_signal_dir, self.disc_dir]:
+                         self.bcd_dir, self.test_signal_dir, self.doppler_dir, self.disc_dir]:
             directory.mkdir(parents=True, exist_ok=True)
     
     def _get_csv_path(self, directory: Path, prefix: str, timestamp: float) -> Path:
@@ -248,12 +264,16 @@ class DiscriminationCSVWriters:
             })
     
     def write_test_signal(self, record: TestSignalRecord):
-        """Write test signal detection record (minutes 8 and 44)"""
+        """Write test signal detection record (minutes 8 and 44)
+        
+        Note: Station assignment is schedule-based (minute 8 = WWV, minute 44 = WWVH).
+        The test signal is identical for both stations - value is in ToA/SNR measurement.
+        """
         timestamp = datetime.fromisoformat(record.timestamp_utc.replace('Z', '+00:00')).timestamp()
         csv_path = self._get_csv_path(self.test_signal_dir, f"{self.channel_dir}_test_signal", timestamp)
         
         fieldnames = ['timestamp_utc', 'minute_number', 'detected', 'station',
-                     'confidence', 'multitone_score', 'chirp_score', 'snr_db']
+                     'confidence', 'multitone_score', 'chirp_score', 'snr_db', 'toa_offset_ms']
         
         file_exists = csv_path.exists()
         
@@ -270,7 +290,8 @@ class DiscriminationCSVWriters:
                 'confidence': f"{record.confidence:.4f}",
                 'multitone_score': f"{record.multitone_score:.4f}",
                 'chirp_score': f"{record.chirp_score:.4f}",
-                'snr_db': f"{record.snr_db:.2f}" if record.snr_db is not None else ''
+                'snr_db': f"{record.snr_db:.2f}" if record.snr_db is not None else '',
+                'toa_offset_ms': f"{record.toa_offset_ms:.2f}" if record.toa_offset_ms is not None else ''
             })
     
     def write_bcd_windows(self, timestamp_utc: str, windows: List[Dict[str, Any]]):
@@ -295,24 +316,65 @@ class DiscriminationCSVWriters:
                 writer.writeheader()
             
             for window in windows:
-                wwv_amp = window.get('wwv_amplitude', 0)
-                wwvh_amp = window.get('wwvh_amplitude', 0)
+                wwv_amp = window.get('wwv_amplitude', 0) or 0
+                wwvh_amp = window.get('wwvh_amplitude', 0) or 0
+                delay_ms = window.get('differential_delay_ms')
                 
                 # Calculate amplitude ratio (avoid log(0))
                 if wwv_amp > 0 and wwvh_amp > 0:
                     ratio_db = 20 * np.log10(wwv_amp / wwvh_amp)
+                elif wwv_amp > 0:
+                    ratio_db = 20.0  # WWV only
+                elif wwvh_amp > 0:
+                    ratio_db = -20.0  # WWVH only
                 else:
                     ratio_db = 0.0
                 
                 writer.writerow({
                     'timestamp_utc': timestamp_utc,
-                    'window_start_sec': f"{window.get('window_start', 0.0):.1f}",
+                    'window_start_sec': f"{window.get('window_start_sec', 0.0):.1f}",
                     'wwv_amplitude': f"{wwv_amp:.4f}",
                     'wwvh_amplitude': f"{wwvh_amp:.4f}",
-                    'differential_delay_ms': f"{window.get('delay', 0.0):.2f}",
-                    'correlation_quality': f"{window.get('quality', 0.0):.3f}",
+                    'differential_delay_ms': f"{delay_ms:.2f}" if delay_ms is not None else "",
+                    'correlation_quality': f"{window.get('correlation_quality', 0.0):.3f}",
                     'amplitude_ratio_db': f"{ratio_db:.2f}"
                 })
+    
+    def write_doppler_record(self, record: DopplerRecord):
+        """Write Doppler estimation record (ionospheric channel characterization)
+        
+        Records per-minute Doppler shift estimates derived from tick phase tracking.
+        Essential for:
+        - Monitoring ionospheric dynamics
+        - Validating BCD adaptive window sizing
+        - Diagnosing discrimination failures due to channel instability
+        """
+        timestamp = datetime.fromisoformat(record.timestamp_utc.replace('Z', '+00:00')).timestamp()
+        csv_path = self._get_csv_path(self.doppler_dir, f"{self.channel_dir}_doppler", timestamp)
+        
+        fieldnames = ['timestamp_utc', 'wwv_doppler_hz', 'wwvh_doppler_hz',
+                     'wwv_doppler_std_hz', 'wwvh_doppler_std_hz',
+                     'max_coherent_window_sec', 'doppler_quality',
+                     'phase_variance_rad', 'valid_tick_count']
+        
+        file_exists = csv_path.exists()
+        
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            
+            writer.writerow({
+                'timestamp_utc': record.timestamp_utc,
+                'wwv_doppler_hz': f"{record.wwv_doppler_hz:.6f}",
+                'wwvh_doppler_hz': f"{record.wwvh_doppler_hz:.6f}",
+                'wwv_doppler_std_hz': f"{record.wwv_doppler_std_hz:.6f}",
+                'wwvh_doppler_std_hz': f"{record.wwvh_doppler_std_hz:.6f}",
+                'max_coherent_window_sec': f"{record.max_coherent_window_sec:.1f}",
+                'doppler_quality': f"{record.doppler_quality:.3f}",
+                'phase_variance_rad': f"{record.phase_variance_rad:.4f}",
+                'valid_tick_count': record.valid_tick_count
+            })
     
     def write_discrimination_result(self, record: DiscriminationRecord):
         """Write final weighted voting discrimination result"""

@@ -39,20 +39,33 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TestSignalDetection:
-    """Results from test signal detection"""
+    """
+    Results from test signal detection
+    
+    The test signal at minutes :08 (WWV) and :44 (WWVH) is IDENTICAL for both stations.
+    Discrimination comes from the SCHEDULE, not signal content. The value of detection
+    is the high-gain ToA and SNR measurements for ionospheric channel characterization.
+    """
     detected: bool
     confidence: float  # 0.0 to 1.0
-    station: Optional[str]  # 'WWV' or 'WWVH'
+    station: Optional[str]  # 'WWV' or 'WWVH' (from schedule, not signal content)
     minute_number: int
     
-    # Feature-specific scores
+    # Feature-specific scores (for detection confidence)
     multitone_score: float = 0.0
     chirp_score: float = 0.0
     noise_correlation: float = 0.0
     
-    # Timing information
-    signal_start_time: Optional[float] = None
+    # Timing information - high-precision ToA from template correlation
+    signal_start_time: Optional[float] = None  # Seconds into minute when signal detected
+    toa_offset_ms: Optional[float] = None  # Time of arrival offset from expected (ms)
+    
+    # SNR measurement - high processing gain from complex signal structure
     snr_db: Optional[float] = None
+    
+    # Channel characterization from test signal analysis
+    delay_spread_ms: Optional[float] = None  # Multipath delay spread (from chirp analysis)
+    coherence_time_sec: Optional[float] = None  # Channel coherence time estimate
 
 
 class WWVTestSignalGenerator:
@@ -353,8 +366,16 @@ class WWVTestSignalDetector:
         # Determine expected station
         expected_station = 'WWV' if minute_number == 8 else 'WWVH'
         
-        # Convert IQ to real (magnitude)
-        audio_signal = np.abs(iq_samples)
+        # Convert IQ to demodulated audio using AM envelope detection
+        # For AM signals, the audio modulation is in the ENVELOPE (magnitude),
+        # not the real part. The real part is I*cos(wt), but we want the audio content.
+        if np.iscomplexobj(iq_samples):
+            # AM envelope detection: |I + jQ| = sqrt(I^2 + Q^2)
+            envelope = np.abs(iq_samples)
+            # Remove DC component (carrier level) to get just the audio modulation
+            audio_signal = envelope - np.mean(envelope)
+        else:
+            audio_signal = iq_samples
         
         # Resample if necessary
         if sample_rate != self.sample_rate:
@@ -378,21 +399,31 @@ class WWVTestSignalDetector:
         
         # Estimate SNR if detected
         snr_db = None
+        toa_offset_ms = None
         if detected and multitone_start is not None:
             snr_db = self._estimate_snr(audio_signal, multitone_start, len(self.multitone_template))
+            
+            # Calculate ToA offset from expected position
+            # Test signal structure: Voice (10s) + Noise (2s) + Blank (1s) + Multitone starts at 13s
+            expected_multitone_start = 13.0  # seconds into minute
+            toa_offset_ms = (multitone_start - expected_multitone_start) * 1000.0
         
-        logger.info(f"Test signal detection: minute={minute_number}, "
+        # Log with ToA information for schedule-based discrimination
+        logger.info(f"Test signal detection: minute={minute_number} ({expected_station}), "
                    f"multitone={multitone_score:.3f}, chirp={chirp_score:.3f}, "
-                   f"confidence={confidence:.3f}, detected={detected}")
+                   f"confidence={confidence:.3f}, detected={detected}"
+                   + (f", ToA_offset={toa_offset_ms:+.2f}ms" if toa_offset_ms else ""))
         
         return TestSignalDetection(
             detected=detected,
             confidence=confidence,
+            # Station from SCHEDULE (minute 8 = WWV, minute 44 = WWVH)
             station=expected_station if detected else None,
             minute_number=minute_number,
             multitone_score=multitone_score,
             chirp_score=chirp_score,
             signal_start_time=multitone_start,
+            toa_offset_ms=toa_offset_ms,
             snr_db=snr_db
         )
     

@@ -15,7 +15,7 @@ to provide confident discrimination between the two stations.
 
 import logging
 import numpy as np
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Any
 from dataclasses import dataclass
 from datetime import datetime
 from scipy import signal as scipy_signal
@@ -78,12 +78,24 @@ class DiscriminationResult:
     bcd_correlation_quality: Optional[float] = None
     bcd_windows: Optional[List[Dict[str, float]]] = None  # Time-series data from sliding windows
     # Test signal discrimination (minute 8/44 scientific modulation test)
+    # Note: Test signal is IDENTICAL for WWV/WWVH - discrimination from SCHEDULE
+    # Value is high-gain ToA and SNR measurement for ionospheric characterization
     test_signal_detected: bool = False
-    test_signal_station: Optional[str] = None  # 'WWV' or 'WWVH'
+    test_signal_station: Optional[str] = None  # 'WWV' or 'WWVH' (from schedule)
     test_signal_confidence: Optional[float] = None
     test_signal_multitone_score: Optional[float] = None
     test_signal_chirp_score: Optional[float] = None
     test_signal_snr_db: Optional[float] = None
+    test_signal_toa_offset_ms: Optional[float] = None  # Time of arrival offset from expected
+    # Doppler estimation (ionospheric channel characterization)
+    doppler_wwv_hz: Optional[float] = None
+    doppler_wwvh_hz: Optional[float] = None
+    doppler_wwv_std_hz: Optional[float] = None
+    doppler_wwvh_std_hz: Optional[float] = None
+    doppler_max_coherent_window_sec: Optional[float] = None
+    doppler_quality: Optional[float] = None
+    doppler_phase_variance_rad: Optional[float] = None
+    doppler_valid_tick_count: Optional[int] = None
     
     def to_dict(self) -> Dict:
         """Convert to dictionary for logging/storage"""
@@ -425,6 +437,7 @@ class WWVHDiscriminator:
         Finalize discrimination using weighted voting based on minute-specific confidence
         
         Weighting hierarchy:
+        - Minutes 8/44: Test signal (highest weight when detected) → BCD → Tick SNR
         - Minutes 1/2: 440 Hz tone (highest weight) → Tick SNR → BCD (if available)
         - Minutes 0/8-10/29-30: BCD amplitude (highest weight) → Tick SNR → 1000/1200 Hz
         - All other minutes: 1000/1200 Hz power (highest weight) → Tick SNR
@@ -441,6 +454,8 @@ class WWVHDiscriminator:
         Returns:
             Enhanced DiscriminationResult with weighted voting
         """
+        # Test signal minutes (scientific modulation test)
+        test_signal_minutes = [8, 44]
         # BCD-dominant minutes (0, 8-10, 29-30)
         bcd_minutes = [0, 8, 9, 10, 29, 30]
         # 440 Hz tone minutes
@@ -451,22 +466,43 @@ class WWVHDiscriminator:
         wwvh_score = 0.0
         total_weight = 0.0
         
-        # Weight factors
-        if minute_number in tone_440_minutes:
+        # Weight factors - test signal gets highest weight when available
+        if minute_number in test_signal_minutes:
+            w_test = 15.0  # Highest weight for test signal (when detected)
+            w_bcd = 8.0
+            w_tick = 5.0
+            w_carrier = 2.0
+            w_440 = 0.0
+        elif minute_number in tone_440_minutes:
+            w_test = 0.0
             w_440 = 10.0  # Highest weight for 440 Hz
             w_tick = 5.0
             w_bcd = 2.0
             w_carrier = 1.0
         elif minute_number in bcd_minutes:
+            w_test = 0.0
             w_bcd = 10.0  # Highest weight for BCD
             w_tick = 5.0
             w_carrier = 2.0
             w_440 = 0.0
         else:
+            w_test = 0.0
             w_carrier = 10.0  # Highest weight for carrier tones
             w_tick = 5.0
             w_bcd = 2.0
             w_440 = 0.0
+        
+        # === VOTE 0: Test Signal Detection (minutes 8/44 only) ===
+        if w_test > 0 and result.test_signal_detected:
+            # Test signal provides definitive station identification
+            if result.test_signal_station == 'WWV':
+                wwv_score += w_test
+            elif result.test_signal_station == 'WWVH':
+                wwvh_score += w_test
+            total_weight += w_test
+            
+            logger.debug(f"Test signal vote: station={result.test_signal_station}, "
+                        f"confidence={result.test_signal_confidence:.3f}")
         
         # === VOTE 1: 440 Hz Tone Detection ===
         if w_440 > 0:
@@ -987,6 +1023,281 @@ class WWVHDiscriminator:
         
         return results
     
+    def extract_per_tick_phases(
+        self,
+        iq_samples: np.ndarray,
+        sample_rate: int,
+        snr_threshold_db: float = 0.0  # Lowered from 10 dB - uses narrow noise band reference
+    ) -> Dict:
+        """
+        Extract per-second tick phases for Doppler estimation.
+        
+        This method extracts the complex amplitude (phasor) of the 1000 Hz (WWV) and
+        1200 Hz (WWVH) tones from each 5ms tick, providing 58 phase measurements per
+        minute (seconds 1-58, skipping second 0 which has the 800ms marker tone).
+        
+        Args:
+            iq_samples: Full minute of complex IQ samples (16 kHz, 60 seconds)
+            sample_rate: Sample rate in Hz (typically 16000)
+            snr_threshold_db: Minimum SNR for reliable phase measurement (default 0 dB)
+            
+        Returns:
+            Dictionary with per-tick phase measurements for WWV and WWVH
+        """
+        # AM demodulation
+        magnitude = np.abs(iq_samples)
+        audio_signal = magnitude - np.mean(magnitude)  # AC coupling
+        
+        # Remove harmonic-generating tones (440/500/600 Hz)
+        b_440, a_440 = iirnotch(440, 20, sample_rate)
+        audio_signal = filtfilt(b_440, a_440, audio_signal)
+        b_500, a_500 = iirnotch(500, 20, sample_rate)
+        audio_signal = filtfilt(b_500, a_500, audio_signal)
+        b_600, a_600 = iirnotch(600, 20, sample_rate)
+        audio_signal = filtfilt(b_600, a_600, audio_signal)
+        
+        samples_per_second = sample_rate
+        tick_duration_samples = int(0.005 * sample_rate)  # 5ms tick
+        
+        # FFT parameters for fine frequency resolution
+        # Zero-pad to 1 second for 1 Hz resolution
+        padded_length = sample_rate
+        
+        wwv_phases = []
+        wwvh_phases = []
+        wwv_complex_amps = []
+        wwvh_complex_amps = []
+        noise_estimates = []
+        
+        # Process seconds 1-58 (skip second 0 with 800ms marker, and 59 for safety margin)
+        for second in range(1, 59):
+            start_sample = second * samples_per_second
+            end_sample = start_sample + tick_duration_samples
+            
+            if end_sample > len(audio_signal):
+                break
+            
+            # Extract 5ms tick and apply Hann window
+            tick_samples = audio_signal[start_sample:end_sample]
+            windowed_tick = tick_samples * np.hanning(len(tick_samples))
+            
+            # Zero-pad to 1 second for 1 Hz FFT resolution
+            padded_tick = np.pad(windowed_tick, (0, padded_length - len(windowed_tick)), mode='constant')
+            
+            # FFT to extract complex amplitudes
+            fft_result = rfft(padded_tick)
+            freqs = rfftfreq(padded_length, 1/sample_rate)
+            
+            # Extract complex values at WWV (1000 Hz) and WWVH (1200 Hz)
+            wwv_freq_idx = np.argmin(np.abs(freqs - 1000.0))
+            wwvh_freq_idx = np.argmin(np.abs(freqs - 1200.0))
+            
+            wwv_complex = fft_result[wwv_freq_idx]
+            wwvh_complex = fft_result[wwvh_freq_idx]
+            
+            # Measure noise in 825-875 Hz guard band
+            noise_low_idx = np.argmin(np.abs(freqs - 825.0))
+            noise_high_idx = np.argmin(np.abs(freqs - 875.0))
+            noise_bins = fft_result[noise_low_idx:noise_high_idx]
+            
+            if len(noise_bins) > 0:
+                noise_power = np.mean(np.abs(noise_bins)**2)
+                noise_estimates.append(noise_power)
+            else:
+                noise_power = 1e-12
+            
+            # Calculate SNR for each tone
+            wwv_power = np.abs(wwv_complex)**2
+            wwvh_power = np.abs(wwvh_complex)**2
+            
+            wwv_snr_db = 10 * np.log10(wwv_power / noise_power) if noise_power > 0 else -100
+            wwvh_snr_db = 10 * np.log10(wwvh_power / noise_power) if noise_power > 0 else -100
+            
+            # Debug: Print first tick's SNR values to stderr
+            if second == 1:
+                import sys
+                print(f"DEBUG {self.channel_name}: Phase SNR: WWV={wwv_snr_db:.1f}dB, WWVH={wwvh_snr_db:.1f}dB (threshold={snr_threshold_db}dB)", file=sys.stderr)
+            
+            # Extract phase (only if SNR is sufficient for reliable measurement)
+            wwv_phase = np.angle(wwv_complex)
+            wwvh_phase = np.angle(wwvh_complex)
+            
+            # Store results with SNR qualification
+            if wwv_snr_db >= snr_threshold_db:
+                wwv_phases.append((second, float(wwv_phase), float(wwv_snr_db)))
+                wwv_complex_amps.append((second, complex(wwv_complex)))
+            
+            if wwvh_snr_db >= snr_threshold_db:
+                wwvh_phases.append((second, float(wwvh_phase), float(wwvh_snr_db)))
+                wwvh_complex_amps.append((second, complex(wwvh_complex)))
+        
+        # Calculate noise floor
+        noise_floor_db = 10 * np.log10(np.mean(noise_estimates)) if noise_estimates else -100
+        
+        # Log at INFO level if one station has significantly fewer phases
+        if len(wwv_phases) < 10 or len(wwvh_phases) < 10:
+            # Get average SNR for debugging
+            avg_wwv_snr = np.mean([p[2] for p in wwv_phases]) if wwv_phases else -100
+            avg_wwvh_snr = np.mean([p[2] for p in wwvh_phases]) if wwvh_phases else -100
+            logger.info(f"{self.channel_name}: Phase extraction: WWV={len(wwv_phases)} (avg SNR {avg_wwv_snr:.1f}dB), "
+                       f"WWVH={len(wwvh_phases)} (avg SNR {avg_wwvh_snr:.1f}dB), "
+                       f"threshold={snr_threshold_db} dB, noise_floor={noise_floor_db:.1f} dB")
+        else:
+            logger.debug(f"{self.channel_name}: Extracted {len(wwv_phases)} WWV and {len(wwvh_phases)} WWVH "
+                        f"tick phases (SNR threshold={snr_threshold_db} dB, noise floor={noise_floor_db:.1f} dB)")
+        
+        return {
+            'wwv_phases': wwv_phases,
+            'wwvh_phases': wwvh_phases,
+            'wwv_complex': wwv_complex_amps,
+            'wwvh_complex': wwvh_complex_amps,
+            'valid_tick_count': max(len(wwv_phases), len(wwvh_phases)),
+            'noise_floor_db': float(noise_floor_db)
+        }
+    
+    def estimate_doppler_shift_from_ticks(
+        self,
+        iq_samples: np.ndarray,
+        sample_rate: int,
+        snr_threshold_db: float = 0.0  # Lowered from 10 dB - per-tick SNR uses different noise ref
+    ) -> Optional[Dict[str, float]]:
+        """
+        Estimate instantaneous Doppler shift from per-tick phase progression.
+        
+        Uses the adjacent pulse phase difference method:
+            Δf_D,k = Δφ_k / (2π × 1s)
+        
+        where Δφ_k is the unwrapped phase difference between tick k and tick k-1.
+        
+        This provides ~57 instantaneous Doppler measurements per minute, enabling
+        accurate determination of the maximum coherent integration window:
+            T_max ≈ 1 / (4 × |Δf_D|)
+        
+        Args:
+            iq_samples: Full minute of complex IQ samples
+            sample_rate: Sample rate in Hz
+            snr_threshold_db: Minimum SNR for reliable phase tracking
+            
+        Returns:
+            Dictionary with:
+                - wwv_doppler_hz: Mean Doppler shift for WWV (Hz)
+                - wwvh_doppler_hz: Mean Doppler shift for WWVH (Hz)
+                - wwv_doppler_std_hz: Doppler variability (Hz)
+                - wwvh_doppler_std_hz: Doppler variability (Hz)
+                - max_coherent_window_sec: Maximum window for π/4 phase error
+                - doppler_quality: Confidence metric (0-1)
+                - phase_variance_rad: RMS phase deviation from linear fit
+                - instantaneous_doppler: List of per-second Doppler measurements
+            Returns None if insufficient high-SNR ticks available
+        """
+        # Extract per-tick phases
+        tick_data = self.extract_per_tick_phases(iq_samples, sample_rate, snr_threshold_db)
+        
+        wwv_phases = tick_data['wwv_phases']
+        wwvh_phases = tick_data['wwvh_phases']
+        
+        if len(wwv_phases) < 10 and len(wwvh_phases) < 10:
+            logger.debug(f"{self.channel_name}: Insufficient high-SNR ticks for Doppler estimation "
+                        f"(WWV: {len(wwv_phases)}, WWVH: {len(wwvh_phases)})")
+            return None
+        
+        def compute_doppler_from_phases(phases_list):
+            """Compute Doppler shift from list of (second, phase, snr) tuples."""
+            if len(phases_list) < 10:
+                return None, None, None, []
+            
+            # Extract times and phases
+            times = np.array([p[0] for p in phases_list])
+            phases = np.array([p[1] for p in phases_list])
+            
+            # Unwrap phases to handle 2π discontinuities
+            phases_unwrapped = np.unwrap(phases)
+            
+            # Method 1: Linear regression for mean Doppler
+            # φ(t) = 2π·Δf_D·t + φ₀
+            coeffs = np.polyfit(times, phases_unwrapped, deg=1)
+            mean_doppler_hz = coeffs[0] / (2 * np.pi)
+            
+            # Method 2: Adjacent difference for instantaneous Doppler
+            # Δf_D,k = (φ_k - φ_{k-1}) / (2π × Δt)
+            instantaneous_doppler = []
+            for i in range(1, len(phases_list)):
+                dt = times[i] - times[i-1]
+                if dt > 0:
+                    dphi = phases_unwrapped[i] - phases_unwrapped[i-1]
+                    inst_doppler = dphi / (2 * np.pi * dt)
+                    instantaneous_doppler.append({
+                        'second': int(times[i]),
+                        'doppler_hz': float(inst_doppler),
+                        'snr_db': float(phases_list[i][2])
+                    })
+            
+            # Doppler variability (standard deviation)
+            if instantaneous_doppler:
+                doppler_values = [d['doppler_hz'] for d in instantaneous_doppler]
+                doppler_std = np.std(doppler_values)
+            else:
+                doppler_std = 0.0
+            
+            # Phase fit quality
+            fit_phases = np.polyval(coeffs, times)
+            residuals = phases_unwrapped - fit_phases
+            phase_variance = np.var(residuals)
+            
+            return mean_doppler_hz, doppler_std, phase_variance, instantaneous_doppler
+        
+        # Compute for WWV
+        wwv_doppler, wwv_std, wwv_var, wwv_inst = compute_doppler_from_phases(wwv_phases)
+        
+        # Compute for WWVH
+        wwvh_doppler, wwvh_std, wwvh_var, wwvh_inst = compute_doppler_from_phases(wwvh_phases)
+        
+        # Use whichever station has more valid measurements
+        if wwv_doppler is None and wwvh_doppler is None:
+            return None
+        
+        # Default to 0 if one station missing
+        wwv_doppler = wwv_doppler or 0.0
+        wwvh_doppler = wwvh_doppler or 0.0
+        wwv_std = wwv_std or 0.0
+        wwvh_std = wwvh_std or 0.0
+        wwv_var = wwv_var or 0.0
+        wwvh_var = wwvh_var or 0.0
+        
+        # Calculate maximum coherent integration window
+        # Limit phase error to π/4 (45°) for <3 dB coherent loss
+        # T_max = π/4 / (2π × |Δf_D|) = 1 / (8 × |Δf_D|)
+        max_doppler = max(abs(wwv_doppler), abs(wwvh_doppler))
+        if max_doppler > 0.001:  # Avoid division by zero
+            max_coherent_window = 1.0 / (8.0 * max_doppler)
+        else:
+            max_coherent_window = 60.0  # Stable channel, no Doppler limit
+        
+        # Clamp to reasonable range
+        max_coherent_window = min(max_coherent_window, 60.0)
+        
+        # Quality metric from phase fit residuals
+        # Quality: 1.0 = perfect fit, 0.0 = random phase (variance = π²/3)
+        phase_variance = max(wwv_var, wwvh_var)
+        doppler_quality = max(0.0, min(1.0, 1.0 - (phase_variance / (np.pi**2 / 3))))
+        
+        logger.info(f"{self.channel_name}: Doppler estimate (per-tick): "
+                   f"WWV={wwv_doppler:+.4f}±{wwv_std:.4f} Hz, "
+                   f"WWVH={wwvh_doppler:+.4f}±{wwvh_std:.4f} Hz, "
+                   f"T_max={max_coherent_window:.1f}s, quality={doppler_quality:.2f}")
+        
+        return {
+            'wwv_doppler_hz': float(wwv_doppler),
+            'wwvh_doppler_hz': float(wwvh_doppler),
+            'wwv_doppler_std_hz': float(wwv_std),
+            'wwvh_doppler_std_hz': float(wwvh_std),
+            'max_coherent_window_sec': float(max_coherent_window),
+            'doppler_quality': float(doppler_quality),
+            'phase_variance_rad': float(np.sqrt(phase_variance)),
+            'wwv_instantaneous_doppler': wwv_inst,
+            'wwvh_instantaneous_doppler': wwvh_inst
+        }
+    
     def estimate_doppler_shift(
         self,
         tick_results: List[Dict[str, float]]
@@ -1043,7 +1354,7 @@ class WWVHDiscriminator:
         # Repeat for WWVH
         wwvh_unwrapped = np.unwrap(wwvh_phases) if len(wwvh_phases) >= 10 else wwv_unwrapped
         wwvh_coeffs = np.polyfit(times_sec, wwvh_unwrapped, deg=1) if len(wwvh_phases) >= 10 else wwv_coeffs
-        wwvh_doppler_hz = wwvh_coeffs[1] / (2 * np.pi)
+        wwvh_doppler_hz = wwvh_coeffs[0] / (2 * np.pi)  # [0] is slope, [1] is intercept
         
         # Calculate maximum coherent integration window
         # Limit phase error to π/4 (45°) for <3 dB coherent loss
@@ -1080,8 +1391,8 @@ class WWVHDiscriminator:
         minute_timestamp: float,
         frequency_mhz: Optional[float] = None,
         window_seconds: float = 10,
-        step_seconds: float = 3,
-        adaptive: bool = True,
+        step_seconds: float = 1,
+        adaptive: bool = False,
         enable_single_station_detection: bool = True
     ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], List[Dict[str, float]]]:
         """
@@ -1091,21 +1402,21 @@ class WWVHDiscriminator:
         By cross-correlating the received 100 Hz signal against the expected template,
         we get two peaks separated by the ionospheric differential delay (~10-20ms).
         
-        DISCRIMINATION-FIRST PHILOSOPHY:
-        Default uses 60-second windows (full minute) for maximum discrimination sensitivity.
-        This provides √36 = 6x SNR improvement over 10-second windows (+7.8 dB), critical for
-        weak signal discrimination. Temporal resolution is secondary to confident discrimination.
+        COHERENCE-LIMITED WINDOWING (2025-11-26 fix):
+        Default uses 10-second windows with 1-second sliding steps. This keeps T_int
+        within typical HF ionospheric coherence time (Tc ~10-20s), preventing Doppler-
+        induced phase rotation from destroying correlation quality.
         
-        BASELINE (60 seconds):
-        - Maximizes SNR for weak signal discrimination
-        - Single measurement per minute (non-overlapping)
-        - Aligns with station timing (full BCD time code)
-        - All 60 second-ticks available for correlation
+        WHY 10 SECONDS:
+        - Within typical HF coherence time (Tc ~10-20s for quiet ionosphere)
+        - Provides √10 = 3.2x SNR improvement over 1-second (+5 dB)
+        - 1-second sliding step produces ~50 windows/minute for time-series tracking
+        - Captures propagation dynamics (fading, multipath variations)
         
-        FUTURE ADAPTIVE WINDOWING:
-        Once confident discrimination established (confidence >0.7 for 5+ minutes),
-        system may progressively shorten windows (60→30→20→15→10 sec) to increase
-        granularity while monitoring confidence. Reverts to 60 sec if confidence drops.
+        WHY NOT 60 SECONDS:
+        - Exceeds Tc under typical conditions, causing phase rotation
+        - Doppler shift of ±0.1 Hz causes 37.7 radians rotation over 60s
+        - Averages over multiple fading periods, destroying amplitude information
         
         This method completely avoids the 1000/1200 Hz time marker tone separation problem!
         The 100 Hz BCD signal is the actual carrier.
@@ -1115,9 +1426,9 @@ class WWVHDiscriminator:
             sample_rate: Sample rate in Hz (typically 16000)
             minute_timestamp: UTC timestamp of minute boundary
             frequency_mhz: Operating frequency for geographic ToA prediction (optional)
-            window_seconds: Integration window length (default 10s, adjust based on conditions)
-            step_seconds: Sliding step size (default 3s for efficiency)
-            adaptive: Enable adaptive window recommendations (default True)
+            window_seconds: Integration window length (default 10s, within typical Tc)
+            step_seconds: Sliding step size (default 1s for high-resolution time-series)
+            adaptive: Enable adaptive window recommendations (default False, use Doppler-adaptive wrapper)
             enable_single_station_detection: Use geographic predictor for single peaks (default True)
             
         Returns:
@@ -1179,21 +1490,34 @@ class WWVHDiscriminator:
                 correlation = scipy_signal.correlate(signal_window, template_window, mode='full', method='fft')
                 correlation = np.abs(correlation)
                 
-                # Find two strongest peaks
-                mean_corr = np.mean(correlation)
-                std_corr = np.std(correlation)
-                # Lower threshold for better sensitivity with 53-second integration
-                # 1.0*std instead of 2.0*std matches tone detector sensitivity
-                threshold = mean_corr + 1.0 * std_corr
+                # CRITICAL: Restrict peak search to near zero-lag
+                # Zero-lag is at index len(template_window) - 1
+                # Propagation delay is typically 0-100ms, differential delay ~5-30ms
+                # Search within ±150ms of zero-lag to find the two station peaks
+                zero_lag_idx = len(template_window) - 1
+                search_radius_samples = int(0.150 * sample_rate)  # ±150ms
+                search_start = max(0, zero_lag_idx - search_radius_samples)
+                search_end = min(len(correlation), zero_lag_idx + search_radius_samples)
                 
-                min_peak_distance = int(0.005 * sample_rate)  # 5ms minimum
+                # Extract the search region
+                search_region = correlation[search_start:search_end]
                 
-                peaks, properties = scipy_signal.find_peaks(
-                    correlation,
+                # Find peaks in the restricted region
+                mean_corr = np.mean(search_region)
+                std_corr = np.std(search_region)
+                threshold = mean_corr + 0.5 * std_corr  # Lower threshold for sensitivity
+                
+                min_peak_distance = int(0.003 * sample_rate)  # 3ms minimum (was 5ms)
+                
+                peaks_local, properties = scipy_signal.find_peaks(
+                    search_region,
                     height=threshold,
                     distance=min_peak_distance,
-                    prominence=std_corr * 0.3  # Reduced from 0.5 for better sensitivity
+                    prominence=std_corr * 0.2  # Lower prominence for better sensitivity
                 )
+                
+                # Convert local peak indices back to full correlation indices
+                peaks = peaks_local + search_start
                 
                 # Handle both dual-peak (both stations) and single-peak (one station) scenarios
                 if len(peaks) >= 2:
@@ -1205,19 +1529,28 @@ class WWVHDiscriminator:
                     peak1_idx = sorted_indices[0]
                     peak2_idx = sorted_indices[1]
                     
-                    peak1_time = peaks[peak1_idx] / sample_rate
-                    peak2_time = peaks[peak2_idx] / sample_rate
+                    # Peak times relative to zero-lag (positive = signal delayed from template)
+                    peak1_time = (peaks[peak1_idx] - zero_lag_idx) / sample_rate
+                    peak2_time = (peaks[peak2_idx] - zero_lag_idx) / sample_rate
                     
                     delay_ms = (peak2_time - peak1_time) * 1000
                     
-                    if 5 <= delay_ms <= 30:
+                    # Log rejection reasons for debugging sparse detections
+                    if delay_ms < 3 or delay_ms > 35:
+                        logger.debug(f"{self.channel_name}: BCD window {window_start_time:.0f}s: delay {delay_ms:.1f}ms outside 3-35ms range")
+                    
+                    if 3 <= delay_ms <= 35:  # Relaxed from 5-30ms to 3-35ms
                         # Joint Least Squares Estimation to overcome temporal leakage
-                        # At each peak, we measure: C(τ) = A_WWV*R(τ-τ_WWV) + A_WWVH*R(τ-τ_WWVH)
-                        # This forms a 2x2 linear system we solve for A_WWV and A_WWVH
+                        # At each peak, we measure: C(τ) = A_early*R(τ-τ_early) + A_late*R(τ-τ_late)
+                        # This forms a 2x2 linear system we solve for A_early and A_late
                         
-                        # Get correlation values at both peaks
-                        c_peak1 = float(peak_heights[peak1_idx])
-                        c_peak2 = float(peak_heights[peak2_idx])
+                        # Get correlation values at both peaks (peak1=early, peak2=late)
+                        c_peak_early = float(peak_heights[peak1_idx])
+                        c_peak_late = float(peak_heights[peak2_idx])
+                        
+                        # Peak times relative to zero-lag (for geographic classification)
+                        peak_early_delay_ms = peak1_time * 1000
+                        peak_late_delay_ms = peak2_time * 1000
                         
                         # Compute template autocorrelation at delay Δτ
                         delay_samples = int(delay_ms * sample_rate / 1000)
@@ -1233,31 +1566,57 @@ class WWVHDiscriminator:
                         else:
                             R_delta = 0.0
                         
-                        # Set up the 2x2 system: [R(0) R(Δτ)] [A_WWV  ] = [C(τ_WWV) ]
-                        #                        [R(Δτ) R(0) ] [A_WWVH]   [C(τ_WWVH)]
+                        # Set up the 2x2 system: [R(0) R(Δτ)] [A_early] = [C(τ_early)]
+                        #                        [R(Δτ) R(0) ] [A_late ]   [C(τ_late) ]
                         # Note: R(-Δτ) = R(Δτ) due to autocorrelation symmetry
                         
                         if R_0 > 0:
                             # Solve the linear system
                             A_matrix = np.array([[R_0, R_delta],
                                                [R_delta, R_0]])
-                            b_vector = np.array([c_peak1, c_peak2])
+                            b_vector = np.array([c_peak_early, c_peak_late])
                             
                             try:
                                 amplitudes = np.linalg.solve(A_matrix, b_vector)
-                                wwv_amp = float(amplitudes[0])
-                                wwvh_amp = float(amplitudes[1])
+                                early_amp = float(amplitudes[0])
+                                late_amp = float(amplitudes[1])
                                 
                                 # Normalize by sqrt(template energy) for physical units
-                                wwv_amp = wwv_amp / np.sqrt(R_0)
-                                wwvh_amp = wwvh_amp / np.sqrt(R_0)
+                                early_amp = early_amp / np.sqrt(R_0)
+                                late_amp = late_amp / np.sqrt(R_0)
+                                
+                                # Amplitudes must be non-negative (use absolute value)
+                                early_amp = abs(early_amp)
+                                late_amp = abs(late_amp)
                             except np.linalg.LinAlgError:
                                 # Matrix is singular, fall back to naive method
-                                wwv_amp = c_peak1 / np.sqrt(R_0)
-                                wwvh_amp = c_peak2 / np.sqrt(R_0)
+                                early_amp = abs(c_peak_early / np.sqrt(R_0))
+                                late_amp = abs(c_peak_late / np.sqrt(R_0))
                         else:
-                            wwv_amp = 0.0
-                            wwvh_amp = 0.0
+                            early_amp = 0.0
+                            late_amp = 0.0
+                        
+                        # GEOGRAPHIC PEAK ASSIGNMENT: Use ToA prediction to assign WWV/WWVH
+                        # The geographic predictor uses receiver location to determine which
+                        # station should arrive first based on propagation delay
+                        if self.geo_predictor and frequency_mhz:
+                            early_station, late_station = self.geo_predictor.classify_dual_peaks(
+                                peak_early_delay_ms, peak_late_delay_ms,
+                                early_amp, late_amp,
+                                frequency_mhz
+                            )
+                            if early_station == 'WWV':
+                                wwv_amp = early_amp
+                                wwvh_amp = late_amp
+                            else:
+                                wwv_amp = late_amp
+                                wwvh_amp = early_amp
+                        else:
+                            # Fallback: Assume WWV arrives first (common for US receivers)
+                            # This is a heuristic that works for most continental US locations
+                            wwv_amp = early_amp
+                            wwvh_amp = late_amp
+                            logger.debug(f"{self.channel_name}: No geo predictor, assuming early=WWV")
                         
                         # Safety check for NaN/Inf values (breaks JSON)
                         if not np.isfinite(wwv_amp):
@@ -1267,7 +1626,7 @@ class WWVHDiscriminator:
                         
                         # Quality from correlation SNR
                         noise_floor = np.median(correlation)
-                        quality = (c_peak1 + c_peak2) / (2 * noise_floor) if noise_floor > 0 else 0.0
+                        quality = (c_peak_early + c_peak_late) / (2 * noise_floor) if noise_floor > 0 else 0.0
                         
                         if not np.isfinite(quality):
                             quality = 0.0
@@ -1320,17 +1679,18 @@ class WWVHDiscriminator:
                                 wwv_amp, wwvh_amp
                             )
                 
-                elif len(peaks) == 1 and enable_single_station_detection and self.geo_predictor and frequency_mhz:
-                    # SINGLE PEAK: Try to classify using geographic ToA prediction
+                elif len(peaks) == 1 and enable_single_station_detection:
+                    # SINGLE PEAK: One station detected
                     peak_idx = 0
-                    peak_time = peaks[peak_idx] / sample_rate
+                    # Peak time relative to zero-lag
+                    peak_time = (peaks[peak_idx] - zero_lag_idx) / sample_rate
                     peak_delay_ms = peak_time * 1000
-                    peak_height = float(peak_heights[peak_idx])
+                    peak_height = float(properties['peak_heights'][peak_idx])
                     
                     # Normalize amplitude
                     R_0 = float(np.sum(template_window**2))
                     if R_0 > 0:
-                        peak_amplitude = peak_height / np.sqrt(R_0)
+                        peak_amplitude = abs(peak_height / np.sqrt(R_0))
                     else:
                         continue  # Skip if template energy is zero
                     
@@ -1338,10 +1698,12 @@ class WWVHDiscriminator:
                     noise_floor = np.median(correlation)
                     quality = peak_height / noise_floor if noise_floor > 0 else 0.0
                     
-                    # Classify the single peak
-                    station = self.geo_predictor.classify_single_peak(
-                        peak_delay_ms, peak_amplitude, frequency_mhz, quality
-                    )
+                    # Try to classify using geographic predictor if available
+                    station = None
+                    if self.geo_predictor and frequency_mhz:
+                        station = self.geo_predictor.classify_single_peak(
+                            peak_delay_ms, peak_amplitude, frequency_mhz, quality
+                        )
                     
                     if station == 'WWV':
                         windows_data.append({
@@ -1363,7 +1725,18 @@ class WWVHDiscriminator:
                             'detection_type': 'single_peak_wwvh',
                             'peak_delay_ms': float(peak_delay_ms)
                         })
-                    # else: station is None (ambiguous/unclassified), skip this window
+                    else:
+                        # Unclassified single peak - record as dominant station based on location
+                        # Default to WWV for US receivers (closer to Colorado than Hawaii)
+                        windows_data.append({
+                            'window_start_sec': float(window_start_time),
+                            'wwv_amplitude': peak_amplitude,
+                            'wwvh_amplitude': 0.0,
+                            'differential_delay_ms': None,
+                            'correlation_quality': float(quality),
+                            'detection_type': 'single_peak_unclassified',
+                            'peak_delay_ms': float(peak_delay_ms)
+                        })
             
             # Step 5: Compute summary statistics from all valid windows
             if not windows_data:
@@ -1372,12 +1745,12 @@ class WWVHDiscriminator:
             
             wwv_amps = [w['wwv_amplitude'] for w in windows_data]
             wwvh_amps = [w['wwvh_amplitude'] for w in windows_data]
-            delays = [w['differential_delay_ms'] for w in windows_data]
+            delays = [w['differential_delay_ms'] for w in windows_data if w['differential_delay_ms'] is not None]
             qualities = [w['correlation_quality'] for w in windows_data]
             
             wwv_amp_mean = float(np.mean(wwv_amps))
             wwvh_amp_mean = float(np.mean(wwvh_amps))
-            delay_mean = float(np.mean(delays))
+            delay_mean = float(np.mean(delays)) if delays else None
             quality_mean = float(np.mean(qualities))
             
             # Adaptive windowing: Adjust window size based on signal conditions
@@ -1441,6 +1814,12 @@ class WWVHDiscriminator:
         Uses ionospheric Doppler shift to determine maximum coherent integration
         window, preventing phase rotation from degrading correlation quality.
         
+        CRITICAL FIX (2025-11-26): Changed default from 60s non-overlapping to 10s
+        sliding windows. The 60s window exceeded typical HF coherence time (Tc ~10-20s),
+        causing Doppler-induced phase rotation to destroy correlation. Now defaults to
+        10s windows with 1s steps, producing ~50 measurements/minute for time-series
+        tracking of propagation dynamics.
+        
         Args:
             iq_samples: Full minute of complex IQ samples
             sample_rate: Sample rate in Hz
@@ -1451,26 +1830,36 @@ class WWVHDiscriminator:
         Returns:
             Tuple of (wwv_amp_mean, wwvh_amp_mean, delay_mean, quality_mean, windows_list)
         """
-        # Adaptive window sizing based on Doppler limits
-        window_seconds = 60.0  # Default: full minute for maximum SNR
+        # 1. Determine Window Size (T_int)
+        # Default to 10 seconds - within typical HF coherence time (Tc ~10-20s)
+        # This prevents Doppler-induced phase rotation from destroying correlation
+        window_seconds = 10.0  # Safe default within typical Tc
         
         if doppler_info and 'max_coherent_window_sec' in doppler_info:
-            # Limit window to prevent >π/4 phase rotation
+            # Use Doppler-derived coherence limit, clamped to [10s, 20s]
+            # Even with stable channel, >20s risks averaging over fading periods
             doppler_limit = doppler_info['max_coherent_window_sec']
-            if doppler_limit < 60.0:
-                window_seconds = max(10.0, min(doppler_limit, 60.0))  # Clamp to [10, 60] sec
-                logger.info(f"{self.channel_name}: Doppler-limited BCD window to {window_seconds:.1f}s "
-                           f"(Δf_D={doppler_info['wwv_doppler_hz']:+.3f} Hz, "
-                           f"quality={doppler_info['doppler_quality']:.2f})")
+            window_seconds = max(10.0, min(doppler_limit, 20.0))
+            
+            logger.info(f"{self.channel_name}: Doppler-limited BCD window to {window_seconds:.1f}s "
+                       f"(Δf_D={doppler_info.get('wwv_doppler_hz', 0):+.3f} Hz, "
+                       f"quality={doppler_info.get('doppler_quality', 0):.2f})")
+        
+        # 2. Determine Slide Step (T_slide)
+        # Use 1-second sliding step for high-resolution time-series tracking
+        # This produces ~50 windows/minute, capturing propagation dynamics
+        step_seconds = 1.0
+        
+        logger.debug(f"{self.channel_name}: BCD correlation: T_int={window_seconds:.1f}s, T_slide={step_seconds:.1f}s")
         
         return self.bcd_correlation_discrimination(
             iq_samples=iq_samples,
             sample_rate=sample_rate,
             minute_timestamp=minute_timestamp,
             frequency_mhz=frequency_mhz,
-            window_seconds=window_seconds,  # Doppler-adaptive!
-            step_seconds=min(window_seconds, 60),  # Non-overlapping
-            adaptive=False,  # Doppler adaptation replaces old adaptive logic
+            window_seconds=window_seconds,  # Now 10-20s (within Tc)
+            step_seconds=step_seconds,      # 1s sliding for time-series
+            adaptive=False,  # Doppler adaptation handles window sizing
             enable_single_station_detection=True
         )
     
@@ -1591,14 +1980,29 @@ class WWVHDiscriminator:
             logger.warning(f"{self.channel_name}: Tick detection failed: {e}")
             result.tick_windows_10sec = []
         
-        # PHASE 3.5: Estimate Doppler shift from tick phase progression
+        # PHASE 3.5: Estimate Doppler shift from per-tick phase progression
+        # Uses adjacent pulse phase difference method for accurate Δf_D measurement
         # This determines maximum coherent integration window for BCD analysis
         doppler_info = None
-        if result.tick_windows_10sec:
-            try:
-                doppler_info = self.estimate_doppler_shift(result.tick_windows_10sec)
-            except Exception as e:
-                logger.debug(f"{self.channel_name}: Doppler estimation failed: {e}")
+        try:
+            # New method: extract per-tick phases directly from IQ samples
+            # Provides ~57 instantaneous Doppler measurements per minute
+            doppler_info = self.estimate_doppler_shift_from_ticks(iq_samples, sample_rate)
+            
+            # Store Doppler info in result for CSV logging and web UI display
+            if doppler_info:
+                result.doppler_wwv_hz = doppler_info.get('wwv_doppler_hz')
+                result.doppler_wwvh_hz = doppler_info.get('wwvh_doppler_hz')
+                result.doppler_wwv_std_hz = doppler_info.get('wwv_doppler_std_hz')
+                result.doppler_wwvh_std_hz = doppler_info.get('wwvh_doppler_std_hz')
+                result.doppler_max_coherent_window_sec = doppler_info.get('max_coherent_window_sec')
+                result.doppler_quality = doppler_info.get('doppler_quality')
+                result.doppler_phase_variance_rad = doppler_info.get('phase_variance_rad')
+                # Count valid ticks from the tick data extraction
+                tick_data = self.extract_per_tick_phases(iq_samples, sample_rate)
+                result.doppler_valid_tick_count = tick_data.get('valid_tick_count', 0)
+        except Exception as e:
+            logger.debug(f"{self.channel_name}: Doppler estimation failed: {e}")
         
         # PHASE 4: BCD discrimination using 100 Hz subcarrier analysis
         # Adaptive window sizing based on Doppler limits
@@ -1645,12 +2049,14 @@ class WWVHDiscriminator:
                 result.test_signal_multitone_score = test_detection.multitone_score
                 result.test_signal_chirp_score = test_detection.chirp_score
                 result.test_signal_snr_db = test_detection.snr_db
+                result.test_signal_toa_offset_ms = test_detection.toa_offset_ms
                 
                 if test_detection.detected:
+                    toa_str = f", ToA={test_detection.toa_offset_ms:+.2f}ms" if test_detection.toa_offset_ms else ""
+                    snr_str = f", SNR={test_detection.snr_db:.1f}dB" if test_detection.snr_db else ""
                     logger.info(f"{self.channel_name}: ✨ Test signal detected! "
-                               f"Station={test_detection.station}, "
-                               f"confidence={test_detection.confidence:.3f}, "
-                               f"SNR={test_detection.snr_db:.1f}dB")
+                               f"Station={test_detection.station} (schedule-based), "
+                               f"confidence={test_detection.confidence:.3f}{snr_str}{toa_str}")
                     
                     # High-confidence test signal overrides other methods
                     if test_detection.confidence > 0.7:

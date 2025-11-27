@@ -184,6 +184,14 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 ## Recent Updates
 
+**November 26, 2025 - Geographic BCD Discrimination & Spectrogram Solar Overlays** ✅
+- **Geographic Peak Assignment:** BCD dual-peak discrimination now uses geographic ToA prediction to correctly assign WWV/WWVH to early/late correlation peaks based on receiver location
+- **Test Signal ToA Offset:** Added time-of-arrival offset measurement for test signals (minutes :08/:44) providing high-precision ionospheric channel characterization
+- **Carrier Page Fixed:** Date picker now scans 10 Hz NPZ files in `analytics/{channel}/decimated/` instead of requiring pre-existing spectrograms
+- **Solar Zenith Overlays:** Spectrograms now include WWV path (red) and WWVH path (purple) solar elevation curves
+- **Spectrogram Generation:** `scripts/generate_spectrograms_from_10hz.py` generates 24-hour spectrograms from decimated NPZ files with automatic solar zenith overlay
+- See `CONTEXT.md` for technical details and next session goals
+
 **November 26, 2025 - Timing Dashboard & Wall Clock Stability** ✅
 - **Fixed:** `ntp_wall_clock_time` now uses stable RTP-derived prediction instead of jittery `time.time()` capture
 - **Result:** Sub-microsecond wall clock stability (was ±2 seconds due to packet arrival jitter)

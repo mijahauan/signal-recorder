@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Carrier Analysis - GRAPE Signal Recorder</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
   <style>
     * {
       margin: 0;
@@ -56,6 +58,7 @@
       gap: 10px;
       align-items: center;
       margin-top: 15px;
+      flex-wrap: wrap;
     }
     
     button {
@@ -139,52 +142,58 @@
       border-left-color: #e74c3c;
     }
     
-    .channel-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-      gap: 20px;
-    }
-    
-    .frequency-group {
-      display: contents;
-    }
-    
-    .frequency-group-label {
-      grid-column: 1 / -1;
-      font-size: 14px;
-      font-weight: 600;
-      color: #2c3e50;
-      margin: 20px 0 10px 0;
-      padding-bottom: 5px;
-      border-bottom: 2px solid #3498db;
-    }
-    
-    .channel-card {
+    .channel-detail {
       background: white;
       border-radius: 8px;
-      padding: 15px;
+      padding: 20px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
     
-    .channel-card.has-warning {
+    .channel-detail.has-warning {
       border-left: 4px solid #f39c12;
     }
     
-    .channel-card.has-critical {
+    .channel-detail.has-critical {
       border-left: 4px solid #e74c3c;
     }
     
     .channel-header {
-      font-size: 16px;
+      font-size: 20px;
       font-weight: 600;
       margin-bottom: 10px;
+    }
+    
+    .channel-subheader {
+      font-size: 13px;
+      color: #7f8c8d;
+      margin-bottom: 15px;
+    }
+    
+    .spectrogram-container {
+      margin: 15px 0;
     }
     
     .spectrogram {
       width: 100%;
       border-radius: 4px;
-      margin: 10px 0;
       background: #f8f9fa;
+    }
+    
+    .power-chart-container {
+      width: 100%;
+      height: 200px;
+      margin-top: 10px;
+      background: white;
+      border-radius: 4px;
+      padding: 10px;
+      border: 1px solid #ecf0f1;
+    }
+    
+    .chart-label {
+      font-size: 12px;
+      color: #7f8c8d;
+      margin-bottom: 5px;
+      font-weight: 500;
     }
     
     .metrics {
@@ -258,6 +267,12 @@
           <option value="">Loading...</option>
         </select>
       </label>
+      <label>
+        Channel: 
+        <select id="channel-picker">
+          <option value="">Loading...</option>
+        </select>
+      </label>
       <button id="btn-refresh">🔄 Refresh</button>
       <label style="margin-left: auto;">
         Auto-refresh: 
@@ -268,13 +283,18 @@
   </div>
   
   <div id="summary-banner"></div>
-  <div id="channel-grid" class="channel-grid"></div>
+  <div id="channel-detail"></div>
   <div id="loading" class="loading">Loading...</div>
 
   <script>
     let currentDate = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    let currentChannel = '';
     let autoRefreshInterval = null;
     let availableDates = [];
+    let allChannels = [];
+    let powerChart = null;
+    let solarZenithData = null;
+    let stationGridSquare = 'EM38ww'; // Default, will be updated from station info
     
     // Fetch available dates and populate dropdown
     async function loadAvailableDates() {
@@ -291,11 +311,14 @@
           return;
         }
         
-        // Add options for each date
+        // Add options for each date - show channels and spectrogram status
         availableDates.forEach(d => {
           const option = document.createElement('option');
           option.value = d.date;
-          option.textContent = `${d.formatted} (${d.count} spectrograms)`;
+          const spectroStatus = d.hasSpectrograms 
+            ? `📊 ${d.spectrogramCount} spectrograms` 
+            : `📁 ${d.count} channels`;
+          option.textContent = `${d.formatted} - ${spectroStatus}`;
           picker.appendChild(option);
         });
         
@@ -309,10 +332,54 @@
       }
     }
     
+    // Populate channel picker
+    function populateChannelPicker(channels) {
+      const picker = document.getElementById('channel-picker');
+      const previousValue = picker.value;
+      picker.innerHTML = '';
+      
+      if (channels.length === 0) {
+        picker.innerHTML = '<option value="">No channels available</option>';
+        return;
+      }
+      
+      // Sort channels: WWV first, then CHU, by frequency
+      const sorted = [...channels].sort((a, b) => {
+        const aIsWWV = a.name.startsWith('WWV');
+        const bIsWWV = b.name.startsWith('WWV');
+        if (aIsWWV && !bIsWWV) return -1;
+        if (!aIsWWV && bIsWWV) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      
+      sorted.forEach(ch => {
+        const option = document.createElement('option');
+        option.value = ch.name;
+        option.textContent = ch.name;
+        picker.appendChild(option);
+      });
+      
+      // Preserve selection or default to first
+      if (previousValue && sorted.some(c => c.name === previousValue)) {
+        picker.value = previousValue;
+        currentChannel = previousValue;
+      } else {
+        picker.value = sorted[0].name;
+        currentChannel = sorted[0].name;
+      }
+    }
+    
     // Date selection
-    document.getElementById('date-picker').addEventListener('change', (e) => {
+    document.getElementById('date-picker').addEventListener('change', async (e) => {
       currentDate = e.target.value;
+      await loadSolarZenith();  // Reload solar zenith for new date
       fetchData();
+    });
+    
+    // Channel selection
+    document.getElementById('channel-picker').addEventListener('change', (e) => {
+      currentChannel = e.target.value;
+      renderSelectedChannel();
     });
     
     document.getElementById('btn-refresh').addEventListener('click', () => {
@@ -331,8 +398,10 @@
       try {
         const response = await fetch(`/api/v1/carrier/quality?date=${currentDate}`);
         const data = await response.json();
+        allChannels = data.channels;
+        populateChannelPicker(allChannels);
         renderSummary(data.system_summary, data.channels);
-        renderChannels(data.channels);
+        renderSelectedChannel();
         document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
         document.getElementById('loading').style.display = 'none';
       } catch (err) {
@@ -397,114 +466,330 @@
       document.getElementById('summary-banner').innerHTML = html;
     }
     
-    function renderChannels(channels) {
-      let html = '';
+    async function renderSelectedChannel() {
+      const ch = allChannels.find(c => c.name === currentChannel);
+      if (!ch) {
+        document.getElementById('channel-detail').innerHTML = '<div class="loading">Select a channel</div>';
+        return;
+      }
       
-      // Group channels by base frequency for comparison
-      const groups = {};
-      channels.forEach(ch => {
-        const baseName = ch.name.replace(/ carrier$/, '');
-        if (!groups[baseName]) {
-          groups[baseName] = { wide: null, carrier: null };
-        }
-        if (ch.channel_type === 'carrier') {
-          groups[baseName].carrier = ch;
-        } else {
-          groups[baseName].wide = ch;
-        }
-      });
+      const hasWarning = ch.alerts.some(a => a.severity === 'warning');
+      const hasCritical = ch.alerts.some(a => a.severity === 'critical');
+      const cardClass = hasCritical ? 'has-critical' : (hasWarning ? 'has-warning' : '');
       
-      // Render grouped by frequency (WWV first, then CHU)
-      const wwvGroups = Object.keys(groups).filter(k => k.startsWith('WWV')).sort();
-      const chuGroups = Object.keys(groups).filter(k => k.startsWith('CHU')).sort();
-      const allGroups = [...wwvGroups, ...chuGroups];
+      let timingClass = 'timing-wall';
+      let timingLabel = ch.timing_quality;
+      if (ch.timing_quality === 'GPS_LOCKED' || ch.timing_quality === 'TONE_LOCKED') {
+        timingClass = 'timing-tone';
+        timingLabel = 'GPS';
+      } else if (ch.timing_quality === 'NTP_SYNCED') {
+        timingClass = 'timing-ntp';
+        timingLabel = 'NTP';
+      } else if (ch.timing_quality === 'WALL_CLOCK') {
+        timingClass = 'timing-wall';
+        timingLabel = 'WALL';
+      }
       
-      allGroups.forEach(baseName => {
-        const group = groups[baseName];
-        
-        // Add frequency group label
-        html += `<div class="frequency-group-label">📻 ${baseName} — 10 Hz Carrier Comparison</div>`;
-        
-        // Render wide channel first, then carrier
-        [group.wide, group.carrier].forEach(ch => {
-          if (!ch) return;
-        const hasWarning = ch.alerts.some(a => a.severity === 'warning');
-        const hasCritical = ch.alerts.some(a => a.severity === 'critical');
-        const cardClass = hasCritical ? 'has-critical' : (hasWarning ? 'has-warning' : '');
-        
-        let timingClass = 'timing-wall';
-        let timingLabel = ch.timing_quality;
-        if (ch.timing_quality === 'GPS_LOCKED' || ch.timing_quality === 'TONE_LOCKED') {
-          timingClass = 'timing-tone';
-          timingLabel = 'GPS';
-        } else if (ch.timing_quality === 'NTP_SYNCED') {
-          timingClass = 'timing-ntp';
-          timingLabel = 'NTP';
-        } else if (ch.timing_quality === 'WALL_CLOCK') {
-          timingClass = 'timing-wall';
-          timingLabel = 'WALL';
-        }
-        
-        let uploadClass = 'upload-current';
-        let uploadText = '✅ Current';
-        if (ch.upload_status === 'delayed') {
-          uploadClass = 'upload-delayed';
-          uploadText = '⏳ Delayed';
-        } else if (ch.upload_status === 'stalled') {
-          uploadClass = 'upload-stalled';
-          uploadText = '❌ Stalled';
-        }
-        
-        const completenessClass = ch.completeness_pct >= 95 ? 'status-good' : (ch.completeness_pct >= 90 ? 'status-warning' : 'status-critical');
-        
-        const channelTypeIcon = ch.channel_type === 'carrier' ? '📡' : '📶';
-        const channelTypeLabel = ch.channel_type === 'carrier' ? 'Native Carrier' : 'Wide (Decimated)';
-        
-        html += `
-          <div class="channel-card ${cardClass}">
-            <div class="channel-header">${channelTypeIcon} ${ch.name}</div>
-            <div style="font-size: 11px; color: #7f8c8d; margin: -5px 0 5px 0;">
-              <strong>${ch.source_type || channelTypeLabel}</strong> • ${ch.sample_rate || 'N/A'}
-            </div>
-            <img src="${ch.spectrogram_url}" alt="${ch.name} spectrogram" class="spectrogram" 
-                 onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22200%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22400%22 height=%22200%22/%3E%3Ctext x=%22200%22 y=%22100%22 text-anchor=%22middle%22 fill=%22%23999%22%3ESpectrogram not available%3C/text%3E%3C/svg%3E'">
-            <div class="metrics">
-              <div class="metric">
-                <div class="metric-label">Completeness</div>
-                <div class="metric-value ${completenessClass}">${ch.completeness_pct !== null ? ch.completeness_pct.toFixed(1) + '%' : 'N/A'}</div>
-              </div>
-              <div class="metric">
-                <div class="metric-label">Packet Loss</div>
-                <div class="metric-value">${ch.packet_loss_pct !== null ? ch.packet_loss_pct.toFixed(1) + '%' : 'N/A'}</div>
-              </div>
-              <div class="metric">
-                <div class="metric-label">Timing Quality</div>
-                <div class="metric-value"><span class="timing-badge ${timingClass}">${timingLabel}</span></div>
-              </div>
-              <div class="metric">
-                <div class="metric-label">Upload Status</div>
-                <div class="metric-value ${uploadClass}">${uploadText}</div>
-              </div>
-              <div class="metric">
-                <div class="metric-label">SNR</div>
-                <div class="metric-value">${ch.snr_db !== null ? ch.snr_db.toFixed(1) + ' dB' : 'N/A'}</div>
-              </div>
-              <div class="metric">
-                <div class="metric-label">Time Snap Age</div>
-                <div class="metric-value">${ch.time_snap_age_minutes !== null ? ch.time_snap_age_minutes + ' min' : 'N/A'}</div>
-              </div>
-            </div>
-            ${ch.alerts.length > 0 ? `
-              <div style="margin-top: 10px; padding: 8px; background: #fff3cd; border-radius: 4px; font-size: 12px;">
-                ${ch.alerts.map(a => `<div>⚠️ ${a.message}</div>`).join('')}
-              </div>
-            ` : ''}
+      let uploadClass = 'upload-current';
+      let uploadText = '✅ Current';
+      if (ch.upload_status === 'delayed') {
+        uploadClass = 'upload-delayed';
+        uploadText = '⏳ Delayed';
+      } else if (ch.upload_status === 'stalled') {
+        uploadClass = 'upload-stalled';
+        uploadText = '❌ Stalled';
+      }
+      
+      const completenessClass = ch.completeness_pct >= 95 ? 'status-good' : (ch.completeness_pct >= 90 ? 'status-warning' : 'status-critical');
+      const channelTypeIcon = ch.channel_type === 'carrier' ? '📡' : '📶';
+      const channelTypeLabel = ch.channel_type === 'carrier' ? 'Native Carrier' : 'Wide (Decimated)';
+      
+      const html = `
+        <div class="channel-detail ${cardClass}">
+          <div class="channel-header">${channelTypeIcon} ${ch.name}</div>
+          <div class="channel-subheader">
+            <strong>${ch.source_type || channelTypeLabel}</strong> • ${ch.sample_rate || 'N/A'}
           </div>
-        `;
-        });  // End inner forEach (wide/carrier)
-      });  // End outer forEach (frequency groups)
+          
+          <div class="metrics" style="grid-template-columns: repeat(6, 1fr); margin-bottom: 15px;">
+            <div class="metric">
+              <div class="metric-label">Completeness</div>
+              <div class="metric-value ${completenessClass}">${ch.completeness_pct !== null ? ch.completeness_pct.toFixed(1) + '%' : 'N/A'}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Packet Loss</div>
+              <div class="metric-value">${ch.packet_loss_pct !== null ? ch.packet_loss_pct.toFixed(1) + '%' : 'N/A'}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Timing Quality</div>
+              <div class="metric-value"><span class="timing-badge ${timingClass}">${timingLabel}</span></div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Upload Status</div>
+              <div class="metric-value ${uploadClass}">${uploadText}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">SNR</div>
+              <div class="metric-value">${ch.snr_db !== null ? ch.snr_db.toFixed(1) + ' dB' : 'N/A'}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Time Snap Age</div>
+              <div class="metric-value">${ch.time_snap_age_minutes !== null ? ch.time_snap_age_minutes + ' min' : 'N/A'}</div>
+            </div>
+          </div>
+          
+          ${ch.alerts.length > 0 ? `
+            <div style="margin-bottom: 15px; padding: 10px; background: #fff3cd; border-radius: 4px; font-size: 13px;">
+              ${ch.alerts.map(a => `<div>⚠️ ${a.message}</div>`).join('')}
+            </div>
+          ` : ''}
+          
+          <div class="spectrogram-container">
+            <div class="chart-label">📊 Spectrogram (10 Hz Decimated)</div>
+            <img src="${ch.spectrogram_url}?t=${Date.now()}" alt="${ch.name} spectrogram" class="spectrogram" 
+                 onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22800%22 height=%22300%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22800%22 height=%22300%22/%3E%3Ctext x=%22400%22 y=%22150%22 text-anchor=%22middle%22 fill=%22%23999%22%3ESpectrogram not available%3C/text%3E%3C/svg%3E'">
+          </div>
+          
+          <div class="chart-label">📈 10 Hz Carrier Power (dB) Over Time</div>
+          <div class="power-chart-container">
+            <canvas id="power-chart"></canvas>
+          </div>
+        </div>
+      `;
       
-      document.getElementById('channel-grid').innerHTML = html;
+      document.getElementById('channel-detail').innerHTML = html;
+      
+      // Fetch and render power data
+      await fetchAndRenderPowerChart(ch.name);
+    }
+    
+    async function fetchAndRenderPowerChart(channelName) {
+      try {
+        // Fetch 10Hz carrier power data
+        const response = await fetch(`/api/v1/channels/${encodeURIComponent(channelName)}/carrier-power/${currentDate}`);
+        const data = await response.json();
+        
+        if (!data.records || data.records.length === 0) {
+          const ctx = document.getElementById('power-chart');
+          if (ctx) {
+            ctx.parentElement.innerHTML = '<div style="text-align: center; padding: 40px; color: #7f8c8d;">No carrier power data available for this date</div>';
+          }
+          return;
+        }
+        
+        // Parse data for chart - convert timestamp strings to Date objects
+        const labels = [];
+        const powerData = [];
+        const peakData = [];
+        
+        data.records.forEach(record => {
+          // Parse timestamp: YYYYMMDDTHHMMSSZ
+          const ts = record.timestamp;
+          const year = parseInt(ts.slice(0, 4));
+          const month = parseInt(ts.slice(4, 6)) - 1;
+          const day = parseInt(ts.slice(6, 8));
+          const hour = parseInt(ts.slice(9, 11));
+          const min = parseInt(ts.slice(11, 13));
+          const sec = parseInt(ts.slice(13, 15));
+          const timestamp = new Date(Date.UTC(year, month, day, hour, min, sec));
+          
+          labels.push(timestamp);
+          powerData.push(record.power_db);
+          peakData.push(record.peak_db);
+        });
+        
+        // Destroy existing chart if present
+        if (powerChart) {
+          powerChart.destroy();
+        }
+        
+        const ctx = document.getElementById('power-chart');
+        if (!ctx) return;
+        
+        // Build datasets array - power data plus optional solar zenith
+        const datasets = [
+          {
+            label: 'Mean Power',
+            data: powerData,
+            borderColor: '#27ae60',
+            backgroundColor: 'rgba(39, 174, 96, 0.1)',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.1,
+            fill: true,
+            yAxisID: 'y'
+          },
+          {
+            label: 'Peak Power',
+            data: peakData,
+            borderColor: '#3498db',
+            backgroundColor: 'rgba(52, 152, 219, 0.05)',
+            borderWidth: 1,
+            pointRadius: 0,
+            tension: 0.1,
+            fill: false,
+            yAxisID: 'y'
+          }
+        ];
+        
+        // Add solar zenith overlay if available
+        if (solarZenithData && solarZenithData.timestamps) {
+          console.log('Adding solar zenith overlay with', solarZenithData.timestamps.length, 'points');
+          // Convert solar timestamps to Date objects
+          const solarLabels = solarZenithData.timestamps.map(ts => new Date(ts));
+          
+          datasets.push({
+            label: 'Solar Elev. (WWV path)',
+            data: solarLabels.map((t, i) => ({ x: t, y: solarZenithData.wwv_solar_elevation[i] })),
+            borderColor: '#e74c3c',
+            borderWidth: 3,
+            pointRadius: 0,
+            tension: 0.3,
+            fill: false,
+            yAxisID: 'y2'
+          });
+          
+          datasets.push({
+            label: 'Solar Elev. (WWVH path)',
+            data: solarLabels.map((t, i) => ({ x: t, y: solarZenithData.wwvh_solar_elevation[i] })),
+            borderColor: '#9b59b6',
+            borderWidth: 3,
+            pointRadius: 0,
+            tension: 0.3,
+            fill: false,
+            yAxisID: 'y2'
+          });
+        } else {
+          console.log('No solar zenith data available for carrier chart');
+        }
+        
+        powerChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: datasets
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              intersect: false,
+              mode: 'index'
+            },
+            plugins: {
+              legend: {
+                position: 'top',
+                labels: {
+                  boxWidth: 12,
+                  padding: 15
+                }
+              },
+              tooltip: {
+                callbacks: {
+                  title: (items) => {
+                    if (items.length > 0) {
+                      const d = new Date(items[0].parsed.x);
+                      return d.getUTCHours().toString().padStart(2,'0') + ':' +
+                             d.getUTCMinutes().toString().padStart(2,'0') + ' UTC';
+                    }
+                    return '';
+                  },
+                  label: (context) => {
+                    return `${context.dataset.label}: ${context.parsed.y.toFixed(1)} dB`;
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                type: 'time',
+                // Match spectrogram: full 24-hour day
+                min: new Date(Date.UTC(
+                  parseInt(currentDate.slice(0,4)),
+                  parseInt(currentDate.slice(4,6)) - 1,
+                  parseInt(currentDate.slice(6,8)),
+                  0, 0, 0
+                )),
+                max: new Date(Date.UTC(
+                  parseInt(currentDate.slice(0,4)),
+                  parseInt(currentDate.slice(4,6)) - 1,
+                  parseInt(currentDate.slice(6,8)),
+                  23, 59, 59
+                )),
+                time: {
+                  unit: 'hour',
+                  stepSize: 3,  // Match spectrogram: 3-hour intervals
+                  displayFormats: {
+                    hour: 'HH:mm'
+                  },
+                  tooltipFormat: 'HH:mm',
+                },
+                adapters: {
+                  date: {
+                    zone: 'UTC'
+                  }
+                },
+                ticks: {
+                  callback: function(value, index, ticks) {
+                    // Format as UTC - only show 3-hour marks
+                    const d = new Date(value);
+                    const hour = d.getUTCHours();
+                    if (hour % 3 === 0) {
+                      return hour.toString().padStart(2, '0') + ':00';
+                    }
+                    return '';
+                  },
+                  maxTicksLimit: 9  // 00, 03, 06, 09, 12, 15, 18, 21, 24
+                },
+                title: {
+                  display: true,
+                  text: 'Time (UTC)'
+                },
+                grid: {
+                  color: 'rgba(0,0,0,0.05)'
+                }
+              },
+              y: {
+                type: 'linear',
+                position: 'left',
+                title: {
+                  display: true,
+                  text: 'Power (dB)'
+                },
+                grid: {
+                  color: 'rgba(0,0,0,0.05)'
+                }
+              },
+              y2: {
+                type: 'linear',
+                position: 'right',
+                min: -90,
+                max: 90,
+                title: {
+                  display: true,
+                  text: 'Solar Elev. (°)'
+                },
+                grid: {
+                  drawOnChartArea: false
+                },
+                ticks: {
+                  callback: function(value) {
+                    if (value === 0) return '0° (horizon)';
+                    return value + '°';
+                  }
+                }
+              }
+            }
+          }
+        });
+        
+      } catch (err) {
+        console.error('Error fetching power data:', err);
+        const ctx = document.getElementById('power-chart');
+        if (ctx) {
+          ctx.parentElement.innerHTML = '<div style="text-align: center; padding: 40px; color: #e74c3c;">Error loading carrier power data</div>';
+        }
+      }
     }
     
     function startAutoRefresh() {
@@ -519,9 +804,42 @@
       }
     }
     
+    // Fetch station info for grid square
+    async function loadStationInfo() {
+      try {
+        const response = await fetch('/api/v1/station/info');
+        if (response.ok) {
+          const info = await response.json();
+          if (info.grid_square) {
+            stationGridSquare = info.grid_square;
+            console.log('Station grid square:', stationGridSquare);
+          }
+        }
+      } catch (err) {
+        console.warn('Could not load station info:', err);
+      }
+    }
+    
+    // Fetch solar zenith data for current date
+    async function loadSolarZenith() {
+      try {
+        const response = await fetch(`/api/v1/solar-zenith?date=${currentDate}&grid=${stationGridSquare}`);
+        if (response.ok) {
+          solarZenithData = await response.json();
+          console.log('Solar zenith loaded - WWV midpoint:', solarZenithData.wwv_midpoint, 
+                      'WWVH midpoint:', solarZenithData.wwvh_midpoint);
+        }
+      } catch (err) {
+        console.warn('Could not load solar zenith data:', err);
+        solarZenithData = null;
+      }
+    }
+    
     // Initial load
     async function init() {
+      await loadStationInfo();
       await loadAvailableDates();
+      await loadSolarZenith();
       fetchData();
       startAutoRefresh();
     }

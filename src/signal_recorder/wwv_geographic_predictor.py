@@ -365,6 +365,74 @@ class WWVGeographicPredictor:
                         f"WWVH: {wwvh_range[0]:.1f}-{wwvh_range[1]:.1f}ms)")
             return None
     
+    def classify_dual_peaks(
+        self,
+        peak_early_delay_ms: float,
+        peak_late_delay_ms: float,
+        peak_early_amplitude: float,
+        peak_late_amplitude: float,
+        frequency_mhz: float
+    ) -> Tuple[str, str]:
+        """
+        Classify two correlation peaks as WWV and WWVH based on geographic ToA prediction.
+        
+        The differential delay Δτ_geo = ToA_WWV - ToA_WWVH determines which station
+        arrives first:
+        - If Δτ_geo < 0: WWV is closer → peak_early = WWV, peak_late = WWVH
+        - If Δτ_geo > 0: WWVH is closer → peak_early = WWVH, peak_late = WWV
+        
+        This uses the receiver's location to calculate the geometric propagation
+        delay to each transmitter, accounting for ionospheric reflection height.
+        
+        Args:
+            peak_early_delay_ms: Delay of earlier-arriving peak (ms from correlation zero)
+            peak_late_delay_ms: Delay of later-arriving peak (ms from correlation zero)
+            peak_early_amplitude: Amplitude of earlier peak
+            peak_late_amplitude: Amplitude of later peak
+            frequency_mhz: Operating frequency for propagation estimation
+            
+        Returns:
+            Tuple of (early_station, late_station) where each is 'WWV' or 'WWVH'
+        """
+        expected = self.calculate_expected_delays(frequency_mhz)
+        
+        wwv_delay = expected['wwv_delay_ms']
+        wwvh_delay = expected['wwvh_delay_ms']
+        
+        # Δτ_geo = ToA_WWV - ToA_WWVH
+        # Negative means WWV arrives first (is closer)
+        delta_geo = wwv_delay - wwvh_delay
+        
+        if delta_geo < 0:
+            # WWV is closer → arrives first (early peak)
+            early_station = 'WWV'
+            late_station = 'WWVH'
+        else:
+            # WWVH is closer → arrives first (early peak)
+            early_station = 'WWVH'
+            late_station = 'WWV'
+        
+        # Log the assignment with confidence information
+        measured_diff = peak_late_delay_ms - peak_early_delay_ms
+        expected_diff = abs(delta_geo)
+        
+        logger.debug(f"Geographic peak assignment: early={early_station}, late={late_station} "
+                    f"(Δτ_geo={delta_geo:+.2f}ms, measured_diff={measured_diff:.2f}ms, "
+                    f"expected_diff={expected_diff:.2f}ms)")
+        
+        # Validate: measured differential should be close to expected
+        if expected_diff > 0:
+            diff_error = abs(measured_diff - expected_diff) / expected_diff
+            if diff_error > 0.5:  # >50% error
+                logger.warning(f"Measured delay diff ({measured_diff:.2f}ms) differs "
+                              f"significantly from expected ({expected_diff:.2f}ms)")
+        
+        # Update history with the assigned classifications
+        self._update_history(frequency_mhz, early_station, peak_early_delay_ms, peak_early_amplitude)
+        self._update_history(frequency_mhz, late_station, peak_late_delay_ms, peak_late_amplitude)
+        
+        return early_station, late_station
+    
     def _update_history(
         self,
         frequency_mhz: float,

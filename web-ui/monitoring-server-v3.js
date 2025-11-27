@@ -1015,51 +1015,82 @@ app.get('/api/v1/carrier/quality', async (req, res) => {
 
 /**
  * GET /api/v1/carrier/available-dates
- * List dates with available spectrograms
+ * List dates with available 10 Hz NPZ data for spectrogram generation
+ * Scans per-channel decimated directories for NPZ files
  */
 app.get('/api/v1/carrier/available-dates', async (req, res) => {
   try {
-    const spectrogramsRoot = paths.getSpectrogramsRoot();
-    const dates = [];
+    const dateMap = new Map();  // date -> {channels: Set, npzCount: number, spectrograms: count}
     
-    if (fs.existsSync(spectrogramsRoot)) {
-      const entries = fs.readdirSync(spectrogramsRoot);
+    // 1. Scan per-channel decimated directories for 10 Hz NPZ files
+    const analyticsRoot = join(paths.dataRoot, 'analytics');
+    if (fs.existsSync(analyticsRoot)) {
+      const channelDirs = fs.readdirSync(analyticsRoot);
       
-      for (const entry of entries) {
-        // Check if it's a valid YYYYMMDD directory
-        if (/^\d{8}$/.test(entry)) {
-          const datePath = join(spectrogramsRoot, entry);
-          const stat = fs.statSync(datePath);
-          
-          if (stat.isDirectory()) {
-            // Check if directory has any PNG files (including subdirectories)
-            let pngCount = 0;
-            const checkForPngs = (dir) => {
-              const items = fs.readdirSync(dir);
-              for (const item of items) {
-                const itemPath = join(dir, item);
-                const itemStat = fs.statSync(itemPath);
-                if (itemStat.isDirectory()) {
-                  checkForPngs(itemPath);  // Recursive check subdirectories
-                } else if (item.endsWith('.png')) {
-                  pngCount++;
+      for (const channelDir of channelDirs) {
+        const decimatedPath = join(analyticsRoot, channelDir, 'decimated');
+        
+        if (fs.existsSync(decimatedPath)) {
+          try {
+            const files = fs.readdirSync(decimatedPath);
+            for (const file of files) {
+              // Match NPZ files: YYYYMMDDTHHMMSSZ_*_iq_10hz.npz
+              if (file.endsWith('_iq_10hz.npz')) {
+                const dateMatch = file.match(/^(\d{8})T/);
+                if (dateMatch) {
+                  const date = dateMatch[1];
+                  if (!dateMap.has(date)) {
+                    dateMap.set(date, { channels: new Set(), npzCount: 0, spectrograms: 0 });
+                  }
+                  dateMap.get(date).channels.add(channelDir);
+                  dateMap.get(date).npzCount++;
                 }
               }
-            };
-            checkForPngs(datePath);
-            
-            if (pngCount > 0) {
-              // Format as YYYY-MM-DD for display
-              const formatted = `${entry.slice(0, 4)}-${entry.slice(4, 6)}-${entry.slice(6, 8)}`;
-              dates.push({
-                date: entry,
-                formatted: formatted,
-                count: pngCount
-              });
             }
+          } catch (e) {
+            // Skip directories we can't read
           }
         }
       }
+    }
+    
+    // 2. Check spectrograms directory for each discovered date
+    const spectrogramsRoot = paths.getSpectrogramsRoot();
+    for (const [date, info] of dateMap) {
+      const spectrogramDir = join(spectrogramsRoot, date);
+      if (fs.existsSync(spectrogramDir)) {
+        const checkForPngs = (dir) => {
+          let count = 0;
+          try {
+            const items = fs.readdirSync(dir);
+            for (const item of items) {
+              const itemPath = join(dir, item);
+              const itemStat = fs.statSync(itemPath);
+              if (itemStat.isDirectory()) {
+                count += checkForPngs(itemPath);
+              } else if (item.endsWith('.png')) {
+                count++;
+              }
+            }
+          } catch (e) {}
+          return count;
+        };
+        info.spectrograms = checkForPngs(spectrogramDir);
+      }
+    }
+    
+    // 3. Build dates array
+    const dates = [];
+    for (const [date, info] of dateMap) {
+      const formatted = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+      dates.push({
+        date: date,
+        formatted: formatted,
+        count: info.channels.size,
+        npzCount: info.npzCount,
+        hasSpectrograms: info.spectrograms > 0,
+        spectrogramCount: info.spectrograms
+      });
     }
     
     // Sort descending (most recent first)
@@ -1067,6 +1098,7 @@ app.get('/api/v1/carrier/available-dates', async (req, res) => {
     
     res.json({ dates });
   } catch (err) {
+    console.error('Error loading available dates:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2412,6 +2444,90 @@ app.get('/api/v1/channels/:channelName/discrimination/:date/methods', async (req
   }
 });
 
+/**
+ * GET /api/v1/channels/:channelName/carrier-power/:date
+ * Get 10Hz carrier power time series from decimated NPZ files
+ */
+app.get('/api/v1/channels/:channelName/carrier-power/:date', async (req, res) => {
+  try {
+    const { channelName, date } = req.params;
+    const decimatedDir = paths.getDecimatedDir(channelName);
+    
+    if (!fs.existsSync(decimatedDir)) {
+      return res.json({ channel: channelName, date, records: [], status: 'no_data' });
+    }
+    
+    // Find all 10Hz NPZ files for this date
+    const files = fs.readdirSync(decimatedDir)
+      .filter(f => f.startsWith(date) && f.endsWith('_10hz.npz'))
+      .sort();
+    
+    if (files.length === 0) {
+      return res.json({ channel: channelName, date, records: [], status: 'no_files' });
+    }
+    
+    // Use Python to extract power from NPZ files (Node can't read NPZ directly)
+    // Write script to temp file to avoid shell escaping issues
+    const tmpScript = `/tmp/carrier_power_${Date.now()}.py`;
+    const pythonScript = `
+import numpy as np
+import json
+import sys
+from pathlib import Path
+
+decimated_dir = Path(sys.argv[1])
+date = sys.argv[2]
+records = []
+
+for npz_file in sorted(decimated_dir.glob(f'{date}*_10hz.npz')):
+    try:
+        data = np.load(npz_file)
+        iq = data['iq']
+        ts_str = npz_file.name.split('_')[0]
+        power_linear = np.mean(np.abs(iq)**2)
+        power_db = 10 * np.log10(power_linear + 1e-12)
+        peak_power = np.max(np.abs(iq)**2)
+        peak_db = 10 * np.log10(peak_power + 1e-12)
+        records.append({
+            'timestamp': ts_str,
+            'power_db': round(float(power_db), 2),
+            'peak_db': round(float(peak_db), 2)
+        })
+    except Exception as e:
+        pass
+
+print(json.dumps(records))
+`;
+    
+    fs.writeFileSync(tmpScript, pythonScript);
+    
+    try {
+      const result = execSync(
+        `source ${process.env.HOME}/signal-recorder/venv/bin/activate && python3 ${tmpScript} "${decimatedDir}" "${date}"`,
+        { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024, shell: '/bin/bash' }
+      );
+      
+      fs.unlinkSync(tmpScript);
+      const records = JSON.parse(result.trim());
+      
+      res.json({
+        channel: channelName,
+        date,
+        records,
+        count: records.length,
+        status: 'OK'
+      });
+    } catch (pyErr) {
+      fs.unlinkSync(tmpScript);
+      throw pyErr;
+    }
+    
+  } catch (err) {
+    console.error('Error loading carrier power:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================================================
 // HELPER FUNCTIONS - NEW ANALYTICS
 // ============================================================================
@@ -2628,7 +2744,8 @@ async function getCurrentTonePowers(paths) {
  * - discrimination/{channel}_discrimination_{date}.csv
  */
 async function loadAllDiscriminationMethods(channelName, date, paths) {
-  const fileChannelName = channelName.replace(/ /g, '_');
+  // Match Python's channel_dir encoding: replace spaces AND dots with underscores
+  const fileChannelName = channelName.replace(/ /g, '_').replace(/\./g, '_');
   const result = {
     channel: channelName,
     date: date,
@@ -2746,6 +2863,25 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
     count: bcdData.count
   };
   
+  // 4.5. Load Doppler estimation (ionospheric channel characterization)
+  const dopplerPath = join(paths.getDopplerDir(channelName), `${fileChannelName}_doppler_${date}.csv`);
+  const dopplerData = parseCSV(dopplerPath);
+  result.methods.doppler = {
+    status: dopplerData.status,
+    records: dopplerData.records.map(r => ({
+      timestamp_utc: r.timestamp_utc,
+      wwv_doppler_hz: parseFloat(r.wwv_doppler_hz),
+      wwvh_doppler_hz: parseFloat(r.wwvh_doppler_hz),
+      wwv_doppler_std_hz: parseFloat(r.wwv_doppler_std_hz),
+      wwvh_doppler_std_hz: parseFloat(r.wwvh_doppler_std_hz),
+      max_coherent_window_sec: parseFloat(r.max_coherent_window_sec),
+      doppler_quality: parseFloat(r.doppler_quality),
+      phase_variance_rad: parseFloat(r.phase_variance_rad),
+      valid_tick_count: parseInt(r.valid_tick_count)
+    })),
+    count: dopplerData.count
+  };
+  
   // 5. Load final weighted voting results
   const discPath = join(paths.getDiscriminationDir(channelName), `${fileChannelName}_discrimination_${date}.csv`);
   const discData = parseCSV(discPath);
@@ -2773,6 +2909,51 @@ app.get('/health', (req, res) => {
     uptime: Date.now() - serverStartTime,
     version: '3.0.0'
   });
+});
+
+// ============================================================================
+// SOLAR ZENITH API
+// ============================================================================
+
+/**
+ * GET /api/v1/solar-zenith
+ * Calculate solar elevation angles at WWV/WWVH path midpoints
+ * Query params: date (YYYYMMDD), grid (Maidenhead grid square)
+ */
+app.get('/api/v1/solar-zenith', async (req, res) => {
+  try {
+    const { date, grid } = req.query;
+    
+    if (!date || !grid) {
+      return res.status(400).json({ error: 'Missing required parameters: date, grid' });
+    }
+    
+    // Validate date format
+    if (!/^\d{8}$/.test(date)) {
+      return res.status(400).json({ error: 'Invalid date format. Use YYYYMMDD' });
+    }
+    
+    // Call Python calculator - use project root (parent of web-ui directory)
+    const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const pythonPath = join(projectRoot, 'venv', 'bin', 'python3');
+    const scriptPath = join(projectRoot, 'src', 'signal_recorder', 'solar_zenith_calculator.py');
+    
+    const cmd = `${pythonPath} ${scriptPath} --date ${date} --grid ${grid} --interval 5`;
+    
+    const execPromise = promisify(exec);
+    const { stdout, stderr } = await execPromise(cmd, { timeout: 10000 });
+    
+    if (stderr) {
+      console.error('Solar zenith calculator stderr:', stderr);
+    }
+    
+    const result = JSON.parse(stdout);
+    res.json(result);
+    
+  } catch (err) {
+    console.error('Error calculating solar zenith:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ============================================================================

@@ -146,9 +146,9 @@ def read_10hz_day(npz_files: List[Path], date_str: str) -> Optional[Tuple[np.nda
 
 def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray, 
                          output_path: Path, channel_name: str, date_str: str, 
-                         date_obj: datetime):
+                         date_obj: datetime, grid_square: str = 'EM38ww'):
     """
-    Generate spectrogram from 10 Hz IQ data and save to PNG
+    Generate spectrogram from 10 Hz IQ data and save to PNG with solar zenith overlay
     
     Args:
         timestamps: Unix timestamps (seconds)
@@ -157,6 +157,7 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         channel_name: Channel name for title
         date_str: Date string for title (YYYY-MM-DD)
         date_obj: Datetime object for the day (used for x-axis limits)
+        grid_square: Maidenhead grid square for receiver location (for solar zenith)
     """
     try:
         sample_rate = 10  # 10 Hz
@@ -216,7 +217,9 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         day_end = day_start + timedelta(days=1)
         ax.set_xlim(day_start, day_end)
         
-        # Format x-axis
+        # Format x-axis with explicit 3-hour ticks to match power chart
+        from matplotlib.dates import HourLocator
+        ax.xaxis.set_major_locator(HourLocator(byhour=[0, 3, 6, 9, 12, 15, 18, 21]))
         ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
         fig.autofmt_xdate()
         
@@ -225,6 +228,39 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         
         # Add grid
         ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # === Add Solar Zenith Overlay ===
+        try:
+            from signal_recorder.solar_zenith_calculator import calculate_solar_zenith_for_day
+            
+            logger.info(f"Calculating solar zenith for grid {grid_square}...")
+            solar_data = calculate_solar_zenith_for_day(date_obj.strftime('%Y%m%d'), grid_square)
+            
+            if solar_data and 'timestamps' in solar_data:
+                # Create secondary y-axis for solar elevation
+                ax2 = ax.twinx()
+                
+                # Convert solar timestamps to datetime
+                solar_times = [datetime.fromisoformat(ts.replace('Z', '+00:00')) for ts in solar_data['timestamps']]
+                
+                # Plot WWV and WWVH path solar elevations
+                ax2.plot(solar_times, solar_data['wwv_solar_elevation'], 
+                        color='#e74c3c', linewidth=2, linestyle='-', alpha=0.8,
+                        label=f"Solar Elev. (WWV path)")
+                ax2.plot(solar_times, solar_data['wwvh_solar_elevation'], 
+                        color='#9b59b6', linewidth=2, linestyle='--', alpha=0.8,
+                        label=f"Solar Elev. (WWVH path)")
+                
+                # Configure secondary y-axis
+                ax2.set_ylabel('Solar Elevation (°)', fontsize=10, color='#666')
+                ax2.set_ylim(-90, 90)
+                ax2.axhline(y=0, color='gray', linewidth=0.5, linestyle=':')  # Horizon line
+                ax2.legend(loc='upper right', fontsize=8)
+                ax2.tick_params(axis='y', labelcolor='#666')
+                
+                logger.info(f"Added solar zenith overlay for WWV/WWVH paths")
+        except Exception as e:
+            logger.warning(f"Could not add solar zenith overlay: {e}")
         
         # Tight layout
         plt.tight_layout()
@@ -250,9 +286,28 @@ def main():
                        help='Channel name (e.g., "WWV 5 MHz", default: all channels)')
     parser.add_argument('--data-root', default='/tmp/grape-test',
                        help='Data root directory (default: /tmp/grape-test)')
+    parser.add_argument('--grid', default=None,
+                       help='Maidenhead grid square for receiver (default: from config)')
     
     args = parser.parse_args()
     date_str = args.date
+    
+    # Get grid square from config or argument
+    grid_square = args.grid
+    if not grid_square:
+        try:
+            import tomllib
+            config_path = Path(__file__).parent.parent / 'config' / 'grape-config.toml'
+            if config_path.exists():
+                with open(config_path, 'rb') as f:
+                    config = tomllib.load(f)
+                    grid_square = config.get('station', {}).get('grid_square', 'EM38ww')
+                    logger.info(f"Using grid square from config: {grid_square}")
+            else:
+                grid_square = 'EM38ww'
+        except Exception as e:
+            logger.warning(f"Could not read config, using default grid: {e}")
+            grid_square = 'EM38ww'
     
     # Parse date for display and datetime object
     year = int(date_str[:4])
@@ -295,7 +350,7 @@ def main():
             logger.info(f"{'='*60}")
             
             # Find decimated directory (convert spaces to underscores)
-            decimated_dir = paths.get_decimated_dir(args.channel)
+            decimated_dir = paths.get_decimated_dir(channel_name)
             
             if not decimated_dir.exists():
                 logger.warning(f"Skipping {channel_name} - decimated directory not found: {decimated_dir}")
@@ -329,7 +384,8 @@ def main():
                 output_path=output_path,
                 channel_name=channel_name,
                 date_str=date_display,
-                date_obj=date_obj
+                date_obj=date_obj,
+                grid_square=grid_square
             )
             
             success_count += 1

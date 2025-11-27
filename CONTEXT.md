@@ -4,14 +4,66 @@
 # Instructions: Paste this entire file at the start of any new chat session
 # to provide ground-truth context for the GRAPE Signal Recorder project.
 
-## 🚨 IMMEDIATE CONTEXT: Session 2025-11-26 (CRITICAL FOR NEXT SESSION)
+## 🚨 IMMEDIATE CONTEXT: Session 2025-11-26 Evening (CRITICAL FOR NEXT SESSION)
 
-**NEXT SESSION GOAL:** Test and display WWV/WWVH discrimination methods on the web UI discrimination page.
+**NEXT SESSION GOAL:** Enable the "Audio" button on the Summary page to allow users to listen to channel audio in real-time.
 
-### What Was Just Completed (Nov 26 - Timing Fixes):
+### Reference Implementation for Audio Streaming
+
+The audio streaming feature should be modeled after `/home/wsprdaemon/SWL-ka9q/` which contains:
+- `server.js` (48KB) - Express server with audio streaming endpoints
+- `radiod_client.py` - Python client for ka9q-radio multicast
+- `discover_multicast.py` - Multicast discovery utilities
+
+**Key files to examine:**
+```bash
+/home/wsprdaemon/SWL-ka9q/server.js       # Audio streaming implementation
+/home/wsprdaemon/SWL-ka9q/radiod_client.py # Ka9q-radio client
+```
+
+The goal is to add a similar audio streaming capability to the GRAPE signal-recorder web UI.
+
+---
+
+### What Was Just Completed (Nov 26 Evening - BCD Geographic & Spectrograms):
+
+**1. Geographic ToA Prediction for BCD Dual Peaks:**
+- **Problem:** BCD correlation discrimination was assuming WWV always arrives first (early peak)
+- **Solution:** Added `classify_dual_peaks()` method to `WWVGeographicPredictor` that uses geographic propagation delay to determine which station (WWV or WWVH) corresponds to early/late peaks
+- **Key Logic:** If `delta_geo < 0` (WWV closer), WWV = early peak; else WWVH = early peak
+- **Files Changed:** 
+  - `src/signal_recorder/wwv_geographic_predictor.py` (lines 367-434) - Added `classify_dual_peaks()`
+  - `src/signal_recorder/wwvh_discrimination.py` (lines 1539-1616) - Use geographic predictor in `bcd_correlation_discrimination()`
+
+**2. Test Signal ToA Offset Measurement:**
+- **Purpose:** High-precision ionospheric channel characterization from test signals (minutes :08 and :44)
+- **Implementation:** Calculate `toa_offset_ms = (detected_start - expected_start) * 1000`
+- **Expected start:** 13.0 seconds into minute (after 10s voice + 2s noise + 1s blank)
+- **Files Changed:**
+  - `src/signal_recorder/wwv_test_signal.py` (lines 40-68, 396-428) - Added `toa_offset_ms` field to `TestSignalDetection`
+  - `src/signal_recorder/wwvh_discrimination.py` (lines 80-89, 2046-2059) - Added `test_signal_toa_offset_ms` to `DiscriminationResult`
+  - `src/signal_recorder/discrimination_csv_writers.py` (lines 87-92, 266-295) - Added ToA offset to CSV output
+  - `src/signal_recorder/analytics_service.py` (lines 1389-1404) - Pass ToA offset to CSV writer
+
+**3. Carrier Page Date Selection Fixed:**
+- **Problem:** Date picker showed "No data available" because it was looking for spectrograms in wrong location
+- **Solution:** Modified `/api/v1/carrier/available-dates` endpoint to scan 10 Hz NPZ files in `analytics/{channel}/decimated/` directories
+- **Files Changed:** `web-ui/monitoring-server-v3.js` (lines 1016-1108) - Rewrote available-dates endpoint
+- **Files Changed:** `web-ui/carrier.html` (lines 314-322) - Updated date picker display
+
+**4. Solar Zenith Overlays on Spectrograms:**
+- **Purpose:** Visualize solar illumination of WWV and WWVH propagation paths
+- **Implementation:** Added secondary y-axis with WWV path (red) and WWVH path (purple) solar elevation curves
+- **Files Changed:** `scripts/generate_spectrograms_from_10hz.py` (lines 147-161, 232-263, 289-310, 381-388)
+- **Usage:** `python3 scripts/generate_spectrograms_from_10hz.py --date YYYYMMDD --data-root /tmp/grape-test`
+- **Output:** `/tmp/grape-test/spectrograms/YYYYMMDD/{channel}_YYYYMMDD_decimated_spectrogram.png`
+
+---
+
+### Previous Session (Nov 26 - Timing Fixes):
 
 **Wall Clock Stability Fix:**
-- **Problem:** `ntp_wall_clock_time` in NPZ archives was unstable (±2 seconds) due to capturing `time.time()` at packet arrival, which varies with network jitter and gap-filling bursts
+- **Problem:** `ntp_wall_clock_time` in NPZ archives was unstable (±2 seconds) due to capturing `time.time()` at packet arrival
 - **Solution:** Predict wall clock at minute boundary using `rtp_derived_utc + ntp_offset` 
 - **Result:** Sub-microsecond stability - wall clock now phase-aligned with RTP-derived UTC
 - **Files Changed:** `core_npz_writer.py` (lines 128-173, 198-217, 226-242)
@@ -19,10 +71,11 @@
 **Timing Dashboard Implementation:**
 - **Drift Analysis Chart:** Time series of drift_ms per channel with reference bands (±1ms excellent, ±5ms good)
 - **Time Source Timeline:** Gantt-style chart showing quality states (TONE_LOCKED/NTP_SYNCED/INTERPOLATED/WALL_CLOCK)
-- **Quality Legend:** Explains what each timing quality level means
 - **Files Changed:** `web-ui/timing-dashboard-enhanced.html` (lines 806-862, 874-1098)
 
-### Next Session: WWV/WWVH Discrimination Testing & Display
+---
+
+### Pending Work: WWV/WWVH Discrimination Testing & Display
 
 **Objective:** Test all 6 discrimination methods and make them display informatively on the discrimination page.
 
@@ -217,6 +270,14 @@ This is a high-level map of the project's most important, stable interfaces.
 
 ## 4. ⚡ Recent Sessions Summary
 
+**SESSION_2025-11-26 (Part 3 - Evening)**: Geographic BCD & Spectrogram Solar Overlays ⭐⭐⭐
+- ✅ **Geographic Peak Assignment:** BCD dual-peak now uses `classify_dual_peaks()` for correct WWV/WWVH assignment
+- ✅ **Test Signal ToA:** Added `toa_offset_ms` measurement for channel characterization
+- ✅ **Carrier Page Fixed:** Date picker now scans NPZ files in `decimated/` directories
+- ✅ **Solar Zenith Overlays:** Spectrograms include WWV (red) and WWVH (purple) solar elevation curves
+- 📁 Modified: `wwv_geographic_predictor.py`, `wwvh_discrimination.py`, `wwv_test_signal.py`, `discrimination_csv_writers.py`, `analytics_service.py`, `monitoring-server-v3.js`, `carrier.html`, `generate_spectrograms_from_10hz.py`
+- 🧪 **NEXT:** Enable "Audio" button using reference implementation from `/home/wsprdaemon/SWL-ka9q/`
+
 **SESSION_2025-11-26 (Part 2)**: Wall Clock Stability + Timing Dashboard ⭐⭐⭐
 - ✅ **Wall Clock Fix:** `ntp_wall_clock_time` now uses stable RTP-derived prediction (was ±2s jitter)
 - ✅ **Root Cause:** `time.time()` captured at packet arrival varies with network jitter and gap-filling
@@ -225,7 +286,6 @@ This is a high-level map of the project's most important, stable interfaces.
 - ✅ **Timing Dashboard:** Interactive drift analysis and time source timeline charts
 - ✅ **Quality Legend:** Explains TONE_LOCKED, NTP_SYNCED, INTERPOLATED, WALL_CLOCK
 - 📁 Modified: `core_npz_writer.py` (wall clock prediction), `timing-dashboard-enhanced.html` (charts)
-- 🧪 **NEXT:** Test WWV/WWVH discrimination methods and display on web UI
 
 **SESSION_2025-11-26 (Part 1)**: Critical Thread Safety + Timing System ⭐⭐⭐
 - ✅ **Thread Safety:** Complete lock protection in `CoreNPZWriter` and `ChannelProcessor`
@@ -276,72 +336,66 @@ This is a high-level map of the project's most important, stable interfaces.
 - Fixed 30-second timing offset bug in tone detector
 - RTP offset correlation proven UNSTABLE (independent clocks per channel)
 
-## 5. 🎯 Next Session: WWV/WWVH Discrimination Testing & Web UI Display
+## 5. 🎯 Next Session: Enable Audio Button on Summary Page
+
+**Objective:** Add real-time audio streaming capability to allow users to listen to WWV/CHU channels via the web UI.
+
+### Reference Implementation
+
+The `/home/wsprdaemon/SWL-ka9q/` project provides a working implementation:
+
+```bash
+# Key files to examine:
+/home/wsprdaemon/SWL-ka9q/server.js        # 48KB - Express server with audio streaming
+/home/wsprdaemon/SWL-ka9q/radiod_client.py # Python ka9q-radio multicast client
+/home/wsprdaemon/SWL-ka9q/discover_multicast.py # Multicast discovery utilities
+```
+
+### Implementation Approach
+
+1. **Study SWL-ka9q audio streaming:**
+   - How does `server.js` handle audio streaming endpoints?
+   - How does it interface with ka9q-radio multicast?
+   - What audio format/encoding is used for web playback?
+
+2. **Add audio endpoint to monitoring-server-v3.js:**
+   - Create `/api/v1/channels/:name/audio` endpoint
+   - Stream audio from ka9q-radio multicast source
+   - Convert to web-compatible format (likely MP3 or WebM)
+
+3. **Update Summary page UI:**
+   - Add click handler to existing "Audio" button
+   - Implement HTML5 audio player or Web Audio API
+   - Show streaming status indicator
+
+### Files to Modify
+
+- `web-ui/monitoring-server-v3.js` - Add audio streaming endpoint
+- `web-ui/summary.html` - Wire up Audio button
+- Possibly add Python helper for ka9q-radio integration
+
+### Success Criteria
+- ✅ Audio button plays live channel audio in browser
+- ✅ Audio quality sufficient for WWV/CHU identification
+- ✅ Minimal latency (<5 seconds)
+- ✅ Works with existing ka9q-radio multicast setup
+
+---
+
+## 5b. 🎯 Pending: WWV/WWVH Discrimination Testing & Web UI Display
 
 **Objective:** Test all 6 discrimination methods and make them display informatively on the web UI discrimination page.
 
 ### Background: The 6 Methods
 
-Each method has different strengths - see `WWV_WWVH_DISCRIMINATION_METHODS.md` for full details:
-
 | Method | Rate | Strengths | Output Directory |
 |--------|------|-----------|------------------|
 | 440 Hz Station ID | 2/hour | Ground truth (min 1=WWVH, 2=WWV) | station_id_440hz/ |
 | Test Signal | 2/hour | Ground truth (min 8=WWV, 44=WWVH) | test_signal/ |
-| BCD Correlation | 15/min | Amplitude + delay, continuous | bcd_discrimination/ |
+| BCD Correlation | ~50/min | Amplitude + delay, 10s windows | bcd_discrimination/ |
 | Timing Tones | 1/min | Reliable baseline | tone_detections/ |
 | Tick Windows | 6/min | Sub-minute dynamics | tick_windows/ |
 | Weighted Voting | 1/min | Final determination | discrimination/ |
-
-### Testing Steps
-
-**1. Verify discrimination data is being generated:**
-```bash
-# Check each method's output directory
-ls -la /tmp/grape-test/analytics/WWV_10_MHz/bcd_discrimination/
-ls -la /tmp/grape-test/analytics/WWV_10_MHz/station_id_440hz/
-ls -la /tmp/grape-test/analytics/WWV_10_MHz/test_signal/
-ls -la /tmp/grape-test/analytics/WWV_10_MHz/tick_windows/
-ls -la /tmp/grape-test/analytics/WWV_10_MHz/tone_detections/
-ls -la /tmp/grape-test/analytics/WWV_10_MHz/discrimination/
-```
-
-**2. Validate BCD correlation output (PRIMARY method):**
-```bash
-tail -20 /tmp/grape-test/analytics/WWV_10_MHz/bcd_discrimination/*_bcd_*.csv
-# Expected columns: bcd_wwv_amplitude, bcd_wwvh_amplitude, bcd_differential_delay_ms, bcd_correlation_quality
-```
-
-**3. Check 440 Hz station ID (ground truth):**
-```bash
-# Should have entries at minutes 1 (WWVH) and 2 (WWV) of each hour
-tail -20 /tmp/grape-test/analytics/WWV_10_MHz/station_id_440hz/*_station_id_*.csv
-```
-
-**4. View discrimination page:**
-```bash
-# Open in browser
-http://localhost:3000/discrimination.html
-# Check: Each method panel shows data, proper labeling, statistics
-```
-
-### Web UI Enhancement Tasks
-
-**Files to modify:**
-- `web-ui/discrimination.html` - Main discrimination page layout
-- `web-ui/monitoring-server-v3.js` - API endpoints for discrimination data
-
-**Key API endpoints:**
-- `GET /api/v1/channels/:name/discrimination/:date/methods` - All methods summary
-- `GET /api/v1/channels/:name/discrimination/:date/bcd` - BCD correlation time series
-- `GET /api/v1/channels/:name/discrimination/:date/station_id` - 440 Hz ID events
-
-**Display goals:**
-1. Show BCD correlation as primary chart (WWV vs WWVH amplitude over time)
-2. Show differential delay (ionospheric path difference)
-3. Mark 440 Hz ID events as calibration points
-4. Show timing tone ratio as secondary indicator
-5. Display weighted voting final determination
 
 ### Success Criteria
 - ✅ All 6 method directories have CSV files
@@ -349,7 +403,6 @@ http://localhost:3000/discrimination.html
 - ✅ 440 Hz ID detected at minutes 1 (WWVH) and 2 (WWV)
 - ✅ Test signal detected at minutes 8 (WWV) and 44 (WWVH)
 - ✅ Web UI displays all methods with proper charts
-- ✅ Differential delay values are realistic (5-30ms typical)
 
 ---
 

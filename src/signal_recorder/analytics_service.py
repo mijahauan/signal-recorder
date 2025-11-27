@@ -38,6 +38,7 @@ from .discrimination_csv_writers import (
     ToneDetectionRecord,
     StationID440HzRecord,
     TestSignalRecord,
+    DopplerRecord,
     DiscriminationRecord
 )
 from .timing_metrics_writer import TimingMetricsWriter
@@ -398,7 +399,8 @@ class AnalyticsService:
             'total_detections': 0,
             'last_detection_time': None,
             'last_completeness_pct': 0.0,
-            'last_packet_loss_pct': 0.0
+            'last_packet_loss_pct': 0.0,
+            'last_snr_db': None
         }
         
         logger.info(f"AnalyticsService initialized for {channel_name}")
@@ -563,7 +565,8 @@ class AnalyticsService:
                         },
                         'quality_metrics': {
                             'last_completeness_pct': self.stats['last_completeness_pct'],
-                            'last_packet_loss_pct': self.stats['last_packet_loss_pct']
+                            'last_packet_loss_pct': self.stats['last_packet_loss_pct'],
+                            'last_snr_db': self.stats['last_snr_db']
                         },
                         'wwvh_discrimination': self._get_discrimination_status()
                     }
@@ -729,6 +732,10 @@ class AnalyticsService:
                             self.stats['chu_detections'] += 1
                     self.stats['total_detections'] = len(self.state.detection_history)
                     self.stats['last_detection_time'] = datetime.now(timezone.utc).isoformat()
+                    
+                    # Track best SNR from detections
+                    best_snr = max(det.snr_db for det in detections)
+                    self.stats['last_snr_db'] = best_snr
             
             # Step 4: Decimate and write 10Hz NPZ (for DRF writer + spectrogram generation)
             decimated_samples = self._write_decimated_npz(archive, timing, detections if self._is_tone_detection_channel(archive.channel_name) else [])
@@ -990,8 +997,10 @@ class AnalyticsService:
         actual_tone_time = minute_boundary + timing_offset_sec
         
         # Calculate RTP timestamp at minute boundary
-        samples_since_minute = (best.timestamp_utc - minute_boundary) * archive.sample_rate
-        rtp_at_minute = int(archive.rtp_timestamp + samples_since_minute)
+        # archive.rtp_timestamp is at archive.unix_timestamp (start of archive)
+        # We need RTP at minute_boundary
+        samples_from_archive_to_minute = (minute_boundary - archive.unix_timestamp) * archive.sample_rate
+        rtp_at_minute = int(archive.rtp_timestamp + samples_from_archive_to_minute)
         
         # Create new time_snap reference
         new_time_snap = TimeSnapReference(
@@ -1378,6 +1387,8 @@ class AnalyticsService:
                 self.csv_writers.write_440hz_detection(id_record)
             
             # 3.5. Write test signal detection data (minutes 8 and 44)
+            # Note: Test signal is IDENTICAL for WWV/WWVH - station from SCHEDULE
+            # Value is high-gain ToA and SNR measurement for channel characterization
             if result.test_signal_detected or dt.minute in [8, 44]:
                 test_signal_record = TestSignalRecord(
                     timestamp_utc=timestamp_utc,
@@ -1387,7 +1398,8 @@ class AnalyticsService:
                     confidence=result.test_signal_confidence or 0.0,
                     multitone_score=result.test_signal_multitone_score or 0.0,
                     chirp_score=result.test_signal_chirp_score or 0.0,
-                    snr_db=result.test_signal_snr_db
+                    snr_db=result.test_signal_snr_db,
+                    toa_offset_ms=result.test_signal_toa_offset_ms
                 )
                 self.csv_writers.write_test_signal(test_signal_record)
             
@@ -1395,7 +1407,22 @@ class AnalyticsService:
             if result.bcd_windows:
                 self.csv_writers.write_bcd_windows(timestamp_utc, result.bcd_windows)
             
-            # 5. Write final weighted voting result
+            # 5. Write Doppler estimation (ionospheric channel characterization)
+            if result.doppler_wwv_hz is not None or result.doppler_wwvh_hz is not None:
+                doppler_record = DopplerRecord(
+                    timestamp_utc=timestamp_utc,
+                    wwv_doppler_hz=result.doppler_wwv_hz or 0.0,
+                    wwvh_doppler_hz=result.doppler_wwvh_hz or 0.0,
+                    wwv_doppler_std_hz=result.doppler_wwv_std_hz or 0.0,
+                    wwvh_doppler_std_hz=result.doppler_wwvh_std_hz or 0.0,
+                    max_coherent_window_sec=result.doppler_max_coherent_window_sec or 60.0,
+                    doppler_quality=result.doppler_quality or 0.0,
+                    phase_variance_rad=result.doppler_phase_variance_rad or 0.0,
+                    valid_tick_count=result.doppler_valid_tick_count or 0
+                )
+                self.csv_writers.write_doppler_record(doppler_record)
+            
+            # 6. Write final weighted voting result
             if result.dominant_station:
                 import json
                 method_weights = {
