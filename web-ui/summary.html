@@ -270,21 +270,118 @@
     
     .listen-button {
       padding: 6px 12px;
-      background: #95a5a6;
+      background: #3498db;
       color: white;
       border: none;
       border-radius: 4px;
-      cursor: not-allowed;
-      font-size: 12px;
-    }
-    
-    .listen-button:not(:disabled) {
-      background: #3498db;
       cursor: pointer;
+      font-size: 12px;
+      transition: background 0.2s, transform 0.1s;
     }
     
-    .listen-button:not(:disabled):hover {
+    .listen-button:hover {
       background: #2980b9;
+    }
+    
+    .listen-button:active {
+      transform: scale(0.95);
+    }
+    
+    .listen-button.playing {
+      background: #27ae60;
+      animation: pulse 1.5s infinite;
+    }
+    
+    .listen-button.loading {
+      background: #f39c12;
+      cursor: wait;
+    }
+    
+    .listen-button.error {
+      background: #e74c3c;
+    }
+    
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.7; }
+      100% { opacity: 1; }
+    }
+    
+    /* Audio Player Panel */
+    .audio-player-panel {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #2c3e50;
+      color: white;
+      padding: 15px 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 1000;
+      display: none;
+      min-width: 250px;
+    }
+    
+    .audio-player-panel.visible {
+      display: block;
+    }
+    
+    .audio-player-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    
+    .audio-player-title {
+      font-weight: 600;
+      font-size: 14px;
+    }
+    
+    .audio-player-close {
+      background: none;
+      border: none;
+      color: #bdc3c7;
+      cursor: pointer;
+      font-size: 18px;
+      padding: 0 5px;
+    }
+    
+    .audio-player-close:hover {
+      color: white;
+    }
+    
+    .audio-player-status {
+      font-size: 12px;
+      color: #bdc3c7;
+      margin-bottom: 10px;
+    }
+    
+    .audio-player-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    
+    .audio-player-controls button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    
+    .audio-stop-btn {
+      background: #e74c3c;
+      color: white;
+    }
+    
+    .audio-stop-btn:hover {
+      background: #c0392b;
+    }
+    
+    .volume-slider {
+      width: 100px;
     }
     
     /* Footer */
@@ -327,6 +424,21 @@
     <div class="update-info" id="update-info">
       Last updated: <span id="last-update">Never</span> | 
       Auto-refresh: <span id="refresh-interval">5s</span>
+    </div>
+  </div>
+  
+  <!-- Audio Player Panel -->
+  <div id="audio-player" class="audio-player-panel">
+    <div class="audio-player-header">
+      <span class="audio-player-title" id="audio-channel-name">No channel</span>
+      <button class="audio-player-close" onclick="grapeAudio.stop()">✕</button>
+    </div>
+    <div class="audio-player-status" id="audio-status">Ready</div>
+    <div class="audio-player-controls">
+      <button class="audio-stop-btn" onclick="grapeAudio.stop()">⏹ Stop</button>
+      <input type="range" class="volume-slider" id="audio-volume" min="0" max="100" value="80" 
+             onchange="grapeAudio.setVolume(this.value / 100)">
+      <span id="audio-volume-label">80%</span>
     </div>
   </div>
   
@@ -584,10 +696,19 @@
       // Build Audio row
       let audioCells = '<th>Audio</th>';
       channels.forEach(ch => {
+        const channelKey = ch.name.replace(/ /g, '_');
+        const isPlaying = grapeAudio && grapeAudio.currentChannel === ch.name;
+        const buttonClass = isPlaying ? 'listen-button playing' : 'listen-button';
+        const buttonIcon = isPlaying ? '🔊' : '🔈';
+        const buttonTitle = isPlaying ? 'Click to stop' : `Listen to ${ch.name}`;
+        
         audioCells += `
           <td>
-            <button class="listen-button" disabled title="Audio proxy not yet implemented">
-              🔊
+            <button class="${buttonClass}" 
+                    id="audio-btn-${channelKey}"
+                    onclick="toggleAudio('${ch.name}')" 
+                    title="${buttonTitle}">
+              ${buttonIcon}
             </button>
           </td>
         `;
@@ -651,6 +772,231 @@
       if (refreshTimer) {
         clearInterval(refreshTimer);
         refreshTimer = null;
+      }
+    }
+    
+    // ========================================================================
+    // GRAPE Audio Player - WebSocket-based audio streaming
+    // ========================================================================
+    
+    class GRAPEAudioPlayer {
+      constructor() {
+        this.ws = null;
+        this.audioContext = null;
+        this.currentChannel = null;
+        this.currentSSRC = null;
+        this.volume = 0.8;
+        this.isPlaying = false;
+        this.sampleRate = 12000;  // ka9q-radio audio sample rate
+        this.bufferQueue = [];
+        this.nextPlayTime = 0;
+        
+        // UI elements
+        this.panelEl = document.getElementById('audio-player');
+        this.channelNameEl = document.getElementById('audio-channel-name');
+        this.statusEl = document.getElementById('audio-status');
+        this.volumeEl = document.getElementById('audio-volume');
+        this.volumeLabelEl = document.getElementById('audio-volume-label');
+      }
+      
+      async start(channelName) {
+        // Stop any existing stream
+        if (this.isPlaying) {
+          await this.stop();
+        }
+        
+        this.currentChannel = channelName;
+        this.updateUI('loading', `Connecting to ${channelName}...`);
+        this.showPanel();
+        this.updateButton(channelName, 'loading');
+        
+        try {
+          // Request audio stream from server
+          const channelKey = channelName.replace(/ /g, '_');
+          const response = await fetch(`/api/v1/audio/stream/${channelKey}`);
+          const data = await response.json();
+          
+          if (!data.success) {
+            throw new Error(data.error || 'Failed to start stream');
+          }
+          
+          this.currentSSRC = data.ssrc;
+          this.sampleRate = data.sample_rate || 12000;
+          
+          // Initialize Web Audio API
+          this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: this.sampleRate
+          });
+          
+          // Connect WebSocket for audio data
+          const wsUrl = data.websocket.replace('http:', 'ws:').replace('https:', 'wss:');
+          this.ws = new WebSocket(wsUrl);
+          this.ws.binaryType = 'arraybuffer';
+          
+          this.ws.onopen = () => {
+            console.log(`🔊 Audio WebSocket connected for ${channelName}`);
+            this.ws.send('A:START');
+            this.isPlaying = true;
+            this.nextPlayTime = this.audioContext.currentTime;
+            this.updateUI('playing', `Playing ${channelName}`);
+            this.updateButton(channelName, 'playing');
+          };
+          
+          this.ws.onmessage = (event) => {
+            if (event.data instanceof ArrayBuffer) {
+              this.playAudioChunk(event.data);
+            }
+          };
+          
+          this.ws.onclose = () => {
+            console.log(`👋 Audio WebSocket closed for ${channelName}`);
+            if (this.isPlaying) {
+              this.updateUI('stopped', 'Connection closed');
+              this.isPlaying = false;
+            }
+          };
+          
+          this.ws.onerror = (error) => {
+            console.error('❌ Audio WebSocket error:', error);
+            this.updateUI('error', 'WebSocket error');
+            this.updateButton(channelName, 'error');
+          };
+          
+        } catch (error) {
+          console.error('❌ Failed to start audio:', error);
+          this.updateUI('error', error.message);
+          this.updateButton(channelName, 'error');
+          this.currentChannel = null;
+        }
+      }
+      
+      playAudioChunk(arrayBuffer) {
+        if (!this.audioContext || !this.isPlaying) return;
+        
+        // Convert Int16 PCM to Float32
+        const int16Data = new Int16Array(arrayBuffer);
+        const float32Data = new Float32Array(int16Data.length);
+        
+        for (let i = 0; i < int16Data.length; i++) {
+          float32Data[i] = int16Data[i] / 32768.0 * this.volume;
+        }
+        
+        // Create audio buffer
+        const audioBuffer = this.audioContext.createBuffer(1, float32Data.length, this.sampleRate);
+        audioBuffer.getChannelData(0).set(float32Data);
+        
+        // Schedule playback
+        const source = this.audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(this.audioContext.destination);
+        
+        // Ensure continuous playback
+        const now = this.audioContext.currentTime;
+        if (this.nextPlayTime < now) {
+          this.nextPlayTime = now;
+        }
+        
+        source.start(this.nextPlayTime);
+        this.nextPlayTime += audioBuffer.duration;
+      }
+      
+      async stop() {
+        if (this.ws) {
+          this.ws.send('A:STOP');
+          this.ws.close();
+          this.ws = null;
+        }
+        
+        if (this.audioContext) {
+          await this.audioContext.close();
+          this.audioContext = null;
+        }
+        
+        // Delete stream on server
+        if (this.currentSSRC) {
+          try {
+            await fetch(`/api/v1/audio/stream/${this.currentSSRC}`, { method: 'DELETE' });
+          } catch (e) {
+            console.warn('Failed to stop server stream:', e);
+          }
+        }
+        
+        const oldChannel = this.currentChannel;
+        this.isPlaying = false;
+        this.currentChannel = null;
+        this.currentSSRC = null;
+        
+        this.updateUI('stopped', 'Stopped');
+        this.hidePanel();
+        
+        if (oldChannel) {
+          this.updateButton(oldChannel, 'idle');
+        }
+        
+        // Refresh to update button states
+        updateSummary();
+      }
+      
+      setVolume(value) {
+        this.volume = Math.max(0, Math.min(1, value));
+        this.volumeLabelEl.textContent = Math.round(this.volume * 100) + '%';
+      }
+      
+      updateUI(state, message) {
+        this.channelNameEl.textContent = this.currentChannel || 'No channel';
+        this.statusEl.textContent = message;
+        
+        // Update status styling
+        this.statusEl.style.color = {
+          'loading': '#f39c12',
+          'playing': '#27ae60',
+          'stopped': '#bdc3c7',
+          'error': '#e74c3c'
+        }[state] || '#bdc3c7';
+      }
+      
+      updateButton(channelName, state) {
+        const channelKey = channelName.replace(/ /g, '_');
+        const button = document.getElementById(`audio-btn-${channelKey}`);
+        if (!button) return;
+        
+        button.className = 'listen-button';
+        if (state === 'loading') {
+          button.classList.add('loading');
+          button.textContent = '⏳';
+        } else if (state === 'playing') {
+          button.classList.add('playing');
+          button.textContent = '🔊';
+        } else if (state === 'error') {
+          button.classList.add('error');
+          button.textContent = '❌';
+          setTimeout(() => {
+            button.className = 'listen-button';
+            button.textContent = '🔈';
+          }, 3000);
+        } else {
+          button.textContent = '🔈';
+        }
+      }
+      
+      showPanel() {
+        this.panelEl.classList.add('visible');
+      }
+      
+      hidePanel() {
+        this.panelEl.classList.remove('visible');
+      }
+    }
+    
+    // Global audio player instance
+    const grapeAudio = new GRAPEAudioPlayer();
+    
+    // Toggle audio for a channel
+    function toggleAudio(channelName) {
+      if (grapeAudio.currentChannel === channelName && grapeAudio.isPlaying) {
+        grapeAudio.stop();
+      } else {
+        grapeAudio.start(channelName);
       }
     }
     

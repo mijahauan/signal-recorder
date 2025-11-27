@@ -12,7 +12,7 @@ description = "beelink rx888 SAS"
 [ka9q]
 status_address = "bee1-hf-status.local"
 # data_address will be auto-discovered from radiod via status_address
-# Uncomment to override: data_address = "239.103.26.231"
+data_address = "239.103.26.231"
 auto_create_channels = true
 
 [recorder]

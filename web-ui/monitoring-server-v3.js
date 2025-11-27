@@ -24,6 +24,9 @@ import { fileURLToPath } from 'url';
 import toml from 'toml';
 import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
+import dgram from 'dgram';
+import { EventEmitter } from 'events';
+import { WebSocketServer } from 'ws';
 import { GRAPEPaths } from './grape-paths.js';
 import {
   getPrimaryTimeReference,
@@ -81,6 +84,262 @@ try {
   console.log('📁 Data root:', dataRoot);
   paths = new GRAPEPaths(dataRoot);
 }
+
+// ============================================================================
+// AUDIO STREAMING CONFIGURATION
+// ============================================================================
+
+// Get radiod hostname from config (ka9q section)
+const RADIOD_HOSTNAME = config.ka9q?.status_address || process.env.RADIOD_HOSTNAME || 'localhost';
+const KA9Q_AUDIO_PORT = 5004;
+const MULTICAST_INTERFACE = process.env.KA9Q_MULTICAST_INTERFACE || null;
+const RADIOD_AUDIO_MULTICAST = config.ka9q?.data_address || process.env.RADIOD_AUDIO_MULTICAST || null;
+
+// Python configuration - use venv if available
+const VENV_PYTHON = join(__dirname, '..', 'venv', 'bin', 'python3');
+const PYTHON_CMD = fs.existsSync(VENV_PYTHON) ? VENV_PYTHON : 'python3';
+const AUDIO_CLIENT_SCRIPT = join(__dirname, 'radiod_audio_client.py');
+
+// Audio SSRC offset - added to IQ SSRC to create audio channel SSRC
+const AUDIO_SSRC_OFFSET = 999;
+
+/**
+ * Calculate audio SSRC from frequency
+ * Audio SSRC = frequency_hz + 999 (e.g., 10 MHz -> 10000999)
+ */
+function getAudioSSRC(frequencyHz) {
+  return Math.floor(frequencyHz) + AUDIO_SSRC_OFFSET;
+}
+
+/**
+ * Get frequency from channel name
+ * Examples: "WWV 10 MHz" -> 10000000, "CHU 3.33 MHz" -> 3330000
+ */
+function channelNameToFrequency(channelName) {
+  const match = channelName.match(/(\d+\.?\d*)\s*MHz/i);
+  if (match) {
+    return parseFloat(match[1]) * 1000000;
+  }
+  return null;
+}
+
+/**
+ * Ka9q-Radio Audio Proxy
+ * Handles RTP stream reception and WebSocket forwarding for audio playback
+ */
+class Ka9qRadioProxy extends EventEmitter {
+  constructor() {
+    super();
+    this.audioSocket = null;
+    this.activeStreams = new Map();
+    this.joinedMulticastGroups = new Set();
+    this.loggedRtp = new Set();
+    this.loggedOrphanRtp = new Set();
+    
+    this.init();
+  }
+
+  init() {
+    console.log(`🔊 Audio Proxy initialized`);
+    console.log(`   Radiod: ${RADIOD_HOSTNAME}`);
+    console.log(`   Interface: ${MULTICAST_INTERFACE || 'default'}`);
+    this.setupAudioSocket();
+  }
+  
+  setupAudioSocket() {
+    // Create audio socket for RTP reception with large buffer
+    this.audioSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    
+    this.audioSocket.on('listening', () => {
+      this.audioSocket.setMulticastLoopback(true);
+      
+      if (MULTICAST_INTERFACE) {
+        try {
+          this.audioSocket.setMulticastInterface(MULTICAST_INTERFACE);
+        } catch (err) {
+          console.warn(`⚠️  Could not set multicast interface ${MULTICAST_INTERFACE}: ${err.message}`);
+        }
+      }
+      
+      // Increase socket buffer
+      try {
+        const requestedSize = 4 * 1024 * 1024; // 4MB
+        this.audioSocket.setRecvBufferSize(requestedSize);
+        const actualSize = this.audioSocket.getRecvBufferSize();
+        console.log(`✅ Audio socket buffer: ${actualSize} bytes`);
+      } catch (err) {
+        console.warn(`⚠️  Could not set socket buffer size: ${err.message}`);
+      }
+      
+      this.setupAudioReception();
+    });
+    
+    this.audioSocket.on('error', (err) => {
+      console.error('❌ Audio socket error:', err);
+    });
+    
+    // Bind to receive multicast traffic
+    this.audioSocket.bind(KA9Q_AUDIO_PORT, '0.0.0.0');
+  }
+
+  setupAudioReception() {
+    this.audioSocket.on('message', (msg, rinfo) => {
+      if (msg.length < 12) return; // Minimum RTP header size
+
+      // Extract SSRC from RTP header
+      const ssrc = msg.readUInt32BE(8);
+      
+      // Check if we care about this SSRC
+      const session = global.audioSessions ? global.audioSessions.get(ssrc) : null;
+      if (!session) {
+        // Log first packet from unknown SSRC, then ignore
+        if (!this.loggedOrphanRtp.has(ssrc)) {
+          // Only log if it looks like an audio SSRC (ends in 999)
+          if (ssrc % 1000 === AUDIO_SSRC_OFFSET) {
+            console.log(`📭 Audio RTP for SSRC ${ssrc} but no WebSocket session active`);
+          }
+          this.loggedOrphanRtp.add(ssrc);
+        }
+        return;
+      }
+      
+      // Log first packet for active SSRCs
+      if (!this.loggedRtp.has(ssrc)) {
+        console.log(`🔊 RTP packet for SSRC ${ssrc} from ${rinfo.address}:${rinfo.port}`);
+        this.loggedRtp.add(ssrc);
+      }
+
+      // Forward to WebSocket client
+      if (session && session.audio_active && session.ws.readyState === 1) {
+        try {
+          // Parse RTP header
+          const byte0 = msg.readUInt8(0);
+          const csrcCount = byte0 & 0x0F;
+          const extension = (byte0 >> 4) & 0x01;
+          
+          // Calculate payload offset
+          let payloadOffset = 12 + (csrcCount * 4);
+          
+          // Skip extension header if present
+          if (extension && msg.length >= payloadOffset + 4) {
+            const extLengthWords = msg.readUInt16BE(payloadOffset + 2);
+            payloadOffset += 4 + (extLengthWords * 4);
+          }
+          
+          if (payloadOffset >= msg.length) return;
+          
+          // Extract PCM payload and byte-swap for browser
+          const pcmPayload = Buffer.from(msg.slice(payloadOffset));
+          for (let i = 0; i < pcmPayload.length; i += 2) {
+            const tmp = pcmPayload[i];
+            pcmPayload[i] = pcmPayload[i + 1];
+            pcmPayload[i + 1] = tmp;
+          }
+          
+          // Send to browser
+          session.ws.send(pcmPayload);
+        } catch (err) {
+          console.error(`❌ Error processing RTP for SSRC ${ssrc}:`, err.message);
+        }
+      }
+    });
+  }
+
+  async startAudioStream(frequencyHz) {
+    const ssrc = getAudioSSRC(frequencyHz);
+    const freqMHz = frequencyHz / 1000000;
+    
+    console.log(`🎵 Starting audio stream: ${freqMHz} MHz (SSRC ${ssrc})`);
+    
+    // Use Python client to create/get audio channel
+    const interfaceArg = MULTICAST_INTERFACE ? `--interface ${MULTICAST_INTERFACE}` : '';
+    const fallbackArg = RADIOD_AUDIO_MULTICAST ? `--fallback-multicast ${RADIOD_AUDIO_MULTICAST}` : '';
+    const cmd = `${PYTHON_CMD} -u ${AUDIO_CLIENT_SCRIPT} --radiod-host ${RADIOD_HOSTNAME} ${interfaceArg} ${fallbackArg} get-or-create --frequency ${frequencyHz}`;
+    
+    try {
+      const { stdout, stderr } = await execAsync(cmd, { timeout: 30000 });
+      
+      if (stderr) {
+        console.log(`   [Python]: ${stderr}`);
+      }
+      
+      const result = JSON.parse(stdout.trim());
+      
+      if (!result.success) {
+        console.error(`❌ Audio stream request failed: ${result.error}`);
+        throw new Error(result.error);
+      }
+      
+      console.log(`✅ Audio channel ready: SSRC ${result.ssrc} (${result.mode})`);
+      
+      const stream = {
+        ssrc: result.ssrc,
+        active: true,
+        frequency: result.frequency_hz,
+        multicastAddress: result.multicast_address,
+        multicastPort: result.port,
+        sampleRate: result.sample_rate
+      };
+      
+      this.activeStreams.set(ssrc, stream);
+      
+      // Join multicast group
+      if (result.multicast_address && !this.joinedMulticastGroups.has(result.multicast_address)) {
+        try {
+          this.audioSocket.addMembership(result.multicast_address, MULTICAST_INTERFACE || '0.0.0.0');
+          this.joinedMulticastGroups.add(result.multicast_address);
+          console.log(`✅ Joined audio multicast: ${result.multicast_address}:${result.port}`);
+        } catch (err) {
+          console.warn(`⚠️  Could not join audio group: ${err.message}`);
+        }
+      }
+      
+      return stream;
+    } catch (error) {
+      console.error(`❌ Failed to start audio stream:`, error.message);
+      throw error;
+    }
+  }
+  
+  async stopAudioStream(ssrc) {
+    const stream = this.activeStreams.get(ssrc);
+    if (stream) {
+      stream.active = false;
+      this.activeStreams.delete(ssrc);
+      
+      // Calculate frequency from SSRC
+      const frequencyHz = ssrc - AUDIO_SSRC_OFFSET;
+      
+      // Use Python client to stop channel
+      const cmd = `${PYTHON_CMD} -u ${AUDIO_CLIENT_SCRIPT} --radiod-host ${RADIOD_HOSTNAME} stop --frequency ${frequencyHz}`;
+      
+      try {
+        await execAsync(cmd, { timeout: 5000 });
+        console.log(`✅ Audio channel ${ssrc} stopped`);
+      } catch (err) {
+        console.error(`❌ Error stopping audio channel ${ssrc}:`, err.message);
+      }
+    }
+  }
+
+  shutdown() {
+    console.log('🛑 Shutting down audio proxy...');
+    
+    for (const [ssrc] of this.activeStreams) {
+      this.stopAudioStream(ssrc);
+    }
+    
+    if (this.audioSocket) {
+      this.audioSocket.close();
+    }
+  }
+}
+
+// Create audio proxy instance
+const audioProxy = new Ka9qRadioProxy();
+
+// Audio session management (global for access from RTP handler)
+global.audioSessions = new Map();
 
 // Middleware
 app.use(express.json());
@@ -2900,6 +3159,156 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
 }
 
 // ============================================================================
+// AUDIO STREAMING API
+// ============================================================================
+
+/**
+ * GET /api/v1/audio/stream/:channel
+ * Start audio stream for a channel (creates AM channel with AGC)
+ * Returns WebSocket URL for audio data
+ */
+app.get('/api/v1/audio/stream/:channel', async (req, res) => {
+  const channelName = req.params.channel.replace(/_/g, ' ');
+  
+  console.log(`🎵 Audio stream request for channel: ${channelName}`);
+  
+  const frequencyHz = channelNameToFrequency(channelName);
+  if (!frequencyHz) {
+    return res.status(400).json({
+      success: false,
+      error: `Could not determine frequency for channel: ${channelName}`
+    });
+  }
+  
+  try {
+    const stream = await audioProxy.startAudioStream(frequencyHz);
+    
+    res.json({
+      success: true,
+      channel: channelName,
+      ssrc: stream.ssrc,
+      frequency_hz: stream.frequency,
+      sample_rate: stream.sampleRate,
+      websocket: `ws://${req.headers.host}/api/v1/audio/ws/${stream.ssrc}`,
+      multicast: `${stream.multicastAddress}:${stream.multicastPort}`
+    });
+  } catch (error) {
+    console.error('❌ Failed to create audio stream:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create audio stream',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * DELETE /api/v1/audio/stream/:ssrc
+ * Stop audio stream
+ */
+app.delete('/api/v1/audio/stream/:ssrc', async (req, res) => {
+  const ssrc = parseInt(req.params.ssrc);
+  
+  await audioProxy.stopAudioStream(ssrc);
+  
+  // Also close any WebSocket session
+  const session = global.audioSessions.get(ssrc);
+  if (session && session.ws) {
+    try {
+      session.ws.close(1000, 'Stream stopped');
+    } catch (e) {}
+    global.audioSessions.delete(ssrc);
+  }
+  
+  res.json({ success: true, message: 'Stream stopped' });
+});
+
+/**
+ * GET /api/v1/audio/health
+ * Audio proxy health check
+ */
+app.get('/api/v1/audio/health', async (req, res) => {
+  const streamInfo = Array.from(audioProxy.activeStreams.entries()).map(([ssrc, stream]) => ({
+    ssrc,
+    frequency_hz: stream.frequency,
+    frequency_mhz: stream.frequency / 1000000,
+    active: stream.active
+  }));
+  
+  // Check Python/ka9q availability
+  let pythonStatus = 'unknown';
+  let pythonError = null;
+  
+  try {
+    const pythonScript = `import sys; import json; 
+try:
+    from ka9q import RadiodControl
+    print(json.dumps({'success': True}))
+except Exception as e:
+    print(json.dumps({'success': False, 'error': str(e)}))`;
+    
+    const { stdout } = await execAsync(
+      `echo "${pythonScript.replace(/"/g, '\\"')}" | ${PYTHON_CMD}`,
+      { timeout: 5000 }
+    );
+    
+    const result = JSON.parse(stdout.trim());
+    pythonStatus = result.success ? 'ok' : 'error';
+    pythonError = result.error || null;
+  } catch (e) {
+    pythonStatus = 'error';
+    pythonError = e.message;
+  }
+  
+  res.json({
+    status: pythonStatus === 'ok' ? 'ok' : 'degraded',
+    service: 'grape-audio-proxy',
+    radiod_hostname: RADIOD_HOSTNAME,
+    active_streams: audioProxy.activeStreams.size,
+    streams: streamInfo,
+    python: {
+      status: pythonStatus,
+      error: pythonError
+    }
+  });
+});
+
+/**
+ * GET /api/v1/audio/channels
+ * List all channels with their audio SSRCs
+ */
+app.get('/api/v1/audio/channels', (req, res) => {
+  try {
+    const channels = paths.discoverChannels();
+    const audioChannels = channels.map(channelName => {
+      const frequencyHz = channelNameToFrequency(channelName);
+      const audioSsrc = frequencyHz ? getAudioSSRC(frequencyHz) : null;
+      const iqSsrc = frequencyHz ? Math.floor(frequencyHz) : null;
+      
+      // Check if stream is active
+      const isActive = audioSsrc && audioProxy.activeStreams.has(audioSsrc);
+      
+      return {
+        name: channelName,
+        frequency_hz: frequencyHz,
+        frequency_mhz: frequencyHz ? frequencyHz / 1000000 : null,
+        iq_ssrc: iqSsrc,
+        audio_ssrc: audioSsrc,
+        audio_active: isActive,
+        stream_url: frequencyHz ? `/api/v1/audio/stream/${channelName.replace(/ /g, '_')}` : null
+      };
+    });
+    
+    res.json({
+      channels: audioChannels,
+      radiod_hostname: RADIOD_HOSTNAME
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
 // HEALTH CHECK
 // ============================================================================
 
@@ -2907,7 +3316,7 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     uptime: Date.now() - serverStartTime,
-    version: '3.0.0'
+    version: '3.1.0'  // Bumped for audio support
   });
 });
 
@@ -2957,14 +3366,15 @@ app.get('/api/v1/solar-zenith', async (req, res) => {
 });
 
 // ============================================================================
-// START SERVER
+// START SERVER WITH WEBSOCKET SUPPORT
 // ============================================================================
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\n✅ Server running on http://localhost:${PORT}`);
   console.log(`📊 Summary: http://localhost:${PORT}/summary.html`);
   console.log(`🎯 Carrier Analysis: http://localhost:${PORT}/carrier.html`);
   console.log(`🔍 Health: http://localhost:${PORT}/health`);
+  console.log(`🔊 Audio Streaming: WebSocket enabled`);
   console.log(`\n📡 API Endpoints:`);
   console.log(`   Summary:`);
   console.log(`     GET /api/v1/summary (aggregated)`);
@@ -2976,9 +3386,110 @@ app.listen(PORT, () => {
   console.log(`   Carrier Analysis:`);
   console.log(`     GET /api/v1/carrier/quality?date=YYYYMMDD`);
   console.log(`     GET /spectrograms/{date}/{filename}`);
-  console.log(`   ⏱️  Timing & Analytics (NEW):`);
+  console.log(`   ⏱️  Timing & Analytics:`);
   console.log(`     GET /api/v1/timing/status`);
   console.log(`     GET /api/v1/tones/current`);
   console.log(`     GET /api/v1/channels/:name/discrimination/:date/methods`);
+  console.log(`   🔊 Audio Streaming:`);
+  console.log(`     GET /api/v1/audio/channels`);
+  console.log(`     GET /api/v1/audio/stream/:channel`);
+  console.log(`     DELETE /api/v1/audio/stream/:ssrc`);
+  console.log(`     GET /api/v1/audio/health`);
+  console.log(`     WS /api/v1/audio/ws/:ssrc`);
   console.log(``);
+});
+
+// WebSocket server for audio streaming
+const wss = new WebSocketServer({ noServer: true });
+
+// Handle WebSocket upgrade requests
+server.on('upgrade', (request, socket, head) => {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  
+  if (url.pathname.startsWith('/api/v1/audio/ws/')) {
+    const ssrc = parseInt(url.pathname.split('/')[5]);
+    if (!isNaN(ssrc)) {
+      console.log(`🔄 WebSocket upgrade request for audio SSRC ${ssrc}`);
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        console.log(`✅ WebSocket upgrade successful for SSRC ${ssrc}`);
+        wss.emit('connection', ws, request, ssrc);
+      });
+    } else {
+      console.warn(`❌ Invalid SSRC in WebSocket path: ${url.pathname}`);
+      socket.destroy();
+    }
+  } else {
+    console.warn(`❌ Non-audio WebSocket path: ${url.pathname}`);
+    socket.destroy();
+  }
+});
+
+// Handle WebSocket connections
+wss.on('connection', (ws, request, ssrc) => {
+  console.log(`🎵 WebSocket audio connection for SSRC ${ssrc}`);
+  
+  // Close any existing session for this SSRC (handles reconnection)
+  const existingSession = global.audioSessions.get(ssrc);
+  if (existingSession && existingSession.ws) {
+    console.log(`♻️  Replacing existing WebSocket session for SSRC ${ssrc}`);
+    try {
+      existingSession.ws.close(1000, 'Replaced by new connection');
+    } catch (e) {}
+  }
+  
+  const session = {
+    ws,
+    ssrc,
+    audio_active: true  // Start active immediately
+  };
+  
+  global.audioSessions.set(ssrc, session);
+  console.log(`✅ Audio activated for SSRC ${ssrc}`);
+  
+  ws.on('message', (message) => {
+    const msg = message.toString();
+    
+    if (msg.startsWith('A:')) {
+      if (msg.includes('START')) {
+        session.audio_active = true;
+        console.log(`▶️  Audio START for SSRC ${ssrc}`);
+      } else if (msg.includes('STOP')) {
+        session.audio_active = false;
+        console.log(`⏹️  Audio STOP for SSRC ${ssrc}`);
+      }
+    }
+  });
+  
+  ws.on('close', (code, reason) => {
+    console.log(`👋 WebSocket closed for SSRC ${ssrc} (code: ${code})`);
+    session.audio_active = false;
+    
+    // Clean up after delay to allow reconnection
+    setTimeout(() => {
+      const currentSession = global.audioSessions.get(ssrc);
+      if (currentSession === session) {
+        global.audioSessions.delete(ssrc);
+        console.log(`🗑️  Session cleaned up for SSRC ${ssrc}`);
+      }
+    }, 5000);
+  });
+  
+  ws.on('error', (error) => {
+    console.error(`❌ WebSocket error for SSRC ${ssrc}:`, error.message);
+  });
+});
+
+// Handle graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\n🛑 Shutting down GRAPE Monitoring Server...');
+  audioProxy.shutdown();
+  server.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Received SIGTERM, shutting down...');
+  audioProxy.shutdown();
+  server.close();
+  process.exit(0);
 });

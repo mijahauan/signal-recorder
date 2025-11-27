@@ -184,6 +184,14 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 ## Recent Updates
 
+**November 26, 2025 - Live Audio Streaming** ✅
+- **New:** Listen to any WWV/CHU channel directly from the Summary page
+- **Audio Button:** Click 🔈 on any channel row to start streaming
+- **Architecture:** AM demodulation with AGC, 12 kHz audio via WebSocket
+- **Audio SSRC:** IQ_SSRC + 999 (e.g., 10 MHz uses SSRC 10000999)
+- **Files:** `radiod_audio_client.py`, `monitoring-server-v3.js` (Ka9qRadioProxy), `summary.html` (GRAPEAudioPlayer)
+- **Dependencies:** Added `ws` package for WebSocket support
+
 **November 26, 2025 - Geographic BCD Discrimination & Spectrogram Solar Overlays** ✅
 - **Geographic Peak Assignment:** BCD dual-peak discrimination now uses geographic ToA prediction to correctly assign WWV/WWVH to early/late correlation peaks based on receiver location
 - **Test Signal ToA Offset:** Added time-of-arrival offset measurement for test signals (minutes :08/:44) providing high-precision ionospheric channel characterization

@@ -4,28 +4,69 @@
 # Instructions: Paste this entire file at the start of any new chat session
 # to provide ground-truth context for the GRAPE Signal Recorder project.
 
-## 🚨 IMMEDIATE CONTEXT: Session 2025-11-26 Evening (CRITICAL FOR NEXT SESSION)
+## 🚨 IMMEDIATE CONTEXT: Session 2025-11-26 Late Evening
 
-**NEXT SESSION GOAL:** Enable the "Audio" button on the Summary page to allow users to listen to channel audio in real-time.
+### What Was Just Completed (Nov 26 Late Evening - Audio Streaming):
 
-### Reference Implementation for Audio Streaming
+**Audio Streaming on Summary Page - IMPLEMENTED** ✅
 
-The audio streaming feature should be modeled after `/home/wsprdaemon/SWL-ka9q/` which contains:
-- `server.js` (48KB) - Express server with audio streaming endpoints
-- `radiod_client.py` - Python client for ka9q-radio multicast
-- `discover_multicast.py` - Multicast discovery utilities
+Users can now listen to any WWV/CHU channel directly from the Summary page.
 
-**Key files to examine:**
-```bash
-/home/wsprdaemon/SWL-ka9q/server.js       # Audio streaming implementation
-/home/wsprdaemon/SWL-ka9q/radiod_client.py # Ka9q-radio client
-```
+**Architecture:**
+- **Audio SSRC:** IQ_SSRC + 999 (e.g., 10 MHz uses SSRC 10000999)
+- **Channel Type:** AM demodulation with AGC enabled
+- **Sample Rate:** 12 kHz audio
+- **Transport:** WebSocket streaming of PCM audio to browser Web Audio API
 
-The goal is to add a similar audio streaming capability to the GRAPE signal-recorder web UI.
+**Files Created:**
+- `web-ui/radiod_audio_client.py` - Python client for ka9q-radio AM channel management
+  - `get_or_create_audio_channel()` - Creates AM channel with AGC
+  - `stop_audio_channel()` - Deletes audio channel
+  - Uses ka9q-python library from `/home/wsprdaemon/SWL-ka9q`
+
+**Files Modified:**
+- `web-ui/monitoring-server-v3.js`:
+  - Added `Ka9qRadioProxy` class for RTP multicast → WebSocket forwarding
+  - Added audio API endpoints:
+    - `GET /api/v1/audio/channels` - List channels with audio SSRCs
+    - `GET /api/v1/audio/stream/:channel` - Start audio stream
+    - `DELETE /api/v1/audio/stream/:ssrc` - Stop audio stream
+    - `GET /api/v1/audio/health` - Audio proxy health check
+    - `WS /api/v1/audio/ws/:ssrc` - WebSocket for audio data
+  - WebSocket server for audio streaming
+  - Graceful shutdown handling
+
+- `web-ui/summary.html`:
+  - Added `GRAPEAudioPlayer` class (Web Audio API playback)
+  - Audio player panel with volume control
+  - Working audio buttons for each channel
+  - Visual feedback (loading/playing/error states)
+
+- `web-ui/package.json`:
+  - Added `ws` dependency for WebSocket support
+
+**Usage:**
+1. Open Summary page: `http://localhost:3000/summary.html`
+2. Click 🔈 button on any channel row
+3. Audio player panel appears with Stop button and volume control
+4. Click again or ⏹ to stop
+
+**Audio SSRC Mapping:**
+| Channel | IQ SSRC | Audio SSRC |
+|---------|---------|------------|
+| WWV 2.5 MHz | 2500000 | 2500999 |
+| WWV 5 MHz | 5000000 | 5000999 |
+| WWV 10 MHz | 10000000 | 10000999 |
+| WWV 15 MHz | 15000000 | 15000999 |
+| WWV 20 MHz | 20000000 | 20000999 |
+| WWV 25 MHz | 25000000 | 25000999 |
+| CHU 3.33 MHz | 3330000 | 3330999 |
+| CHU 7.85 MHz | 7850000 | 7850999 |
+| CHU 14.67 MHz | 14670000 | 14670999 |
 
 ---
 
-### What Was Just Completed (Nov 26 Evening - BCD Geographic & Spectrograms):
+### Previous Session (Nov 26 Evening - BCD Geographic & Spectrograms):
 
 **1. Geographic ToA Prediction for BCD Dual Peaks:**
 - **Problem:** BCD correlation discrimination was assuming WWV always arrives first (early peak)
