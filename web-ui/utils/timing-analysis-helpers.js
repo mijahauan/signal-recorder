@@ -86,9 +86,7 @@ async function getPrimaryTimeReference(paths, config) {
       
       const source = state.time_snap.source || 'unknown';
       const confidence = state.time_snap.confidence || 0;
-      // Use utc_timestamp (when tone was detected), NOT established_at (NPZ creation time)
-      // This matches Python timing_metrics_writer.py line 360
-      const ageSeconds = Date.now() / 1000 - state.time_snap.utc_timestamp;
+      const ageSeconds = Date.now() / 1000 - (state.time_snap.established_at || state.time_snap.utc_timestamp);
       
       // Calculate score
       let score = confidence * 100;

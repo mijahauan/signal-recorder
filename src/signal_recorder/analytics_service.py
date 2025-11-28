@@ -663,15 +663,11 @@ class AnalyticsService:
             # Step 2.5: Write timing metrics for web-UI (every 60 seconds)
             current_time = time.time()
             if current_time - self.last_timing_metrics_write >= self.timing_metrics_interval:
-                # Use CURRENT BEST time_snap (from verified tone detections if available)
-                # Fall back to archive's embedded time_snap for self-contained operation
-                if self.state.time_snap is not None:
-                    # Use analytics' current time_snap (updated by verified tone detections)
-                    # This gives accurate quality classification (TONE_LOCKED when fresh)
-                    active_time_snap = self.state.time_snap
-                elif archive.time_snap_rtp is not None and archive.time_snap_utc is not None:
-                    # Fall back to archive's embedded time_snap
-                    active_time_snap = TimeSnapReference(
+                # Use archive's embedded time_snap if available (self-contained reference)
+                # This works across RTP session boundaries (core recorder restarts)
+                if archive.time_snap_rtp is not None and archive.time_snap_utc is not None:
+                    # Create TimeSnapReference from archive's embedded metadata
+                    archive_time_snap = TimeSnapReference(
                         rtp_timestamp=archive.time_snap_rtp,
                         utc_timestamp=archive.time_snap_utc,
                         sample_rate=archive.sample_rate,
@@ -680,10 +676,7 @@ class AnalyticsService:
                         station=archive.time_snap_station or 'unknown',
                         established_at=archive.created_timestamp
                     )
-                else:
-                    active_time_snap = None
-                
-                if active_time_snap is not None:
+                    
                     # Use archive's stored NTP offset (quality at recording time)
                     ntp_offset = archive.ntp_offset_ms
                     ntp_synced = (ntp_offset is not None and abs(ntp_offset) < 100)  # Synced if < 100ms offset
@@ -696,7 +689,7 @@ class AnalyticsService:
                     if archive.ntp_wall_clock_time is not None:
                         # Archive has independent NTP reference - PERFECT!
                         self.timing_writer.write_snapshot(
-                            time_snap=active_time_snap,
+                            time_snap=archive_time_snap,
                             current_rtp=archive.rtp_timestamp,
                             current_utc=archive.ntp_wall_clock_time,  # INDEPENDENT NTP reference
                             ntp_offset_ms=ntp_offset,
@@ -705,6 +698,7 @@ class AnalyticsService:
                         self.last_timing_metrics_write = current_time
                     else:
                         # Old archive format without NTP time - skip drift measurement
+                        # (Can still use tone-to-tone for RTP characterization)
                         logger.debug(f"{self.channel_name}: Archive lacks ntp_wall_clock_time - "
                                    f"skipping drift measurement (use tone-to-tone instead)")
                         self.last_timing_metrics_write = current_time
