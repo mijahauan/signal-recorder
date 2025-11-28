@@ -1,18 +1,38 @@
 # GRAPE Signal Recorder - AI Context Document
 
-**Last Updated:** 2025-11-28  
-**Status:** Beta release ready - repository cleaned up
+**Last Updated:** 2025-11-28 (afternoon session)  
+**Status:** Beta release ready - active discrimination refinement
 
 ---
 
-## 🎯 Current State: Beta Release Ready
+## 🎯 Current Focus: Discrimination Refinement
 
-The GRAPE Signal Recorder is functionally complete for beta testing:
-- **Recording:** 16 kHz IQ capture from ka9q-radio ✅
-- **Analytics:** WWV/WWVH discrimination with 5 voting methods ✅
-- **Decimation:** 10 Hz NPZ files for all 9 channels ✅
-- **DRF Upload:** Multi-subchannel Digital RF to PSWS ✅ (tested Nov 28)
-- **Repository:** Cleaned up for external testers ✅
+The core system is complete. Current work focuses on **tuning the WWV/WWVH discrimination methodology** to maximize scientific value.
+
+### Immediate Priorities for Next Session
+
+1. **Discrimination Scoring Weights** - The weighted voting system needs tuning:
+   - 500/600 Hz ground truth (weight=10) can be overridden by other methods (combined weight=12)
+   - User chose to keep current balance - disagreements show mixed propagation
+   - Consider adaptive weights based on signal conditions
+   
+2. **Differential Doppler Display** - Maximize information in Vote 6 panel:
+   - Current: Shows WWV/WWVH Δf_D traces with solar elevation
+   - Want: Better visualization of coherence window, quality metrics
+   - Data available: `doppler_wwv_hz`, `doppler_wwvh_hz`, `doppler_quality`, coherence time
+   
+3. **440 Hz Detection Sensitivity** - Improved this session:
+   - Changed from simple FFT to coherent integration (~30 dB gain)
+   - Now matches 1000/1200 Hz detector sensitivity
+   - Should see WWV 440 Hz at minute :02 more often
+
+### Recent Session Work (Nov 28)
+
+- ✅ **440 Hz Coherent Integration:** Quadrature matched filter with 44 one-second segments
+- ✅ **Timing Dashboard:** Refined categories (TONE_LOCKED, TONE_STABLE, TONE_AGED)
+- ✅ **Service Scripts:** `scripts/grape-*.sh` with -start|-stop|-status flags
+- ✅ **Major Cleanup:** Organized 140+ files into `archive/` directories
+- ✅ **Ground Truth Analysis:** Explained why disagreements occur (mixed propagation)
 
 ### Quick Start for Beta Testers
 
@@ -27,12 +47,18 @@ pip install -e .
 cp config/grape-config.toml.template config/grape-config.toml
 # Edit with your station info and ka9q-radio address
 
-# Run recorder
-python -m signal_recorder.grape_recorder --config config/grape-config.toml
+# Start all services
+./scripts/grape-all.sh -start
 
-# Web UI (separate terminal)
-cd web-ui && npm install && npm start
-# Open http://localhost:3000
+# Or individually:
+./scripts/grape-core.sh -start
+./scripts/grape-analytics.sh -start
+./scripts/grape-ui.sh -start
+
+# Check status
+./scripts/grape-all.sh -status
+
+# Web UI: http://localhost:3000
 ```
 
 ---
@@ -145,41 +171,97 @@ ls /tmp/grape-test/analytics/WWV_10_MHz/digital_rf/ # DRF output
 
 ---
 
-## 5. 📋 Recent Completions
+## 5. � Discrimination System Details
 
-### Nov 28: DRF Upload System ✅
-- **Multi-subchannel DRF Writer:** All 9 frequencies in single ch0 (wsprdaemon-compatible)
-- **Upload Tracker:** JSON state file tracks successful uploads
-- **Daily Upload Script:** Orchestrates DRF creation → SFTP upload → trigger directory
-- **Tested:** 35MB uploaded to PSWS in 28 seconds, trigger processed by server
+### Weighted Voting (8 Methods)
 
-### Nov 27: UI & Gap Analysis
-- **Gap Analysis Page:** Functional with batch NPZ processing, scatter timeline
-- **Channel Sorting:** All pages sort by frequency (WWV 2.5 → WWV 25)
-- **Quota Manager:** Disk cleanup integrated
-- **Discrimination UI:** Plotly charts with proper loading states
+The discrimination system uses weighted voting across multiple independent methods:
 
-### Earlier Milestones
-- **Core Recording:** 16 kHz IQ capture from ka9q-radio
-- **Analytics:** WWV/WWVH discrimination with 8 voting methods
-- **Decimation:** 10 Hz NPZ files for all channels
-- **Web UI:** Real-time monitoring on port 3000
+| Vote | Method | Weight | Minutes Active |
+|------|--------|--------|----------------|
+| 0 | Test Signal | 15 | :08, :44 only |
+| 1 | 440 Hz Station ID | 10 | :01 (WWVH), :02 (WWV) |
+| 2 | BCD Amplitude Ratio | 2-10 | All (higher in BCD minutes) |
+| 3 | 1000/1200 Hz Power Ratio | 1-10 | All |
+| 4 | Tick SNR Average | 5 | All |
+| 5 | 500/600 Hz Ground Truth | 10 | 14 exclusive minutes/hour |
+| 6 | Differential Doppler | 2 | When quality > 0.3 |
+| 7 | Timing Coherence | 3 | :08, :44 when test signal + BCD |
+
+**Key Insight:** Ground truth (Vote 5) can be overridden when other methods collectively disagree. This is by design - a "disagreement" shows mixed propagation where dominant station differs from ground truth detection.
+
+### Key Files for Discrimination
+
+| File | Purpose |
+|------|---------|
+| `src/signal_recorder/wwvh_discrimination.py` | Main discrimination logic, all 8 voting methods |
+| `src/signal_recorder/tone_detector.py` | 1000/1200 Hz matched filter detection |
+| `web-ui/discrimination.html` | 7-panel visualization UI |
+
+### CSV Outputs (per channel)
+
+```
+analytics/{channel}/tone_detections/     # 1000/1200 Hz power, timing
+analytics/{channel}/tick_windows/        # Per-second tick SNR
+analytics/{channel}/station_id_440hz/    # 440 Hz ground truth
+analytics/{channel}/bcd_discrimination/  # BCD correlation peaks
+analytics/{channel}/discrimination/      # Final weighted voting result
+analytics/{channel}/doppler/             # Differential Doppler measurements
+```
 
 ---
 
-## 6. 📚 Key Documentation
+## 6. 📋 Session History
 
-| Document | Content |
+### Nov 28 Afternoon: Discrimination Refinement
+- **440 Hz Coherent Integration:** ~30 dB processing gain via quadrature matched filter
+- **Timing Dashboard:** TONE_LOCKED (<5min), TONE_STABLE (low drift), TONE_AGED (>5min)
+- **Service Scripts:** `grape-all.sh`, `grape-analytics.sh`, `grape-core.sh`, `grape-ui.sh`
+- **Repository Cleanup:** 88 dev-history docs, 22 shell scripts, 14 test scripts → `archive/`
+- **Analysis:** Ground truth disagreements explained (mixed propagation, not bugs)
+
+### Nov 28 Morning: DRF Upload System
+- **Multi-subchannel DRF Writer:** All 9 frequencies in single ch0 (wsprdaemon-compatible)
+- **Upload Tracker:** JSON state file tracks successful uploads
+- **Tested:** 35MB uploaded to PSWS in 28 seconds
+
+### Nov 27: UI & Gap Analysis
+- **Gap Analysis Page:** Batch NPZ processing, scatter timeline
+- **Channel Sorting:** All pages sort by frequency
+
+---
+
+## 7. 📚 Documentation Structure
+
+| Location | Content |
 |----------|---------|
-| `docs/DRF_UPLOAD_SYSTEM.md` | Complete upload system documentation |
-| `docs/DISCRIMINATION_SYSTEM.md` | WWV/WWVH discrimination methods |
-| `docs/GAP_ANALYSIS.md` | Gap detection and analysis |
-| `README.md` | Project overview (needs beta update) |
+| `README.md` | Project overview, quick start, architecture |
+| `ARCHITECTURE.md` | Detailed system design |
+| `TECHNICAL_REFERENCE.md` | Implementation details |
+| `INSTALLATION.md` | Setup guide |
+| `docs/` | Feature-specific documentation |
+| `archive/dev-history/` | Session notes and design docs |
+| `archive/shell-scripts/` | Legacy scripts (superseded by grape-*.sh) |
+| `archive/test-scripts/` | Development test scripts |
 
-### Development Notes (candidates for cleanup)
-| File | Status |
-|------|--------|
-| `SESSION_*.md` | Development session notes - archive or remove |
-| `*_SUCCESS.md` | Verification docs - consolidate |
-| `*_QUICKSTART.md` | Quick references - consolidate into README |
-| `DIFFERENTIAL_DELAY_LOGIC.md` | Implementation notes - archive |
+---
+
+## 8. 🔧 Service Control
+
+```bash
+# All services
+./scripts/grape-all.sh -start|-stop|-status
+
+# Individual services
+./scripts/grape-core.sh -start       # Core recorder (ka9q-radio → 16kHz NPZ)
+./scripts/grape-analytics.sh -start  # Analytics (9 channels)
+./scripts/grape-ui.sh -start         # Web UI (port 3000)
+```
+
+---
+
+## 9. 🎯 Next Session Goals
+
+1. **Tune Discrimination Weights:** Experiment with ground truth authority vs. mixed propagation detection
+2. **Enhance Doppler Display:** Show coherence window (T_c), add statistics, improve visualization
+3. **Validate 440 Hz Improvement:** Confirm WWV minute :02 detections with new coherent integration

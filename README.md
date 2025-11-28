@@ -35,13 +35,19 @@ pip install -e .
 cp config/grape-config.toml.template config/grape-config.toml
 # Edit config/grape-config.toml with your station details and ka9q-radio address
 
-# Test the recorder (uses /tmp/grape-test by default)
-python -m signal_recorder.grape_recorder --config config/grape-config.toml
+# Start all services
+./scripts/grape-all.sh -start
 
-# In another terminal, start Web UI
-cd web-ui
-npm install   # or: pnpm install
-npm start     # http://localhost:3000
+# Check status
+./scripts/grape-all.sh -status
+```
+
+**Service Control Scripts:**
+```bash
+./scripts/grape-all.sh -start|-stop|-status    # All services
+./scripts/grape-core.sh -start|-stop|-status   # Core recorder only
+./scripts/grape-analytics.sh -start|-stop|-status  # Analytics (9 channels)
+./scripts/grape-ui.sh -start|-stop|-status     # Web UI only
 ```
 
 **Modes:** Set `mode = "test"` (default, uses `/tmp/grape-test`) or `mode = "production"` (uses `/var/lib/signal-recorder`).
@@ -222,6 +228,12 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 ## Status
 
 **Beta Release** - Core functionality complete and tested. Daily recording and PSWS upload operational at AC0G since November 2025.
+
+### Recent Updates (Nov 28, 2025)
+- **440 Hz Detection:** Coherent integration for ~30 dB processing gain
+- **Service Scripts:** `scripts/grape-*.sh` for easy start/stop/status
+- **Timing Dashboard:** Refined quality categories (TONE_LOCKED, TONE_STABLE, TONE_AGED)
+- **Repository Cleanup:** Organized archive/ with dev history, legacy scripts
 
 ## Credits & Support
 
