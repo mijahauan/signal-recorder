@@ -1422,23 +1422,61 @@ class AnalyticsService:
                 )
                 self.csv_writers.write_doppler_record(doppler_record)
             
-            # 6. Write final weighted voting result
+            # 6. Write final weighted voting result - comprehensive format
             if result.dominant_station:
                 import json
-                method_weights = {
-                    'timing_tones': 1.0 if (result.wwv_detected or result.wwvh_detected) else 0.0,
-                    'tick_windows': 1.0 if result.tick_windows_10sec else 0.0,
-                    'station_id_440hz': 1.0 if (result.tone_440hz_wwv_detected or result.tone_440hz_wwvh_detected) else 0.0,
-                    'bcd': 1.0 if result.bcd_windows else 0.0,
-                    'test_signal': 1.0 if result.test_signal_detected else 0.0
-                }
+                
+                # Serialize tick windows to JSON
+                tick_windows_json = json.dumps(result.tick_windows_10sec) if result.tick_windows_10sec else None
+                
+                # Serialize BCD windows to JSON  
+                bcd_windows_json = json.dumps(result.bcd_windows) if result.bcd_windows else None
+                
+                # Serialize inter-method validation
+                agreements_json = json.dumps(result.inter_method_agreements) if result.inter_method_agreements else None
+                disagreements_json = json.dumps(result.inter_method_disagreements) if result.inter_method_disagreements else None
                 
                 disc_record = DiscriminationRecord(
                     timestamp_utc=timestamp_utc,
+                    minute_timestamp=result.minute_timestamp,
+                    minute_number=dt.minute,
+                    # Timing tones
+                    wwv_detected=result.wwv_detected,
+                    wwvh_detected=result.wwvh_detected,
+                    wwv_power_db=result.wwv_power_db,
+                    wwvh_power_db=result.wwvh_power_db,
+                    power_ratio_db=result.power_ratio_db,
+                    differential_delay_ms=result.differential_delay_ms,
+                    # 440 Hz station ID
+                    tone_440hz_wwv_detected=result.tone_440hz_wwv_detected,
+                    tone_440hz_wwv_power_db=result.tone_440hz_wwv_power_db,
+                    tone_440hz_wwvh_detected=result.tone_440hz_wwvh_detected,
+                    tone_440hz_wwvh_power_db=result.tone_440hz_wwvh_power_db,
+                    # Final decision
                     dominant_station=result.dominant_station,
                     confidence=result.confidence,
-                    method_weights=json.dumps(method_weights),
-                    minute_type='standard'  # Can be extended later
+                    # Tick windows
+                    tick_windows_10sec=tick_windows_json,
+                    # BCD discrimination
+                    bcd_wwv_amplitude=result.bcd_wwv_amplitude,
+                    bcd_wwvh_amplitude=result.bcd_wwvh_amplitude,
+                    bcd_differential_delay_ms=result.bcd_differential_delay_ms,
+                    bcd_correlation_quality=result.bcd_correlation_quality,
+                    bcd_windows=bcd_windows_json,
+                    # 500/600 Hz ground truth
+                    tone_500_600_detected=result.tone_500_600_detected,
+                    tone_500_600_power_db=result.tone_500_600_power_db,
+                    tone_500_600_freq_hz=result.tone_500_600_freq_hz,
+                    tone_500_600_ground_truth_station=result.tone_500_600_ground_truth_station,
+                    # Harmonic power ratios
+                    harmonic_ratio_500_1000=result.harmonic_ratio_500_1000,
+                    harmonic_ratio_600_1200=result.harmonic_ratio_600_1200,
+                    # BCD validation
+                    bcd_minute_validated=result.bcd_minute_validated,
+                    bcd_correlation_peak_quality=result.bcd_correlation_peak_quality,
+                    # Inter-method cross-validation
+                    inter_method_agreements=agreements_json,
+                    inter_method_disagreements=disagreements_json
                 )
                 self.csv_writers.write_discrimination_result(disc_record)
                        

@@ -108,12 +108,47 @@ class DopplerRecord:
 
 @dataclass
 class DiscriminationRecord:
-    """Record from final weighted voting"""
+    """Record from final weighted voting - comprehensive format matching reprocessing output"""
     timestamp_utc: str
+    minute_timestamp: float
+    minute_number: int
+    # Timing tones (1000/1200 Hz)
+    wwv_detected: bool
+    wwvh_detected: bool
+    wwv_power_db: Optional[float]
+    wwvh_power_db: Optional[float]
+    power_ratio_db: Optional[float]
+    differential_delay_ms: Optional[float]
+    # 440 Hz station ID
+    tone_440hz_wwv_detected: bool
+    tone_440hz_wwv_power_db: Optional[float]
+    tone_440hz_wwvh_detected: bool
+    tone_440hz_wwvh_power_db: Optional[float]
+    # Final decision
     dominant_station: str
     confidence: str
-    method_weights: str  # JSON string
-    minute_type: str
+    # Tick windows (JSON)
+    tick_windows_10sec: Optional[str]  # JSON string
+    # BCD discrimination
+    bcd_wwv_amplitude: Optional[float]
+    bcd_wwvh_amplitude: Optional[float]
+    bcd_differential_delay_ms: Optional[float]
+    bcd_correlation_quality: Optional[float]
+    bcd_windows: Optional[str]  # JSON string
+    # 500/600 Hz ground truth
+    tone_500_600_detected: bool
+    tone_500_600_power_db: Optional[float]
+    tone_500_600_freq_hz: Optional[int]
+    tone_500_600_ground_truth_station: Optional[str]
+    # Harmonic power ratios (500→1000 Hz, 600→1200 Hz)
+    harmonic_ratio_500_1000: Optional[float]  # P_1000/P_500 in dB
+    harmonic_ratio_600_1200: Optional[float]  # P_1200/P_600 in dB
+    # BCD validation
+    bcd_minute_validated: bool
+    bcd_correlation_peak_quality: Optional[float]
+    # Inter-method cross-validation
+    inter_method_agreements: Optional[str]  # JSON string
+    inter_method_disagreements: Optional[str]  # JSON string
 
 
 class DiscriminationCSVWriters:
@@ -377,12 +412,28 @@ class DiscriminationCSVWriters:
             })
     
     def write_discrimination_result(self, record: DiscriminationRecord):
-        """Write final weighted voting discrimination result"""
+        """Write final weighted voting discrimination result - comprehensive format"""
         timestamp = datetime.fromisoformat(record.timestamp_utc.replace('Z', '+00:00')).timestamp()
         csv_path = self._get_csv_path(self.disc_dir, f"{self.channel_dir}_discrimination", timestamp)
         
-        fieldnames = ['timestamp_utc', 'dominant_station', 'confidence',
-                     'method_weights', 'minute_type']
+        # Full 31-column format matching reprocess_discrimination.py output
+        fieldnames = [
+            'timestamp_utc', 'minute_timestamp', 'minute_number',
+            'wwv_detected', 'wwvh_detected', 'wwv_power_db', 'wwvh_power_db',
+            'power_ratio_db', 'differential_delay_ms',
+            'tone_440hz_wwv_detected', 'tone_440hz_wwv_power_db',
+            'tone_440hz_wwvh_detected', 'tone_440hz_wwvh_power_db',
+            'dominant_station', 'confidence',
+            'tick_windows_10sec',
+            'bcd_wwv_amplitude', 'bcd_wwvh_amplitude',
+            'bcd_differential_delay_ms', 'bcd_correlation_quality',
+            'bcd_windows',
+            'tone_500_600_detected', 'tone_500_600_power_db',
+            'tone_500_600_freq_hz', 'tone_500_600_ground_truth_station',
+            'harmonic_ratio_500_1000', 'harmonic_ratio_600_1200',
+            'bcd_minute_validated', 'bcd_correlation_peak_quality',
+            'inter_method_agreements', 'inter_method_disagreements'
+        ]
         
         file_exists = csv_path.exists()
         
@@ -393,10 +444,36 @@ class DiscriminationCSVWriters:
             
             writer.writerow({
                 'timestamp_utc': record.timestamp_utc,
+                'minute_timestamp': record.minute_timestamp,
+                'minute_number': record.minute_number,
+                'wwv_detected': 1 if record.wwv_detected else 0,
+                'wwvh_detected': 1 if record.wwvh_detected else 0,
+                'wwv_power_db': f"{record.wwv_power_db:.2f}" if record.wwv_power_db is not None else '',
+                'wwvh_power_db': f"{record.wwvh_power_db:.2f}" if record.wwvh_power_db is not None else '',
+                'power_ratio_db': f"{record.power_ratio_db:.2f}" if record.power_ratio_db is not None else '',
+                'differential_delay_ms': f"{record.differential_delay_ms:.2f}" if record.differential_delay_ms is not None else '',
+                'tone_440hz_wwv_detected': 1 if record.tone_440hz_wwv_detected else 0,
+                'tone_440hz_wwv_power_db': f"{record.tone_440hz_wwv_power_db:.2f}" if record.tone_440hz_wwv_power_db is not None else '',
+                'tone_440hz_wwvh_detected': 1 if record.tone_440hz_wwvh_detected else 0,
+                'tone_440hz_wwvh_power_db': f"{record.tone_440hz_wwvh_power_db:.2f}" if record.tone_440hz_wwvh_power_db is not None else '',
                 'dominant_station': record.dominant_station,
                 'confidence': record.confidence,
-                'method_weights': record.method_weights,
-                'minute_type': record.minute_type
+                'tick_windows_10sec': record.tick_windows_10sec or '',
+                'bcd_wwv_amplitude': f"{record.bcd_wwv_amplitude:.2f}" if record.bcd_wwv_amplitude is not None else '',
+                'bcd_wwvh_amplitude': f"{record.bcd_wwvh_amplitude:.2f}" if record.bcd_wwvh_amplitude is not None else '',
+                'bcd_differential_delay_ms': f"{record.bcd_differential_delay_ms:.2f}" if record.bcd_differential_delay_ms is not None else '',
+                'bcd_correlation_quality': f"{record.bcd_correlation_quality:.2f}" if record.bcd_correlation_quality is not None else '',
+                'bcd_windows': record.bcd_windows or '',
+                'tone_500_600_detected': 1 if record.tone_500_600_detected else 0,
+                'tone_500_600_power_db': f"{record.tone_500_600_power_db:.2f}" if record.tone_500_600_power_db is not None else '',
+                'tone_500_600_freq_hz': record.tone_500_600_freq_hz if record.tone_500_600_freq_hz else '',
+                'tone_500_600_ground_truth_station': record.tone_500_600_ground_truth_station or '',
+                'harmonic_ratio_500_1000': f"{record.harmonic_ratio_500_1000:.2f}" if record.harmonic_ratio_500_1000 is not None else '',
+                'harmonic_ratio_600_1200': f"{record.harmonic_ratio_600_1200:.2f}" if record.harmonic_ratio_600_1200 is not None else '',
+                'bcd_minute_validated': 1 if record.bcd_minute_validated else 0,
+                'bcd_correlation_peak_quality': f"{record.bcd_correlation_peak_quality:.2f}" if record.bcd_correlation_peak_quality is not None else '',
+                'inter_method_agreements': record.inter_method_agreements or '',
+                'inter_method_disagreements': record.inter_method_disagreements or ''
             })
 
 

@@ -12,13 +12,19 @@ This is useful after:
 
 Usage:
     # Reprocess specific date
-    python3 scripts/reprocess_discrimination.py --date 20251119 --channel "WWV 10 MHz"
+    python3 scripts/reprocess_discrimination.py --date 20251127 --channel "WWV 10 MHz"
+    
+    # Reprocess specific hours (fast testing - ~5 min for 2 hours)
+    python3 scripts/reprocess_discrimination.py --date 20251127 --channel "WWV 10 MHz" --start-hour 9 --end-hour 11
     
     # Reprocess date range
     python3 scripts/reprocess_discrimination.py --start-date 20251118 --end-date 20251119 --channel "WWV 10 MHz"
     
     # Reprocess all available data
     python3 scripts/reprocess_discrimination.py --all --channel "WWV 10 MHz"
+    
+    # Keep existing data and append (useful for filling gaps)
+    python3 scripts/reprocess_discrimination.py --date 20251127 --channel "WWV 10 MHz" --start-hour 6 --end-hour 12 --keep-existing
 """
 
 import argparse
@@ -42,14 +48,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def find_npz_files(archive_dir: Path, start_date: str, end_date: str) -> List[Path]:
+def find_npz_files(archive_dir: Path, start_date: str, end_date: str,
+                   start_hour: int = 0, end_hour: int = 23) -> List[Path]:
     """
-    Find all NPZ files in date range
+    Find all NPZ files in date range and optional hour range
     
     Args:
         archive_dir: Path to archives/{channel}
         start_date: YYYYMMDD format
         end_date: YYYYMMDD format
+        start_hour: Start hour (0-23), default 0
+        end_hour: End hour (0-23), default 23
         
     Returns:
         List of NPZ file paths sorted by timestamp
@@ -69,9 +78,27 @@ def find_npz_files(archive_dir: Path, start_date: str, end_date: str) -> List[Pa
         
         # Find files for this date
         matching_files = list(archive_dir.glob(date_pattern))
+        
+        # Filter by hour if specified
+        if start_hour > 0 or end_hour < 23:
+            filtered_files = []
+            for f in matching_files:
+                # Extract hour from filename: YYYYMMDDTHHMMSSZ_...
+                filename = f.stem
+                if 'T' in filename:
+                    time_part = filename.split('T')[1][:2]  # HH
+                    try:
+                        hour = int(time_part)
+                        if start_hour <= hour <= end_hour:
+                            filtered_files.append(f)
+                    except ValueError:
+                        pass
+            matching_files = filtered_files
+        
         npz_files.extend(matching_files)
         
-        logger.info(f"Date {date_str}: Found {len(matching_files)} NPZ files")
+        hour_info = f" (hours {start_hour:02d}-{end_hour:02d})" if (start_hour > 0 or end_hour < 23) else ""
+        logger.info(f"Date {date_str}: Found {len(matching_files)} NPZ files{hour_info}")
         current_dt += timedelta(days=1)
     
     # Sort by filename (which includes timestamp)
@@ -102,15 +129,21 @@ def reprocess_discrimination(
     tone_detector = MultiStationToneDetector(channel_name=channel_name)
     
     # Check if this channel has WWV/WWVH discrimination
+    # Handle both space and underscore formats: "WWV 10 MHz", "WWV_10_MHz"
+    import re
     wwvh_frequencies = [2.5, 5.0, 10.0, 15.0]
     channel_freq = None
-    for freq in wwvh_frequencies:
-        if f'{freq} MHz' in channel_name or f'{int(freq)} MHz' in channel_name:
-            channel_freq = freq
-            break
+    
+    # Extract frequency from channel name using regex
+    freq_match = re.search(r'(\d+(?:\.\d+)?)[_\s]*MHz', channel_name, re.IGNORECASE)
+    if freq_match:
+        extracted_freq = float(freq_match.group(1))
+        if extracted_freq in wwvh_frequencies:
+            channel_freq = extracted_freq
     
     if channel_freq is None:
-        logger.error(f"Channel {channel_name} does not support WWV/WWVH discrimination")
+        logger.error(f"Channel {channel_name} does not support WWV/WWVH discrimination "
+                    f"(extracted freq: {freq_match.group(1) if freq_match else 'None'})")
         return 0
     
     discriminator = WWVHDiscriminator(channel_name=channel_name)
@@ -136,10 +169,16 @@ def reprocess_discrimination(
     # Process each NPZ file
     successful = 0
     failed = 0
+    total = len(npz_files)
+    
+    # Progress reporting every 10%
+    report_interval = max(1, total // 10)
     
     for i, npz_file in enumerate(npz_files, 1):
         try:
-            logger.info(f"[{i}/{len(npz_files)}] Processing: {npz_file.name}")
+            # Progress update
+            if i == 1 or i % report_interval == 0 or i == total:
+                print(f"[{i}/{total}] Processing {npz_file.name}...", flush=True)
             
             # Load archive
             archive = NPZArchive.load(npz_file)
@@ -191,7 +230,11 @@ def reprocess_discrimination(
                                'tone_440hz_wwv_detected,tone_440hz_wwv_power_db,'
                                'tone_440hz_wwvh_detected,tone_440hz_wwvh_power_db,'
                                'dominant_station,confidence,tick_windows_10sec,'
-                               'bcd_wwv_amplitude,bcd_wwvh_amplitude,bcd_differential_delay_ms,bcd_correlation_quality,bcd_windows\n')
+                               'bcd_wwv_amplitude,bcd_wwvh_amplitude,bcd_differential_delay_ms,bcd_correlation_quality,bcd_windows,'
+                               'tone_500_600_detected,tone_500_600_power_db,tone_500_600_freq_hz,tone_500_600_ground_truth_station,'
+                               'harmonic_ratio_500_1000,harmonic_ratio_600_1200,'
+                               'bcd_minute_validated,bcd_correlation_peak_quality,'
+                               'inter_method_agreements,inter_method_disagreements\n')
                         write_header = False
                     # Format data
                     minute_number = dt.minute
@@ -221,6 +264,26 @@ def reprocess_discrimination(
                     if result.bcd_windows:
                         bcd_windows_str = json.dumps(result.bcd_windows).replace('"', '""')  # Escape quotes for CSV
                     
+                    # Format new 500/600 Hz tone fields
+                    tone_500_600_power_str = f'{result.tone_500_600_power_db:.2f}' if result.tone_500_600_power_db is not None else ''
+                    tone_500_600_freq_str = str(result.tone_500_600_freq_hz) if result.tone_500_600_freq_hz is not None else ''
+                    tone_500_600_gt_str = result.tone_500_600_ground_truth_station if result.tone_500_600_ground_truth_station else ''
+                    
+                    # Format harmonic ratio fields
+                    harmonic_500_1000_str = f'{result.harmonic_ratio_500_1000:.2f}' if result.harmonic_ratio_500_1000 is not None else ''
+                    harmonic_600_1200_str = f'{result.harmonic_ratio_600_1200:.2f}' if result.harmonic_ratio_600_1200 is not None else ''
+                    
+                    # Format BCD validation fields
+                    bcd_peak_quality_str = f'{result.bcd_correlation_peak_quality:.2f}' if result.bcd_correlation_peak_quality is not None else ''
+                    
+                    # Serialize inter-method validation lists
+                    agreements_str = ''
+                    if result.inter_method_agreements:
+                        agreements_str = json.dumps(result.inter_method_agreements).replace('"', '""')
+                    disagreements_str = ''
+                    if result.inter_method_disagreements:
+                        disagreements_str = json.dumps(result.inter_method_disagreements).replace('"', '""')
+                    
                     f.write(f'{dt.isoformat()},{result.minute_timestamp},{minute_number},'
                            f'{int(result.wwv_detected)},{int(result.wwvh_detected)},'
                            f'{wwv_power_str},{wwvh_power_str},{power_ratio_str},{diff_delay_str},'
@@ -228,7 +291,11 @@ def reprocess_discrimination(
                            f'{int(result.tone_440hz_wwvh_detected)},{tone_440_wwvh_power_str},'
                            f'{result.dominant_station if result.dominant_station else ""},'
                            f'{result.confidence if result.confidence else "low"},"{tick_windows_str}",'
-                           f'{bcd_wwv_str},{bcd_wwvh_str},{bcd_delay_str},{bcd_quality_str},"{bcd_windows_str}"\n')
+                           f'{bcd_wwv_str},{bcd_wwvh_str},{bcd_delay_str},{bcd_quality_str},"{bcd_windows_str}",'
+                           f'{int(result.tone_500_600_detected)},{tone_500_600_power_str},{tone_500_600_freq_str},{tone_500_600_gt_str},'
+                           f'{harmonic_500_1000_str},{harmonic_600_1200_str},'
+                           f'{int(result.bcd_minute_validated)},{bcd_peak_quality_str},'
+                           f'"{agreements_str}","{disagreements_str}"\n')
             except Exception as e:
                 logger.error(f"  Failed to write CSV for {npz_file.name}: {e}")
                 failed += 1
@@ -270,6 +337,12 @@ def main():
                        help='Process all available data')
     parser.add_argument('--keep-existing', action='store_true',
                        help='Keep existing CSV data (append mode)')
+    parser.add_argument('--start-hour', type=int, default=0,
+                       help='Start hour UTC (0-23, default: 0)')
+    parser.add_argument('--end-hour', type=int, default=23,
+                       help='End hour UTC (0-23, default: 23)')
+    parser.add_argument('--limit', type=int, default=0,
+                       help='Limit number of files to process (0=all)')
     
     args = parser.parse_args()
     
@@ -322,7 +395,10 @@ def main():
     logger.info("Reprocessing Discrimination Data with Coherent Integration")
     logger.info("=" * 60)
     logger.info(f"Channel: {args.channel}")
-    logger.info(f"Date range: {start_date} to {end_date}")
+    hour_range = ""
+    if args.start_hour > 0 or args.end_hour < 23:
+        hour_range = f" (hours {args.start_hour:02d}:00-{args.end_hour:02d}:59 UTC)"
+    logger.info(f"Date range: {start_date} to {end_date}{hour_range}")
     logger.info(f"Archive directory: {archive_dir}")
     logger.info(f"Output directory: {discrimination_dir}")
     logger.info(f"Clear existing: {not args.keep_existing}")
@@ -330,13 +406,20 @@ def main():
     
     # Find NPZ files
     logger.info("🔍 Searching for NPZ files...")
-    npz_files = find_npz_files(archive_dir, start_date, end_date)
+    npz_files = find_npz_files(archive_dir, start_date, end_date,
+                                args.start_hour, args.end_hour)
     
     if not npz_files:
         logger.error("No NPZ files found in date range")
         return 1
     
     logger.info(f"✅ Found {len(npz_files)} NPZ files to process")
+    
+    # Apply limit if specified
+    if args.limit > 0:
+        npz_files = npz_files[:args.limit]
+        logger.info(f"⚠️  Limited to first {args.limit} files")
+    
     logger.info("")
     
     # Reprocess

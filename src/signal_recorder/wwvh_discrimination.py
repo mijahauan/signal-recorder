@@ -30,6 +30,78 @@ from .wwv_test_signal import WWVTestSignalDetector, TestSignalDetection
 
 logger = logging.getLogger(__name__)
 
+# WWV/WWVH 500/600 Hz tone schedule (per minute)
+# During certain minutes, only one station broadcasts these tones
+# This provides ground truth for discrimination
+TONE_SCHEDULE_500_600 = {
+    0: {'WWV': None, 'WWVH': None},
+    1: {'WWV': 600, 'WWVH': 440},   # 440 Hz ground truth minutes
+    2: {'WWV': 440, 'WWVH': 600},
+    3: {'WWV': 600, 'WWVH': 500},
+    4: {'WWV': 500, 'WWVH': 600},
+    5: {'WWV': 600, 'WWVH': 500},
+    6: {'WWV': 500, 'WWVH': 600},
+    7: {'WWV': 600, 'WWVH': 500},
+    8: {'WWV': None, 'WWVH': None},   # Test signal minute (WWV)
+    9: {'WWV': None, 'WWVH': None},
+    10: {'WWV': None, 'WWVH': None},
+    11: {'WWV': 600, 'WWVH': 500},
+    12: {'WWV': 500, 'WWVH': 600},
+    13: {'WWV': 600, 'WWVH': 500},
+    14: {'WWV': None, 'WWVH': None},
+    15: {'WWV': None, 'WWVH': None},
+    16: {'WWV': 500, 'WWVH': None},   # WWV-only
+    17: {'WWV': 600, 'WWVH': None},   # WWV-only
+    18: {'WWV': None, 'WWVH': None},
+    19: {'WWV': 600, 'WWVH': None},   # WWV-only
+    20: {'WWV': 500, 'WWVH': 600},
+    21: {'WWV': 600, 'WWVH': 500},
+    22: {'WWV': 500, 'WWVH': 600},
+    23: {'WWV': 600, 'WWVH': 500},
+    24: {'WWV': 500, 'WWVH': 600},
+    25: {'WWV': 600, 'WWVH': 500},
+    26: {'WWV': 500, 'WWVH': 600},
+    27: {'WWV': 600, 'WWVH': 500},
+    28: {'WWV': 500, 'WWVH': 600},
+    29: {'WWV': None, 'WWVH': None},
+    30: {'WWV': None, 'WWVH': None},
+    31: {'WWV': 600, 'WWVH': 500},
+    32: {'WWV': 500, 'WWVH': 600},
+    33: {'WWV': 600, 'WWVH': 500},
+    34: {'WWV': 500, 'WWVH': 600},
+    35: {'WWV': 600, 'WWVH': 500},
+    36: {'WWV': 500, 'WWVH': 600},
+    37: {'WWV': 600, 'WWVH': 500},
+    38: {'WWV': 500, 'WWVH': 600},
+    39: {'WWV': 600, 'WWVH': 500},
+    40: {'WWV': 500, 'WWVH': 600},
+    41: {'WWV': 600, 'WWVH': 500},
+    42: {'WWV': 500, 'WWVH': 600},
+    43: {'WWV': None, 'WWVH': 500},   # WWVH-only
+    44: {'WWV': None, 'WWVH': 600},   # WWVH-only (even minute) (+ test signal)
+    45: {'WWV': None, 'WWVH': 500},   # WWVH-only
+    46: {'WWV': None, 'WWVH': 600},   # WWVH-only
+    47: {'WWV': None, 'WWVH': 500},   # WWVH-only
+    48: {'WWV': None, 'WWVH': 600},   # WWVH-only (even minute)
+    49: {'WWV': None, 'WWVH': 500},   # WWVH-only
+    50: {'WWV': None, 'WWVH': 600},   # WWVH-only (even minute)
+    51: {'WWV': None, 'WWVH': 500},   # WWVH-only
+    52: {'WWV': 500, 'WWVH': 600},
+    53: {'WWV': 600, 'WWVH': 500},
+    54: {'WWV': 500, 'WWVH': 600},
+    55: {'WWV': 600, 'WWVH': 500},
+    56: {'WWV': 500, 'WWVH': 600},
+    57: {'WWV': 600, 'WWVH': 500},
+    58: {'WWV': 500, 'WWVH': 600},
+    59: {'WWV': None, 'WWVH': None}
+}
+
+# Minutes where only one station broadcasts 500/600 Hz tones (ground truth)
+# Minute 1: WWV=600 Hz while WWVH=440 Hz (WWV 600 Hz exclusive)
+# Minute 2: WWV=440 Hz while WWVH=600 Hz (WWVH 600 Hz exclusive)
+WWVH_ONLY_TONE_MINUTES = [2, 43, 44, 45, 46, 47, 48, 49, 50, 51]  # 10 minutes (600 Hz at min 2)
+WWV_ONLY_TONE_MINUTES = [1, 16, 17, 19]  # 4 minutes (600 Hz at min 1)
+
 
 @dataclass
 class DiscriminationResult:
@@ -96,6 +168,22 @@ class DiscriminationResult:
     doppler_quality: Optional[float] = None
     doppler_phase_variance_rad: Optional[float] = None
     doppler_valid_tick_count: Optional[int] = None
+    # Inter-method cross-validation (Phase 6)
+    inter_method_agreements: Optional[List[str]] = None
+    inter_method_disagreements: Optional[List[str]] = None
+    # 500/600 Hz tone ground truth (exclusive broadcast minutes)
+    tone_500_600_detected: bool = False
+    tone_500_600_power_db: Optional[float] = None
+    tone_500_600_freq_hz: Optional[int] = None  # 500 or 600
+    tone_500_600_ground_truth_station: Optional[str] = None  # Which station should be broadcasting
+    # Harmonic Power Ratio (500→1000 Hz, 600→1200 Hz)
+    # 2nd harmonic of 500 Hz is 1000 Hz (WWV timing marker), 2nd harmonic of 600 Hz is 1200 Hz (WWVH timing marker)
+    # Receiver nonlinearity causes harmonic content proportional to fundamental power
+    harmonic_ratio_500_1000: Optional[float] = None  # P_1000/P_500 ratio (dB)
+    harmonic_ratio_600_1200: Optional[float] = None  # P_1200/P_600 ratio (dB)
+    # BCD time code validation
+    bcd_minute_validated: bool = False  # True if BCD correlation confirms expected minute
+    bcd_correlation_peak_quality: Optional[float] = None  # Peak sharpness indicates timing lock
     
     def to_dict(self) -> Dict:
         """Convert to dictionary for logging/storage"""
@@ -172,6 +260,47 @@ class WWVHDiscriminator:
             logger.info(f"{channel_name}: Geographic ToA prediction disabled (no grid square configured)")
         
         logger.info(f"{channel_name}: WWVHDiscriminator initialized")
+    
+    def measure_tone_powers_fft(
+        self,
+        iq_samples: np.ndarray,
+        sample_rate: int
+    ) -> Tuple[float, float]:
+        """
+        Measure actual tone powers using FFT (not matched filter).
+        
+        This provides accurate RELATIVE power comparison between 1000 Hz and 1200 Hz
+        tones, unlike matched filter SNR which measures detection confidence.
+        
+        Args:
+            iq_samples: Complex IQ samples
+            sample_rate: Sample rate in Hz
+            
+        Returns:
+            Tuple of (wwv_power_db, wwvh_power_db) - absolute power in dB
+        """
+        # AM demodulation
+        envelope = np.abs(iq_samples)
+        audio = envelope - np.mean(envelope)
+        
+        # FFT
+        fft_result = np.abs(rfft(audio))
+        freqs = rfftfreq(len(audio), 1/sample_rate)
+        
+        # Measure power at 1000 Hz (WWV) and 1200 Hz (WWVH)
+        # Use small window around target frequency
+        def get_peak_power(target_freq: float) -> float:
+            idx = np.argmin(np.abs(freqs - target_freq))
+            # Take max in ±5 bins to handle slight frequency offsets
+            band_start = max(0, idx - 5)
+            band_end = min(len(fft_result), idx + 5)
+            peak = np.max(fft_result[band_start:band_end])
+            return 20 * np.log10(peak + 1e-12)
+        
+        wwv_power_db = get_peak_power(1000.0)
+        wwvh_power_db = get_peak_power(1200.0)
+        
+        return wwv_power_db, wwvh_power_db
     
     def compute_discrimination(
         self,
@@ -438,9 +567,15 @@ class WWVHDiscriminator:
         
         Weighting hierarchy:
         - Minutes 8/44: Test signal (highest weight when detected) → BCD → Tick SNR
-        - Minutes 1/2: 440 Hz tone (highest weight) → Tick SNR → BCD (if available)
+        - Minutes 1/2: 440 Hz tone (highest weight) + 500/600 Hz ground truth → Tick SNR
+        - Minutes 16,17,19: 500/600 Hz ground truth (WWV-only) → 1000/1200 Hz → Tick SNR
+        - Minutes 43-51: 500/600 Hz ground truth (WWVH-only) → 1000/1200 Hz → Tick SNR
         - Minutes 0/8-10/29-30: BCD amplitude (highest weight) → Tick SNR → 1000/1200 Hz
         - All other minutes: 1000/1200 Hz power (highest weight) → Tick SNR
+        
+        500/600 Hz Ground Truth Minutes (14 per hour):
+        - WWV-only: 1, 16, 17, 19 (WWV broadcasts 600/500 Hz, WWVH is silent)
+        - WWVH-only: 2, 43-51 (WWVH broadcasts 600/500 Hz, WWV is silent)
         
         Args:
             result: Base discrimination result from 1000/1200 Hz tones
@@ -460,6 +595,10 @@ class WWVHDiscriminator:
         bcd_minutes = [0, 8, 9, 10, 29, 30]
         # 440 Hz tone minutes
         tone_440_minutes = [1, 2]
+        # 500/600 Hz ground truth minutes (14 total per hour!)
+        # WWV-only: 1, 16, 17, 19 (WWV broadcasts 500/600 Hz, WWVH silent)
+        # WWVH-only: 2, 43, 44, 45, 46, 47, 48, 49, 50, 51 (WWVH broadcasts, WWV silent)
+        ground_truth_500_600_minutes = WWV_ONLY_TONE_MINUTES + WWVH_ONLY_TONE_MINUTES
         
         # Initialize voting scores
         wwv_score = 0.0
@@ -467,27 +606,30 @@ class WWVHDiscriminator:
         total_weight = 0.0
         
         # Weight factors - test signal gets highest weight when available
+        # 500/600 Hz ground truth gets high weight when applicable (overlaps with some other categories)
+        w_500_600 = 10.0 if minute_number in ground_truth_500_600_minutes else 0.0
+        
         if minute_number in test_signal_minutes:
             w_test = 15.0  # Highest weight for test signal (when detected)
             w_bcd = 8.0
             w_tick = 5.0
-            w_carrier = 2.0
+            w_carrier = 2.0 if w_500_600 == 0 else 1.0  # Reduce carrier weight when ground truth available
             w_440 = 0.0
         elif minute_number in tone_440_minutes:
             w_test = 0.0
             w_440 = 10.0  # Highest weight for 440 Hz
             w_tick = 5.0
             w_bcd = 2.0
-            w_carrier = 1.0
+            w_carrier = 1.0  # Already reduced for 440 Hz minutes
         elif minute_number in bcd_minutes:
             w_test = 0.0
             w_bcd = 10.0  # Highest weight for BCD
             w_tick = 5.0
-            w_carrier = 2.0
+            w_carrier = 2.0 if w_500_600 == 0 else 1.0
             w_440 = 0.0
         else:
             w_test = 0.0
-            w_carrier = 10.0  # Highest weight for carrier tones
+            w_carrier = 10.0 if w_500_600 == 0 else 5.0  # Reduce when ground truth available
             w_tick = 5.0
             w_bcd = 2.0
             w_440 = 0.0
@@ -558,6 +700,91 @@ class WWVHDiscriminator:
                     else:
                         wwvh_score += w_tick
                     total_weight += w_tick
+        
+        # === VOTE 5: 500/600 Hz Ground Truth Tone Detection ===
+        # During exclusive broadcast minutes, only one station transmits 500/600 Hz
+        # This provides absolute ground truth for station identification
+        if w_500_600 > 0 and result.tone_500_600_detected:
+            gt_station = result.tone_500_600_ground_truth_station
+            if gt_station == 'WWV':
+                wwv_score += w_500_600
+                total_weight += w_500_600
+                logger.debug(f"{self.channel_name}: 500/600 Hz ground truth vote: WWV "
+                           f"(minute {minute_number}, power={result.tone_500_600_power_db:.1f}dB)")
+            elif gt_station == 'WWVH':
+                wwvh_score += w_500_600
+                total_weight += w_500_600
+                logger.debug(f"{self.channel_name}: 500/600 Hz ground truth vote: WWVH "
+                           f"(minute {minute_number}, power={result.tone_500_600_power_db:.1f}dB)")
+        
+        # === VOTE 6: Differential Doppler Shift ===
+        # The two stations have different propagation paths, leading to different Doppler shifts.
+        # ΔfD = fD_WWV - fD_WWVH provides a path signature that correlates with geographic ToA.
+        # If WWV Doppler is significantly different from WWVH Doppler, it validates path separation.
+        w_doppler = 2.0  # Lower weight - confirmatory rather than primary
+        if (result.doppler_wwv_hz is not None and result.doppler_wwvh_hz is not None and
+            result.doppler_quality is not None and result.doppler_quality > 0.3):
+            delta_doppler = result.doppler_wwv_hz - result.doppler_wwvh_hz
+            # Significant differential Doppler (>0.05 Hz) indicates distinct paths
+            if abs(delta_doppler) > 0.05:
+                # Compare with power ratio - they should correlate
+                # Stronger signal typically has cleaner (lower std) Doppler
+                if result.doppler_wwv_std_hz is not None and result.doppler_wwvh_std_hz is not None:
+                    wwv_doppler_cleaner = result.doppler_wwv_std_hz < result.doppler_wwvh_std_hz
+                    if wwv_doppler_cleaner and result.power_ratio_db and result.power_ratio_db > 0:
+                        wwv_score += w_doppler
+                        total_weight += w_doppler
+                        logger.debug(f"{self.channel_name}: Doppler vote: WWV (cleaner Doppler, ΔfD={delta_doppler:.3f}Hz)")
+                    elif not wwv_doppler_cleaner and result.power_ratio_db and result.power_ratio_db < 0:
+                        wwvh_score += w_doppler
+                        total_weight += w_doppler
+                        logger.debug(f"{self.channel_name}: Doppler vote: WWVH (cleaner Doppler, ΔfD={delta_doppler:.3f}Hz)")
+        
+        # === VOTE 7: Test Signal ToA vs BCD ToA Consistency (minutes 8/44) ===
+        # Both Test Signal and BCD are modulated on the carrier simultaneously.
+        # The Test Signal matched filter has superior BT product gain for timing.
+        # If Test Signal ToA aligns with BCD early peak arrival, boost confidence.
+        if minute_number in [8, 44] and result.test_signal_detected and result.test_signal_toa_offset_ms is not None:
+            # Check if BCD also detected dual peaks with timing
+            if result.bcd_differential_delay_ms is not None and result.bcd_differential_delay_ms > 0:
+                # Test signal ToA should be close to the dominant station's BCD arrival
+                # If ToA offset is small (<5ms), the timing is coherent
+                if abs(result.test_signal_toa_offset_ms) < 5.0:
+                    # Boost the test signal vote confidence
+                    w_timing_coherence = 3.0
+                    if result.test_signal_station == 'WWV':
+                        wwv_score += w_timing_coherence
+                    elif result.test_signal_station == 'WWVH':
+                        wwvh_score += w_timing_coherence
+                    total_weight += w_timing_coherence
+                    logger.debug(f"{self.channel_name}: Timing coherence vote: {result.test_signal_station} "
+                               f"(ToA offset={result.test_signal_toa_offset_ms:.2f}ms, BCD delay={result.bcd_differential_delay_ms:.1f}ms)")
+        
+        # === VOTE 8: Harmonic Power Ratio Cross-Validation ===
+        # The 2nd harmonic of 500 Hz is 1000 Hz (WWV timing marker)
+        # The 2nd harmonic of 600 Hz is 1200 Hz (WWVH timing marker)
+        # In exclusive tone minutes, the harmonic ratio should correlate with station presence
+        w_harmonic = 1.5  # Lower weight - confirmatory
+        if result.harmonic_ratio_500_1000 is not None and result.harmonic_ratio_600_1200 is not None:
+            # If 500 Hz is present, its harmonic boosts 1000 Hz (WWV marker)
+            # If 600 Hz is present, its harmonic boosts 1200 Hz (WWVH marker)
+            # A higher harmonic ratio indicates stronger fundamental tone presence
+            ratio_diff = result.harmonic_ratio_500_1000 - result.harmonic_ratio_600_1200
+            
+            # Significant difference (>3 dB) indicates one station's tone is dominant
+            if abs(ratio_diff) > 3.0:
+                if ratio_diff > 0:
+                    # 500→1000 Hz harmonic stronger - correlates with WWV 500 Hz tone
+                    if result.power_ratio_db and result.power_ratio_db > 0:
+                        wwv_score += w_harmonic
+                        total_weight += w_harmonic
+                        logger.debug(f"{self.channel_name}: Harmonic ratio vote: WWV (500→1000 stronger by {ratio_diff:.1f}dB)")
+                else:
+                    # 600→1200 Hz harmonic stronger - correlates with WWVH 600 Hz tone
+                    if result.power_ratio_db and result.power_ratio_db < 0:
+                        wwvh_score += w_harmonic
+                        total_weight += w_harmonic
+                        logger.debug(f"{self.channel_name}: Harmonic ratio vote: WWVH (600→1200 stronger by {-ratio_diff:.1f}dB)")
         
         # === FINAL DECISION ===
         if total_weight > 0:
@@ -694,6 +921,146 @@ class WWVHDiscriminator:
                         f"Freq: {actual_freq:.1f}Hz")
         
         return detected, power_db if detected else None
+    
+    def detect_500_600hz_tone(
+        self,
+        iq_samples: np.ndarray,
+        sample_rate: int,
+        minute_number: int
+    ) -> Tuple[bool, Optional[float], Optional[int], Optional[str]]:
+        """
+        Detect 500/600 Hz tones for ground truth validation.
+        
+        During certain minutes, only one station broadcasts these tones:
+        - Minute 1: WWV=600 Hz, WWVH=440 Hz (WWV 600 Hz exclusive)
+        - Minute 2: WWV=440 Hz, WWVH=600 Hz (WWVH 600 Hz exclusive)
+        - Minutes 16,17,19: WWV broadcasts 500/600 Hz, WWVH does NOT (3 minutes)
+        - Minutes 43-51: WWVH broadcasts 500/600 Hz, WWV does NOT (9 minutes)
+        
+        Total: 14 ground truth minutes per hour!
+        
+        If we detect a 500/600 Hz tone during these exclusive minutes,
+        we have ground truth for which station is being received.
+        
+        Args:
+            iq_samples: Complex IQ samples
+            sample_rate: Sample rate in Hz
+            minute_number: Minute number (0-59)
+            
+        Returns:
+            (detected, power_db, freq_hz, ground_truth_station)
+            - detected: Whether 500 or 600 Hz tone was found
+            - power_db: Power of detected tone
+            - freq_hz: 500 or 600 (which tone was detected)
+            - ground_truth_station: 'WWV' or 'WWVH' (which station should be broadcasting)
+        """
+        # Get schedule for this minute
+        schedule = TONE_SCHEDULE_500_600.get(minute_number, {'WWV': None, 'WWVH': None})
+        
+        wwv_tone = schedule.get('WWV')
+        wwvh_tone = schedule.get('WWVH')
+        
+        # Determine if this is a ground truth minute (only one station broadcasting)
+        ground_truth_station = None
+        expected_tone = None
+        
+        if minute_number in WWVH_ONLY_TONE_MINUTES:
+            ground_truth_station = 'WWVH'
+            expected_tone = wwvh_tone
+        elif minute_number in WWV_ONLY_TONE_MINUTES:
+            ground_truth_station = 'WWV'
+            expected_tone = wwv_tone
+        else:
+            # Both stations broadcast or neither - no ground truth
+            return False, None, None, None
+        
+        # AM demodulation
+        magnitude = np.abs(iq_samples)
+        audio_signal = magnitude - np.mean(magnitude)
+        
+        # The 500/600 Hz tone is broadcast throughout the minute (:00 to :45)
+        # NOT just the first 800ms like the timing marker
+        # Use seconds 15-45 for best SNR (avoid voice announcements at start/end)
+        start_sample = int(15.0 * sample_rate)
+        end_sample = min(int(45.0 * sample_rate), len(audio_signal))
+        
+        if end_sample <= start_sample:
+            # Not enough data
+            return False, None, None, ground_truth_station
+        
+        tone_window = audio_signal[start_sample:end_sample]
+        
+        # Window and FFT
+        windowed = tone_window * scipy_signal.windows.hann(len(tone_window))
+        fft_result = rfft(windowed)
+        freqs = rfftfreq(len(windowed), 1/sample_rate)
+        
+        # Measure power at 500 Hz, 600 Hz, and their 2nd harmonics (1000 Hz, 1200 Hz)
+        power_500 = power_600 = power_1000 = power_1200 = 0.0
+        
+        for target_freq in [500.0, 600.0, 1000.0, 1200.0]:
+            freq_idx = np.argmin(np.abs(freqs - target_freq))
+            power = np.abs(fft_result[freq_idx])**2
+            if target_freq == 500.0:
+                power_500 = power
+            elif target_freq == 600.0:
+                power_600 = power
+            elif target_freq == 1000.0:
+                power_1000 = power
+            else:  # 1200 Hz
+                power_1200 = power
+        
+        # Measure noise floor in guard band (825-875 Hz)
+        guard_low_idx = np.argmin(np.abs(freqs - 825.0))
+        guard_high_idx = np.argmin(np.abs(freqs - 875.0))
+        
+        if guard_high_idx > guard_low_idx:
+            guard_band_power = np.abs(fft_result[guard_low_idx:guard_high_idx])**2
+            noise_power = np.mean(guard_band_power) * 1.5  # ENBW for Hann window
+        else:
+            noise_power = np.mean(np.abs(fft_result)**2)
+        
+        # Determine which tone is stronger
+        detected_freq = 500 if power_500 > power_600 else 600
+        detected_power = max(power_500, power_600)
+        
+        # Calculate SNR
+        if noise_power > 0:
+            snr_db = 10 * np.log10(detected_power / noise_power)
+            power_db = 10 * np.log10(detected_power + 1e-12)
+        else:
+            snr_db = 0.0
+            power_db = -np.inf
+        
+        # Detection threshold: SNR > 6 dB
+        detected = snr_db > 6.0
+        
+        # Calculate harmonic power ratios (in dB)
+        # P_1000/P_500 and P_1200/P_600 - measures 2nd harmonic contribution
+        # Higher ratio when that fundamental is present (due to receiver nonlinearity)
+        harmonic_ratio_500_1000 = None
+        harmonic_ratio_600_1200 = None
+        
+        if power_500 > 0:
+            harmonic_ratio_500_1000 = 10 * np.log10((power_1000 + 1e-12) / power_500)
+        if power_600 > 0:
+            harmonic_ratio_600_1200 = 10 * np.log10((power_1200 + 1e-12) / power_600)
+        
+        # Validate that detected tone matches expected
+        if detected and expected_tone and detected_freq != expected_tone:
+            # Detected wrong tone - could be interference or misidentification
+            logger.warning(f"{self.channel_name}: Minute {minute_number} - "
+                          f"Expected {expected_tone} Hz ({ground_truth_station}) but detected {detected_freq} Hz")
+        
+        if detected:
+            logger.info(f"{self.channel_name}: ✨ {detected_freq} Hz tone detected in minute {minute_number} - "
+                       f"Ground truth: {ground_truth_station}, Power: {power_db:.1f}dB, SNR: {snr_db:.1f}dB")
+            if harmonic_ratio_500_1000 is not None or harmonic_ratio_600_1200 is not None:
+                logger.debug(f"{self.channel_name}: Harmonic ratios - 500→1000: {harmonic_ratio_500_1000:.1f}dB, "
+                           f"600→1200: {harmonic_ratio_600_1200:.1f}dB")
+        
+        return (detected, power_db if detected else None, detected_freq if detected else None, 
+                ground_truth_station, harmonic_ratio_500_1000, harmonic_ratio_600_1200)
     
     def detect_tick_windows(
         self,
@@ -965,6 +1332,13 @@ class WWVHDiscriminator:
                 
                 ratio_db = wwv_snr - wwvh_snr
                 
+                # ABSOLUTE POWER (for inter-method agreement)
+                # Use incoherent energy sum for absolute power comparison
+                # This is comparable to FFT-based power measurement
+                wwv_power_db = 10 * np.log10(wwv_energy_sum) if wwv_energy_sum > 0 else -100
+                wwvh_power_db = 10 * np.log10(wwvh_energy_sum) if wwvh_energy_sum > 0 else -100
+                power_ratio_db = wwv_power_db - wwvh_power_db
+                
                 # Convert noise power density to dB (relative to 1.0 = 0 dB)
                 # This is N₀ in dBW/Hz
                 noise_power_density_db = 10 * np.log10(N0) if N0 > 0 else -100
@@ -975,10 +1349,14 @@ class WWVHDiscriminator:
                 
                 results.append({
                     'second': window_start_second,  # Actual start second (skips second 0)
-                    # Best SNR (chosen method)
+                    # Best SNR (chosen method) - relative to noise floor
                     'wwv_snr_db': float(wwv_snr),
                     'wwvh_snr_db': float(wwvh_snr),
-                    'ratio_db': float(ratio_db),
+                    'ratio_db': float(ratio_db),  # SNR ratio (legacy)
+                    # ABSOLUTE POWER (for inter-method agreement)
+                    'wwv_power_db': float(wwv_power_db),
+                    'wwvh_power_db': float(wwvh_power_db),
+                    'power_ratio_db': float(power_ratio_db),  # Absolute power ratio
                     # Coherent results
                     'coherent_wwv_snr_db': float(coherent_wwv_snr),
                     'coherent_wwvh_snr_db': float(coherent_wwvh_snr),
@@ -1010,6 +1388,10 @@ class WWVHDiscriminator:
                     'wwv_snr_db': -100.0,
                     'wwvh_snr_db': -100.0,
                     'ratio_db': 0.0,
+                    # Absolute power (for inter-method agreement)
+                    'wwv_power_db': -100.0,
+                    'wwvh_power_db': -100.0,
+                    'power_ratio_db': 0.0,
                     'coherent_wwv_snr_db': -100.0,
                     'coherent_wwvh_snr_db': -100.0,
                     'incoherent_wwv_snr_db': -100.0,
@@ -1393,7 +1775,11 @@ class WWVHDiscriminator:
         window_seconds: float = 10,
         step_seconds: float = 1,
         adaptive: bool = False,
-        enable_single_station_detection: bool = True
+        enable_single_station_detection: bool = True,
+        timing_power_ratio_db: Optional[float] = None,  # WWV-WWVH power from 1000/1200 Hz (positive=WWV stronger)
+        ground_truth_station: Optional[str] = None,  # From 500/600 Hz exclusive minutes ('WWV' or 'WWVH')
+        wwv_tick_snr_db: Optional[float] = None,  # SNR of 1000 Hz tick
+        wwvh_tick_snr_db: Optional[float] = None  # SNR of 1200 Hz tick
     ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], List[Dict[str, float]]]:
         """
         Discriminate WWV/WWVH using 100 Hz BCD cross-correlation with sliding windows
@@ -1680,9 +2066,8 @@ class WWVHDiscriminator:
                             )
                 
                 elif len(peaks) == 1 and enable_single_station_detection:
-                    # SINGLE PEAK: One station detected
+                    # SINGLE PEAK: One station detected - use multi-evidence classification
                     peak_idx = 0
-                    # Peak time relative to zero-lag
                     peak_time = (peaks[peak_idx] - zero_lag_idx) / sample_rate
                     peak_delay_ms = peak_time * 1000
                     peak_height = float(properties['peak_heights'][peak_idx])
@@ -1692,48 +2077,150 @@ class WWVHDiscriminator:
                     if R_0 > 0:
                         peak_amplitude = abs(peak_height / np.sqrt(R_0))
                     else:
-                        continue  # Skip if template energy is zero
+                        continue
                     
-                    # Quality from SNR
                     noise_floor = np.median(correlation)
                     quality = peak_height / noise_floor if noise_floor > 0 else 0.0
                     
-                    # Try to classify using geographic predictor if available
-                    station = None
+                    # === MULTI-EVIDENCE CLASSIFICATION ===
+                    # Collect votes from multiple sources with exclusion logic
+                    wwv_votes = 0.0
+                    wwvh_votes = 0.0
+                    exclusion_wwv = False  # If True, cannot be WWV
+                    exclusion_wwvh = False  # If True, cannot be WWVH
+                    evidence_sources = []
+                    
+                    # EVIDENCE 1: 500/600 Hz Ground Truth (DEFINITIVE - can exclude)
+                    if ground_truth_station == 'WWV':
+                        wwv_votes += 10.0
+                        exclusion_wwvh = True
+                        evidence_sources.append('gt_wwv')
+                    elif ground_truth_station == 'WWVH':
+                        wwvh_votes += 10.0
+                        exclusion_wwv = True
+                        evidence_sources.append('gt_wwvh')
+                    
+                    # EVIDENCE 2: Geographic ToA prediction
+                    geo_station = None
                     if self.geo_predictor and frequency_mhz:
-                        station = self.geo_predictor.classify_single_peak(
+                        geo_station = self.geo_predictor.classify_single_peak(
                             peak_delay_ms, peak_amplitude, frequency_mhz, quality
                         )
+                        if geo_station == 'WWV':
+                            wwv_votes += 3.0
+                            evidence_sources.append('geo_wwv')
+                        elif geo_station == 'WWVH':
+                            wwvh_votes += 3.0
+                            evidence_sources.append('geo_wwvh')
                     
-                    if station == 'WWV':
-                        windows_data.append({
-                            'window_start_sec': float(window_start_time),
-                            'wwv_amplitude': peak_amplitude,
-                            'wwvh_amplitude': 0.0,
-                            'differential_delay_ms': None,
-                            'correlation_quality': float(quality),
-                            'detection_type': 'single_peak_wwv',
-                            'peak_delay_ms': float(peak_delay_ms)
-                        })
-                    elif station == 'WWVH':
+                    # EVIDENCE 3: Timing tone power ratio (1000/1200 Hz)
+                    if timing_power_ratio_db is not None:
+                        if abs(timing_power_ratio_db) > 3.0:
+                            # Strong difference - high confidence
+                            if timing_power_ratio_db > 0:
+                                wwv_votes += 5.0
+                                evidence_sources.append('pwr_wwv_strong')
+                            else:
+                                wwvh_votes += 5.0
+                                evidence_sources.append('pwr_wwvh_strong')
+                        elif abs(timing_power_ratio_db) > 1.0:
+                            # Moderate difference
+                            if timing_power_ratio_db > 0:
+                                wwv_votes += 2.0
+                                evidence_sources.append('pwr_wwv_mod')
+                            else:
+                                wwvh_votes += 2.0
+                                evidence_sources.append('pwr_wwvh_mod')
+                        else:
+                            # Marginal - still counts but less
+                            if timing_power_ratio_db > 0:
+                                wwv_votes += 0.5
+                            else:
+                                wwvh_votes += 0.5
+                    
+                    # EVIDENCE 4: Tick SNR comparison
+                    if wwv_tick_snr_db is not None and wwvh_tick_snr_db is not None:
+                        snr_diff = wwv_tick_snr_db - wwvh_tick_snr_db
+                        if snr_diff > 3.0:
+                            wwv_votes += 2.0
+                            evidence_sources.append('snr_wwv')
+                        elif snr_diff < -3.0:
+                            wwvh_votes += 2.0
+                            evidence_sources.append('snr_wwvh')
+                    
+                    # === APPLY EXCLUSIONS ===
+                    if exclusion_wwv:
+                        wwv_votes = 0.0  # Cannot be WWV
+                    if exclusion_wwvh:
+                        wwvh_votes = 0.0  # Cannot be WWVH
+                    
+                    # === MAKE DECISION ===
+                    total_votes = wwv_votes + wwvh_votes
+                    
+                    if total_votes > 0:
+                        wwv_confidence = wwv_votes / total_votes
+                        wwvh_confidence = wwvh_votes / total_votes
+                        
+                        if wwv_confidence > 0.6:
+                            detection_type = 'single_peak_wwv_multi'
+                            if ground_truth_station == 'WWV':
+                                detection_type = 'single_peak_wwv_gt'
+                            quality_adj = quality * min(1.0, wwv_confidence + 0.2)
+                            windows_data.append({
+                                'window_start_sec': float(window_start_time),
+                                'wwv_amplitude': peak_amplitude,
+                                'wwvh_amplitude': 0.0,
+                                'differential_delay_ms': None,
+                                'correlation_quality': float(quality_adj),
+                                'detection_type': detection_type,
+                                'peak_delay_ms': float(peak_delay_ms),
+                                'evidence': evidence_sources
+                            })
+                        elif wwvh_confidence > 0.6:
+                            detection_type = 'single_peak_wwvh_multi'
+                            if ground_truth_station == 'WWVH':
+                                detection_type = 'single_peak_wwvh_gt'
+                            quality_adj = quality * min(1.0, wwvh_confidence + 0.2)
+                            windows_data.append({
+                                'window_start_sec': float(window_start_time),
+                                'wwv_amplitude': 0.0,
+                                'wwvh_amplitude': peak_amplitude,
+                                'differential_delay_ms': None,
+                                'correlation_quality': float(quality_adj),
+                                'detection_type': detection_type,
+                                'peak_delay_ms': float(peak_delay_ms),
+                                'evidence': evidence_sources
+                            })
+                        else:
+                            # Ambiguous - lean toward stronger evidence
+                            if wwv_votes > wwvh_votes:
+                                windows_data.append({
+                                    'window_start_sec': float(window_start_time),
+                                    'wwv_amplitude': peak_amplitude,
+                                    'wwvh_amplitude': 0.0,
+                                    'differential_delay_ms': None,
+                                    'correlation_quality': float(quality * 0.6),
+                                    'detection_type': 'single_peak_wwv_ambig',
+                                    'peak_delay_ms': float(peak_delay_ms)
+                                })
+                            else:
+                                windows_data.append({
+                                    'window_start_sec': float(window_start_time),
+                                    'wwv_amplitude': 0.0,
+                                    'wwvh_amplitude': peak_amplitude,
+                                    'differential_delay_ms': None,
+                                    'correlation_quality': float(quality * 0.6),
+                                    'detection_type': 'single_peak_wwvh_ambig',
+                                    'peak_delay_ms': float(peak_delay_ms)
+                                })
+                    else:
+                        # No evidence available - unclassified
                         windows_data.append({
                             'window_start_sec': float(window_start_time),
                             'wwv_amplitude': 0.0,
-                            'wwvh_amplitude': peak_amplitude,
-                            'differential_delay_ms': None,
-                            'correlation_quality': float(quality),
-                            'detection_type': 'single_peak_wwvh',
-                            'peak_delay_ms': float(peak_delay_ms)
-                        })
-                    else:
-                        # Unclassified single peak - record as dominant station based on location
-                        # Default to WWV for US receivers (closer to Colorado than Hawaii)
-                        windows_data.append({
-                            'window_start_sec': float(window_start_time),
-                            'wwv_amplitude': peak_amplitude,
                             'wwvh_amplitude': 0.0,
                             'differential_delay_ms': None,
-                            'correlation_quality': float(quality),
+                            'correlation_quality': float(quality * 0.3),
                             'detection_type': 'single_peak_unclassified',
                             'peak_delay_ms': float(peak_delay_ms)
                         })
@@ -1784,11 +2271,17 @@ class WWVHDiscriminator:
                     logger.info(f"{self.channel_name}: Weak signals (quality={quality_mean:.1f}) "
                                f"- consider 15-20 second windows for better SNR")
             
+            # Format delay info (may be None if all single-peak detections)
+            if delay_mean is not None and delays:
+                delay_str = f"delay={delay_mean:.2f}±{np.std(delays):.2f}ms"
+            else:
+                delay_str = "delay=N/A (single-peak only)"
+            
             logger.info(f"{self.channel_name}: BCD correlation ({len(windows_data)} windows, {window_seconds}s) - "
-                       f"WWV amp={wwv_amp_mean:.1f}±{np.std(wwv_amps):.1f}, "
-                       f"WWVH amp={wwvh_amp_mean:.1f}±{np.std(wwvh_amps):.1f}, "
+                       f"WWV amp={wwv_amp_mean:.4f}±{np.std(wwv_amps):.4f}, "
+                       f"WWVH amp={wwvh_amp_mean:.4f}±{np.std(wwvh_amps):.4f}, "
                        f"ratio={20*np.log10(max(wwv_amp_mean,1e-10)/max(wwvh_amp_mean,1e-10)):+.1f}dB, "
-                       f"delay={delay_mean:.2f}±{np.std(delays):.2f}ms, "
+                       f"{delay_str}, "
                        f"quality={quality_mean:.1f}")
             
             return wwv_amp_mean, wwvh_amp_mean, delay_mean, quality_mean, windows_data
@@ -1805,7 +2298,11 @@ class WWVHDiscriminator:
         sample_rate: int,
         minute_timestamp: float,
         frequency_mhz: Optional[float] = None,
-        doppler_info: Optional[Dict[str, float]] = None
+        doppler_info: Optional[Dict[str, float]] = None,
+        timing_power_ratio_db: Optional[float] = None,  # WWV-WWVH power for single-peak classification
+        ground_truth_station: Optional[str] = None,  # From 500/600 Hz exclusive minutes
+        wwv_tick_snr_db: Optional[float] = None,  # SNR of 1000 Hz tick
+        wwvh_tick_snr_db: Optional[float] = None  # SNR of 1200 Hz tick
     ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], List[Dict[str, float]]]:
         """
         Wrapper method for BCD discrimination with adaptive window sizing.
@@ -1860,7 +2357,11 @@ class WWVHDiscriminator:
             window_seconds=window_seconds,  # Now 10-20s (within Tc)
             step_seconds=step_seconds,      # 1s sliding for time-series
             adaptive=False,  # Doppler adaptation handles window sizing
-            enable_single_station_detection=True
+            enable_single_station_detection=True,
+            timing_power_ratio_db=timing_power_ratio_db,  # For single-peak cross-validation
+            ground_truth_station=ground_truth_station,  # From 500/600 Hz exclusive minutes
+            wwv_tick_snr_db=wwv_tick_snr_db,  # SNR evidence
+            wwvh_tick_snr_db=wwvh_tick_snr_db
         )
     
     def _generate_bcd_template(
@@ -1934,6 +2435,29 @@ class WWVHDiscriminator:
         if result is None:
             return None
         
+        # CRITICAL: Override power values with accurate FFT measurement
+        # Matched filter SNR measures detection confidence, not relative power.
+        # For station comparison, we need actual tone power from FFT.
+        fft_wwv_power_db, fft_wwvh_power_db = self.measure_tone_powers_fft(iq_samples, sample_rate)
+        
+        # Update result with accurate FFT-based power values
+        result.wwv_power_db = fft_wwv_power_db
+        result.wwvh_power_db = fft_wwvh_power_db
+        result.power_ratio_db = fft_wwv_power_db - fft_wwvh_power_db
+        
+        # Re-determine dominant station based on accurate power ratio
+        if result.wwv_detected or result.wwvh_detected:
+            if abs(result.power_ratio_db) < 3.0:
+                result.dominant_station = 'BALANCED'
+            elif result.power_ratio_db > 0:
+                result.dominant_station = 'WWV'
+            else:
+                result.dominant_station = 'WWVH'
+        
+        logger.debug(f"{self.channel_name}: FFT power - WWV={fft_wwv_power_db:.1f}dB, "
+                    f"WWVH={fft_wwvh_power_db:.1f}dB, ratio={result.power_ratio_db:+.1f}dB "
+                    f"-> {result.dominant_station}")
+        
         # Get minute number (0-59)
         dt = datetime.utcfromtimestamp(minute_timestamp)
         minute_number = dt.minute
@@ -1958,6 +2482,32 @@ class WWVHDiscriminator:
             # If 440 Hz detected, increases confidence that WWV is present
             if detected and result.confidence == 'low':
                 result.confidence = 'medium'
+        
+        # PHASE 2.5: Detect 500/600 Hz tones for ground truth (exclusive minutes only)
+        # Minutes 43-51: Only WWVH broadcasts 500/600 Hz (9 minutes)
+        # Minutes 16,17,19: Only WWV broadcasts 500/600 Hz (3 minutes)
+        # This provides 12 ground truth minutes per hour!
+        try:
+            (detected, power_db, freq_hz, ground_truth_station, 
+             harmonic_500_1000, harmonic_600_1200) = self.detect_500_600hz_tone(
+                iq_samples, sample_rate, minute_number
+            )
+            result.tone_500_600_detected = detected
+            result.tone_500_600_power_db = power_db
+            result.tone_500_600_freq_hz = freq_hz
+            result.tone_500_600_ground_truth_station = ground_truth_station
+            result.harmonic_ratio_500_1000 = harmonic_500_1000
+            result.harmonic_ratio_600_1200 = harmonic_600_1200
+            
+            # If detected in exclusive minute, this is strong ground truth
+            if detected and ground_truth_station:
+                # Boost confidence if tone detection agrees with power-based station
+                if result.dominant_station == ground_truth_station:
+                    if result.confidence != 'high':
+                        result.confidence = 'high'
+                        logger.info(f"{self.channel_name}: {freq_hz} Hz ground truth confirms {ground_truth_station}")
+        except Exception as e:
+            logger.debug(f"{self.channel_name}: 500/600 Hz detection failed: {e}")
         
         # PHASE 3: Detect 5ms tick marks with coherent integration (60-second baseline)
         # DISCRIMINATION-FIRST: Use full minute for maximum tick stacking sensitivity
@@ -2008,9 +2558,32 @@ class WWVHDiscriminator:
         # Adaptive window sizing based on Doppler limits
         # Amplitudes measured directly from 100 Hz BCD signal correlation peaks
         # Delay spread measurement quantifies channel multipath (complements Doppler spread)
+        # 
+        # MULTI-EVIDENCE CLASSIFICATION (2025-11-27):
+        # Pass all available evidence for single-peak classification:
+        # - timing_power_ratio_db: 1000/1200 Hz power difference
+        # - ground_truth_station: From 500/600 Hz exclusive minutes (DEFINITIVE)
+        # - wwv_tick_snr_db/wwvh_tick_snr_db: Tick SNR comparison
+        
+        # Extract tick SNR values for evidence
+        wwv_tick_snr = None
+        wwvh_tick_snr = None
+        if result.tick_windows_10sec:
+            # Get mean SNR across ticks
+            wwv_snrs = [t.get('wwv_snr_db', -100) for t in result.tick_windows_10sec if t.get('wwv_snr_db', -100) > 0]
+            wwvh_snrs = [t.get('wwvh_snr_db', -100) for t in result.tick_windows_10sec if t.get('wwvh_snr_db', -100) > 0]
+            if wwv_snrs:
+                wwv_tick_snr = float(np.mean(wwv_snrs))
+            if wwvh_snrs:
+                wwvh_tick_snr = float(np.mean(wwvh_snrs))
+        
         try:
             bcd_wwv, bcd_wwvh, bcd_delay, bcd_quality, bcd_windows = self.detect_bcd_discrimination(
-                iq_samples, sample_rate, minute_timestamp, frequency_mhz, doppler_info
+                iq_samples, sample_rate, minute_timestamp, frequency_mhz, doppler_info,
+                timing_power_ratio_db=result.power_ratio_db,  # 1000/1200 Hz power difference
+                ground_truth_station=result.tone_500_600_ground_truth_station if result.tone_500_600_detected else None,
+                wwv_tick_snr_db=wwv_tick_snr,
+                wwvh_tick_snr_db=wwvh_tick_snr
             )
             
             # Log 440 Hz reference measurements when available (hourly calibration anchor)
@@ -2078,6 +2651,155 @@ class WWVHDiscriminator:
             tone_440_wwvh_detected=result.tone_440hz_wwvh_detected,
             tick_results=result.tick_windows_10sec
         )
+        
+        # PHASE 6: Inter-method cross-validation
+        # Aggregate independent measurements to assess agreement and adjust confidence
+        result = self._cross_validate_methods(result, minute_number)
+        
+        return result
+    
+    def _cross_validate_methods(
+        self,
+        result: 'DiscriminationResult',
+        minute_number: int
+    ) -> 'DiscriminationResult':
+        """
+        Cross-validate independent discrimination methods for consistency.
+        
+        Checks for agreement between:
+        1. Power-based: FFT power ratio (1000/1200 Hz timing tones)
+        2. Timing-based: BCD differential delay vs geographic prediction
+        3. Per-tick voting: Majority of 59 ticks
+        4. Ground truth: 440 Hz (min 1,2) or test signal (min 8,44)
+        
+        Agreement boosts confidence, disagreement triggers investigation flags.
+        """
+        agreements = []
+        disagreements = []
+        
+        # 1. Power vs Timing cross-check
+        # If WWVH is louder (power_ratio < 0) and WWV arrives first (bcd_delay > 0),
+        # they AGREE: the louder station is the more distant one (WWVH from Hawaii)
+        if result.power_ratio_db is not None and result.bcd_differential_delay_ms is not None:
+            power_says_wwvh = result.power_ratio_db < -3
+            power_says_wwv = result.power_ratio_db > 3
+            
+            # Positive BCD delay means WWVH peak is later than WWV peak
+            wwv_arrives_first = result.bcd_differential_delay_ms > 5
+            wwvh_arrives_first = result.bcd_differential_delay_ms < -5
+            
+            if (power_says_wwvh and wwv_arrives_first) or (power_says_wwv and wwvh_arrives_first):
+                agreements.append('power_timing_agree')
+                logger.debug(f"{self.channel_name}: ✓ Power + Timing agree on station identity")
+            elif power_says_wwvh or power_says_wwv:
+                if wwv_arrives_first or wwvh_arrives_first:
+                    disagreements.append('power_timing_disagree')
+                    logger.warning(f"{self.channel_name}: ✗ Power ({result.dominant_station}) vs Timing disagree")
+        
+        # 2. Per-tick majority voting
+        if result.tick_windows_10sec:
+            tw = result.tick_windows_10sec[0]
+            # Use absolute power ratio if available
+            tick_power_ratio = tw.get('power_ratio_db', tw.get('ratio_db', 0))
+            
+            if abs(tick_power_ratio) > 3:
+                tick_says = 'WWV' if tick_power_ratio > 3 else 'WWVH'
+                if result.dominant_station == tick_says:
+                    agreements.append('tick_power_agree')
+                elif result.dominant_station not in ['BALANCED', 'UNKNOWN']:
+                    disagreements.append('tick_power_disagree')
+                    logger.debug(f"{self.channel_name}: Tick power ({tick_says}) differs from FFT ({result.dominant_station})")
+        
+        # 3. Geographic delay validation
+        # Check if measured BCD delay matches expected for receiver location
+        if result.bcd_differential_delay_ms is not None and self.geo_predictor:
+            try:
+                freq_mhz = self.channel_frequency_mhz or 10.0
+                pred = self.geo_predictor.calculate_expected_delays(freq_mhz)
+                expected_diff = pred['wwv_delay_ms'] - pred['wwvh_delay_ms']
+                measured_diff = result.bcd_differential_delay_ms
+                
+                # Expected diff is negative (WWV closer), measured should be positive
+                # (WWV arrives first = WWVH peak is later)
+                deviation = abs(abs(measured_diff) - abs(expected_diff))
+                
+                if deviation < 10:  # Within 10ms of expected
+                    agreements.append('geographic_timing_agree')
+                    logger.debug(f"{self.channel_name}: ✓ BCD delay ({measured_diff:.1f}ms) matches "
+                               f"geographic prediction ({expected_diff:.1f}ms) within {deviation:.1f}ms")
+                elif deviation > 20:  # More than 20ms off
+                    disagreements.append('geographic_timing_unusual')
+                    logger.info(f"{self.channel_name}: BCD delay ({measured_diff:.1f}ms) deviates "
+                              f"{deviation:.1f}ms from expected ({expected_diff:.1f}ms) - unusual propagation?")
+            except Exception as e:
+                logger.debug(f"{self.channel_name}: Could not validate geographic delay: {e}")
+        
+        # 4. Ground truth validation (when available)
+        if minute_number == 1 and result.tone_440hz_wwvh_detected:
+            # Minute 1: 440 Hz = WWVH
+            if result.dominant_station == 'WWVH':
+                agreements.append('440hz_ground_truth_agree')
+                logger.info(f"{self.channel_name}: ✓ 440 Hz ground truth confirms WWVH")
+            else:
+                disagreements.append('440hz_ground_truth_disagree')
+                logger.warning(f"{self.channel_name}: ✗ 440 Hz says WWVH but power says {result.dominant_station}")
+        
+        if minute_number == 2 and result.tone_440hz_wwv_detected:
+            # Minute 2: 440 Hz = WWV
+            if result.dominant_station == 'WWV':
+                agreements.append('440hz_ground_truth_agree')
+                logger.info(f"{self.channel_name}: ✓ 440 Hz ground truth confirms WWV")
+            else:
+                disagreements.append('440hz_ground_truth_disagree')
+                logger.warning(f"{self.channel_name}: ✗ 440 Hz says WWV but power says {result.dominant_station}")
+        
+        # 5. BCD correlation quality validation
+        # High BCD correlation quality confirms received signal matches expected minute template
+        # This validates that we're synchronized with the correct UTC minute
+        if result.bcd_correlation_quality is not None:
+            result.bcd_correlation_peak_quality = result.bcd_correlation_quality
+            if result.bcd_correlation_quality > 5.0:  # Threshold for "good" correlation
+                result.bcd_minute_validated = True
+                agreements.append('bcd_minute_validated')
+                logger.debug(f"{self.channel_name}: ✓ BCD correlation quality {result.bcd_correlation_quality:.1f} "
+                           f"confirms minute timing")
+            elif result.bcd_correlation_quality < 2.0:
+                # Very low correlation suggests timing issue or no signal
+                disagreements.append('bcd_minute_quality_low')
+                logger.debug(f"{self.channel_name}: BCD correlation quality {result.bcd_correlation_quality:.1f} "
+                           f"is low - possible timing issue")
+        
+        # 6. 500/600 Hz exclusive tone ground truth (12 minutes per hour!)
+        if result.tone_500_600_detected and result.tone_500_600_ground_truth_station:
+            gt_station = result.tone_500_600_ground_truth_station
+            if result.dominant_station == gt_station:
+                agreements.append('500_600hz_ground_truth_agree')
+                logger.info(f"{self.channel_name}: ✓ {result.tone_500_600_freq_hz} Hz ground truth confirms {gt_station}")
+            else:
+                disagreements.append('500_600hz_ground_truth_disagree')
+                logger.warning(f"{self.channel_name}: ✗ {result.tone_500_600_freq_hz} Hz says {gt_station} "
+                             f"but power says {result.dominant_station}")
+        
+        # Store cross-validation results
+        result.inter_method_agreements = agreements
+        result.inter_method_disagreements = disagreements
+        
+        # Adjust confidence based on agreement
+        agreement_count = len(agreements)
+        disagreement_count = len(disagreements)
+        
+        if agreement_count >= 2 and disagreement_count == 0:
+            if result.confidence != 'high':
+                result.confidence = 'high'
+                logger.info(f"{self.channel_name}: Confidence → HIGH ({agreement_count} methods agree)")
+        elif disagreement_count >= 2:
+            if result.confidence == 'high':
+                result.confidence = 'medium'
+                logger.warning(f"{self.channel_name}: Confidence → MEDIUM ({disagreement_count} disagreements)")
+        elif disagreement_count > agreement_count:
+            if result.confidence != 'low':
+                result.confidence = 'low'
+                logger.warning(f"{self.channel_name}: Confidence → LOW (more disagreements than agreements)")
         
         return result
     

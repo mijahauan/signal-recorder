@@ -4,26 +4,60 @@
 # Instructions: Paste this entire file at the start of any new chat session
 # to provide ground-truth context for the GRAPE Signal Recorder project.
 
-## 🚨 IMMEDIATE CONTEXT: WWV/WWVH Discrimination Testing & Refinement
+## 🚨 IMMEDIATE CONTEXT: Web UI Unification & Visualization Enhancement
 
-**NEXT SESSION GOAL:** Test, validate, and refine the 6 WWV/WWVH discrimination methods to ensure accurate station identification across all propagation conditions.
+**NEXT SESSION GOAL:** Bring the web UI into stylistic unity and ensure optimal visualization of the WWV/WWVH discrimination analyses.
+
+### Priority Tasks
+1. **Stylistic Unity**: Consistent design across all pages (Summary, Discrimination, Status)
+2. **Discrimination Visualization**: Best views for the 8 voting methods and ground truth data
+3. **500/600 Hz Ground Truth Display**: New method added - needs UI integration
+4. **Harmonic Ratio Charts**: New data columns need visualization
+5. **Multi-Evidence Classification**: Show evidence sources in BCD displays
+
+### Key Web UI Files
+| File | Purpose |
+|------|---------|
+| `web-ui/monitoring-server-v3.js` | API server, CSV parsing, data endpoints |
+| `web-ui/discrimination.html` | Main discrimination page |
+| `web-ui/discrimination-enhanced.js` | Plotly charts for discrimination |
+| `web-ui/components/discrimination-charts.js` | Individual method chart components |
+| `web-ui/summary.html` | Summary dashboard with audio player |
+| `web-ui/styles.css` | Global styles |
+
+### Current Design Issues to Address
+- Inconsistent chart styling between pages
+- Method cards need uniform sizing and layout
+- 500/600 Hz ground truth method needs dedicated visualization
+- Harmonic ratio data (new) not yet displayed
+- BCD detection types (single_peak_wwv_gt, etc.) not shown in UI
 
 ---
 
 ## 1. 📋 Discrimination System Overview
 
-The GRAPE Signal Recorder uses **6 independent methods** to distinguish between WWV (Fort Collins, CO) and WWVH (Kauai, HI) signals on shared frequencies (2.5, 5, 10, 15 MHz).
+The GRAPE Signal Recorder uses **8 voting methods** in `finalize_discrimination()` to distinguish between WWV (Fort Collins, CO) and WWVH (Kauai, HI) signals on shared frequencies (2.5, 5, 10, 15 MHz).
 
-### The 6 Methods at a Glance
+### The 8 Voting Methods
 
-| # | Method | Rate | Best For | Ground Truth? | Output Directory |
-|---|--------|------|----------|---------------|------------------|
-| 1 | **Timing Tones** | 1/min | Baseline measurement | No | `tone_detections/` |
-| 2 | **Tick Windows** | 6/min | Sub-minute dynamics | No | `tick_windows/` |
-| 3 | **440 Hz Station ID** | 2/hour | Calibration | **YES** (min 1=WWVH, 2=WWV) | `station_id_440hz/` |
-| 4 | **Test Signal** | 2/hour | ToA calibration | **YES** (min 8=WWV, 44=WWVH) | `test_signal/` |
-| 5 | **BCD Correlation** | ~50/min | Amplitude + delay | No | `bcd_discrimination/` |
-| 6 | **Weighted Voting** | 1/min | Final determination | Combined | `discrimination/` |
+| Vote | Method | Weight | Trigger | Ground Truth? |
+|------|--------|--------|---------|---------------|
+| 0 | **Test Signal** | 15.0 | Min 8/44 | **YES** |
+| 1 | **440 Hz Tone** | 10.0 | Min 1/2 | **YES** |
+| 2 | **BCD Amplitude** | 2-10 | BCD peaks detected | No |
+| 3 | **Timing Tones** | 5-10 | 1000/1200 Hz power | No |
+| 4 | **Tick SNR** | 5.0 | All minutes | No |
+| 5 | **500/600 Hz Ground Truth** | 10.0 | 14 exclusive min/hr | **YES** (NEW) |
+| 6 | **Differential Doppler** | 2.0 | ΔfD > 0.05 Hz | No |
+| 7 | **Test Signal ↔ BCD ToA** | 3.0 | Min 8/44 | No |
+| 8 | **Harmonic Power Ratio** | 1.5 | |ratio diff| > 3dB | No |
+
+### Ground Truth Minutes (Exclusive Broadcasts)
+- **440 Hz**: Minute 1 (WWVH), Minute 2 (WWV)
+- **Test Signal**: Minute 8 (WWV), Minute 44 (WWVH)
+- **500/600 Hz WWV-only**: Minutes 1, 16, 17, 19
+- **500/600 Hz WWVH-only**: Minutes 2, 43-51
+- **Total ground truth**: 18 minutes per hour with definitive station ID
 
 ### Method Details
 
@@ -389,16 +423,101 @@ GET /api/v1/channels/:name/discrimination/:date/test_signal # Min 8/44
 
 ## 10. ✅ What Was Completed (Nov 26-27)
 
-### Audio Streaming ✅
+### Audio Streaming ✅ (Nov 26)
 - Live audio playback from Summary page
 - AM demodulation with AGC, 12 kHz via WebSocket
 - Files: `radiod_audio_client.py`, `monitoring-server-v3.js`, `summary.html`
 
-### Geographic BCD Discrimination ✅
+### Geographic BCD Discrimination ✅ (Nov 26)
 - `classify_dual_peaks()` uses geographic ToA to assign WWV/WWVH
 - Test signal ToA offset measurement added
 
-### Timing System ✅
+### Timing System ✅ (Nov 26)
 - Thread-safe core recorder
 - Stable wall clock prediction
 - Timing dashboard with drift analysis
+
+### Multi-Evidence BCD Classification ✅ (Nov 27)
+- **Problem fixed:** Single-peak BCD was defaulting to WWV incorrectly
+- **Solution:** Multi-evidence voting with 4 sources:
+  - 500/600 Hz ground truth (DEFINITIVE - sets exclusion flag)
+  - Geographic ToA prediction
+  - Timing tone power ratio (1000/1200 Hz)
+  - Tick SNR comparison
+- **New detection types:** `single_peak_wwv_gt`, `single_peak_wwvh_multi`, etc.
+
+### Advanced Voting Methods ✅ (Nov 27)
+- VOTE 5: 500/600 Hz ground truth (14 exclusive minutes/hour)
+- VOTE 6: Differential Doppler shift voting
+- VOTE 7: Test Signal ↔ BCD ToA coherence
+- VOTE 8: Harmonic power ratio (500→1000, 600→1200)
+
+### Harmonic Power Measurement ✅ (Nov 27)
+- New fields: `harmonic_ratio_500_1000`, `harmonic_ratio_600_1200`
+- CSV format updated to 31 columns
+- Measures 2nd harmonic relationship for cross-validation
+
+### Reprocessing Script Enhancement ✅ (Nov 27)
+- Added `--start-hour` and `--end-hour` parameters
+- Enables 2-hour targeted reprocessing (~5 min vs 40 min)
+
+### Documentation ✅ (Nov 27)
+- `docs/DISCRIMINATION_SYSTEM.md` - Comprehensive technical documentation
+- `docs/SESSION_2025-11-27.md` - Detailed session notes
+
+---
+
+## 11. 📊 CSV Format Reference (31 Columns)
+
+```
+timestamp_utc, minute_timestamp, minute_number,
+wwv_detected, wwvh_detected, wwv_power_db, wwvh_power_db,
+power_ratio_db, differential_delay_ms,
+tone_440hz_wwv_detected, tone_440hz_wwv_power_db,
+tone_440hz_wwvh_detected, tone_440hz_wwvh_power_db,
+dominant_station, confidence, tick_windows_10sec,
+bcd_wwv_amplitude, bcd_wwvh_amplitude, bcd_differential_delay_ms,
+bcd_correlation_quality, bcd_windows,
+tone_500_600_detected, tone_500_600_power_db, tone_500_600_freq_hz,
+tone_500_600_ground_truth_station,
+harmonic_ratio_500_1000, harmonic_ratio_600_1200,
+bcd_minute_validated, bcd_correlation_peak_quality,
+inter_method_agreements, inter_method_disagreements
+```
+
+### New Columns (Nov 27)
+- Columns 25-26: `harmonic_ratio_500_1000`, `harmonic_ratio_600_1200`
+
+---
+
+## 12. 🎨 Web UI Enhancement Priorities
+
+### Immediate Tasks for Next Session
+
+1. **Unified Color Scheme**
+   - WWV: Blue (#3498db)
+   - WWVH: Orange (#e67e22)
+   - Ground Truth: Green highlight
+   - Confidence levels: High=dark, Medium=medium, Low=light
+
+2. **Method Card Standardization**
+   - Consistent card sizing and spacing
+   - Unified chart dimensions
+   - Standard legend placement
+
+3. **New Visualizations Needed**
+   - 500/600 Hz ground truth method chart
+   - Harmonic ratio time series
+   - Multi-evidence BCD classification breakdown
+   - Detection type distribution (pie chart)
+
+4. **Chart Improvements**
+   - Solar elevation overlay on all time-series
+   - Ground truth minute highlighting (vertical bands)
+   - Confidence-based point sizing
+   - Hover tooltips with full data
+
+5. **Page Consistency**
+   - Summary page: Match discrimination page styling
+   - Navigation: Uniform header/sidebar
+   - Responsive layout for different screen sizes
