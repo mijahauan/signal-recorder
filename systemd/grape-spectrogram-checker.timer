@@ -1,12 +1,12 @@
 [Unit]
-Description=GRAPE Spectrogram Checker Timer (runs every 6 hours)
+Description=GRAPE Spectrogram Checker Timer (runs every 30 minutes)
 After=network.target
 
 [Timer]
-# Check every 6 hours
-OnCalendar=*-*-* 00,06,12,18:30:00 UTC
+# Run every 30 minutes to keep current day spectrograms fresh
+OnCalendar=*:00,30
 Persistent=true
-RandomizedDelaySec=600
+RandomizedDelaySec=60
 
 [Install]
 WantedBy=timers.target

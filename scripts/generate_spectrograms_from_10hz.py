@@ -196,15 +196,19 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         logger.info("Creating plot...")
         fig, ax = plt.subplots(figsize=(30, 6), dpi=120)
         
-        # Plot spectrogram
+        # Plot spectrogram with FIXED dB range for consistent comparison
+        # Range based on observed power levels (typically -60 to 0 dB relative)
+        FIXED_DB_MIN = -60   # dB floor (noise floor)
+        FIXED_DB_MAX = 0     # dB ceiling (strong carriers)
+        
         im = ax.pcolormesh(
             dt_times,
             f_shifted,
             Sxx_db_shifted,
             shading='auto',
             cmap='viridis',
-            vmin=np.percentile(Sxx_db_shifted, 5),
-            vmax=np.percentile(Sxx_db_shifted, 95)
+            vmin=FIXED_DB_MIN,
+            vmax=FIXED_DB_MAX
         )
         
         # Labels and title
@@ -243,13 +247,24 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
                 # Convert solar timestamps to datetime
                 solar_times = [datetime.fromisoformat(ts.replace('Z', '+00:00')) for ts in solar_data['timestamps']]
                 
-                # Plot WWV and WWVH path solar elevations
-                ax2.plot(solar_times, solar_data['wwv_solar_elevation'], 
-                        color='#e74c3c', linewidth=2, linestyle='-', alpha=0.8,
-                        label=f"Solar Elev. (WWV path)")
-                ax2.plot(solar_times, solar_data['wwvh_solar_elevation'], 
-                        color='#9b59b6', linewidth=2, linestyle='--', alpha=0.8,
-                        label=f"Solar Elev. (WWVH path)")
+                # Determine channel type to show appropriate solar paths
+                is_chu = channel_name.upper().startswith('CHU')
+                
+                if is_chu and 'chu_solar_elevation' in solar_data:
+                    # CHU channel: show CHU path solar elevation
+                    ax2.plot(solar_times, solar_data['chu_solar_elevation'], 
+                            color='#e67e22', linewidth=2, linestyle='-', alpha=0.8,
+                            label=f"Solar Elev. (CHU path)")
+                    logger.info(f"Added solar zenith overlay for CHU path")
+                else:
+                    # WWV channel: show WWV and WWVH path solar elevations
+                    ax2.plot(solar_times, solar_data['wwv_solar_elevation'], 
+                            color='#e74c3c', linewidth=2, linestyle='-', alpha=0.8,
+                            label=f"Solar Elev. (WWV path)")
+                    ax2.plot(solar_times, solar_data['wwvh_solar_elevation'], 
+                            color='#9b59b6', linewidth=2, linestyle='--', alpha=0.8,
+                            label=f"Solar Elev. (WWVH path)")
+                    logger.info(f"Added solar zenith overlay for WWV/WWVH paths")
                 
                 # Configure secondary y-axis
                 ax2.set_ylabel('Solar Elevation (°)', fontsize=10, color='#666')
@@ -258,7 +273,6 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
                 ax2.legend(loc='upper right', fontsize=8)
                 ax2.tick_params(axis='y', labelcolor='#666')
                 
-                logger.info(f"Added solar zenith overlay for WWV/WWVH paths")
         except Exception as e:
             logger.warning(f"Could not add solar zenith overlay: {e}")
         

@@ -12,7 +12,6 @@ Collects and writes timing metrics for visualization:
 import csv
 import json
 import logging
-import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -95,8 +94,10 @@ class TimingMetricsWriter:
         self.tone_to_tone_drift_ppm = None  # A/D clock drift in ppm
         
         # Drift tracking for jitter calculation
-        self.drift_history = []  # Last 10 measurements
-        self.max_drift_history = 10
+        # Use 60 measurements (1 hour) for better statistical averaging
+        # This helps smooth out short-term noise from host clock jitter
+        self.drift_history = []
+        self.max_drift_history = 60
         
         logger.info(f"{channel_name}: TimingMetricsWriter initialized at {output_dir}")
     
@@ -188,55 +189,65 @@ class TimingMetricsWriter:
                                           current_rtp: int, current_time_utc: float,
                                           ntp_synced: bool) -> float:
         """
-        Calculate ADC clock drift against NTP reference
+        Calculate ADC clock DRIFT RATE against wall clock reference
         
-        Two Independent Time Bases:
-        1. Data Time Base (ADC clock): Measured by RTP timestamps
-           - Anchored by WWV/CHU time_snap (gold standard offset)
-           - Drift rate unknown until measured
+        This measures the CHANGE in phase offset between RTP-derived time and
+        wall clock time since the last measurement. The absolute offset is not
+        meaningful (varies by channel due to packet arrival timing), but the
+        rate of change indicates ADC clock frequency error.
         
-        2. Reference Time Base (NTP wall clock): Independent measurement
-           - Stored in archive at recording time
-           - Provides ±10ms precision reference
-        
-        Calculation:
-        - RTP predicted time = time_snap.utc + (rtp - time_snap.rtp) / sample_rate
-        - NTP actual time = stored ntp_wall_clock_time from archive
-        - Drift = NTP_actual - RTP_predicted
+        Measurement:
+        1. offset = wall_clock - rtp_predicted (phase difference)
+        2. drift_rate = current_offset - previous_offset (change in phase)
         
         Interpretation:
-        - Positive drift: ADC clock running slow (RTP behind NTP)
-        - Negative drift: ADC clock running fast (RTP ahead of NTP)  
-        - Near zero: ADC clock stable at 16000 Hz
+        - drift_rate ≈ 0: ADC clock running at exactly 16000 Hz
+        - drift_rate > 0: ADC clock slow (RTP falling behind wall clock)
+        - drift_rate < 0: ADC clock fast (RTP running ahead of wall clock)
         
-        Returns drift in milliseconds
+        Limitations:
+        - Host clock jitter directly affects measurement noise
+        - For sub-ms precision, host needs quality NTP/PTP synchronization
+        - Use tone-to-tone measurement for gold-standard ADC characterization
+        
+        Returns:
+            Accumulated drift in milliseconds since last measurement.
+            This is written to the 'drift_ms' CSV column.
         """
-        # Calculate what time the current RTP SHOULD correspond to
-        # based on the tone-locked time_snap anchor
+        # Calculate current offset between wall clock and RTP-predicted time
         rtp_predicted_utc = time_snap.calculate_sample_time(current_rtp)
+        current_offset_ms = (current_time_utc - rtp_predicted_utc) * 1000.0
         
-        # Compare to actual system time (NTP-synced or wall clock)
-        # Positive drift: system time is ahead of RTP (RTP running slow)
-        # Negative drift: system time is behind RTP (RTP running fast)
-        drift_seconds = current_time_utc - rtp_predicted_utc
-        drift_ms = drift_seconds * 1000.0
-        
-        # Sanity check: drift should be reasonable (< 10 seconds for good systems)
-        if abs(drift_ms) > 10000:
-            logger.warning(f"{self.channel_name}: Excessive drift ({drift_ms:.1f}ms) - "
-                          f"possible time_snap or system clock issue")
+        # Initialize baseline on first call
+        if not hasattr(self, '_last_offset_ms'):
+            self._last_offset_ms = current_offset_ms
+            self._last_offset_time = current_time_utc
+            logger.info(f"{self.channel_name}: Drift baseline established, offset={current_offset_ms:.1f}ms")
             return 0.0
         
-        # Note: Drift includes both RTP instability AND reference jitter
-        # - With NTP: mostly RTP drift (reference is ±10ms)
-        # - Without NTP: includes large wall clock jitter (±seconds)
-        # For pure RTP characterization, use tone-to-tone measurement
+        # Calculate drift rate (change in offset)
+        offset_change_ms = current_offset_ms - self._last_offset_ms
+        time_elapsed = current_time_utc - self._last_offset_time
         
-        if not ntp_synced and abs(drift_ms) > 1000:
-            logger.debug(f"{self.channel_name}: Large drift ({drift_ms:.1f}ms) - "
-                        f"NTP not synced, wall clock jitter included")
+        # Update baseline for next measurement
+        self._last_offset_ms = current_offset_ms
+        self._last_offset_time = current_time_utc
         
-        return drift_ms
+        # Sanity check: offset change should be small (< 1 second per minute for reasonable clocks)
+        # Only suppress if this is a short interval (< 2 minutes) - longer gaps may legitimately
+        # accumulate more drift
+        if abs(offset_change_ms) > 1000 and time_elapsed < 120.0:
+            logger.warning(f"{self.channel_name}: Large offset change ({offset_change_ms:.1f}ms over {time_elapsed:.0f}s) - "
+                          f"possible time_snap discontinuity or clock jump")
+            return 0.0
+        
+        # Log drift rate if significant
+        if abs(offset_change_ms) > 10 and time_elapsed > 30:
+            drift_ppm = (offset_change_ms / 1000.0) / time_elapsed * 1e6
+            logger.debug(f"{self.channel_name}: Drift rate {offset_change_ms:.1f}ms over {time_elapsed:.0f}s "
+                        f"({drift_ppm:.1f} ppm)")
+        
+        return offset_change_ms
     
     def _check_tone_to_tone_drift(self, time_snap: 'TimeSnapReference'):
         """
@@ -583,45 +594,7 @@ class TimingMetricsWriter:
         with open(json_path, 'w') as f:
             json.dump({'transitions': transitions}, f, indent=2)
     
-    @staticmethod
-    def get_ntp_offset() -> Optional[float]:
-        """
-        Get system NTP offset in milliseconds
-        
-        Returns None if NTP not available
-        """
-        try:
-            # Try ntpq first (ntpd)
-            result = subprocess.run(
-                ['ntpq', '-c', 'rv'],
-                capture_output=True, text=True, timeout=2
-            )
-            
-            if result.returncode == 0:
-                for line in result.stdout.split(','):
-                    if 'offset=' in line:
-                        offset_str = line.split('offset=')[1].strip()
-                        return float(offset_str)
-        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
-            pass
-        
-        try:
-            # Try chronyc (chrony)
-            result = subprocess.run(
-                ['chronyc', 'tracking'],
-                capture_output=True, text=True, timeout=2
-            )
-            
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if 'System time' in line:
-                        # Parse "System time : 0.000012345 seconds fast of NTP time"
-                        parts = line.split(':')
-                        if len(parts) >= 2:
-                            offset_str = parts[1].strip().split()[0]
-                            offset_seconds = float(offset_str)
-                            return offset_seconds * 1000.0  # Convert to ms
-        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
-            pass
-        
-        return None
+    # NOTE: get_ntp_offset() has been removed.
+    # NTP offset is now obtained from the centralized NTPStatusCache in CoreRecorder
+    # and passed to write_snapshot() via the ntp_offset_ms parameter.
+    # This eliminates blocking subprocess calls in the analytics path.

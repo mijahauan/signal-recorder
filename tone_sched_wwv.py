@@ -46,13 +46,13 @@ schedule = {
     41: {'WWV': 600, 'WWVH': 500},
     42: {'WWV': 500, 'WWVH': 600},
     43: {'WWV': None, 'WWVH': 500},
-    44: {'WWV': None, 'WWVH': 500},
+    44: {'WWV': None, 'WWVH': 600},  # even minute
     45: {'WWV': None, 'WWVH': 500},
     46: {'WWV': None, 'WWVH': 600},
     47: {'WWV': None, 'WWVH': 500},
-    48: {'WWV': None, 'WWVH': 500},
+    48: {'WWV': None, 'WWVH': 600},  # even minute
     49: {'WWV': None, 'WWVH': 500},
-    50: {'WWV': None, 'WWVH': 500},
+    50: {'WWV': None, 'WWVH': 600},  # even minute
     51: {'WWV': None, 'WWVH': 500},
     52: {'WWV': 500, 'WWVH': 600},
     53: {'WWV': 600, 'WWVH': 500},

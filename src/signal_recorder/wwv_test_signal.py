@@ -385,8 +385,15 @@ class WWVTestSignalDetector:
         # Normalize
         audio_signal = audio_signal / np.max(np.abs(audio_signal))
         
-        # Step 1: Multi-tone detection (primary discriminator)
-        multitone_score, multitone_start = self._detect_multitone(audio_signal)
+        # Step 1: Multi-tone detection using BOTH methods
+        # Method A: Template correlation (original)
+        multitone_score_template, multitone_start = self._detect_multitone(audio_signal)
+        
+        # Method B: Simple tone presence detection (more robust to fading)
+        multitone_score_simple = self._detect_multitone_simple(audio_signal)
+        
+        # Use the better of the two scores
+        multitone_score = max(multitone_score_template, multitone_score_simple)
         
         # Step 2: Chirp detection (confirmatory)
         chirp_score, chirp_start = self._detect_chirp(audio_signal)
@@ -482,6 +489,82 @@ class WWVTestSignalDetector:
         start_time = peak_idx / self.sample_rate if score > self.multitone_threshold else None
         
         return score, start_time
+    
+    def _detect_multitone_simple(self, audio_signal: np.ndarray) -> float:
+        """
+        Simple multi-tone detection based on presence of 2, 3, 4, 5 kHz tones
+        
+        This method is more robust to ionospheric fading and phase distortion
+        than template correlation. It counts 1-second windows in the expected
+        test signal period (13-23 seconds) where all 4 tones have positive SNR.
+        
+        Returns:
+            Detection score 0.0 to 1.0 (fraction of windows with all tones present)
+        """
+        from scipy.fft import rfft, rfftfreq
+        
+        # Expected multi-tone window: 13-23 seconds into minute
+        multitone_start_sec = 13
+        multitone_end_sec = 23
+        
+        # Analyze 1-second windows
+        windows_with_all_tones = 0
+        total_windows = 0
+        
+        for sec in range(multitone_start_sec, multitone_end_sec):
+            start = sec * self.sample_rate
+            end = start + self.sample_rate
+            
+            if end > len(audio_signal):
+                break
+            
+            segment = audio_signal[start:end]
+            
+            # FFT
+            fft_result = np.abs(rfft(segment))
+            freqs = rfftfreq(len(segment), 1/self.sample_rate)
+            
+            # Measure power at each test signal frequency
+            tone_snrs = []
+            for target in [2000, 3000, 4000, 5000]:
+                idx = np.argmin(np.abs(freqs - target))
+                tone_power = np.max(fft_result[max(0, idx-1):idx+2])
+                
+                # Noise reference at 1.5 kHz (clean band)
+                noise_idx = np.argmin(np.abs(freqs - 1500))
+                noise_level = np.mean(fft_result[max(0, noise_idx-10):noise_idx+10])
+                
+                if noise_level > 0:
+                    snr_db = 20 * np.log10(tone_power / noise_level)
+                else:
+                    snr_db = 0
+                    
+                tone_snrs.append(snr_db)
+            
+            # All 4 tones must have positive SNR
+            if all(snr > 0 for snr in tone_snrs):
+                windows_with_all_tones += 1
+            
+            total_windows += 1
+        
+        if total_windows == 0:
+            return 0.0
+        
+        # Score is fraction of windows with all tones present
+        # Scale to match template detection range (0.15-1.0)
+        raw_score = windows_with_all_tones / total_windows
+        
+        # At least 30% of windows should have all tones for a valid detection
+        # Scale so 30% = 0.15 (threshold), 80% = 1.0
+        if raw_score < 0.2:
+            score = raw_score * 0.5  # Below threshold
+        else:
+            score = min(1.0, 0.15 + (raw_score - 0.2) * 1.4)
+        
+        logger.debug(f"Simple multitone: {windows_with_all_tones}/{total_windows} windows "
+                    f"({raw_score:.1%}), score={score:.3f}")
+        
+        return score
     
     def _detect_chirp(self, audio_signal: np.ndarray) -> Tuple[float, Optional[float]]:
         """

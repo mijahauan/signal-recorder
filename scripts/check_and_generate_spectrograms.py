@@ -91,6 +91,15 @@ def is_day_complete(date_str: str) -> bool:
         return False
 
 
+def is_current_day(date_str: str) -> bool:
+    """Check if a date is the current UTC day"""
+    try:
+        today = datetime.now(timezone.utc).strftime('%Y%m%d')
+        return date_str == today
+    except:
+        return False
+
+
 def generate_spectrograms(date_str: str, data_root: Path) -> bool:
     """Generate spectrograms for a specific date from 10 Hz decimated NPZ files"""
     script_dir = Path(__file__).parent
@@ -165,6 +174,13 @@ def main():
     # Find missing spectrograms
     missing_dates = archive_dates - spectrogram_dates
     
+    # Always include current day for refresh (spectrograms need updating as data arrives)
+    today = datetime.now(timezone.utc).strftime('%Y%m%d')
+    if today in archive_dates:
+        if today in spectrogram_dates:
+            logger.info(f"🔄 Adding current day {today} for spectrogram refresh")
+        missing_dates.add(today)
+    
     if not missing_dates:
         logger.info("✅ All dates have spectrograms!")
         return 0
@@ -181,8 +197,8 @@ def main():
             date_dt = datetime(year, month, day, tzinfo=timezone.utc)
             
             if date_dt >= cutoff:
-                # Check if day is complete
-                if args.skip_incomplete and not is_day_complete(date_str):
+                # Check if day is complete (but always process current day for refresh)
+                if args.skip_incomplete and not is_day_complete(date_str) and not is_current_day(date_str):
                     logger.info(f"⏭️  Skipping {date_str} (day not complete)")
                     continue
                 

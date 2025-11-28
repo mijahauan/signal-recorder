@@ -1,0 +1,2155 @@
+==========================================
+GRAPE Auto-Spectrogram Generator
+==========================================
+Data root: /tmp/grape-test
+Interval: 300 seconds (5 minutes)
+Started at: Thu Nov 27 13:11:09 CST 2025
+
+[19:11:09] Generating spectrograms for 20251127...
+2025-11-27 13:11:10,355 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 13:11:12,547 - INFO - Processing: WWV 5 MHz
+2025-11-27 13:11:14,444 - INFO - Processing: WWV 10 MHz
+2025-11-27 13:11:16,466 - INFO - Processing: WWV 15 MHz
+2025-11-27 13:11:18,435 - INFO - Processing: WWV 20 MHz
+2025-11-27 13:11:20,370 - INFO - Processing: WWV 25 MHz
+2025-11-27 13:11:22,361 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 13:11:24,326 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 13:11:26,128 - INFO - Processing: CHU 14.67 MHz
+[19:11:28] Done. Next run in 5 minutes.
+
+[19:16:28] Generating spectrograms for 20251127...
+2025-11-27 13:16:29,161 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 13:16:31,256 - INFO - Processing: WWV 5 MHz
+2025-11-27 13:16:33,083 - INFO - Processing: WWV 10 MHz
+2025-11-27 13:16:35,100 - INFO - Processing: WWV 15 MHz
+2025-11-27 13:16:37,040 - INFO - Processing: WWV 20 MHz
+2025-11-27 13:16:38,866 - INFO - Processing: WWV 25 MHz
+2025-11-27 13:16:40,793 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 13:16:42,681 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 13:16:44,569 - INFO - Processing: CHU 14.67 MHz
+[19:16:46] Done. Next run in 5 minutes.
+
+[19:21:46] Generating spectrograms for 20251127...
+2025-11-27 13:21:47,639 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 13:21:49,539 - INFO - Processing: WWV 5 MHz
+2025-11-27 13:21:51,372 - INFO - Processing: WWV 10 MHz
+2025-11-27 13:21:53,276 - INFO - Processing: WWV 15 MHz
+2025-11-27 13:21:55,244 - INFO - Processing: WWV 20 MHz
+2025-11-27 13:21:57,138 - INFO - Processing: WWV 25 MHz
+2025-11-27 13:21:59,104 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 13:22:01,160 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 13:22:04,065 - INFO - Processing: CHU 14.67 MHz
+[19:22:07] Done. Next run in 5 minutes.
+
+[19:27:07] Generating spectrograms for 20251127...
+2025-11-27 13:27:08,657 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 13:27:11,824 - INFO - Processing: WWV 5 MHz
+2025-11-27 13:27:13,993 - INFO - Processing: WWV 10 MHz
+2025-11-27 13:27:16,119 - INFO - Processing: WWV 15 MHz
+2025-11-27 13:27:18,004 - INFO - Processing: WWV 20 MHz
+2025-11-27 13:27:19,944 - INFO - Processing: WWV 25 MHz
+2025-11-27 13:27:21,953 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 13:27:23,865 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 13:27:25,779 - INFO - Processing: CHU 14.67 MHz
+[19:27:27] Done. Next run in 5 minutes.
+
+[19:32:27] Generating spectrograms for 20251127...
+2025-11-27 13:32:29,026 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 13:32:31,485 - INFO - Processing: WWV 5 MHz
+2025-11-27 13:32:33,723 - INFO - Processing: WWV 10 MHz
+2025-11-27 13:32:35,863 - INFO - Processing: WWV 15 MHz
+2025-11-27 13:32:38,113 - INFO - Processing: WWV 20 MHz
+2025-11-27 13:32:40,322 - INFO - Processing: WWV 25 MHz
+2025-11-27 13:32:42,365 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 13:32:44,226 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 13:32:46,161 - INFO - Processing: CHU 14.67 MHz
+[19:32:48] Done. Next run in 5 minutes.
+
+[19:37:48] Generating spectrograms for 20251127...
+2025-11-27 13:37:49,332 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 13:37:51,309 - INFO - Processing: WWV 5 MHz
+2025-11-27 13:37:53,282 - INFO - Processing: WWV 10 MHz
+2025-11-27 13:37:55,322 - INFO - Processing: WWV 15 MHz
+2025-11-27 13:37:57,203 - INFO - Processing: WWV 20 MHz
+2025-11-27 13:37:59,156 - INFO - Processing: WWV 25 MHz
+2025-11-27 13:38:01,126 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 13:38:03,298 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 13:38:05,661 - INFO - Processing: CHU 14.67 MHz
+[19:38:08] Done. Next run in 5 minutes.
+
+[19:43:08] Generating spectrograms for 20251127...
+2025-11-27 13:43:10,297 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 13:43:12,699 - INFO - Processing: WWV 5 MHz
+2025-11-27 13:43:15,142 - INFO - Processing: WWV 10 MHz
+2025-11-27 13:43:17,168 - INFO - Processing: WWV 15 MHz
+2025-11-27 13:43:19,175 - INFO - Processing: WWV 20 MHz
+2025-11-27 13:43:21,246 - INFO - Processing: WWV 25 MHz
+2025-11-27 13:43:23,178 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 13:43:25,210 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 13:43:27,389 - INFO - Processing: CHU 14.67 MHz
+[19:43:29] Done. Next run in 5 minutes.
+
+[19:48:29] Generating spectrograms for 20251127...
+2025-11-27 13:48:30,615 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 13:48:33,046 - INFO - Processing: WWV 5 MHz
+2025-11-27 13:48:35,351 - INFO - Processing: WWV 10 MHz
+2025-11-27 13:48:37,632 - INFO - Processing: WWV 15 MHz
+2025-11-27 13:48:39,788 - INFO - Processing: WWV 20 MHz
+2025-11-27 13:48:41,924 - INFO - Processing: WWV 25 MHz
+2025-11-27 13:48:44,290 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 13:48:46,486 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 13:48:48,727 - INFO - Processing: CHU 14.67 MHz
+[19:48:51] Done. Next run in 5 minutes.
+
+[19:53:51] Generating spectrograms for 20251127...
+2025-11-27 13:53:52,502 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 13:53:55,333 - INFO - Processing: WWV 5 MHz
+2025-11-27 13:53:58,080 - INFO - Processing: WWV 10 MHz
+2025-11-27 13:54:00,941 - INFO - Processing: WWV 15 MHz
+2025-11-27 13:54:03,707 - INFO - Processing: WWV 20 MHz
+2025-11-27 13:54:05,998 - INFO - Processing: WWV 25 MHz
+2025-11-27 13:54:09,556 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 13:54:13,162 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 13:54:16,761 - INFO - Processing: CHU 14.67 MHz
+[19:54:20] Done. Next run in 5 minutes.
+
+[19:59:20] Generating spectrograms for 20251127...
+2025-11-27 13:59:21,529 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 13:59:24,206 - INFO - Processing: WWV 5 MHz
+2025-11-27 13:59:26,686 - INFO - Processing: WWV 10 MHz
+2025-11-27 13:59:29,212 - INFO - Processing: WWV 15 MHz
+2025-11-27 13:59:31,907 - INFO - Processing: WWV 20 MHz
+2025-11-27 13:59:34,789 - INFO - Processing: WWV 25 MHz
+2025-11-27 13:59:37,357 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 13:59:39,796 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 13:59:42,313 - INFO - Processing: CHU 14.67 MHz
+[19:59:44] Done. Next run in 5 minutes.
+
+[20:04:44] Generating spectrograms for 20251127...
+2025-11-27 14:04:46,387 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:04:49,049 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:04:51,864 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:04:54,355 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:04:57,313 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:05:00,033 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:05:03,502 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:05:07,119 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:05:10,113 - INFO - Processing: CHU 14.67 MHz
+[20:05:13] Done. Next run in 5 minutes.
+
+[20:10:13] Generating spectrograms for 20251127...
+2025-11-27 14:10:14,724 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:10:17,678 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:10:20,680 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:10:23,511 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:10:26,410 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:10:29,404 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:10:32,256 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:10:34,975 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:10:37,619 - INFO - Processing: CHU 14.67 MHz
+[20:10:40] Done. Next run in 5 minutes.
+
+[20:15:40] Generating spectrograms for 20251127...
+2025-11-27 14:15:41,838 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:15:44,435 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:15:47,720 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:15:50,094 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:15:52,864 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:15:55,915 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:15:58,537 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:16:01,183 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:16:03,666 - INFO - Processing: CHU 14.67 MHz
+[20:16:06] Done. Next run in 5 minutes.
+
+[20:21:06] Generating spectrograms for 20251127...
+2025-11-27 14:21:08,020 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:21:10,681 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:21:13,553 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:21:16,758 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:21:20,243 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:21:23,218 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:21:27,137 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:21:29,835 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:21:32,895 - INFO - Processing: CHU 14.67 MHz
+[20:21:35] Done. Next run in 5 minutes.
+
+[20:26:35] Generating spectrograms for 20251127...
+2025-11-27 14:26:37,483 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:26:40,029 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:26:42,791 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:26:45,209 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:26:48,314 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:26:50,839 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:26:53,245 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:26:55,764 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:26:58,234 - INFO - Processing: CHU 14.67 MHz
+[20:27:01] Done. Next run in 5 minutes.
+
+[20:32:01] Generating spectrograms for 20251127...
+2025-11-27 14:32:02,244 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:32:04,334 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:32:07,010 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:32:11,609 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:32:13,935 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:32:16,257 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:32:18,549 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:32:20,709 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:32:22,608 - INFO - Processing: CHU 14.67 MHz
+[20:32:24] Done. Next run in 5 minutes.
+
+[20:37:24] Generating spectrograms for 20251127...
+2025-11-27 14:37:25,777 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:37:27,904 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:37:29,968 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:37:32,098 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:37:34,161 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:37:36,522 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:37:38,591 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:37:40,686 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:37:42,775 - INFO - Processing: CHU 14.67 MHz
+[20:37:45] Done. Next run in 5 minutes.
+
+[20:42:45] Generating spectrograms for 20251127...
+2025-11-27 14:42:46,700 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:42:49,954 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:42:52,991 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:42:56,388 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:42:59,349 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:43:02,385 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:43:05,873 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:43:09,027 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:43:13,483 - INFO - Processing: CHU 14.67 MHz
+[20:43:19] Done. Next run in 5 minutes.
+
+[20:48:19] Generating spectrograms for 20251127...
+2025-11-27 14:48:20,888 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:48:23,638 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:48:26,457 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:48:29,466 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:48:32,321 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:48:34,677 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:48:37,034 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:48:39,670 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:48:42,082 - INFO - Processing: CHU 14.67 MHz
+[20:48:45] Done. Next run in 5 minutes.
+
+[20:53:45] Generating spectrograms for 20251127...
+2025-11-27 14:53:46,481 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:53:49,055 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:53:51,332 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:53:54,393 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:53:57,485 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:54:00,046 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:54:02,411 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:54:05,156 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:54:07,510 - INFO - Processing: CHU 14.67 MHz
+[20:54:11] Done. Next run in 5 minutes.
+
+[20:59:11] Generating spectrograms for 20251127...
+2025-11-27 14:59:13,010 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 14:59:17,307 - INFO - Processing: WWV 5 MHz
+2025-11-27 14:59:21,376 - INFO - Processing: WWV 10 MHz
+2025-11-27 14:59:24,083 - INFO - Processing: WWV 15 MHz
+2025-11-27 14:59:26,671 - INFO - Processing: WWV 20 MHz
+2025-11-27 14:59:29,052 - INFO - Processing: WWV 25 MHz
+2025-11-27 14:59:32,244 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 14:59:34,783 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 14:59:37,682 - INFO - Processing: CHU 14.67 MHz
+[20:59:40] Done. Next run in 5 minutes.
+
+[21:04:40] Generating spectrograms for 20251127...
+2025-11-27 15:04:42,272 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:04:45,115 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:04:47,640 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:04:50,449 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:04:53,282 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:04:56,005 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:04:58,793 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:05:01,424 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:05:04,122 - INFO - Processing: CHU 14.67 MHz
+[21:05:07] Done. Next run in 5 minutes.
+
+[21:10:07] Generating spectrograms for 20251127...
+2025-11-27 15:10:09,093 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:10:12,893 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:10:15,829 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:10:18,425 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:10:20,829 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:10:23,698 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:10:26,198 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:10:28,900 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:10:31,566 - INFO - Processing: CHU 14.67 MHz
+[21:10:34] Done. Next run in 5 minutes.
+
+[21:15:34] Generating spectrograms for 20251127...
+2025-11-27 15:15:35,924 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:15:38,727 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:15:41,250 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:15:44,051 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:15:46,640 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:15:49,539 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:15:52,439 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:15:54,882 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:15:57,730 - INFO - Processing: CHU 14.67 MHz
+[21:16:00] Done. Next run in 5 minutes.
+
+[21:21:00] Generating spectrograms for 20251127...
+2025-11-27 15:21:01,863 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:21:04,870 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:21:08,679 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:21:12,533 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:21:15,223 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:21:18,105 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:21:20,807 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:21:23,708 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:21:26,438 - INFO - Processing: CHU 14.67 MHz
+[21:21:29] Done. Next run in 5 minutes.
+
+[21:26:29] Generating spectrograms for 20251127...
+2025-11-27 15:26:30,695 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:26:32,791 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:26:34,766 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:26:36,831 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:26:38,820 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:26:40,846 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:26:42,807 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:26:44,803 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:26:46,847 - INFO - Processing: CHU 14.67 MHz
+[21:26:49] Done. Next run in 5 minutes.
+
+[21:31:49] Generating spectrograms for 20251127...
+2025-11-27 15:31:50,089 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:31:52,211 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:31:54,314 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:31:56,385 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:31:58,462 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:32:00,520 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:32:02,755 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:32:05,667 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:32:08,449 - INFO - Processing: CHU 14.67 MHz
+[21:32:11] Done. Next run in 5 minutes.
+
+[21:37:11] Generating spectrograms for 20251127...
+2025-11-27 15:37:13,010 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:37:15,969 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:37:18,048 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:37:20,224 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:37:22,558 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:37:25,007 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:37:27,189 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:37:29,305 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:37:31,449 - INFO - Processing: CHU 14.67 MHz
+[21:37:33] Done. Next run in 5 minutes.
+
+[21:42:33] Generating spectrograms for 20251127...
+2025-11-27 15:42:35,335 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:42:38,380 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:42:41,036 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:42:43,853 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:42:46,641 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:42:49,272 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:42:52,221 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:42:55,191 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:42:57,846 - INFO - Processing: CHU 14.67 MHz
+[21:43:01] Done. Next run in 5 minutes.
+
+[21:48:01] Generating spectrograms for 20251127...
+2025-11-27 15:48:02,897 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:48:05,717 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:48:08,802 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:48:12,229 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:48:15,967 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:48:19,826 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:48:24,105 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:48:27,627 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:48:31,133 - INFO - Processing: CHU 14.67 MHz
+[21:48:34] Done. Next run in 5 minutes.
+
+[21:53:34] Generating spectrograms for 20251127...
+2025-11-27 15:53:36,363 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:53:39,761 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:53:42,827 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:53:45,903 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:53:49,205 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:53:52,419 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:53:55,448 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:53:58,711 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:54:02,053 - INFO - Processing: CHU 14.67 MHz
+[21:54:05] Done. Next run in 5 minutes.
+
+[21:59:05] Generating spectrograms for 20251127...
+2025-11-27 15:59:07,324 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 15:59:10,370 - INFO - Processing: WWV 5 MHz
+2025-11-27 15:59:13,497 - INFO - Processing: WWV 10 MHz
+2025-11-27 15:59:15,793 - INFO - Processing: WWV 15 MHz
+2025-11-27 15:59:18,176 - INFO - Processing: WWV 20 MHz
+2025-11-27 15:59:20,503 - INFO - Processing: WWV 25 MHz
+2025-11-27 15:59:22,782 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 15:59:25,164 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 15:59:27,368 - INFO - Processing: CHU 14.67 MHz
+[21:59:29] Done. Next run in 5 minutes.
+
+[22:04:29] Generating spectrograms for 20251127...
+2025-11-27 16:04:31,362 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:04:35,297 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:04:38,770 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:04:42,103 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:04:45,227 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:04:48,382 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:04:51,818 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:04:54,758 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:04:57,806 - INFO - Processing: CHU 14.67 MHz
+[22:05:01] Done. Next run in 5 minutes.
+
+[22:10:01] Generating spectrograms for 20251127...
+2025-11-27 16:10:02,465 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:10:05,360 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:10:08,061 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:10:10,756 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:10:13,249 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:10:15,908 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:10:18,257 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:10:20,813 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:10:23,238 - INFO - Processing: CHU 14.67 MHz
+[22:10:25] Done. Next run in 5 minutes.
+
+[22:15:25] Generating spectrograms for 20251127...
+2025-11-27 16:15:26,740 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:15:29,458 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:15:31,849 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:15:34,337 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:15:36,795 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:15:39,291 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:15:41,601 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:15:44,090 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:15:46,650 - INFO - Processing: CHU 14.67 MHz
+[22:15:49] Done. Next run in 5 minutes.
+
+[22:20:49] Generating spectrograms for 20251127...
+2025-11-27 16:20:50,234 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:20:52,946 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:20:55,500 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:20:58,155 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:21:00,775 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:21:03,238 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:21:05,985 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:21:09,899 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:21:12,753 - INFO - Processing: CHU 14.67 MHz
+[22:21:15] Done. Next run in 5 minutes.
+
+[22:26:15] Generating spectrograms for 20251127...
+2025-11-27 16:26:16,661 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:26:19,290 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:26:21,919 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:26:24,482 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:26:27,010 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:26:29,583 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:26:31,980 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:26:34,495 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:26:36,776 - INFO - Processing: CHU 14.67 MHz
+[22:26:39] Done. Next run in 5 minutes.
+
+[22:31:39] Generating spectrograms for 20251127...
+2025-11-27 16:31:40,468 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:31:42,773 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:31:45,115 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:31:47,303 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:31:49,631 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:31:51,948 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:31:54,057 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:31:56,411 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:31:58,990 - INFO - Processing: CHU 14.67 MHz
+[22:32:01] Done. Next run in 5 minutes.
+
+[22:37:01] Generating spectrograms for 20251127...
+2025-11-27 16:37:02,810 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:37:06,029 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:37:09,274 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:37:12,036 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:37:14,483 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:37:16,862 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:37:19,272 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:37:21,784 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:37:24,217 - INFO - Processing: CHU 14.67 MHz
+[22:37:26] Done. Next run in 5 minutes.
+
+[22:42:26] Generating spectrograms for 20251127...
+2025-11-27 16:42:28,064 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:42:30,723 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:42:33,220 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:42:35,435 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:42:37,838 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:42:40,200 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:42:42,378 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:42:44,939 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:42:47,520 - INFO - Processing: CHU 14.67 MHz
+[22:42:50] Done. Next run in 5 minutes.
+
+[22:47:50] Generating spectrograms for 20251127...
+2025-11-27 16:47:50,914 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:47:53,152 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:47:55,379 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:47:57,679 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:47:59,855 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:48:02,041 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:48:04,233 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:48:06,819 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:48:09,947 - INFO - Processing: CHU 14.67 MHz
+[22:48:13] Done. Next run in 5 minutes.
+
+[22:53:13] Generating spectrograms for 20251127...
+2025-11-27 16:53:14,298 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:53:16,609 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:53:19,085 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:53:21,332 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:53:23,795 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:53:26,182 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:53:28,500 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:53:31,043 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:53:33,740 - INFO - Processing: CHU 14.67 MHz
+[22:53:36] Done. Next run in 5 minutes.
+
+[22:58:36] Generating spectrograms for 20251127...
+2025-11-27 16:58:37,156 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 16:58:39,447 - INFO - Processing: WWV 5 MHz
+2025-11-27 16:58:41,719 - INFO - Processing: WWV 10 MHz
+2025-11-27 16:58:43,949 - INFO - Processing: WWV 15 MHz
+2025-11-27 16:58:46,446 - INFO - Processing: WWV 20 MHz
+2025-11-27 16:58:48,795 - INFO - Processing: WWV 25 MHz
+2025-11-27 16:58:51,095 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 16:58:53,545 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 16:58:55,802 - INFO - Processing: CHU 14.67 MHz
+[22:58:58] Done. Next run in 5 minutes.
+
+[23:03:58] Generating spectrograms for 20251127...
+2025-11-27 17:03:59,175 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:04:01,592 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:04:04,358 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:04:08,164 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:04:11,473 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:04:13,705 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:04:15,919 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:04:18,478 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:04:20,846 - INFO - Processing: CHU 14.67 MHz
+[23:04:23] Done. Next run in 5 minutes.
+
+[23:09:23] Generating spectrograms for 20251127...
+2025-11-27 17:09:24,281 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:09:26,646 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:09:29,162 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:09:31,487 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:09:33,983 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:09:36,378 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:09:38,722 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:09:41,160 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:09:43,431 - INFO - Processing: CHU 14.67 MHz
+[23:09:45] Done. Next run in 5 minutes.
+
+[23:14:45] Generating spectrograms for 20251127...
+2025-11-27 17:14:46,878 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:14:49,215 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:14:51,700 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:14:54,020 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:14:56,457 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:14:58,819 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:15:01,156 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:15:03,681 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:15:06,087 - INFO - Processing: CHU 14.67 MHz
+[23:15:09] Done. Next run in 5 minutes.
+
+[23:20:09] Generating spectrograms for 20251127...
+2025-11-27 17:20:10,575 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:20:13,717 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:20:16,649 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:20:18,856 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:20:21,448 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:20:23,952 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:20:26,220 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:20:28,589 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:20:31,078 - INFO - Processing: CHU 14.67 MHz
+[23:20:33] Done. Next run in 5 minutes.
+
+[23:25:33] Generating spectrograms for 20251127...
+2025-11-27 17:25:34,559 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:25:36,797 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:25:39,380 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:25:41,636 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:25:44,188 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:25:46,766 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:25:49,005 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:25:51,458 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:25:53,921 - INFO - Processing: CHU 14.67 MHz
+[23:25:56] Done. Next run in 5 minutes.
+
+[23:30:56] Generating spectrograms for 20251127...
+2025-11-27 17:30:57,298 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:30:59,627 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:31:01,991 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:31:04,332 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:31:07,780 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:31:10,757 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:31:13,746 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:31:16,162 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:31:18,699 - INFO - Processing: CHU 14.67 MHz
+[23:31:21] Done. Next run in 5 minutes.
+
+[23:36:21] Generating spectrograms for 20251127...
+2025-11-27 17:36:22,310 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:36:24,673 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:36:27,143 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:36:29,480 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:36:31,986 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:36:34,681 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:36:36,955 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:36:39,354 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:36:42,016 - INFO - Processing: CHU 14.67 MHz
+[23:36:44] Done. Next run in 5 minutes.
+
+[23:41:44] Generating spectrograms for 20251127...
+2025-11-27 17:41:46,101 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:41:49,651 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:41:53,740 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:41:57,280 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:42:00,910 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:42:04,475 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:42:08,820 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:42:12,833 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:42:17,049 - INFO - Processing: CHU 14.67 MHz
+[23:42:21] Done. Next run in 5 minutes.
+
+[23:47:21] Generating spectrograms for 20251127...
+2025-11-27 17:47:22,605 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:47:25,286 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:47:27,964 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:47:30,439 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:47:33,498 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:47:36,828 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:47:39,419 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:47:41,941 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:47:44,376 - INFO - Processing: CHU 14.67 MHz
+[23:47:47] Done. Next run in 5 minutes.
+
+[23:52:47] Generating spectrograms for 20251127...
+2025-11-27 17:52:48,450 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:52:51,221 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:52:54,756 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:52:57,928 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:53:01,553 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:53:05,238 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:53:08,684 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:53:12,666 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:53:16,017 - INFO - Processing: CHU 14.67 MHz
+[23:53:19] Done. Next run in 5 minutes.
+
+[23:58:19] Generating spectrograms for 20251127...
+2025-11-27 17:58:20,787 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 17:58:23,344 - INFO - Processing: WWV 5 MHz
+2025-11-27 17:58:26,011 - INFO - Processing: WWV 10 MHz
+2025-11-27 17:58:28,613 - INFO - Processing: WWV 15 MHz
+2025-11-27 17:58:31,282 - INFO - Processing: WWV 20 MHz
+2025-11-27 17:58:33,764 - INFO - Processing: WWV 25 MHz
+2025-11-27 17:58:36,161 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 17:58:38,720 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 17:58:41,213 - INFO - Processing: CHU 14.67 MHz
+[23:58:43] Done. Next run in 5 minutes.
+
+[00:03:43] Generating spectrograms for 20251128...
+2025-11-27 18:03:44,813 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:03:45,237 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:03:45,664 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:03:46,010 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:03:46,010 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:03:46,324 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:03:46,324 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:03:46,661 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:03:46,982 - INFO - Processing: CHU 14.67 MHz
+[00:03:47] Done. Next run in 5 minutes.
+
+[00:08:47] Generating spectrograms for 20251128...
+2025-11-27 18:08:48,614 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:08:49,059 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:08:49,489 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:08:49,881 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:08:50,238 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:08:50,697 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:08:51,120 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:08:51,602 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:08:52,003 - INFO - Processing: CHU 14.67 MHz
+[00:08:52] Done. Next run in 5 minutes.
+
+[00:13:52] Generating spectrograms for 20251128...
+2025-11-27 18:13:53,614 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:13:54,046 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:13:54,428 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:13:54,777 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:13:55,129 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:13:55,500 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:13:55,886 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:13:56,327 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:13:56,719 - INFO - Processing: CHU 14.67 MHz
+[00:13:57] Done. Next run in 5 minutes.
+
+[00:18:57] Generating spectrograms for 20251128...
+2025-11-27 18:18:58,295 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:18:58,748 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:18:59,102 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:18:59,469 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:18:59,894 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:19:00,270 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:19:00,687 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:19:01,193 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:19:01,571 - INFO - Processing: CHU 14.67 MHz
+[00:19:02] Done. Next run in 5 minutes.
+
+[00:24:02] Generating spectrograms for 20251128...
+2025-11-27 18:24:03,061 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:24:03,518 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:24:03,927 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:24:04,350 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:24:04,744 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:24:05,146 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:24:05,539 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:24:06,015 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:24:06,417 - INFO - Processing: CHU 14.67 MHz
+[00:24:07] Done. Next run in 5 minutes.
+
+[00:29:07] Generating spectrograms for 20251128...
+2025-11-27 18:29:07,994 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:29:08,471 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:29:08,901 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:29:09,316 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:29:09,719 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:29:10,122 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:29:10,488 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:29:10,949 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:29:11,343 - INFO - Processing: CHU 14.67 MHz
+[00:29:12] Done. Next run in 5 minutes.
+
+[00:34:12] Generating spectrograms for 20251128...
+2025-11-27 18:34:12,967 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:34:13,461 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:34:13,881 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:34:14,268 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:34:14,660 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:34:15,069 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:34:15,497 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:34:15,985 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:34:16,391 - INFO - Processing: CHU 14.67 MHz
+[00:34:17] Done. Next run in 5 minutes.
+
+[00:39:17] Generating spectrograms for 20251128...
+2025-11-27 18:39:18,020 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:39:18,500 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:39:18,904 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:39:19,320 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:39:19,715 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:39:20,134 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:39:20,550 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:39:21,031 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:39:21,439 - INFO - Processing: CHU 14.67 MHz
+[00:39:22] Done. Next run in 5 minutes.
+
+[00:44:22] Generating spectrograms for 20251128...
+2025-11-27 18:44:22,988 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:44:23,478 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:44:23,895 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:44:24,289 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:44:24,704 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:44:25,096 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:44:25,499 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:44:26,012 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:44:26,423 - INFO - Processing: CHU 14.67 MHz
+[00:44:27] Done. Next run in 5 minutes.
+
+[00:49:27] Generating spectrograms for 20251128...
+2025-11-27 18:49:28,073 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:49:28,575 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:49:28,991 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:49:29,456 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:49:29,888 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:49:30,343 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:49:30,759 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:49:31,386 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:49:32,021 - INFO - Processing: CHU 14.67 MHz
+[00:49:33] Done. Next run in 5 minutes.
+
+[00:54:33] Generating spectrograms for 20251128...
+2025-11-27 18:54:34,932 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:54:35,677 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:54:36,427 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:54:37,079 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:54:37,754 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:54:38,274 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:54:38,755 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:54:39,418 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:54:39,937 - INFO - Processing: CHU 14.67 MHz
+[00:54:40] Done. Next run in 5 minutes.
+
+[00:59:40] Generating spectrograms for 20251128...
+2025-11-27 18:59:42,151 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 18:59:42,756 - INFO - Processing: WWV 5 MHz
+2025-11-27 18:59:43,200 - INFO - Processing: WWV 10 MHz
+2025-11-27 18:59:43,636 - INFO - Processing: WWV 15 MHz
+2025-11-27 18:59:44,065 - INFO - Processing: WWV 20 MHz
+2025-11-27 18:59:44,483 - INFO - Processing: WWV 25 MHz
+2025-11-27 18:59:45,000 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 18:59:45,412 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 18:59:45,804 - INFO - Processing: CHU 14.67 MHz
+[00:59:46] Done. Next run in 5 minutes.
+
+[01:04:46] Generating spectrograms for 20251128...
+2025-11-27 19:04:47,435 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:04:47,956 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:04:48,419 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:04:48,890 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:04:49,371 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:04:49,822 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:04:50,361 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:04:50,790 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:04:51,230 - INFO - Processing: CHU 14.67 MHz
+[01:04:51] Done. Next run in 5 minutes.
+
+[01:09:51] Generating spectrograms for 20251128...
+2025-11-27 19:09:52,921 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:09:53,476 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:09:53,950 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:09:54,442 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:09:54,915 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:09:55,417 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:09:55,962 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:09:56,422 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:09:56,870 - INFO - Processing: CHU 14.67 MHz
+[01:09:57] Done. Next run in 5 minutes.
+
+[01:14:57] Generating spectrograms for 20251128...
+2025-11-27 19:14:58,588 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:14:59,139 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:14:59,596 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:15:00,059 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:15:00,515 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:15:00,959 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:15:01,492 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:15:01,925 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:15:02,375 - INFO - Processing: CHU 14.67 MHz
+[01:15:03] Done. Next run in 5 minutes.
+
+[01:20:03] Generating spectrograms for 20251128...
+2025-11-27 19:20:03,998 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:20:04,545 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:20:05,011 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:20:05,480 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:20:05,927 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:20:06,380 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:20:06,939 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:20:07,371 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:20:07,841 - INFO - Processing: CHU 14.67 MHz
+[01:20:08] Done. Next run in 5 minutes.
+
+[01:25:08] Generating spectrograms for 20251128...
+2025-11-27 19:25:09,456 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:25:10,011 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:25:10,504 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:25:10,988 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:25:11,526 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:25:11,999 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:25:12,563 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:25:13,009 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:25:13,462 - INFO - Processing: CHU 14.67 MHz
+[01:25:14] Done. Next run in 5 minutes.
+
+[01:30:14] Generating spectrograms for 20251128...
+2025-11-27 19:30:15,157 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:30:15,729 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:30:16,238 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:30:16,740 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:30:17,217 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:30:17,691 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:30:18,269 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:30:18,742 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:30:19,224 - INFO - Processing: CHU 14.67 MHz
+[01:30:19] Done. Next run in 5 minutes.
+
+[01:35:20] Generating spectrograms for 20251128...
+2025-11-27 19:35:20,945 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:35:21,524 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:35:22,018 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:35:22,510 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:35:23,022 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:35:23,497 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:35:24,085 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:35:24,578 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:35:25,068 - INFO - Processing: CHU 14.67 MHz
+[01:35:25] Done. Next run in 5 minutes.
+
+[01:40:25] Generating spectrograms for 20251128...
+2025-11-27 19:40:26,676 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:40:27,268 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:40:27,780 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:40:28,318 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:40:28,823 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:40:29,325 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:40:29,930 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:40:30,426 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:40:30,949 - INFO - Processing: CHU 14.67 MHz
+[01:40:32] Done. Next run in 5 minutes.
+
+[01:45:32] Generating spectrograms for 20251128...
+2025-11-27 19:45:33,530 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:45:34,290 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:45:34,967 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:45:35,665 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:45:36,337 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:45:37,093 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:45:37,770 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:45:38,321 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:45:38,902 - INFO - Processing: CHU 14.67 MHz
+[01:45:39] Done. Next run in 5 minutes.
+
+[01:50:39] Generating spectrograms for 20251128...
+2025-11-27 19:50:40,848 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:50:41,450 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:50:41,963 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:50:42,501 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:50:43,038 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:50:43,561 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:50:44,138 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:50:44,662 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:50:45,191 - INFO - Processing: CHU 14.67 MHz
+[01:50:45] Done. Next run in 5 minutes.
+
+[01:55:45] Generating spectrograms for 20251128...
+2025-11-27 19:55:46,904 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 19:55:47,520 - INFO - Processing: WWV 5 MHz
+2025-11-27 19:55:48,047 - INFO - Processing: WWV 10 MHz
+2025-11-27 19:55:48,616 - INFO - Processing: WWV 15 MHz
+2025-11-27 19:55:49,151 - INFO - Processing: WWV 20 MHz
+2025-11-27 19:55:49,668 - INFO - Processing: WWV 25 MHz
+2025-11-27 19:55:50,305 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 19:55:50,860 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 19:55:51,394 - INFO - Processing: CHU 14.67 MHz
+[01:55:52] Done. Next run in 5 minutes.
+
+[02:00:52] Generating spectrograms for 20251128...
+2025-11-27 20:00:53,050 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:00:53,649 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:00:54,139 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:00:54,682 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:00:55,147 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:00:55,643 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:00:56,222 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:00:56,686 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:00:57,159 - INFO - Processing: CHU 14.67 MHz
+[02:00:57] Done. Next run in 5 minutes.
+
+[02:05:57] Generating spectrograms for 20251128...
+2025-11-27 20:05:58,772 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:05:59,381 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:05:59,867 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:06:00,361 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:06:00,877 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:06:01,424 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:06:02,026 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:06:02,563 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:06:03,102 - INFO - Processing: CHU 14.67 MHz
+[02:06:03] Done. Next run in 5 minutes.
+
+[02:11:03] Generating spectrograms for 20251128...
+2025-11-27 20:11:04,730 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:11:05,364 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:11:05,903 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:11:06,498 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:11:07,045 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:11:07,547 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:11:08,115 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:11:08,628 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:11:09,138 - INFO - Processing: CHU 14.67 MHz
+[02:11:09] Done. Next run in 5 minutes.
+
+[02:16:09] Generating spectrograms for 20251128...
+2025-11-27 20:16:10,826 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:16:11,430 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:16:11,948 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:16:12,483 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:16:13,060 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:16:13,600 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:16:14,280 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:16:14,843 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:16:15,401 - INFO - Processing: CHU 14.67 MHz
+[02:16:16] Done. Next run in 5 minutes.
+
+[02:21:16] Generating spectrograms for 20251128...
+2025-11-27 20:21:17,239 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:21:17,880 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:21:18,444 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:21:19,006 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:21:19,554 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:21:20,097 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:21:20,714 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:21:21,257 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:21:21,830 - INFO - Processing: CHU 14.67 MHz
+[02:21:22] Done. Next run in 5 minutes.
+
+[02:26:22] Generating spectrograms for 20251128...
+2025-11-27 20:26:23,683 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:26:24,310 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:26:24,873 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:26:25,480 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:26:26,046 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:26:26,661 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:26:27,291 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:26:27,851 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:26:28,404 - INFO - Processing: CHU 14.67 MHz
+[02:26:29] Done. Next run in 5 minutes.
+
+[02:31:29] Generating spectrograms for 20251128...
+2025-11-27 20:31:30,414 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:31:31,154 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:31:31,817 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:31:32,434 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:31:32,992 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:31:33,563 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:31:34,375 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:31:35,268 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:31:36,343 - INFO - Processing: CHU 14.67 MHz
+[02:31:37] Done. Next run in 5 minutes.
+
+[02:36:37] Generating spectrograms for 20251128...
+2025-11-27 20:36:38,864 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:36:39,630 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:36:40,352 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:36:41,154 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:36:41,821 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:36:42,445 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:36:43,122 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:36:43,679 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:36:44,271 - INFO - Processing: CHU 14.67 MHz
+[02:36:45] Done. Next run in 5 minutes.
+
+[02:41:45] Generating spectrograms for 20251128...
+2025-11-27 20:41:46,185 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:41:46,847 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:41:47,433 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:41:48,004 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:41:48,569 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:41:49,175 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:41:49,805 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:41:50,352 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:41:50,932 - INFO - Processing: CHU 14.67 MHz
+[02:41:51] Done. Next run in 5 minutes.
+
+[02:46:51] Generating spectrograms for 20251128...
+2025-11-27 20:46:54,384 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:46:55,713 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:46:57,249 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:46:58,614 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:47:00,208 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:47:01,778 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:47:04,316 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:47:06,220 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:47:08,590 - INFO - Processing: CHU 14.67 MHz
+[02:47:11] Done. Next run in 5 minutes.
+
+[02:52:11] Generating spectrograms for 20251128...
+2025-11-27 20:52:12,681 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:52:13,383 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:52:13,991 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:52:14,610 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:52:15,237 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:52:15,814 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:52:16,491 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:52:17,062 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:52:17,667 - INFO - Processing: CHU 14.67 MHz
+[02:52:18] Done. Next run in 5 minutes.
+
+[02:57:18] Generating spectrograms for 20251128...
+2025-11-27 20:57:19,521 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 20:57:20,239 - INFO - Processing: WWV 5 MHz
+2025-11-27 20:57:20,865 - INFO - Processing: WWV 10 MHz
+2025-11-27 20:57:21,463 - INFO - Processing: WWV 15 MHz
+2025-11-27 20:57:22,106 - INFO - Processing: WWV 20 MHz
+2025-11-27 20:57:22,762 - INFO - Processing: WWV 25 MHz
+2025-11-27 20:57:23,465 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 20:57:24,117 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 20:57:24,733 - INFO - Processing: CHU 14.67 MHz
+[02:57:25] Done. Next run in 5 minutes.
+
+[03:02:25] Generating spectrograms for 20251128...
+2025-11-27 21:02:26,535 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:02:27,180 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:02:27,770 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:02:28,372 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:02:28,979 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:02:29,637 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:02:30,362 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:02:30,996 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:02:31,678 - INFO - Processing: CHU 14.67 MHz
+[03:02:32] Done. Next run in 5 minutes.
+
+[03:07:32] Generating spectrograms for 20251128...
+2025-11-27 21:07:33,865 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:07:34,701 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:07:35,493 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:07:36,313 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:07:37,235 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:07:38,399 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:07:39,572 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:07:40,676 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:07:41,510 - INFO - Processing: CHU 14.67 MHz
+[03:07:42] Done. Next run in 5 minutes.
+
+[03:12:42] Generating spectrograms for 20251128...
+2025-11-27 21:12:43,689 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:12:44,425 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:12:45,080 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:12:45,694 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:12:46,335 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:12:46,967 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:12:47,669 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:12:48,302 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:12:48,913 - INFO - Processing: CHU 14.67 MHz
+[03:12:49] Done. Next run in 5 minutes.
+
+[03:17:49] Generating spectrograms for 20251128...
+2025-11-27 21:17:50,798 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:17:51,515 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:17:52,191 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:17:52,860 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:17:53,530 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:17:54,272 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:17:54,932 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:17:55,554 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:17:56,171 - INFO - Processing: CHU 14.67 MHz
+[03:17:57] Done. Next run in 5 minutes.
+
+[03:22:57] Generating spectrograms for 20251128...
+2025-11-27 21:22:58,087 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:22:58,773 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:22:59,372 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:23:00,000 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:23:00,605 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:23:01,292 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:23:01,964 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:23:02,572 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:23:03,137 - INFO - Processing: CHU 14.67 MHz
+[03:23:04] Done. Next run in 5 minutes.
+
+[03:28:04] Generating spectrograms for 20251128...
+2025-11-27 21:28:04,975 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:28:05,668 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:28:06,318 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:28:06,959 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:28:07,603 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:28:08,342 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:28:08,972 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:28:09,602 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:28:10,228 - INFO - Processing: CHU 14.67 MHz
+[03:28:11] Done. Next run in 5 minutes.
+
+[03:33:11] Generating spectrograms for 20251128...
+2025-11-27 21:33:12,078 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:33:12,792 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:33:13,438 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:33:14,094 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:33:14,735 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:33:15,467 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:33:16,123 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:33:16,790 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:33:17,396 - INFO - Processing: CHU 14.67 MHz
+[03:33:18] Done. Next run in 5 minutes.
+
+[03:38:18] Generating spectrograms for 20251128...
+2025-11-27 21:38:19,246 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:38:20,021 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:38:20,675 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:38:21,362 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:38:22,027 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:38:22,762 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:38:23,411 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:38:24,032 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:38:24,668 - INFO - Processing: CHU 14.67 MHz
+[03:38:25] Done. Next run in 5 minutes.
+
+[03:43:25] Generating spectrograms for 20251128...
+2025-11-27 21:43:26,541 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:43:27,325 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:43:28,000 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:43:28,660 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:43:29,343 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:43:30,101 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:43:30,788 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:43:31,439 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:43:32,083 - INFO - Processing: CHU 14.67 MHz
+[03:43:33] Done. Next run in 5 minutes.
+
+[03:48:33] Generating spectrograms for 20251128...
+2025-11-27 21:48:34,437 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:48:35,423 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:48:36,237 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:48:37,044 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:48:37,819 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:48:38,886 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:48:39,728 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:48:40,653 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:48:41,469 - INFO - Processing: CHU 14.67 MHz
+[03:48:42] Done. Next run in 5 minutes.
+
+[03:53:42] Generating spectrograms for 20251128...
+2025-11-27 21:53:43,590 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:53:44,351 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:53:45,040 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:53:45,761 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:53:46,423 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:53:47,155 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:53:47,832 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:53:48,506 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:53:49,146 - INFO - Processing: CHU 14.67 MHz
+[03:53:50] Done. Next run in 5 minutes.
+
+[03:58:50] Generating spectrograms for 20251128...
+2025-11-27 21:58:51,372 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 21:58:52,288 - INFO - Processing: WWV 5 MHz
+2025-11-27 21:58:52,953 - INFO - Processing: WWV 10 MHz
+2025-11-27 21:58:53,694 - INFO - Processing: WWV 15 MHz
+2025-11-27 21:58:54,646 - INFO - Processing: WWV 20 MHz
+2025-11-27 21:58:55,392 - INFO - Processing: WWV 25 MHz
+2025-11-27 21:58:56,086 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 21:58:56,757 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 21:58:57,797 - INFO - Processing: CHU 14.67 MHz
+[03:58:58] Done. Next run in 5 minutes.
+
+[04:03:58] Generating spectrograms for 20251128...
+2025-11-27 22:03:59,711 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:04:00,477 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:04:01,173 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:04:01,887 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:04:02,594 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:04:03,335 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:04:04,019 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:04:04,697 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:04:05,385 - INFO - Processing: CHU 14.67 MHz
+[04:04:06] Done. Next run in 5 minutes.
+
+[04:09:06] Generating spectrograms for 20251128...
+2025-11-27 22:09:07,217 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:09:07,984 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:09:08,678 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:09:09,372 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:09:10,088 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:09:10,845 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:09:11,550 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:09:12,278 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:09:12,964 - INFO - Processing: CHU 14.67 MHz
+[04:09:13] Done. Next run in 5 minutes.
+
+[04:14:13] Generating spectrograms for 20251128...
+2025-11-27 22:14:14,865 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:14:15,666 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:14:16,369 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:14:17,099 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:14:17,811 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:14:18,588 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:14:19,288 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:14:19,991 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:14:20,691 - INFO - Processing: CHU 14.67 MHz
+[04:14:21] Done. Next run in 5 minutes.
+
+[04:19:21] Generating spectrograms for 20251128...
+2025-11-27 22:19:22,566 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:19:23,348 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:19:24,054 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:19:24,765 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:19:25,488 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:19:26,234 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:19:26,973 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:19:27,690 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:19:28,403 - INFO - Processing: CHU 14.67 MHz
+[04:19:29] Done. Next run in 5 minutes.
+
+[04:24:29] Generating spectrograms for 20251128...
+2025-11-27 22:24:30,454 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:24:31,403 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:24:32,288 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:24:33,122 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:24:33,978 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:24:34,855 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:24:35,805 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:24:36,905 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:24:37,966 - INFO - Processing: CHU 14.67 MHz
+[04:24:39] Done. Next run in 5 minutes.
+
+[04:29:39] Generating spectrograms for 20251128...
+2025-11-27 22:29:40,819 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:29:41,714 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:29:42,453 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:29:43,170 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:29:43,940 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:29:44,738 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:29:45,473 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:29:46,182 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:29:46,896 - INFO - Processing: CHU 14.67 MHz
+[04:29:47] Done. Next run in 5 minutes.
+
+[04:34:47] Generating spectrograms for 20251128...
+2025-11-27 22:34:48,855 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:34:49,669 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:34:50,397 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:34:51,124 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:34:51,857 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:34:52,665 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:34:53,348 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:34:54,032 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:34:54,759 - INFO - Processing: CHU 14.67 MHz
+[04:34:55] Done. Next run in 5 minutes.
+
+[04:39:55] Generating spectrograms for 20251128...
+2025-11-27 22:39:56,652 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:39:57,490 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:39:58,236 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:39:58,938 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:39:59,679 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:40:00,512 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:40:01,256 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:40:01,981 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:40:02,729 - INFO - Processing: CHU 14.67 MHz
+[04:40:03] Done. Next run in 5 minutes.
+
+[04:45:03] Generating spectrograms for 20251128...
+2025-11-27 22:45:04,707 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:45:05,533 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:45:06,258 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:45:07,032 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:45:07,807 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:45:08,607 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:45:09,350 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:45:10,113 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:45:10,892 - INFO - Processing: CHU 14.67 MHz
+[04:45:11] Done. Next run in 5 minutes.
+
+[04:50:11] Generating spectrograms for 20251128...
+2025-11-27 22:50:12,820 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:50:13,682 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:50:14,456 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:50:15,252 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:50:15,999 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:50:16,868 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:50:17,644 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:50:18,402 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:50:19,179 - INFO - Processing: CHU 14.67 MHz
+[04:50:20] Done. Next run in 5 minutes.
+
+[04:55:20] Generating spectrograms for 20251128...
+2025-11-27 22:55:21,157 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 22:55:22,033 - INFO - Processing: WWV 5 MHz
+2025-11-27 22:55:22,811 - INFO - Processing: WWV 10 MHz
+2025-11-27 22:55:23,579 - INFO - Processing: WWV 15 MHz
+2025-11-27 22:55:24,344 - INFO - Processing: WWV 20 MHz
+2025-11-27 22:55:25,190 - INFO - Processing: WWV 25 MHz
+2025-11-27 22:55:25,952 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 22:55:26,770 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 22:55:27,516 - INFO - Processing: CHU 14.67 MHz
+[04:55:28] Done. Next run in 5 minutes.
+
+[05:00:28] Generating spectrograms for 20251128...
+2025-11-27 23:00:29,564 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:00:30,470 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:00:31,272 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:00:32,224 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:00:33,120 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:00:34,545 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:00:36,092 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:00:37,069 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:00:38,207 - INFO - Processing: CHU 14.67 MHz
+[05:00:39] Done. Next run in 5 minutes.
+
+[05:05:39] Generating spectrograms for 20251128...
+2025-11-27 23:05:40,497 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:05:41,353 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:05:42,135 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:05:42,902 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:05:43,649 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:05:44,458 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:05:45,223 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:05:45,994 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:05:46,741 - INFO - Processing: CHU 14.67 MHz
+[05:05:47] Done. Next run in 5 minutes.
+
+[05:10:47] Generating spectrograms for 20251128...
+2025-11-27 23:10:48,700 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:10:49,566 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:10:50,390 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:10:51,190 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:10:51,993 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:10:52,831 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:10:53,602 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:10:54,367 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:10:55,168 - INFO - Processing: CHU 14.67 MHz
+[05:10:56] Done. Next run in 5 minutes.
+
+[05:15:56] Generating spectrograms for 20251128...
+2025-11-27 23:15:57,156 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:15:58,028 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:15:58,847 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:15:59,625 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:16:00,408 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:16:01,253 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:16:02,041 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:16:02,781 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:16:03,553 - INFO - Processing: CHU 14.67 MHz
+[05:16:04] Done. Next run in 5 minutes.
+
+[05:21:04] Generating spectrograms for 20251128...
+2025-11-27 23:21:05,602 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:21:06,467 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:21:07,270 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:21:08,080 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:21:08,876 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:21:09,726 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:21:10,527 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:21:11,320 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:21:12,139 - INFO - Processing: CHU 14.67 MHz
+[05:21:13] Done. Next run in 5 minutes.
+
+[05:26:13] Generating spectrograms for 20251128...
+2025-11-27 23:26:14,165 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:26:15,037 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:26:15,894 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:26:16,714 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:26:17,507 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:26:18,395 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:26:19,208 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:26:19,986 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:26:20,812 - INFO - Processing: CHU 14.67 MHz
+[05:26:21] Done. Next run in 5 minutes.
+
+[05:31:21] Generating spectrograms for 20251128...
+2025-11-27 23:31:22,808 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:31:23,732 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:31:24,565 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:31:25,392 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:31:26,241 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:31:27,117 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:31:27,954 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:31:28,831 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:31:29,725 - INFO - Processing: CHU 14.67 MHz
+[05:31:31] Done. Next run in 5 minutes.
+
+[05:36:31] Generating spectrograms for 20251128...
+2025-11-27 23:36:32,358 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:36:33,752 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:36:35,206 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:36:36,320 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:36:37,194 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:36:38,150 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:36:38,953 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:36:39,852 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:36:40,771 - INFO - Processing: CHU 14.67 MHz
+[05:36:42] Done. Next run in 5 minutes.
+
+[05:41:42] Generating spectrograms for 20251128...
+2025-11-27 23:41:42,940 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:41:43,925 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:41:44,769 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:41:45,608 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:41:46,428 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:41:47,300 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:41:48,112 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:41:48,925 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:41:49,731 - INFO - Processing: CHU 14.67 MHz
+[05:41:50] Done. Next run in 5 minutes.
+
+[05:46:50] Generating spectrograms for 20251128...
+2025-11-27 23:46:51,786 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:46:52,760 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:46:53,635 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:46:54,465 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:46:55,349 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:46:56,209 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:46:57,023 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:46:57,868 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:46:58,698 - INFO - Processing: CHU 14.67 MHz
+[05:46:59] Done. Next run in 5 minutes.
+
+[05:51:59] Generating spectrograms for 20251128...
+2025-11-27 23:52:00,785 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:52:01,696 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:52:02,532 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:52:03,349 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:52:04,179 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:52:05,054 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:52:05,919 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:52:06,759 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:52:07,614 - INFO - Processing: CHU 14.67 MHz
+[05:52:08] Done. Next run in 5 minutes.
+
+[05:57:08] Generating spectrograms for 20251128...
+2025-11-27 23:57:09,665 - INFO - Processing: WWV 2.5 MHz
+2025-11-27 23:57:10,607 - INFO - Processing: WWV 5 MHz
+2025-11-27 23:57:11,448 - INFO - Processing: WWV 10 MHz
+2025-11-27 23:57:12,335 - INFO - Processing: WWV 15 MHz
+2025-11-27 23:57:13,214 - INFO - Processing: WWV 20 MHz
+2025-11-27 23:57:14,117 - INFO - Processing: WWV 25 MHz
+2025-11-27 23:57:14,957 - INFO - Processing: CHU 3.33 MHz
+2025-11-27 23:57:15,793 - INFO - Processing: CHU 7.85 MHz
+2025-11-27 23:57:16,632 - INFO - Processing: CHU 14.67 MHz
+[05:57:17] Done. Next run in 5 minutes.
+
+[06:02:17] Generating spectrograms for 20251128...
+2025-11-28 00:02:18,617 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:02:19,579 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:02:20,435 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:02:21,314 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:02:22,117 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:02:23,069 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:02:23,878 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:02:24,752 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:02:25,568 - INFO - Processing: CHU 14.67 MHz
+[06:02:26] Done. Next run in 5 minutes.
+
+[06:07:26] Generating spectrograms for 20251128...
+2025-11-28 00:07:27,545 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:07:28,461 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:07:29,338 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:07:30,160 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:07:30,989 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:07:31,963 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:07:32,965 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:07:33,950 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:07:35,027 - INFO - Processing: CHU 14.67 MHz
+[06:07:36] Done. Next run in 5 minutes.
+
+[06:12:36] Generating spectrograms for 20251128...
+2025-11-28 00:12:37,889 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:12:38,945 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:12:40,251 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:12:41,689 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:12:42,857 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:12:43,856 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:12:44,712 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:12:45,604 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:12:46,502 - INFO - Processing: CHU 14.67 MHz
+[06:12:47] Done. Next run in 5 minutes.
+
+[06:17:47] Generating spectrograms for 20251128...
+2025-11-28 00:17:48,586 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:17:49,547 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:17:50,426 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:17:51,287 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:17:52,171 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:17:53,167 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:17:54,008 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:17:54,873 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:17:55,732 - INFO - Processing: CHU 14.67 MHz
+[06:17:56] Done. Next run in 5 minutes.
+
+[06:22:56] Generating spectrograms for 20251128...
+2025-11-28 00:22:57,800 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:22:58,801 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:22:59,703 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:23:00,605 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:23:01,526 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:23:02,461 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:23:03,327 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:23:04,191 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:23:05,039 - INFO - Processing: CHU 14.67 MHz
+[06:23:06] Done. Next run in 5 minutes.
+
+[06:28:06] Generating spectrograms for 20251128...
+2025-11-28 00:28:07,091 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:28:08,038 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:28:08,857 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:28:09,758 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:28:10,614 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:28:11,618 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:28:12,461 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:28:13,297 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:28:14,149 - INFO - Processing: CHU 14.67 MHz
+[06:28:15] Done. Next run in 5 minutes.
+
+[06:33:15] Generating spectrograms for 20251128...
+2025-11-28 00:33:16,297 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:33:17,246 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:33:18,146 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:33:19,011 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:33:19,875 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:33:20,793 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:33:21,688 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:33:22,545 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:33:23,375 - INFO - Processing: CHU 14.67 MHz
+[06:33:24] Done. Next run in 5 minutes.
+
+[06:38:24] Generating spectrograms for 20251128...
+2025-11-28 00:38:25,380 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:38:26,393 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:38:27,272 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:38:28,166 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:38:29,094 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:38:30,066 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:38:31,063 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:38:32,195 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:38:33,131 - INFO - Processing: CHU 14.67 MHz
+[06:38:34] Done. Next run in 5 minutes.
+
+[06:43:34] Generating spectrograms for 20251128...
+2025-11-28 00:43:35,640 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:43:36,859 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:43:38,048 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:43:39,153 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:43:40,277 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:43:41,268 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:43:42,154 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:43:43,032 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:43:43,930 - INFO - Processing: CHU 14.67 MHz
+[06:43:45] Done. Next run in 5 minutes.
+
+[06:48:45] Generating spectrograms for 20251128...
+2025-11-28 00:48:46,015 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:48:47,012 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:48:47,966 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:48:48,899 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:48:49,879 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:48:50,837 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:48:51,751 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:48:52,634 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:48:53,560 - INFO - Processing: CHU 14.67 MHz
+[06:48:54] Done. Next run in 5 minutes.
+
+[06:53:54] Generating spectrograms for 20251128...
+2025-11-28 00:53:55,791 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:53:56,810 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:53:57,761 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:53:58,710 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:53:59,716 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:54:00,665 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:54:01,580 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:54:02,504 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:54:03,566 - INFO - Processing: CHU 14.67 MHz
+[06:54:05] Done. Next run in 5 minutes.
+
+[06:59:05] Generating spectrograms for 20251128...
+2025-11-28 00:59:06,264 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 00:59:07,436 - INFO - Processing: WWV 5 MHz
+2025-11-28 00:59:08,555 - INFO - Processing: WWV 10 MHz
+2025-11-28 00:59:09,509 - INFO - Processing: WWV 15 MHz
+2025-11-28 00:59:10,530 - INFO - Processing: WWV 20 MHz
+2025-11-28 00:59:11,786 - INFO - Processing: WWV 25 MHz
+2025-11-28 00:59:12,751 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 00:59:13,629 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 00:59:14,575 - INFO - Processing: CHU 14.67 MHz
+[06:59:15] Done. Next run in 5 minutes.
+
+[07:04:15] Generating spectrograms for 20251128...
+2025-11-28 01:04:16,823 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:04:17,818 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:04:18,748 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:04:19,659 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:04:20,654 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:04:21,612 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:04:22,528 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:04:23,444 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:04:24,392 - INFO - Processing: CHU 14.67 MHz
+[07:04:25] Done. Next run in 5 minutes.
+
+[07:09:25] Generating spectrograms for 20251128...
+2025-11-28 01:09:26,540 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:09:27,563 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:09:28,516 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:09:29,524 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:09:30,500 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:09:31,475 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:09:32,656 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:09:33,723 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:09:34,673 - INFO - Processing: CHU 14.67 MHz
+[07:09:36] Done. Next run in 5 minutes.
+
+[07:14:36] Generating spectrograms for 20251128...
+2025-11-28 01:14:37,759 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:14:39,626 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:14:41,484 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:14:42,661 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:14:43,785 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:14:44,741 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:14:45,715 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:14:46,652 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:14:47,598 - INFO - Processing: CHU 14.67 MHz
+[07:14:48] Done. Next run in 5 minutes.
+
+[07:19:48] Generating spectrograms for 20251128...
+2025-11-28 01:19:49,797 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:19:50,849 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:19:51,772 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:19:52,693 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:19:53,702 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:19:54,638 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:19:55,543 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:19:56,473 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:19:57,416 - INFO - Processing: CHU 14.67 MHz
+[07:19:58] Done. Next run in 5 minutes.
+
+[07:24:58] Generating spectrograms for 20251128...
+2025-11-28 01:24:59,692 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:25:00,747 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:25:01,725 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:25:02,677 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:25:03,665 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:25:04,622 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:25:05,582 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:25:06,533 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:25:07,501 - INFO - Processing: CHU 14.67 MHz
+[07:25:08] Done. Next run in 5 minutes.
+
+[07:30:08] Generating spectrograms for 20251128...
+2025-11-28 01:30:09,733 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:30:10,781 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:30:11,749 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:30:12,690 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:30:13,674 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:30:14,607 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:30:15,495 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:30:16,415 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:30:17,309 - INFO - Processing: CHU 14.67 MHz
+[07:30:18] Done. Next run in 5 minutes.
+
+[07:35:18] Generating spectrograms for 20251128...
+2025-11-28 01:35:19,448 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:35:20,535 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:35:21,537 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:35:22,542 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:35:23,575 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:35:24,545 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:35:25,536 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:35:26,511 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:35:27,465 - INFO - Processing: CHU 14.67 MHz
+[07:35:28] Done. Next run in 5 minutes.
+
+[07:40:28] Generating spectrograms for 20251128...
+2025-11-28 01:40:29,710 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:40:30,971 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:40:32,176 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:40:33,377 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:40:34,469 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:40:35,450 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:40:36,447 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:40:37,537 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:40:39,267 - INFO - Processing: CHU 14.67 MHz
+[07:40:41] Done. Next run in 5 minutes.
+
+[07:45:41] Generating spectrograms for 20251128...
+2025-11-28 01:45:42,060 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:45:43,167 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:45:44,144 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:45:45,130 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:45:46,167 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:45:47,199 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:45:48,194 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:45:49,209 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:45:50,172 - INFO - Processing: CHU 14.67 MHz
+[07:45:51] Done. Next run in 5 minutes.
+
+[07:50:51] Generating spectrograms for 20251128...
+2025-11-28 01:50:52,535 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:50:53,623 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:50:54,594 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:50:55,539 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:50:56,573 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:50:57,511 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:50:58,500 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:50:59,492 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:51:00,531 - INFO - Processing: CHU 14.67 MHz
+[07:51:01] Done. Next run in 5 minutes.
+
+[07:56:01] Generating spectrograms for 20251128...
+2025-11-28 01:56:02,724 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 01:56:03,776 - INFO - Processing: WWV 5 MHz
+2025-11-28 01:56:04,732 - INFO - Processing: WWV 10 MHz
+2025-11-28 01:56:05,702 - INFO - Processing: WWV 15 MHz
+2025-11-28 01:56:06,708 - INFO - Processing: WWV 20 MHz
+2025-11-28 01:56:07,689 - INFO - Processing: WWV 25 MHz
+2025-11-28 01:56:08,630 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 01:56:09,579 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 01:56:10,556 - INFO - Processing: CHU 14.67 MHz
+[07:56:11] Done. Next run in 5 minutes.
+
+[08:01:11] Generating spectrograms for 20251128...
+2025-11-28 02:01:12,868 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:01:13,964 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:01:14,969 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:01:15,984 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:01:17,049 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:01:18,061 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:01:19,041 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:01:20,023 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:01:21,008 - INFO - Processing: CHU 14.67 MHz
+[08:01:22] Done. Next run in 5 minutes.
+
+[08:06:22] Generating spectrograms for 20251128...
+2025-11-28 02:06:23,287 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:06:24,383 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:06:25,443 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:06:26,490 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:06:27,577 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:06:28,564 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:06:29,587 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:06:30,585 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:06:31,590 - INFO - Processing: CHU 14.67 MHz
+[08:06:32] Done. Next run in 5 minutes.
+
+[08:11:32] Generating spectrograms for 20251128...
+2025-11-28 02:11:33,948 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:11:35,077 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:11:36,225 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:11:37,739 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:11:39,755 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:11:41,246 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:11:42,433 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:11:43,468 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:11:44,481 - INFO - Processing: CHU 14.67 MHz
+[08:11:45] Done. Next run in 5 minutes.
+
+[08:16:45] Generating spectrograms for 20251128...
+2025-11-28 02:16:46,818 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:16:47,985 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:16:49,078 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:16:50,125 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:16:51,230 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:16:52,247 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:16:53,282 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:16:54,315 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:16:55,331 - INFO - Processing: CHU 14.67 MHz
+[08:16:56] Done. Next run in 5 minutes.
+
+[08:21:56] Generating spectrograms for 20251128...
+2025-11-28 02:21:57,721 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:21:58,826 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:22:00,018 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:22:01,058 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:22:02,164 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:22:03,217 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:22:04,256 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:22:05,317 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:22:06,376 - INFO - Processing: CHU 14.67 MHz
+[08:22:07] Done. Next run in 5 minutes.
+
+[08:27:07] Generating spectrograms for 20251128...
+2025-11-28 02:27:08,777 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:27:09,879 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:27:10,905 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:27:11,904 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:27:12,990 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:27:13,991 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:27:15,050 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:27:16,100 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:27:17,121 - INFO - Processing: CHU 14.67 MHz
+[08:27:18] Done. Next run in 5 minutes.
+
+[08:32:18] Generating spectrograms for 20251128...
+2025-11-28 02:32:19,472 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:32:20,648 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:32:21,734 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:32:22,796 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:32:23,917 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:32:24,992 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:32:26,079 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:32:27,140 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:32:28,246 - INFO - Processing: CHU 14.67 MHz
+[08:32:29] Done. Next run in 5 minutes.
+
+[08:37:29] Generating spectrograms for 20251128...
+2025-11-28 02:37:30,626 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:37:31,982 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:37:33,243 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:37:34,899 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:37:36,290 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:37:37,491 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:37:39,052 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:37:40,447 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:37:41,796 - INFO - Processing: CHU 14.67 MHz
+[08:37:43] Done. Next run in 5 minutes.
+
+[08:42:43] Generating spectrograms for 20251128...
+2025-11-28 02:42:44,141 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:42:45,308 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:42:46,382 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:42:47,407 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:42:48,546 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:42:49,558 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:42:50,597 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:42:51,700 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:42:52,748 - INFO - Processing: CHU 14.67 MHz
+[08:42:54] Done. Next run in 5 minutes.
+
+[08:47:54] Generating spectrograms for 20251128...
+2025-11-28 02:47:55,036 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:47:56,234 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:47:57,299 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:47:58,416 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:47:59,537 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:48:00,650 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:48:01,791 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:48:02,846 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:48:03,936 - INFO - Processing: CHU 14.67 MHz
+[08:48:05] Done. Next run in 5 minutes.
+
+[08:53:05] Generating spectrograms for 20251128...
+2025-11-28 02:53:06,281 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:53:07,405 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:53:08,504 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:53:09,564 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:53:10,684 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:53:11,746 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:53:12,895 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:53:13,984 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:53:15,100 - INFO - Processing: CHU 14.67 MHz
+[08:53:16] Done. Next run in 5 minutes.
+
+[08:58:16] Generating spectrograms for 20251128...
+2025-11-28 02:58:17,417 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 02:58:18,572 - INFO - Processing: WWV 5 MHz
+2025-11-28 02:58:19,698 - INFO - Processing: WWV 10 MHz
+2025-11-28 02:58:20,824 - INFO - Processing: WWV 15 MHz
+2025-11-28 02:58:21,975 - INFO - Processing: WWV 20 MHz
+2025-11-28 02:58:23,049 - INFO - Processing: WWV 25 MHz
+2025-11-28 02:58:24,170 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 02:58:25,270 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 02:58:26,446 - INFO - Processing: CHU 14.67 MHz
+[08:58:27] Done. Next run in 5 minutes.
+
+[09:03:27] Generating spectrograms for 20251128...
+2025-11-28 03:03:28,748 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:03:29,941 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:03:31,052 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:03:32,236 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:03:33,981 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:03:35,659 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:03:36,928 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:03:38,377 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:03:40,025 - INFO - Processing: CHU 14.67 MHz
+[09:03:41] Done. Next run in 5 minutes.
+
+[09:08:41] Generating spectrograms for 20251128...
+2025-11-28 03:08:42,473 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:08:43,688 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:08:44,855 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:08:45,990 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:08:47,219 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:08:48,346 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:08:49,494 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:08:50,593 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:08:51,784 - INFO - Processing: CHU 14.67 MHz
+[09:08:53] Done. Next run in 5 minutes.
+
+[09:13:53] Generating spectrograms for 20251128...
+2025-11-28 03:13:54,166 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:13:55,385 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:13:56,561 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:13:57,687 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:13:58,858 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:14:00,047 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:14:01,209 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:14:02,320 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:14:03,526 - INFO - Processing: CHU 14.67 MHz
+[09:14:04] Done. Next run in 5 minutes.
+
+[09:19:04] Generating spectrograms for 20251128...
+2025-11-28 03:19:05,786 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:19:07,010 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:19:08,132 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:19:09,266 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:19:10,479 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:19:11,621 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:19:12,774 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:19:13,903 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:19:15,372 - INFO - Processing: CHU 14.67 MHz
+[09:19:16] Done. Next run in 5 minutes.
+
+[09:24:17] Generating spectrograms for 20251128...
+2025-11-28 03:24:18,103 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:24:19,544 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:24:20,682 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:24:21,827 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:24:23,312 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:24:24,464 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:24:25,629 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:24:26,773 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:24:27,974 - INFO - Processing: CHU 14.67 MHz
+[09:24:29] Done. Next run in 5 minutes.
+
+[09:29:29] Generating spectrograms for 20251128...
+2025-11-28 03:29:30,442 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:29:31,753 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:29:33,301 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:29:35,235 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:29:37,117 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:29:38,492 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:29:39,844 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:29:41,029 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:29:42,230 - INFO - Processing: CHU 14.67 MHz
+[09:29:43] Done. Next run in 5 minutes.
+
+[09:34:43] Generating spectrograms for 20251128...
+2025-11-28 03:34:44,554 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:34:45,844 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:34:46,998 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:34:48,152 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:34:49,369 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:34:50,517 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:34:51,693 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:34:52,851 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:34:54,098 - INFO - Processing: CHU 14.67 MHz
+[09:34:55] Done. Next run in 5 minutes.
+
+[09:39:55] Generating spectrograms for 20251128...
+2025-11-28 03:39:56,417 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:39:57,665 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:39:58,847 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:40:00,007 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:40:01,260 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:40:02,417 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:40:03,563 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:40:04,734 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:40:05,980 - INFO - Processing: CHU 14.67 MHz
+[09:40:07] Done. Next run in 5 minutes.
+
+[09:45:07] Generating spectrograms for 20251128...
+2025-11-28 03:45:08,360 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:45:09,630 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:45:10,833 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:45:12,064 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:45:13,350 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:45:14,526 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:45:15,699 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:45:16,837 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:45:18,076 - INFO - Processing: CHU 14.67 MHz
+[09:45:19] Done. Next run in 5 minutes.
+
+[09:50:19] Generating spectrograms for 20251128...
+2025-11-28 03:50:20,441 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:50:21,656 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:50:22,823 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:50:24,054 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:50:25,271 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:50:26,503 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:50:27,615 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:50:28,698 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:50:29,891 - INFO - Processing: CHU 14.67 MHz
+[09:50:31] Done. Next run in 5 minutes.
+
+[09:55:31] Generating spectrograms for 20251128...
+2025-11-28 03:55:32,580 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 03:55:34,436 - INFO - Processing: WWV 5 MHz
+2025-11-28 03:55:35,983 - INFO - Processing: WWV 10 MHz
+2025-11-28 03:55:37,460 - INFO - Processing: WWV 15 MHz
+2025-11-28 03:55:39,193 - INFO - Processing: WWV 20 MHz
+2025-11-28 03:55:40,570 - INFO - Processing: WWV 25 MHz
+2025-11-28 03:55:41,833 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 03:55:43,052 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 03:55:44,327 - INFO - Processing: CHU 14.67 MHz
+[09:55:45] Done. Next run in 5 minutes.
+
+[10:00:45] Generating spectrograms for 20251128...
+2025-11-28 04:00:46,733 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 04:00:48,017 - INFO - Processing: WWV 5 MHz
+2025-11-28 04:00:49,209 - INFO - Processing: WWV 10 MHz
+2025-11-28 04:00:50,384 - INFO - Processing: WWV 15 MHz
+2025-11-28 04:00:51,575 - INFO - Processing: WWV 20 MHz
+2025-11-28 04:00:52,676 - INFO - Processing: WWV 25 MHz
+2025-11-28 04:00:53,846 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 04:00:54,962 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 04:00:56,308 - INFO - Processing: CHU 14.67 MHz
+[10:00:57] Done. Next run in 5 minutes.
+
+[10:05:57] Generating spectrograms for 20251128...
+2025-11-28 04:05:58,669 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 04:05:59,983 - INFO - Processing: WWV 5 MHz
+2025-11-28 04:06:01,160 - INFO - Processing: WWV 10 MHz
+2025-11-28 04:06:02,302 - INFO - Processing: WWV 15 MHz
+2025-11-28 04:06:03,551 - INFO - Processing: WWV 20 MHz
+2025-11-28 04:06:04,725 - INFO - Processing: WWV 25 MHz
+2025-11-28 04:06:05,912 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 04:06:07,036 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 04:06:08,260 - INFO - Processing: CHU 14.67 MHz
+[10:06:09] Done. Next run in 5 minutes.
+
+[10:11:09] Generating spectrograms for 20251128...
+2025-11-28 04:11:10,662 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 04:11:11,930 - INFO - Processing: WWV 5 MHz
+2025-11-28 04:11:13,105 - INFO - Processing: WWV 10 MHz
+2025-11-28 04:11:14,318 - INFO - Processing: WWV 15 MHz
+2025-11-28 04:11:15,592 - INFO - Processing: WWV 20 MHz
+2025-11-28 04:11:16,782 - INFO - Processing: WWV 25 MHz
+2025-11-28 04:11:17,936 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 04:11:19,144 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 04:11:20,340 - INFO - Processing: CHU 14.67 MHz
+[10:11:21] Done. Next run in 5 minutes.
+
+[10:16:21] Generating spectrograms for 20251128...
+2025-11-28 04:16:22,665 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 04:16:23,957 - INFO - Processing: WWV 5 MHz
+2025-11-28 04:16:25,165 - INFO - Processing: WWV 10 MHz
+2025-11-28 04:16:26,378 - INFO - Processing: WWV 15 MHz
+2025-11-28 04:16:27,649 - INFO - Processing: WWV 20 MHz
+2025-11-28 04:16:28,844 - INFO - Processing: WWV 25 MHz
+2025-11-28 04:16:30,036 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 04:16:31,203 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 04:16:32,492 - INFO - Processing: CHU 14.67 MHz
+[10:16:34] Done. Next run in 5 minutes.
+
+[10:21:34] Generating spectrograms for 20251128...
+2025-11-28 04:21:35,446 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 04:21:37,159 - INFO - Processing: WWV 5 MHz
+2025-11-28 04:21:38,856 - INFO - Processing: WWV 10 MHz
+2025-11-28 04:21:40,340 - INFO - Processing: WWV 15 MHz
+2025-11-28 04:21:42,013 - INFO - Processing: WWV 20 MHz
+2025-11-28 04:21:43,412 - INFO - Processing: WWV 25 MHz
+2025-11-28 04:21:44,676 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 04:21:45,907 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 04:21:47,181 - INFO - Processing: CHU 14.67 MHz
+[10:21:48] Done. Next run in 5 minutes.
+
+[10:26:48] Generating spectrograms for 20251128...
+2025-11-28 04:26:49,557 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 04:26:50,876 - INFO - Processing: WWV 5 MHz
+2025-11-28 04:26:52,091 - INFO - Processing: WWV 10 MHz
+2025-11-28 04:26:53,327 - INFO - Processing: WWV 15 MHz
+2025-11-28 04:26:54,627 - INFO - Processing: WWV 20 MHz
+2025-11-28 04:26:55,852 - INFO - Processing: WWV 25 MHz
+2025-11-28 04:26:57,070 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 04:26:58,325 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 04:26:59,642 - INFO - Processing: CHU 14.67 MHz
+[10:27:01] Done. Next run in 5 minutes.
+
+[10:32:01] Generating spectrograms for 20251128...
+2025-11-28 04:32:02,073 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 04:32:03,428 - INFO - Processing: WWV 5 MHz
+2025-11-28 04:32:04,701 - INFO - Processing: WWV 10 MHz
+2025-11-28 04:32:05,898 - INFO - Processing: WWV 15 MHz
+2025-11-28 04:32:07,129 - INFO - Processing: WWV 20 MHz
+2025-11-28 04:32:08,314 - INFO - Processing: WWV 25 MHz
+2025-11-28 04:32:09,552 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 04:32:10,767 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 04:32:12,057 - INFO - Processing: CHU 14.67 MHz
+[10:32:13] Done. Next run in 5 minutes.
+
+[10:37:13] Generating spectrograms for 20251128...
+2025-11-28 04:37:14,501 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 04:37:15,833 - INFO - Processing: WWV 5 MHz
+2025-11-28 04:37:17,097 - INFO - Processing: WWV 10 MHz
+2025-11-28 04:37:18,340 - INFO - Processing: WWV 15 MHz
+2025-11-28 04:37:19,642 - INFO - Processing: WWV 20 MHz
+2025-11-28 04:37:20,891 - INFO - Processing: WWV 25 MHz
+2025-11-28 04:37:22,154 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 04:37:23,435 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 04:37:24,758 - INFO - Processing: CHU 14.67 MHz
+[10:37:26] Done. Next run in 5 minutes.
+
+[10:42:26] Generating spectrograms for 20251128...
+2025-11-28 04:42:27,227 - INFO - Processing: WWV 2.5 MHz
+2025-11-28 04:42:28,479 - INFO - Processing: WWV 5 MHz
+2025-11-28 04:42:29,749 - INFO - Processing: WWV 10 MHz
+2025-11-28 04:42:31,509 - INFO - Processing: WWV 15 MHz
+2025-11-28 04:42:33,480 - INFO - Processing: WWV 20 MHz
+2025-11-28 04:42:34,935 - INFO - Processing: WWV 25 MHz
+2025-11-28 04:42:36,544 - INFO - Processing: CHU 3.33 MHz
+2025-11-28 04:42:37,869 - INFO - Processing: CHU 7.85 MHz
+2025-11-28 04:42:39,284 - INFO - Processing: CHU 14.67 MHz
+[10:42:41] Done. Next run in 5 minutes.
+

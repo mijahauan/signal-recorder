@@ -105,6 +105,41 @@ function calculateEnhancedStats(data) {
         wwvh: data.filter(d => d.tone_440hz_wwvh_detected).length
     };
     
+    // 500/600 Hz ground truth tone detections (exclusive broadcast minutes)
+    const tone500600 = {
+        detected: data.filter(d => d.tone_500_600_detected).length,
+        wwvOnly: data.filter(d => d.tone_500_600_ground_truth_station === 'WWV').length,
+        wwvhOnly: data.filter(d => d.tone_500_600_ground_truth_station === 'WWVH').length,
+        agreements: data.filter(d => d.tone_500_600_detected && 
+            d.tone_500_600_ground_truth_station === d.dominant_station).length,
+        disagreements: data.filter(d => d.tone_500_600_detected && 
+            d.tone_500_600_ground_truth_station && 
+            d.tone_500_600_ground_truth_station !== d.dominant_station).length
+    };
+    
+    // BCD minute validation
+    const bcdValidation = {
+        validated: data.filter(d => d.bcd_minute_validated).length,
+        lowQuality: data.filter(d => d.bcd_correlation_peak_quality !== null && 
+            d.bcd_correlation_peak_quality < 2.0).length
+    };
+    
+    // Inter-method cross-validation
+    let totalAgreements = 0;
+    let totalDisagreements = 0;
+    data.forEach(d => {
+        if (d.inter_method_agreements) {
+            const agreements = typeof d.inter_method_agreements === 'string' 
+                ? JSON.parse(d.inter_method_agreements) : d.inter_method_agreements;
+            totalAgreements += Array.isArray(agreements) ? agreements.length : 0;
+        }
+        if (d.inter_method_disagreements) {
+            const disagreements = typeof d.inter_method_disagreements === 'string'
+                ? JSON.parse(d.inter_method_disagreements) : d.inter_method_disagreements;
+            totalDisagreements += Array.isArray(disagreements) ? disagreements.length : 0;
+        }
+    });
+    
     // Coherent integration usage (Improvement #2)
     let coherentCount = 0;
     data.forEach(d => {
@@ -122,6 +157,9 @@ function calculateEnhancedStats(data) {
         confidenceCounts,
         bcdStats,
         tone440,
+        tone500600,
+        bcdValidation,
+        crossValidation: { agreements: totalAgreements, disagreements: totalDisagreements },
         coherentCount
     };
 }
@@ -162,6 +200,27 @@ function renderStatsDashboard(stats, channel, date) {
                 </div>
                 <div class="stat-subtext">
                     ${stats.tone440.wwv} WWV (min 2), ${stats.tone440.wwvh} WWVH (min 1)
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-label">🔊 500/600 Hz Ground Truth</div>
+                <div class="stat-value" style="color: #22c55e;">${stats.tone500600.detected}</div>
+                <div class="stat-subtext">
+                    Detected in exclusive minutes<br>
+                    ${stats.tone500600.wwvOnly} WWV-only, ${stats.tone500600.wwvhOnly} WWVH-only<br>
+                    <span style="color: #10b981;">✓ ${stats.tone500600.agreements} agree</span> / 
+                    <span style="color: #ef4444;">✗ ${stats.tone500600.disagreements} disagree</span>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-label">🔗 Cross-Validation</div>
+                <div class="stat-value" style="color: #10b981;">${stats.crossValidation.agreements}</div>
+                <div class="stat-subtext">
+                    Inter-method agreements<br>
+                    <span style="color: #ef4444;">${stats.crossValidation.disagreements} disagreements</span><br>
+                    BCD validated: ${stats.bcdValidation.validated}
                 </div>
             </div>
             
@@ -253,6 +312,18 @@ function renderImprovementPlots(data, channel, date) {
         </div>
     `;
     plotConfidenceDistribution(data);
+    
+    // Plot 6: 500/600 Hz Ground Truth Timeline
+    plots.innerHTML += `
+        <div class="plot-container">
+            <div class="plot-title">
+                500/600 Hz Ground Truth Tone Detection (Exclusive Broadcast Minutes)
+                <span class="plot-badge">NEW</span>
+            </div>
+            <div id="plot-500-600hz" style="height: 400px;"></div>
+        </div>
+    `;
+    plot500600HzGroundTruth(data, dayStart, dayEnd);
 }
 
 function plotBCDRatios(data, dayStart, dayEnd) {
@@ -702,6 +773,118 @@ function plotConfidenceDistribution(data) {
     };
     
     Plotly.newPlot('plot-confidence', [trace], layout, {responsive: true, displayModeBar: false});
+}
+
+function plot500600HzGroundTruth(data, dayStart, dayEnd) {
+    // Known exclusive broadcast minutes
+    // Min 1: WWV=600 Hz (WWVH=440), Min 2: WWVH=600 Hz (WWV=440)
+    const wwvOnlyMinutes = [1, 16, 17, 19];  // Only WWV broadcasts 500/600 Hz (4 minutes)
+    const wwvhOnlyMinutes = [2, 43, 44, 45, 46, 47, 48, 49, 50, 51];  // Only WWVH broadcasts (10 minutes)
+    
+    // Extract 500/600 Hz detections
+    const detections = data.filter(d => d.tone_500_600_detected);
+    
+    // Separate by ground truth station
+    const wwvGT = detections.filter(d => d.tone_500_600_ground_truth_station === 'WWV');
+    const wwvhGT = detections.filter(d => d.tone_500_600_ground_truth_station === 'WWVH');
+    
+    // Create traces
+    const traces = [
+        // WWV ground truth detections (minutes 16, 17, 19)
+        {
+            x: wwvGT.map(d => new Date(d.timestamp_utc)),
+            y: wwvGT.map(d => d.tone_500_600_power_db || 0),
+            mode: 'markers',
+            name: 'WWV-only (min 1,16,17,19)',
+            marker: {
+                size: 12,
+                color: wwvGT.map(d => d.dominant_station === 'WWV' ? '#10b981' : '#ef4444'),
+                symbol: 'circle',
+                line: { color: '#10b981', width: 2 }
+            },
+            text: wwvGT.map(d => `${d.tone_500_600_freq_hz} Hz\nDominant: ${d.dominant_station}\n${d.dominant_station === 'WWV' ? '✓ Agree' : '✗ Disagree'}`),
+            hovertemplate: '%{text}<br>Power: %{y:.1f} dB<br>%{x|%H:%M:%S}<extra></extra>'
+        },
+        // WWVH ground truth detections (minutes 43-51)
+        {
+            x: wwvhGT.map(d => new Date(d.timestamp_utc)),
+            y: wwvhGT.map(d => d.tone_500_600_power_db || 0),
+            mode: 'markers',
+            name: 'WWVH-only (min 2,43-51)',
+            marker: {
+                size: 12,
+                color: wwvhGT.map(d => d.dominant_station === 'WWVH' ? '#10b981' : '#ef4444'),
+                symbol: 'diamond',
+                line: { color: '#9b59b6', width: 2 }
+            },
+            text: wwvhGT.map(d => `${d.tone_500_600_freq_hz} Hz\nDominant: ${d.dominant_station}\n${d.dominant_station === 'WWVH' ? '✓ Agree' : '✗ Disagree'}`),
+            hovertemplate: '%{text}<br>Power: %{y:.1f} dB<br>%{x|%H:%M:%S}<extra></extra>'
+        }
+    ];
+    
+    // Add reference lines for exclusive minutes
+    const shapes = [];
+    const annotations = [];
+    
+    // Mark WWV-only minutes on time axis (1, 16, 17, 19)
+    wwvOnlyMinutes.forEach(min => {
+        // For each hour in the day
+        for (let h = 0; h < 24; h++) {
+            const t = new Date(dayStart);
+            t.setUTCHours(h, min, 0, 0);
+            shapes.push({
+                type: 'line',
+                x0: t, x1: t,
+                y0: 0, y1: 1,
+                yref: 'paper',
+                line: { color: 'rgba(16, 185, 129, 0.15)', width: 8 }
+            });
+        }
+    });
+    
+    // Mark WWVH-only minutes on time axis (2, 43-51)
+    wwvhOnlyMinutes.forEach(min => {
+        for (let h = 0; h < 24; h++) {
+            const t = new Date(dayStart);
+            t.setUTCHours(h, min, 0, 0);
+            shapes.push({
+                type: 'line',
+                x0: t, x1: t,
+                y0: 0, y1: 1,
+                yref: 'paper',
+                line: { color: 'rgba(155, 89, 182, 0.15)', width: 8 }
+            });
+        }
+    });
+    
+    const layout = {
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        font: { color: '#e0e0e0' },
+        xaxis: { 
+            title: 'Time (UTC)', 
+            gridcolor: 'rgba(139, 92, 246, 0.1)',
+            range: [dayStart, dayEnd]
+        },
+        yaxis: { 
+            title: '500/600 Hz Tone Power (dB)', 
+            gridcolor: 'rgba(139, 92, 246, 0.1)' 
+        },
+        margin: { t: 20, r: 20, b: 60, l: 70 },
+        showlegend: true,
+        legend: { x: 0.02, y: 0.98, bgcolor: 'rgba(30, 41, 59, 0.8)' },
+        shapes: shapes,
+        annotations: [
+            {
+                x: 0.02, y: 1.08, xref: 'paper', yref: 'paper',
+                text: '🟢 = Detection agrees with ground truth, 🔴 = Disagrees',
+                showarrow: false,
+                font: { size: 11, color: '#a78bfa' }
+            }
+        ]
+    };
+    
+    Plotly.newPlot('plot-500-600hz', traces, layout, {responsive: true, displayModeBar: false});
 }
 
 // Auto-load on page load

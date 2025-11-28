@@ -112,13 +112,14 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         Extract frequency in MHz from channel name
         
         Args:
-            channel_name: Channel name like "WWV 2.5 MHz", "WWV 10 MHz"
+            channel_name: Channel name like "WWV 2.5 MHz", "WWV_10_MHz", "WWV 10 MHz"
             
         Returns:
             Frequency in MHz, or None if not found
         """
-        # Match patterns like "WWV 2.5 MHz", "WWV 10 MHz", etc.
-        match = re.search(r'(\d+(?:\.\d+)?)\s*MHz', channel_name, re.IGNORECASE)
+        # Match patterns like "WWV 2.5 MHz", "WWV_10_MHz", "WWV 10 MHz", etc.
+        # Allow underscore or space before MHz
+        match = re.search(r'(\d+(?:\.\d+)?)[_\s]*MHz', channel_name, re.IGNORECASE)
         if match:
             return float(match.group(1))
         return None

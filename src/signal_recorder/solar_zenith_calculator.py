@@ -1,8 +1,14 @@
 """
-Solar Zenith Angle Calculator for WWV/WWVH Path Midpoints
+Solar Zenith Angle Calculator for WWV/WWVH/CHU Path Midpoints
 
 Calculates solar elevation angles at the midpoint of the propagation path
-between a receiver location and WWV/WWVH transmitters.
+between a receiver location and time signal transmitters:
+- WWV: Fort Collins, Colorado (40.6779°N, 105.0392°W)
+- WWVH: Kekaha, Kauai, Hawaii (22.0534°N, 159.7619°W)  
+- CHU: Ottawa, Canada (45°17′41.3″N, 75°45′28.3″W)
+
+Solar elevation at the path midpoint correlates with D-layer absorption
+and propagation conditions on HF time signal frequencies.
 
 Usage:
     python -m signal_recorder.solar_zenith_calculator --date 20251127 --grid EM38ww
@@ -17,6 +23,7 @@ from typing import Tuple, List, Dict
 # Transmitter coordinates (lat, lon in degrees)
 WWV_LOCATION = (40.6779, -105.0392)   # Fort Collins, Colorado
 WWVH_LOCATION = (22.0534, -159.7619)  # Kekaha, Kauai, Hawaii
+CHU_LOCATION = (45.2948, -75.7579)    # Ottawa, Canada (45°17′41.3″N 75°45′28.3″W)
 
 
 def grid_to_latlon(grid: str) -> Tuple[float, float]:
@@ -190,7 +197,7 @@ def calculate_solar_zenith_for_day(
     interval_minutes: int = 5
 ) -> Dict:
     """
-    Calculate solar zenith angles for WWV and WWVH path midpoints over 24 hours.
+    Calculate solar zenith angles for WWV, WWVH, and CHU path midpoints over 24 hours.
     
     Args:
         date_str: Date in YYYYMMDD format
@@ -198,7 +205,7 @@ def calculate_solar_zenith_for_day(
         interval_minutes: Time interval between samples
         
     Returns:
-        Dictionary with solar zenith data for both paths
+        Dictionary with solar zenith data for all paths
     """
     # Parse date
     year = int(date_str[0:4])
@@ -208,15 +215,17 @@ def calculate_solar_zenith_for_day(
     # Get receiver location
     rx_lat, rx_lon = grid_to_latlon(receiver_grid)
     
-    # Calculate midpoints
+    # Calculate midpoints for all transmitters
     wwv_mid_lat, wwv_mid_lon = calculate_midpoint(rx_lat, rx_lon, *WWV_LOCATION)
     wwvh_mid_lat, wwvh_mid_lon = calculate_midpoint(rx_lat, rx_lon, *WWVH_LOCATION)
+    chu_mid_lat, chu_mid_lon = calculate_midpoint(rx_lat, rx_lon, *CHU_LOCATION)
     
     # Generate time series
     start_time = datetime(year, month, day, 0, 0, 0)
     times = []
     wwv_elevations = []
     wwvh_elevations = []
+    chu_elevations = []
     
     current_time = start_time
     end_time = start_time + timedelta(days=1)
@@ -232,6 +241,10 @@ def calculate_solar_zenith_for_day(
         _, wwvh_el = solar_position(current_time, wwvh_mid_lat, wwvh_mid_lon)
         wwvh_elevations.append(round(wwvh_el, 2))
         
+        # CHU path midpoint
+        _, chu_el = solar_position(current_time, chu_mid_lat, chu_mid_lon)
+        chu_elevations.append(round(chu_el, 2))
+        
         current_time += timedelta(minutes=interval_minutes)
     
     return {
@@ -240,15 +253,17 @@ def calculate_solar_zenith_for_day(
         "receiver_location": {"lat": round(rx_lat, 4), "lon": round(rx_lon, 4)},
         "wwv_midpoint": {"lat": round(wwv_mid_lat, 4), "lon": round(wwv_mid_lon, 4)},
         "wwvh_midpoint": {"lat": round(wwvh_mid_lat, 4), "lon": round(wwvh_mid_lon, 4)},
+        "chu_midpoint": {"lat": round(chu_mid_lat, 4), "lon": round(chu_mid_lon, 4)},
         "interval_minutes": interval_minutes,
         "timestamps": times,
         "wwv_solar_elevation": wwv_elevations,
-        "wwvh_solar_elevation": wwvh_elevations
+        "wwvh_solar_elevation": wwvh_elevations,
+        "chu_solar_elevation": chu_elevations
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Calculate solar zenith angles for WWV/WWVH paths")
+    parser = argparse.ArgumentParser(description="Calculate solar zenith angles for WWV/WWVH/CHU paths")
     parser.add_argument("--date", required=True, help="Date in YYYYMMDD format")
     parser.add_argument("--grid", required=True, help="Maidenhead grid square (e.g., EM38ww)")
     parser.add_argument("--interval", type=int, default=5, help="Interval in minutes (default: 5)")

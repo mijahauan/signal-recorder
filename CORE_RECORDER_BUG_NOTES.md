@@ -2,7 +2,7 @@
 
 **Date**: 2025-11-23  
 **Priority**: HIGH  
-**Status**: IDENTIFIED, NOT FIXED
+**Status**: ✅ FIXED (2025-11-23 18:49 UTC-06:00)
 
 ---
 
@@ -215,19 +215,92 @@ The core recorder violated this principle by using wall clock for minute boundar
 
 ---
 
-## Next Session Checklist
+## ✅ Fix Implementation (2025-11-23)
 
-- [ ] Review this document
-- [ ] Read `core_npz_writer.py` lines 82-157
-- [ ] Remove wall clock check (lines 96-110)
-- [ ] Test with 2-3 minute capture
-- [ ] Validate file sizes (960,000 samples each)
-- [ ] Restart analytics services
-- [ ] Wait for test signal (minute 8 or 44)
-- [ ] Validate discrimination confidence improvement
-- [ ] Update this document with results
+### Changes Made
+
+**File: `src/signal_recorder/core_npz_writer.py`**
+
+1. **Removed wall clock minute boundary check** (old lines 96-113)
+   - Deleted all `wall_clock` and `minute_boundary` logic
+   - Removed premature file write on minute rollover
+   
+2. **Added timing hierarchy support**
+   - `time_snap` loading from analytics state (±1ms accuracy)
+   - NTP sync detection via `ntpq`/`chronyc` (±10ms accuracy)
+   - Wall clock fallback (±seconds accuracy)
+   
+3. **Implemented RTP-primary timing**
+   - `_calculate_utc_from_rtp()`: Converts RTP timestamp to UTC using best available source
+   - Sample count (960,000) is now the **ONLY** file completion trigger
+   - File timestamps derived from RTP, not wall clock
+   
+4. **Added periodic timing refresh**
+   - Every 10 files, reload `time_snap` and check NTP status
+   - Enables progressive accuracy improvement as analytics establishes tone lock
+
+**File: `src/signal_recorder/core_recorder.py`**
+
+1. **Pass state file path to NPZ writer**
+   - Constructs path: `state/analytics-{channel}.json`
+   - NPZ writer can now access analytics `time_snap` data
+   
+2. **ChannelProcessor updated**
+   - Accepts `state_file` parameter
+   - Passes to `CoreNPZWriter` initialization
+
+### Testing
+
+**Validation script created:** `test-core-recorder-fix.py`
+
+```bash
+# Check latest 10 files
+python3 test-core-recorder-fix.py --archive-dir /tmp/grape-test/archives/WWV_10_MHz
+
+# Check all files with details
+python3 test-core-recorder-fix.py --archive-dir /tmp/grape-test/archives/WWV_10_MHz --latest 0 --verbose
+```
+
+**Expected Results:**
+- All NPZ files: 960,000 samples (60.0 seconds)
+- No more ~23 second files
+- Files written only when sample count complete
+
+### Restart Required
+
+```bash
+# Stop core recorder
+pkill -f core_recorder
+
+# Start with config
+python3 -m signal_recorder.core_recorder --config /path/to/config.toml
+
+# Or via systemd (if configured)
+sudo systemctl restart grape-core-recorder
+```
+
+### Validation Checklist
+
+- [x] Code changes implemented
+- [x] Test script created
+- [ ] Core recorder restarted
+- [ ] Wait 2-3 minutes for new files
+- [ ] Run validation script
+- [ ] Verify 960,000 samples per file
+- [ ] Check discrimination baseline performance
+
+---
+
+## Architecture Compliance
+
+This fix realigns the core recorder with documented architecture principles:
+
+✅ **RTP timestamp is PRIMARY reference** (CONTEXT.md line 44-45)  
+✅ **Sample count integrity** (CONTEXT.md line 46)  
+✅ **No time stretching** (CONTEXT.md line 80)  
+✅ **Timing hierarchy**: time_snap > NTP > wall_clock (CONTEXT.md line 207)
 
 ---
 
 **End of Bug Report**  
-**Next Action**: Fix core recorder in dedicated session
+**Status**: Fixed, pending deployment validation

@@ -206,6 +206,21 @@ class GRAPEPaths {
     }
     
     /**
+     * Get Doppler estimation directory (ionospheric channel characterization).
+     * 
+     * Contains per-minute Doppler shift estimates derived from tick phase tracking:
+     * - Instantaneous Doppler shift (Δf_D) for WWV and WWVH
+     * - Maximum coherent integration window (T_c)
+     * - Doppler quality metrics
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/doppler/
+     */
+    getDopplerDir(channelName) {
+        return join(this.getAnalyticsDir(channelName), 'doppler');
+    }
+    
+    /**
      * Get timing metrics directory (time_snap status, drift, transitions).
      * 
      * @param {string} channelName - Channel name

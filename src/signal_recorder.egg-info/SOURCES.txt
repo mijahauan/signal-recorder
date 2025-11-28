@@ -120,9 +120,12 @@ src/signal_recorder/paths.py
 src/signal_recorder/quality_metrics.py
 src/signal_recorder/radiod_health.py
 src/signal_recorder/session_tracker.py
+src/signal_recorder/startup_tone_detector.py
 src/signal_recorder/tone_detector.py
 src/signal_recorder/uploader.py
 src/signal_recorder/wwv_bcd_encoder.py
+src/signal_recorder/wwv_geographic_predictor.py
+src/signal_recorder/wwv_test_signal.py
 src/signal_recorder/wwv_tone_schedule.py
 src/signal_recorder/wwvh_discrimination.py
 src/signal_recorder.egg-info/PKG-INFO

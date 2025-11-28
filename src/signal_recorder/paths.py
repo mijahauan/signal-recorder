@@ -207,6 +207,18 @@ class GRAPEPaths:
         """
         return self.get_analytics_dir(channel_name) / 'test_signal'
     
+    def get_doppler_dir(self, channel_name: str) -> Path:
+        """Get Doppler estimation directory (ionospheric channel characterization).
+        
+        Contains per-minute Doppler shift estimates derived from tick phase tracking:
+        - Instantaneous Doppler shift (Δf_D) for WWV and WWVH
+        - Maximum coherent integration window (T_c)
+        - Doppler quality metrics
+        
+        Returns: {data_root}/analytics/{CHANNEL}/doppler/
+        """
+        return self.get_analytics_dir(channel_name) / 'doppler'
+    
     def get_timing_dir(self, channel_name: str) -> Path:
         """Get timing metrics directory (time_snap status, drift, transitions).
         
