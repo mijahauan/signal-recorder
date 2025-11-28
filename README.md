@@ -11,7 +11,7 @@ The [HamSCI GRAPE project](https://hamsci.org/grape) studies ionospheric disturb
 **Key Capabilities:**
 - 📡 **Multi-channel recording** - Simultaneous WWV 2.5-25 MHz, CHU 3.33-14.67 MHz
 - 🎯 **GPS-quality timing** - ±1ms via tone detection (time_snap mechanism)
-- 🔬 **5 discrimination methods** - Timing tones, ticks, 440 Hz ID, BCD, weighted voting
+- 🔬 **8 voting methods** - BCD, timing tones, ticks, 440/500/600 Hz, Doppler stability, weighted voting
 - 📊 **Digital RF output** - 10 Hz IQ + metadata (wsprdaemon-compatible)
 - 🌐 **Web UI** - Real-time monitoring, configuration, quality metrics
 - 🚀 **PSWS upload** - Automated rsync to HamSCI repository
@@ -119,43 +119,38 @@ Wsprdaemon-compatible Digital RF output:
 - **Packet Loss:** <1% healthy (indicates network issues)
 - **Time_snap Quality:** TONE_LOCKED (±1ms) > NTP_SYNCED (±10ms) > WALL_CLOCK (±seconds)
 
-## 🔬 WWV/WWVH Discrimination (6 Methods)
+## 🔬 WWV/WWVH Discrimination (8 Voting Methods)
 
 Separate WWV (Fort Collins) and WWVH (Kauai) signals on shared frequencies (2.5, 5, 10, 15 MHz) using complementary measurement techniques:
 
-**Method 1: BCD Correlation** (15/min) 🚀 PRIMARY  
-Cross-correlation of 100 Hz BCD time code finds two peaks = two stations.  
-✅ Highest temporal resolution - captures ionospheric dynamics  
-✅ Measures amplitude AND differential delay simultaneously  
-✅ Optimized performance: 3-second steps (Nov 2025)
+### Voting Methods
 
-**Method 2: Timing Tones** (1/min)  
-Power ratio of 1000 Hz (WWV) vs 1200 Hz (WWVH) marker tones.  
-✅ Reliable baseline - works even with weak signals
+| Vote | Method | Weight | Description |
+|------|--------|--------|-------------|
+| 0 | **Test Signal** | 15 | Minutes :08/:44 scientific modulation test |
+| 1 | **440 Hz Station ID** | 10 | WWVH min 1, WWV min 2 |
+| 2 | **BCD Amplitude Ratio** | 2-10 | 100 Hz time code dual-peak detection |
+| 3 | **1000/1200 Hz Power** | 1-10 | Timing tone power ratio |
+| 4 | **Tick SNR Average** | 5 | 59-tick coherent integration |
+| 5 | **500/600 Hz Ground Truth** | 10-15 | 12 exclusive minutes/hour (weight=15 for M16-19, M43-51) |
+| 6 | **Doppler Stability** | 2 | Lower std = cleaner path (independent of power) |
+| 7 | **Timing Coherence** | 3 | Test signal + BCD ToA agreement |
 
-**Method 3: Tick Windows** (6/min)  
-Per-second tick analysis with adaptive coherent/incoherent integration.  
-✅ Sub-minute dynamics - tracks rapid propagation changes
+### Inter-Method Cross-Validation (9 checks)
 
-**Method 4: 440/500/600 Hz Tone Detection** (14 ground truth min/hour)  
-440 Hz station ID: WWVH minute 1, WWV minute 2.  
-500/600 Hz exclusive minutes: WWV-only (1,16,17,19), WWVH-only (2,43-51).  
-✅ Ground truth calibration - 100% certain identification when present
+Beyond voting, independent measurements validate each other:
+- **Power vs Timing** - BCD delay should match power ratio direction
+- **Geographic Delay** - Measured delay vs predicted from receiver location
+- **Doppler-Power Agreement** - Δf_D magnitude correlates with power
+- **Coherence Quality** - Low coherence (<0.3) downgrades confidence
+- **Harmonic Signature** - 500→1000 Hz, 600→1200 Hz ratios confirm station
 
-**Method 5: Test Signal Detection** (2/hour)  
-Detect WWV/WWVH test signals at minutes :08 and :44 with ToA offset.  
-✅ High-precision ionospheric channel characterization
-
-**Method 6: Weighted Voting** (1/min)  
-Combines all methods with minute-specific weighting for final determination.  
-✅ Robust - leverages strengths of each method
-
-**Why 6 Methods?**
+### Why 8 Methods?
 - **Redundancy:** Multiple independent measurements validate each other
 - **Adaptability:** Different methods excel under different propagation conditions  
 - **Temporal Coverage:** From hourly calibration to sub-second dynamics
 - **Ground Truth:** 14 minutes/hour with 440/500/600 Hz exclusive broadcasts
-- **Cross-Validation:** Agreement confirms accuracy, disagreement reveals complexity
+- **Cross-Validation:** Agreement confirms accuracy, disagreement reveals mixed propagation
 
 **Quick Check:** View `http://localhost:3000/discrimination.html` for 7-panel analysis with method labels and performance statistics.
 
@@ -230,10 +225,13 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 **Beta Release** - Core functionality complete and tested. Daily recording and PSWS upload operational at AC0G since November 2025.
 
 ### Recent Updates (Nov 28, 2025)
+- **Discrimination Refinement:** 8 voting methods + 9 cross-validation checks
+- **500/600 Hz Weight Boost:** Exclusive minutes (M16-19, M43-51) now weight=15
+- **Doppler Stability Vote:** Uses std ratio for channel quality (independent of power)
+- **Coherence Quality Check:** Low coherence downgrades confidence
+- **Harmonic Signature Check:** Validates 500/600 Hz harmonics at 1000/1200 Hz
 - **440 Hz Detection:** Coherent integration for ~30 dB processing gain
 - **Service Scripts:** `scripts/grape-*.sh` for easy start/stop/status
-- **Timing Dashboard:** Refined quality categories (TONE_LOCKED, TONE_STABLE, TONE_AGED)
-- **Repository Cleanup:** Organized archive/ with dev history, legacy scripts
 
 ## Credits & Support
 

@@ -607,7 +607,15 @@ class WWVHDiscriminator:
         
         # Weight factors - test signal gets highest weight when available
         # 500/600 Hz ground truth gets high weight when applicable (overlaps with some other categories)
-        w_500_600 = 10.0 if minute_number in ground_truth_500_600_minutes else 0.0
+        # Exclusive minutes (16,17,19 WWV-only; 43-51 WWVH-only) get highest weight (15.0)
+        # Mixed minutes (1,2) share with 440 Hz so get standard weight (10.0)
+        high_confidence_500_600_minutes = [m for m in ground_truth_500_600_minutes if m not in [1, 2]]
+        if minute_number in high_confidence_500_600_minutes:
+            w_500_600 = 15.0  # Highest confidence - scheduled to be alone
+        elif minute_number in [1, 2]:
+            w_500_600 = 10.0  # High confidence, but shares minute with 440 Hz
+        else:
+            w_500_600 = 0.0
         
         if minute_number in test_signal_minutes:
             w_test = 15.0  # Highest weight for test signal (when detected)
@@ -717,28 +725,34 @@ class WWVHDiscriminator:
                 logger.debug(f"{self.channel_name}: 500/600 Hz ground truth vote: WWVH "
                            f"(minute {minute_number}, power={result.tone_500_600_power_db:.1f}dB)")
         
-        # === VOTE 6: Differential Doppler Shift ===
-        # The two stations have different propagation paths, leading to different Doppler shifts.
-        # ΔfD = fD_WWV - fD_WWVH provides a path signature that correlates with geographic ToA.
-        # If WWV Doppler is significantly different from WWVH Doppler, it validates path separation.
+        # === VOTE 6: Doppler Stability Vote ===
+        # Uses Doppler standard deviation as an INDEPENDENT measure of channel stability.
+        # A more stable path (lower std) indicates a cleaner, more direct ionospheric reflection.
+        # This avoids subtle reinforcement loops with the power ratio by using std, not mean ΔfD.
         w_doppler = 2.0  # Lower weight - confirmatory rather than primary
-        if (result.doppler_wwv_hz is not None and result.doppler_wwvh_hz is not None and
+        if (result.doppler_wwv_std_hz is not None and 
+            result.doppler_wwvh_std_hz is not None and
             result.doppler_quality is not None and result.doppler_quality > 0.3):
-            delta_doppler = result.doppler_wwv_hz - result.doppler_wwvh_hz
-            # Significant differential Doppler (>0.05 Hz) indicates distinct paths
-            if abs(delta_doppler) > 0.05:
-                # Compare with power ratio - they should correlate
-                # Stronger signal typically has cleaner (lower std) Doppler
-                if result.doppler_wwv_std_hz is not None and result.doppler_wwvh_std_hz is not None:
-                    wwv_doppler_cleaner = result.doppler_wwv_std_hz < result.doppler_wwvh_std_hz
-                    if wwv_doppler_cleaner and result.power_ratio_db and result.power_ratio_db > 0:
-                        wwv_score += w_doppler
-                        total_weight += w_doppler
-                        logger.debug(f"{self.channel_name}: Doppler vote: WWV (cleaner Doppler, ΔfD={delta_doppler:.3f}Hz)")
-                    elif not wwv_doppler_cleaner and result.power_ratio_db and result.power_ratio_db < 0:
-                        wwvh_score += w_doppler
-                        total_weight += w_doppler
-                        logger.debug(f"{self.channel_name}: Doppler vote: WWVH (cleaner Doppler, ΔfD={delta_doppler:.3f}Hz)")
+            # Calculate ratio of Doppler standard deviations in dB
+            # Negative = WWV more stable, Positive = WWVH more stable
+            std_ratio_db = 10 * np.log10(
+                (result.doppler_wwv_std_hz + 1e-12) / 
+                (result.doppler_wwvh_std_hz + 1e-12)
+            )
+            
+            # If one station's Doppler is significantly more stable (>3 dB difference)
+            if std_ratio_db < -3.0:
+                # WWV is much more stable (cleaner path)
+                wwv_score += w_doppler
+                total_weight += w_doppler
+                logger.debug(f"{self.channel_name}: Doppler stability vote: WWV "
+                           f"(WWV std < WWVH std by {-std_ratio_db:.1f} dB)")
+            elif std_ratio_db > 3.0:
+                # WWVH is much more stable (cleaner path)
+                wwvh_score += w_doppler
+                total_weight += w_doppler
+                logger.debug(f"{self.channel_name}: Doppler stability vote: WWVH "
+                           f"(WWVH std < WWV std by {std_ratio_db:.1f} dB)")
         
         # === VOTE 7: Test Signal ToA vs BCD ToA Consistency (minutes 8/44) ===
         # Both Test Signal and BCD are modulated on the carrier simultaneously.
@@ -2787,6 +2801,102 @@ class WWVHDiscriminator:
                 disagreements.append('500_600hz_ground_truth_disagree')
                 logger.warning(f"{self.channel_name}: ✗ {result.tone_500_600_freq_hz} Hz says {gt_station} "
                              f"but power says {result.dominant_station}")
+        
+        # 7. Differential Doppler Shift Agreement (Phase 6A)
+        # WWV (Colorado) and WWVH (Hawaii) have different propagation paths,
+        # leading to different Doppler shifts. The Δf_D acts as a geographic
+        # signature that can validate power-based discrimination.
+        if result.doppler_wwv_hz is not None and result.doppler_wwvh_hz is not None:
+            # Only consider if Doppler quality is acceptable
+            doppler_quality = result.doppler_quality or 0.0
+            if doppler_quality > 0.3:
+                # Calculate differential Doppler magnitude
+                doppler_diff_hz = abs(result.doppler_wwv_hz) - abs(result.doppler_wwvh_hz)
+                power_ratio = result.power_ratio_db or 0.0
+                
+                # Agreement: When power strongly favors one station AND its Doppler
+                # magnitude is dominant (suggesting shorter/more active path)
+                # This is heuristic but leverages path independence
+                if (power_ratio > 3.0 and doppler_diff_hz > 0.005) or \
+                   (power_ratio < -3.0 and doppler_diff_hz < -0.005):
+                    agreements.append('doppler_power_agree')
+                    logger.debug(f"{self.channel_name}: ✓ Doppler Δf_D ({doppler_diff_hz:.4f} Hz) "
+                               f"agrees with power ratio ({power_ratio:.1f} dB)")
+                elif abs(doppler_diff_hz) > 0.02:
+                    # Very high differential Doppler suggests complex, non-reciprocal channel
+                    # This is informational, not necessarily a disagreement
+                    logger.info(f"{self.channel_name}: High differential Doppler: {doppler_diff_hz:.4f} Hz - "
+                              f"complex multipath channel")
+        
+        # 8. Coherence Quality Confidence Adjustment (Phase 6B)
+        # Low coherence quality means unstable channel (fading, multipath) where
+        # phase-derived measurements (BCD timing, Doppler) are unreliable.
+        if result.tick_windows_10sec:
+            # Use the full minute window (index 0) for coherence assessment
+            full_min_tick_data = result.tick_windows_10sec[0]
+            
+            coherence_wwv = full_min_tick_data.get('coherence_quality_wwv', 1.0)
+            coherence_wwvh = full_min_tick_data.get('coherence_quality_wwvh', 1.0)
+            min_coherence = min(coherence_wwv, coherence_wwvh)
+            
+            if min_coherence < 0.3:
+                # Significant phase instability - timing measurements unreliable
+                # This is a strong indicator to reduce confidence
+                disagreements.append('low_coherence_downgrade')
+                logger.warning(f"{self.channel_name}: ⚠ Coherence very low ({min_coherence:.2f}) - "
+                             f"phase-derived measurements unreliable")
+            elif min_coherence > 0.85:
+                # Excellent coherence confirms stable channel - all methods trustworthy
+                agreements.append('high_coherence_boost')
+                logger.debug(f"{self.channel_name}: ✓ High coherence ({min_coherence:.2f}) - "
+                           f"stable channel, measurements reliable")
+        
+        # 9. Harmonic Content Cross-Validation (Phase 6C)
+        # When one station broadcasts 500/600 Hz exclusively, receiver nonlinearity
+        # creates harmonics at 1000/1200 Hz that add to the timing tone power:
+        #   - 500 Hz × 2 = 1000 Hz (adds to WWV timing marker)
+        #   - 600 Hz × 2 = 1200 Hz (adds to WWVH timing marker)
+        # The harmonic ratio P_1000/P_500 or P_1200/P_600 indicates contamination level.
+        if result.tone_500_600_detected and result.tone_500_600_ground_truth_station:
+            gt_station = result.tone_500_600_ground_truth_station
+            gt_freq = result.tone_500_600_freq_hz
+            power_ratio = result.power_ratio_db or 0.0
+            
+            # Get harmonic ratios (already computed in detect_500_600hz_tone)
+            h_500_1000 = result.harmonic_ratio_500_1000  # P_1000/P_500 in dB
+            h_600_1200 = result.harmonic_ratio_600_1200  # P_1200/P_600 in dB
+            
+            # Analyze exclusive WWV minutes (1, 16, 17, 19)
+            # WWV broadcasts 600 Hz → harmonic at 1200 Hz adds to WWVH timing power
+            # If WWV is truly dominant, this harmonic is significant
+            if gt_station == 'WWV' and gt_freq == 600 and h_600_1200 is not None:
+                # Strong harmonic ratio (>-15 dB) confirms significant 600 Hz presence
+                # This supports WWV as the received station
+                if h_600_1200 > -15 and power_ratio > 0:
+                    agreements.append('harmonic_signature_wwv')
+                    logger.debug(f"{self.channel_name}: ✓ 600→1200 Hz harmonic ratio ({h_600_1200:.1f} dB) "
+                               f"confirms WWV 600 Hz presence")
+            
+            # Analyze exclusive WWVH minutes (2, 43-51)
+            # WWVH broadcasts 600 Hz → harmonic at 1200 Hz adds to WWVH timing power
+            # If WWVH is truly dominant, this harmonic is significant
+            elif gt_station == 'WWVH' and gt_freq == 600 and h_600_1200 is not None:
+                if h_600_1200 > -15 and power_ratio < 0:
+                    agreements.append('harmonic_signature_wwvh')
+                    logger.debug(f"{self.channel_name}: ✓ 600→1200 Hz harmonic ratio ({h_600_1200:.1f} dB) "
+                               f"confirms WWVH 600 Hz presence")
+            
+            # 500 Hz exclusive minutes: harmonic at 1000 Hz
+            elif gt_freq == 500 and h_500_1000 is not None:
+                if h_500_1000 > -15:
+                    if gt_station == 'WWV' and power_ratio > 0:
+                        agreements.append('harmonic_signature_wwv')
+                        logger.debug(f"{self.channel_name}: ✓ 500→1000 Hz harmonic ratio ({h_500_1000:.1f} dB) "
+                                   f"confirms WWV 500 Hz presence")
+                    elif gt_station == 'WWVH' and power_ratio < 0:
+                        agreements.append('harmonic_signature_wwvh')
+                        logger.debug(f"{self.channel_name}: ✓ 500→1000 Hz harmonic ratio ({h_500_1000:.1f} dB) "
+                                   f"confirms WWVH 500 Hz presence")
         
         # Store cross-validation results
         result.inter_method_agreements = agreements

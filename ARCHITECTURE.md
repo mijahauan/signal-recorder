@@ -108,7 +108,7 @@ Core Recorder (Stable)  →  Analytics (Evolving)  →  Consumers (Flexible)
 
 ### 5. Independent Discrimination Methods
 
-**Decision:** Six separate analysis methods for WWV/WWVH discrimination on shared frequencies, each with dedicated CSV output.
+**Decision:** Eight voting methods + nine cross-validation checks for WWV/WWVH discrimination on shared frequencies, each with dedicated CSV output.
 
 **Why?**
 - **Independent Reprocessing:** Update one method without rerunning others
@@ -116,14 +116,28 @@ Core Recorder (Stable)  →  Analytics (Evolving)  →  Consumers (Flexible)
 - **Provenance:** Clear data lineage for each result
 - **Weighted Voting:** Combine methods with confidence levels
 - **Scientific Rigor:** Document how each conclusion was reached
+- **Mutual Reinforcement:** Cross-validation checks validate voting results
 
-**Methods:**
-1. BCD Correlation (100 Hz subcarrier) - PRIMARY, highest temporal resolution
-2. Timing Tones (1000/1200 Hz power ratio)
-3. Tick Windows (5ms coherent analysis)
-4. 440/500/600 Hz Tones (14 ground truth minutes/hour)
-5. Test Signal Detection (minutes :08, :44 with ToA offset)
-6. Weighted Voting (final determination)
+**Voting Methods (8):**
+1. Test Signal Detection (minutes :08, :44) - weight=15
+2. 440 Hz Station ID (minutes 1, 2) - weight=10
+3. BCD Amplitude Ratio (100 Hz subcarrier) - weight=2-10
+4. 1000/1200 Hz Timing Tone Power Ratio - weight=1-10
+5. Tick SNR Average (59-tick coherent integration) - weight=5
+6. 500/600 Hz Ground Truth (12 exclusive min/hour) - weight=10-15
+7. Doppler Stability (std ratio, independent of power) - weight=2
+8. Timing Coherence (Test + BCD ToA agreement) - weight=3
+
+**Cross-Validation Checks (9):**
+1. Power vs Timing agreement
+2. Per-tick voting consistency
+3. Geographic delay validation
+4. 440 Hz ground truth validation
+5. BCD correlation quality
+6. 500/600 Hz ground truth validation
+7. Doppler-Power agreement (Δf_D vs power ratio)
+8. Coherence quality confidence adjustment
+9. Harmonic signature validation (500→1000, 600→1200 Hz)
 
 ---
 
@@ -492,12 +506,32 @@ JSON Response → Chart.js plots
 
 #### Method 6: Weighted Voting (Final Determination)
 
-**What:** Combine all methods with minute-specific weighting.
+**What:** Combine all 8 voting methods with minute-specific weighting.
+
+**Voting Weights:**
+| Vote | Method | Max Weight | When Applied |
+|------|--------|------------|---------------|
+| 0 | Test Signal | 15 | Minutes :08, :44 only |
+| 1 | 440 Hz Station ID | 10 | Minutes 1, 2 only |
+| 2 | BCD Amplitude Ratio | 10 | Higher in BCD-dominant minutes |
+| 3 | 1000/1200 Hz Power | 10 | Reduced when ground truth available |
+| 4 | Tick SNR Average | 5 | All minutes |
+| 5 | 500/600 Hz Ground Truth | **15** | M16-19, M43-51 (exclusive); 10 for M1-2 |
+| 6 | Doppler Stability | 2 | When quality > 0.3, std ratio > 3 dB |
+| 7 | Timing Coherence | 3 | Minutes :08, :44 with test + BCD |
+
+**Cross-Validation (Phase 6):**
+After voting, 9 inter-method checks adjust confidence:
+- **Agreements** boost confidence (≥2 with 0 disagreements → HIGH)
+- **Disagreements** reduce confidence (≥2 → MEDIUM)
+- Low coherence (<0.3) forces LOW confidence
+- High coherence (>0.85) contributes to agreement count
 
 **Outputs:**
 - Dominant station (WWV/WWVH/BALANCED/UNKNOWN)
-- Confidence level
+- Confidence level (high/medium/low)
 - All individual method results
+- Inter-method agreements/disagreements list
 
 **Use:** Final determination for visualization and scientific analysis.
 
@@ -785,7 +819,10 @@ Web UI
 ### V2 (November 2025) - Current
 - Three-service architecture (Core, Analytics, DRF Writer)
 - 10 Hz NPZ as central pivot point
-- Five independent discrimination methods
+- **Eight voting methods** with weighted scoring
+- **Nine cross-validation checks** for mutual reinforcement
+- 500/600 Hz ground truth weight boosted to 15 for exclusive minutes
+- Doppler stability vote uses std ratio (independent of power)
 - Separated CSV outputs per method
 - Canonical contracts established (Nov 20, 2025)
 

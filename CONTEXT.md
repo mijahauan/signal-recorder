@@ -1,7 +1,7 @@
 # GRAPE Signal Recorder - AI Context Document
 
-**Last Updated:** 2025-11-28 (afternoon session)  
-**Status:** Beta release ready - active discrimination refinement
+**Last Updated:** 2025-11-28 (late afternoon session)  
+**Status:** Beta release ready - enhanced inter-method cross-validation
 
 ---
 
@@ -33,6 +33,11 @@ The core system is complete. Current work focuses on **tuning the WWV/WWVH discr
 - ✅ **Service Scripts:** `scripts/grape-*.sh` with -start|-stop|-status flags
 - ✅ **Major Cleanup:** Organized 140+ files into `archive/` directories
 - ✅ **Ground Truth Analysis:** Explained why disagreements occur (mixed propagation)
+- ✅ **Doppler-Power Agreement:** Check 7 validates power ratio with Δf_D magnitude
+- ✅ **Coherence Quality Check:** Check 8 downgrades confidence when min coherence < 0.3
+- ✅ **Harmonic Signature Check:** Check 9 validates 500/600 Hz harmonics at 1000/1200 Hz
+- ✅ **500/600 Hz Weight Boost:** Exclusive minutes (M16-19, M43-51) now weight=15 (was 10)
+- ✅ **Vote 6 Simplification:** Changed from ΔfD mean to std ratio for independence
 
 ### Quick Start for Beta Testers
 
@@ -184,11 +189,29 @@ The discrimination system uses weighted voting across multiple independent metho
 | 2 | BCD Amplitude Ratio | 2-10 | All (higher in BCD minutes) |
 | 3 | 1000/1200 Hz Power Ratio | 1-10 | All |
 | 4 | Tick SNR Average | 5 | All |
-| 5 | 500/600 Hz Ground Truth | 10 | 14 exclusive minutes/hour |
-| 6 | Differential Doppler | 2 | When quality > 0.3 |
+| 5 | 500/600 Hz Ground Truth | 10-15 | 14 exclusive minutes/hour (15 for M16-19, M43-51) |
+| 6 | Doppler Stability (std ratio) | 2 | When quality > 0.3, std ratio > 3 dB |
 | 7 | Timing Coherence | 3 | :08, :44 when test signal + BCD |
 
 **Key Insight:** Ground truth (Vote 5) can be overridden when other methods collectively disagree. This is by design - a "disagreement" shows mixed propagation where dominant station differs from ground truth detection.
+
+### Inter-Method Cross-Validation (Phase 6)
+
+Beyond voting, independent measurements validate each other via `_cross_validate_methods()`:
+
+| # | Check | Agreement Condition | Effect |
+|---|-------|---------------------|--------|
+| 1 | Power vs Timing | WWVH louder + WWV arrives first | +agreement |
+| 2 | Per-tick Voting | Tick power matches FFT ratio | +agreement |
+| 3 | Geographic Delay | BCD delay within 10ms of predicted | +agreement |
+| 4 | 440 Hz Ground Truth | Power agrees with min 1/2 detection | +agreement |
+| 5 | BCD Correlation | Quality > 5.0 confirms minute lock | +agreement |
+| 6 | 500/600 Hz Ground Truth | Power agrees with exclusive tone | +agreement |
+| 7 | **Doppler-Power** | Δf_D magnitude agrees with power ratio | +agreement |
+| 8 | **Coherence Quality** | min(Q_wwv, Q_wwvh) < 0.3 → unreliable | +disagreement |
+| 9 | **Harmonic Signature** | P_1000/P_500 or P_1200/P_600 confirms station | +agreement |
+
+Checks 7-9 were added 2025-11-28 to exploit orthogonal measurements we already collect.
 
 ### Key Files for Discrimination
 

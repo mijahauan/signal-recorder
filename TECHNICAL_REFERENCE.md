@@ -228,38 +228,55 @@ On 2.5, 5, 10, and 15 MHz, both WWV (Fort Collins, CO) and WWVH (Kauai, HI) tran
 - **1000 Hz**: WWV/CHU marker tone (first 0.8 sec of each minute)
 - **1200 Hz**: WWVH marker tone (first 0.8 sec of each minute)
 
-### 6 Discrimination Methods
+### 8 Voting Methods + 9 Cross-Validation Checks
 
 Each method writes to its own daily CSV for independent reprocessing:
 
-1. **BCD Correlation (PRIMARY)** - 100 Hz time code dual-peak detection
-   - 3-second sliding windows, 15+ measurements/minute
-   - Measures amplitude AND differential delay simultaneously
-   - Geographic peak assignment based on receiver location
+#### Voting Methods
 
-2. **Timing Tones** - 1000 Hz (WWV) vs 1200 Hz (WWVH) power ratio
-   - First 0.8 seconds of each minute
-   - Reliable baseline even with weak signals
+| Vote | Method | Weight | Description |
+|------|--------|--------|-------------|
+| 0 | Test Signal | 15 | Minutes :08/:44 scientific modulation |
+| 1 | 440 Hz Station ID | 10 | WWVH min 1, WWV min 2 |
+| 2 | BCD Amplitude Ratio | 2-10 | 100 Hz time code dual-peak |
+| 3 | 1000/1200 Hz Power | 1-10 | Timing tone ratio |
+| 4 | Tick SNR Average | 5 | 59-tick coherent integration |
+| 5 | 500/600 Hz Ground Truth | **10-15** | 12 exclusive min/hour |
+| 6 | Doppler Stability | 2 | std ratio (independent of power) |
+| 7 | Timing Coherence | 3 | Test + BCD ToA agreement |
 
-3. **Tick Windows** - 5ms tick coherent/incoherent analysis
-   - 6 windows per minute (at seconds 0, 10, 20, 30, 40, 50)
-   - Adaptive integration method selection
+**Weight 5 Details (500/600 Hz Ground Truth):**
+- **weight=15:** Exclusive minutes M16, M17, M19 (WWV-only), M43-51 (WWVH-only)
+- **weight=10:** Mixed minutes M1, M2 (share with 440 Hz)
 
-4. **440/500/600 Hz Tone Detection** - Ground truth identification
-   - Minute 1: WWVH 440 Hz, Minute 2: WWV 440 Hz
-   - 500/600 Hz exclusive minutes provide additional ground truth
-   - Harmonic analysis: 500→1000 Hz (WWV), 600→1200 Hz (WWVH)
+**Vote 6 (Doppler Stability):**
+```python
+std_ratio_db = 10 * log10(doppler_wwv_std / doppler_wwvh_std)
+if std_ratio_db < -3.0:  # WWV more stable
+    wwv_score += 2.0
+elif std_ratio_db > 3.0:  # WWVH more stable
+    wwvh_score += 2.0
+```
 
-5. **Test Signal Detection** - Minutes :08 and :44
-   - Time-of-arrival offset measurement
-   - High-precision ionospheric channel characterization
+#### Cross-Validation Checks (Phase 6)
 
-6. **Weighted Voting** - Combines all methods
-   - Minute-specific confidence weighting based on tone schedule
-   - 440 Hz minutes: Highest weight to tone detection
-   - Ground truth minutes: High weight to 500/600 Hz detection
-   - BCD minutes (0, 8-10, 29-30): Highest weight to BCD
-   - Final determination: WWV/WWVH/BALANCED/UNKNOWN
+| # | Check | Agreement Token | Effect |
+|---|-------|-----------------|--------|
+| 1 | Power vs Timing | `power_timing_agree` | +agreement |
+| 2 | Per-tick voting | `tick_power_agree` | +agreement |
+| 3 | Geographic delay | `geographic_timing_agree` | +agreement |
+| 4 | 440 Hz ground truth | `440hz_ground_truth_agree` | +agreement |
+| 5 | BCD correlation | `bcd_minute_validated` | +agreement |
+| 6 | 500/600 Hz ground truth | `500_600hz_ground_truth_agree` | +agreement |
+| 7 | Doppler-Power | `doppler_power_agree` | +agreement |
+| 8 | Coherence quality | `high_coherence_boost` / `low_coherence_downgrade` | ± |
+| 9 | Harmonic signature | `harmonic_signature_wwv/wwvh` | +agreement |
+
+**Confidence Adjustment:**
+- ≥2 agreements + 0 disagreements → HIGH
+- ≥2 disagreements → MEDIUM
+- More disagreements than agreements → LOW
+- Low coherence (<0.3) → LOW (forced)
 
 ### Timing Purpose
 
@@ -568,6 +585,14 @@ sudo sysctl -w net.core.rmem_max=26214400
 
 ---
 
-**Version**: 2.0  
+**Version**: 2.1  
 **Last Updated**: November 28, 2025  
 **Purpose**: Technical reference for GRAPE Signal Recorder developers
+
+**Recent Changes (Nov 28, 2025):**
+- 8 voting methods (was 6)
+- 9 cross-validation checks added
+- 500/600 Hz weight boosted to 15 for exclusive minutes
+- Doppler vote changed to std ratio (independent of power)
+- Coherence quality check downgrades/boosts confidence
+- Harmonic signature validation (500→1000, 600→1200 Hz)
