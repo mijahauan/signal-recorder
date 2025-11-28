@@ -363,13 +363,20 @@ class TimingMetricsWriter:
         source_lower = time_snap.source.lower() if time_snap.source else ''
         is_tone_source = any(station in source_lower for station in ['wwv', 'chu'])
         
+        # Thresholds chosen to match propagation reality:
+        # - Tone precision degrades ~1ms/hour due to ADC clock drift
+        # - 30 min = still within ±0.5ms, clearly "locked"
+        # - 2 hours = still better than NTP (±10ms), but aging
+        TONE_LOCKED_MAX_AGE = 1800    # 30 minutes
+        TONE_DERIVED_MAX_AGE = 7200   # 2 hours
+        
         # Tone-based classifications (best quality)
         if is_tone_source:
             # Fresh tone with low drift = actively tone-locked
-            if age_seconds < 300 and abs(drift_ms) < 5.0:
+            if age_seconds < TONE_LOCKED_MAX_AGE and abs(drift_ms) < 5.0:
                 return 'TONE_LOCKED'
-            # Aging tone but still valid
-            elif age_seconds < 3600:
+            # Aging tone but still valid (better than NTP)
+            elif age_seconds < TONE_DERIVED_MAX_AGE:
                 return 'INTERPOLATED'
             # Very old tone - fall through to check NTP fallback
         
@@ -377,9 +384,9 @@ class TimingMetricsWriter:
         if time_snap.source == 'ntp':
             return 'NTP_SYNCED'
         
-        # Aged tone (>1 hour) - check if NTP available as fallback
+        # Aged tone (>2 hours) - check if NTP available as fallback
         # This allows graceful degradation: TONE → NTP → WALL_CLOCK
-        if is_tone_source and age_seconds >= 3600:
+        if is_tone_source and age_seconds >= TONE_DERIVED_MAX_AGE:
             ntp_offset = self.get_ntp_offset()
             if ntp_offset is not None:
                 return 'NTP_SYNCED'  # Fallback to NTP for aged tone

@@ -86,7 +86,9 @@ async function getPrimaryTimeReference(paths, config) {
       
       const source = state.time_snap.source || 'unknown';
       const confidence = state.time_snap.confidence || 0;
-      const ageSeconds = Date.now() / 1000 - (state.time_snap.established_at || state.time_snap.utc_timestamp);
+      // Use utc_timestamp (when tone was detected), NOT established_at (NPZ creation time)
+      // This matches Python timing_metrics_writer.py line 360
+      const ageSeconds = Date.now() / 1000 - state.time_snap.utc_timestamp;
       
       // Calculate score
       let score = confidence * 100;
@@ -104,12 +106,17 @@ async function getPrimaryTimeReference(paths, config) {
       
       if (score > bestScore) {
         bestScore = score;
+        const qualityDetails = getQualityDetails(source, ageSeconds, 0);
         bestReference = {
           source_channel: channelName,
           source_type: source,
           station: state.time_snap.station || 'unknown',
-          quality: classifyQuality(source, ageSeconds),
-          precision_ms: getPrecision(source),
+          quality: qualityDetails.quality,
+          effective_quality: qualityDetails.effectiveQuality,
+          base_reference: qualityDetails.baseReference,
+          is_tone_based: qualityDetails.isToneBased,
+          precision_ms: getPrecision(source, ageSeconds),
+          precision_description: qualityDetails.precisionDescription,
           confidence: confidence,
           snr_db: state.time_snap.detection_snr_db || null,
           tone_frequency_hz: state.time_snap.tone_frequency || null,
@@ -173,11 +180,13 @@ async function getTimingHealthSummary(paths, config) {
     // Get latest record
     const latest = metrics.records[metrics.records.length - 1];
     
-    // Count by quality
+    // Count by quality - handle both old and new naming
     const quality = latest.quality || 'WALL_CLOCK';
     if (quality === 'TONE_LOCKED') toneLocked++;
     else if (quality === 'NTP_SYNCED') ntpSynced++;
-    else if (quality === 'INTERPOLATED') interpolated++;
+    else if (quality === 'INTERPOLATED' || quality === 'TONE_AGED' || quality === 'TONE_STABLE') {
+      interpolated++;  // Count all tone-based interpolation together
+    }
     else wallClock++;
     
     // Collect drift/jitter
@@ -412,7 +421,7 @@ function classifyQuality(source, ageSeconds) {
   if (source.includes('startup') && ageSeconds < 300) {
     return 'TONE_LOCKED';
   } else if (source.includes('startup') && ageSeconds < 3600) {
-    return 'INTERPOLATED';
+    return 'TONE_AGED';  // Was 'INTERPOLATED' - clearer name
   } else if (source === 'ntp') {
     return 'NTP_SYNCED';
   } else {
@@ -420,8 +429,69 @@ function classifyQuality(source, ageSeconds) {
   }
 }
 
-function getPrecision(source) {
-  if (source.includes('startup')) return 1.0;
+/**
+ * Get detailed quality info including base reference and estimated precision
+ */
+function getQualityDetails(source, ageSeconds, driftMs) {
+  const quality = classifyQuality(source, ageSeconds);
+  
+  // Base reference - what timing is derived from
+  let baseReference = 'unknown';
+  if (source.includes('wwv')) baseReference = 'WWV tone';
+  else if (source.includes('chu')) baseReference = 'CHU tone';
+  else if (source === 'ntp') baseReference = 'NTP';
+  else baseReference = 'System clock';
+  
+  // Estimate current precision based on source and age
+  // Tone sources: start at ±1ms, degrade ~1ms/hour due to ADC drift
+  // NTP: ±10ms constant
+  // Wall clock: ±seconds
+  let estimatedPrecisionMs;
+  let precisionDescription;
+  
+  if (source.includes('startup')) {
+    // Tone-based: degrades with age
+    const hoursSincelock = ageSeconds / 3600;
+    estimatedPrecisionMs = 1.0 + (hoursSincelock * 1.0); // ~1ms/hour drift
+    if (estimatedPrecisionMs < 2) {
+      precisionDescription = 'Excellent (fresh tone)';
+    } else if (estimatedPrecisionMs < 5) {
+      precisionDescription = 'Good (aging tone)';
+    } else {
+      precisionDescription = 'Degraded (stale tone)';
+    }
+  } else if (source === 'ntp') {
+    estimatedPrecisionMs = 10.0;
+    precisionDescription = 'Good (NTP)';
+  } else {
+    estimatedPrecisionMs = 1000.0;
+    precisionDescription = 'Poor (unsynchronized)';
+  }
+  
+  // Effective quality considers both nominal quality AND actual drift
+  // If drift is excellent despite aged source, effective quality is still good
+  let effectiveQuality = quality;
+  if (quality === 'TONE_AGED' && Math.abs(driftMs) < 1.0) {
+    effectiveQuality = 'TONE_STABLE';  // Aged but drift is excellent
+  }
+  
+  return {
+    quality,
+    effectiveQuality,
+    baseReference,
+    estimatedPrecisionMs,
+    precisionDescription,
+    isToneBased: source.includes('startup') || source.includes('wwv') || source.includes('chu'),
+    ageSeconds
+  };
+}
+
+function getPrecision(source, ageSeconds = 0) {
+  if (source.includes('startup')) {
+    // Tone precision degrades ~1ms per hour
+    const hoursSinceLock = ageSeconds / 3600;
+    return Math.min(1.0 + hoursSinceLock, 50.0);  // Cap at 50ms
+  }
   if (source === 'ntp') return 10.0;
   return 1000.0; // wall clock
 }
@@ -453,5 +523,7 @@ export {
   getTimingHealthSummary,
   getTimingMetrics,
   getTimingTransitions,
-  getTimingTimeline
+  getTimingTimeline,
+  getQualityDetails,
+  classifyQuality
 };

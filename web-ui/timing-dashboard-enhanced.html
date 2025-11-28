@@ -152,9 +152,13 @@
             color: #fff;
         }
         
-        .quality-badge.interpolated {
-            background: #f59e0b;
+        .quality-badge.interpolated,
+        .quality-badge.tone-aged,
+        .quality-badge.tone-derived {
+            background: linear-gradient(135deg, #22c55e 25%, #facc15 25%, #facc15 50%, #22c55e 50%, #22c55e 75%, #facc15 75%);
+            background-size: 8px 8px;
             color: #fff;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
         }
         
         .quality-badge.wall-clock {
@@ -604,10 +608,12 @@
                 `;
             }
             
-            const qualityClass = data.quality.toLowerCase().replace('_', '-');
-            const borderClass = data.quality === 'TONE_LOCKED' ? '' :
-                               data.quality === 'NTP_SYNCED' ? 'ntp' :
-                               data.quality === 'INTERPOLATED' ? 'degraded' : 'poor';
+            // Use effective_quality for display if available, fall back to quality
+            const displayQuality = data.effective_quality || data.quality;
+            const qualityClass = displayQuality.toLowerCase().replace('_', '-');
+            const borderClass = displayQuality === 'TONE_LOCKED' || displayQuality === 'TONE_STABLE' ? '' :
+                               displayQuality === 'NTP_SYNCED' ? 'ntp' :
+                               displayQuality === 'TONE_AGED' || displayQuality === 'INTERPOLATED' ? 'degraded' : 'poor';
             
             return `
                 <div class="primary-reference ${borderClass}">
@@ -645,16 +651,16 @@
                         </div>
                         
                         <div class="ref-metric">
-                            <div class="ref-metric-label">Source Type</div>
+                            <div class="ref-metric-label">Base Reference</div>
                             <div class="ref-metric-value">
-                                ${data.tone_frequency_hz ? `${data.tone_frequency_hz} Hz` : 'No Tone'}
+                                ${data.base_reference || (data.tone_frequency_hz ? `${data.tone_frequency_hz} Hz tone` : 'No Tone')}
                             </div>
                             <div class="ref-metric-sub">
-                                ${data.source_type.includes('wwv') && data.tone_frequency_hz ? 'WWV tone' : 
-                                  data.source_type.includes('chu') && data.tone_frequency_hz ? 'CHU tone' :
-                                  data.quality === 'WALL_CLOCK' ? 'Unsynchronized clock' :
+                                ${data.precision_description || (
+                                  data.is_tone_based ? 'Tone-derived timing' :
                                   data.quality === 'NTP_SYNCED' ? 'NTP synchronized' :
-                                  data.source_type}
+                                  'Unsynchronized clock'
+                                )}
                             </div>
                         </div>
                     </div>
@@ -843,20 +849,23 @@
                     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;">
                         <div style="display: flex; align-items: flex-start; gap: 12px;">
                             <span style="background: #10b981; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">TONE_LOCKED</span>
-                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Locked to WWV/CHU second marker tone. Highest precision (±1ms). Time derived from detected tone edge at minute boundary.</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Tone detected within 30 min. Highest precision (±0.5ms). Indicates good propagation.</span>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <span style="background: linear-gradient(135deg, #22c55e 25%, #facc15 25%, #facc15 50%, #22c55e 50%, #22c55e 75%, #facc15 75%); background-size: 8px 8px; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">TONE_DERIVED</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">No tone for 30 min - 2 hours. Still tone-based but aging (~1ms/hr drift). Propagation fadeout.</span>
                         </div>
                         <div style="display: flex; align-items: flex-start; gap: 12px;">
                             <span style="background: #3b82f6; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">NTP_SYNCED</span>
-                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Using NTP-synchronized system clock. Good precision (±10ms). Fallback when tone not detected but system clock is synced.</span>
-                        </div>
-                        <div style="display: flex; align-items: flex-start; gap: 12px;">
-                            <span style="background: #f59e0b; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">INTERPOLATED</span>
-                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Using aged tone reference (>5 min old). Moderate precision (±50ms). ADC clock drift may accumulate over time.</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">No tone for &gt;2 hours. Fallback to NTP (±10ms). Extended propagation outage.</span>
                         </div>
                         <div style="display: flex; align-items: flex-start; gap: 12px;">
                             <span style="background: #ef4444; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">WALL_CLOCK</span>
-                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Using unsynchronized system clock. Low precision (±seconds). Only used at startup before first tone detection.</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Unsynchronized system clock. Low precision (±seconds). Only at startup before first tone detection.</span>
                         </div>
+                    </div>
+                    <div style="margin-top: 15px; padding: 12px; background: rgba(16, 185, 129, 0.1); border-radius: 6px; font-size: 13px; color: #10b981;">
+                        💡 <strong>Key insight:</strong> RTP drift is the true measure of timing quality. If drift is &lt;1ms, timing is excellent even when showing TONE_DERIVED.
                     </div>
                 </div>
             `;
@@ -1029,11 +1038,21 @@
             try {
                 // Fetch metrics for all channels to build timeline
                 const traces = [];
+                // Quality colors - TONE_DERIVED uses green base (still tone-based = good)
                 const qualityColors = {
-                    'TONE_LOCKED': '#10b981',
-                    'NTP_SYNCED': '#3b82f6',
-                    'INTERPOLATED': '#f59e0b',
-                    'WALL_CLOCK': '#ef4444'
+                    'TONE_LOCKED': '#10b981',      // Green - fresh tone
+                    'TONE_DERIVED': '#22c55e',     // Lighter green - still tone-based
+                    'NTP_SYNCED': '#3b82f6',       // Blue - NTP fallback
+                    'WALL_CLOCK': '#ef4444'        // Red - unsynchronized
+                };
+                
+                // TONE_DERIVED gets yellow hatching overlay to distinguish from TONE_LOCKED
+                const needsHatchOverlay = (quality) => quality === 'TONE_DERIVED';
+                
+                // Map old/internal names to display names
+                const qualityDisplayName = (q) => {
+                    if (q === 'INTERPOLATED' || q === 'TONE_AGED') return 'TONE_DERIVED';
+                    return q;
                 };
                 
                 for (let i = 0; i < availableChannels.length; i++) {
@@ -1043,18 +1062,19 @@
                         const data = await response.json();
                         
                         if (data.available && data.metrics && data.metrics.length > 0) {
-                            // Group consecutive records by quality
+                            // Group consecutive records by quality (using display names)
                             const segments = [];
                             let currentSegment = null;
                             
                             for (const m of data.metrics) {
-                                if (!currentSegment || currentSegment.quality !== m.quality) {
+                                const displayQuality = qualityDisplayName(m.quality);
+                                if (!currentSegment || currentSegment.quality !== displayQuality) {
                                     if (currentSegment) {
                                         currentSegment.end = new Date(m.timestamp);
                                         segments.push(currentSegment);
                                     }
                                     currentSegment = {
-                                        quality: m.quality,
+                                        quality: displayQuality,
                                         start: new Date(m.timestamp),
                                         end: null
                                     };
@@ -1070,6 +1090,7 @@
                                 const qualitySegments = segments.filter(s => s.quality === quality);
                                 if (qualitySegments.length > 0) {
                                     for (const seg of qualitySegments) {
+                                        // Base color bar
                                         traces.push({
                                             x: [seg.start, seg.end],
                                             y: [channel, channel],
@@ -1080,6 +1101,25 @@
                                             showlegend: traces.filter(t => t.legendgroup === quality).length === 0,
                                             hovertemplate: `${channel}<br>${quality}<br>%{x}<extra></extra>`
                                         });
+                                        
+                                        // Add yellow diagonal hatching for TONE_DERIVED (green + yellow = still good but aging)
+                                        if (needsHatchOverlay(quality)) {
+                                            traces.push({
+                                                x: [seg.start, seg.end],
+                                                y: [channel, channel],
+                                                mode: 'lines',
+                                                line: { 
+                                                    color: '#facc15',  // Yellow
+                                                    width: 20,
+                                                    dash: 'dot'        // Dotted pattern for hatching effect
+                                                },
+                                                name: quality + ' (aging)',
+                                                legendgroup: quality,
+                                                showlegend: false,
+                                                hoverinfo: 'skip',
+                                                opacity: 0.4
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -1130,6 +1170,12 @@
             const title = document.getElementById('alert-title');
             const message = document.getElementById('alert-message');
             
+            const avgDrift = parseFloat(healthSummary.drift.average_ms);
+            const isToneBased = primaryRef.is_tone_based || 
+                               primaryRef.source_type?.includes('startup') ||
+                               primaryRef.source_type?.includes('wwv') ||
+                               primaryRef.source_type?.includes('chu');
+            
             // Check for critical issues
             if (!primaryRef.available) {
                 banner.className = 'alert-banner visible';
@@ -1138,31 +1184,43 @@
                 return;
             }
             
-            if (primaryRef.quality === 'WALL_CLOCK' && primaryRef.age_seconds > 300) {
+            // Wall clock with no tone history is critical
+            if (primaryRef.quality === 'WALL_CLOCK' && !isToneBased) {
                 banner.className = 'alert-banner visible';
                 title.textContent = 'Critical: Using Unsynchronized Clock';
-                message.textContent = `All channels using wall clock (±${(primaryRef.precision_ms/1000).toFixed(0)} sec precision). System has aged time_snap from startup. Waiting for fresh tone detection.`;
+                message.textContent = 'No tone reference established. Timing precision is ±seconds. Check propagation and tone detection.';
                 return;
             }
             
-            if (healthSummary.tone_locked_channels === 0) {
-                banner.className = 'alert-banner visible warning';
-                title.textContent = 'Warning: No Tone-Locked Channels';
-                message.textContent = `All ${healthSummary.total_channels} channels using NTP or wall clock. Check propagation conditions.`;
-                return;
-            }
-            
-            if (parseFloat(healthSummary.drift.average_ms) > 50) {
+            // Excessive drift is always critical regardless of source
+            if (avgDrift > 50) {
                 banner.className = 'alert-banner visible';
                 title.textContent = 'Critical: Excessive Drift';
-                message.textContent = `Average drift is ${healthSummary.drift.average_ms}ms. Check system clock and time_snap anchors.`;
+                message.textContent = `Average drift is ${healthSummary.drift.average_ms}ms. Check system clock and RTP streams.`;
                 return;
             }
             
-            if (primaryRef.quality === 'WALL_CLOCK' && primaryRef.age_seconds < 300) {
+            // Tone-based timing with good drift - no warning needed!
+            // This was the key missing case
+            if (isToneBased && avgDrift < 5) {
+                // No alert - everything is working well
+                banner.className = 'alert-banner';
+                return;
+            }
+            
+            // NTP-only with no tone-based channels is a soft warning
+            if (!isToneBased && healthSummary.tone_locked_channels === 0) {
+                banner.className = 'alert-banner visible warning';
+                title.textContent = 'Info: Using NTP Timing';
+                message.textContent = `All channels using NTP (±10ms). No tone detected yet - normal during poor propagation. RTP drift: ±${avgDrift.toFixed(2)}ms`;
+                return;
+            }
+            
+            // System stabilizing after startup
+            if (primaryRef.age_seconds < 120) {
                 banner.className = 'alert-banner visible warning';
                 title.textContent = 'Info: System Stabilizing';
-                message.textContent = 'Using initial time_snap from startup. Fresh tone detection will occur at next 5-minute check. Jitter measurements stabilizing.';
+                message.textContent = 'Recently started - timing measurements stabilizing. Data quality will improve.';
                 return;
             }
             
