@@ -36,6 +36,7 @@ from .core_npz_writer import CoreNPZWriter, GapRecord
 from .channel_manager import ChannelManager
 from .radiod_health import RadiodHealthChecker
 from .startup_tone_detector import StartupToneDetector, StartupTimeSnap
+from .quota_manager import QuotaManager
 
 logger = logging.getLogger(__name__)
 
@@ -150,9 +151,18 @@ class CoreRecorder:
         # Write initial status
         self._write_status()
         
+        # Initialize quota manager (75% threshold, keep min 7 days)
+        self.quota_manager = QuotaManager(
+            data_root=self.paths.data_root,
+            threshold_percent=75.0,
+            min_days_to_keep=7,
+            dry_run=False
+        )
+        
         # Main loop (status updates and health monitoring)
         last_status_time = 0
         last_health_check = 0
+        last_quota_check = 0
         try:
             while self.running:
                 time.sleep(1)
@@ -173,6 +183,11 @@ class CoreRecorder:
                 if now - last_health_check >= 30:
                     self._monitor_stream_health()
                     last_health_check = now
+                
+                # Quota enforcement (every 5 minutes)
+                if now - last_quota_check >= 300:
+                    self._enforce_quota()
+                    last_quota_check = now
         
         except KeyboardInterrupt:
             logger.info("Received interrupt signal")
@@ -388,6 +403,23 @@ class CoreRecorder:
                         
         except Exception as e:
             logger.error(f"Health monitoring error: {e}", exc_info=True)
+    
+    def _enforce_quota(self):
+        """
+        Enforce disk quota by removing old files if over threshold.
+        Called periodically (every 5 minutes) in main loop.
+        """
+        try:
+            result = self.quota_manager.enforce_quota()
+            
+            if result.get('files_deleted', 0) > 0:
+                logger.info(
+                    f"Quota enforcement: deleted {result['files_deleted']} files, "
+                    f"freed {result['bytes_freed'] / 1024 / 1024 / 1024:.2f} GB, "
+                    f"usage now {result['final_usage_percent']:.1f}%"
+                )
+        except Exception as e:
+            logger.error(f"Quota enforcement error: {e}", exc_info=True)
     
     def _recreate_channel(self, ssrc: int):
         """

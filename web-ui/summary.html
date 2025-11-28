@@ -4,91 +4,39 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GRAPE - System Summary</title>
+  <link rel="stylesheet" href="/styles.css">
   <script>
     // Set current page for navigation
     window.GRAPE_CURRENT_PAGE = 'summary';
   </script>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    
-    body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background: #f5f5f5;
-      color: #333;
-      padding: 20px;
-    }
-    
-    .container {
-      max-width: 1400px;
-      margin: 0 auto;
-    }
-    
-    /* Header */
-    header {
-      background: #2c3e50;
-      color: white;
-      padding: 15px 20px;
-      border-radius: 8px;
-      margin-bottom: 20px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    
-    header h1 {
-      font-size: 24px;
-      font-weight: 600;
-    }
-    
-    .nav-links {
-      display: flex;
-      gap: 15px;
-    }
-    
-    .nav-links a {
-      color: #ecf0f1;
-      text-decoration: none;
-      padding: 8px 16px;
-      border-radius: 4px;
-      transition: background 0.2s;
-    }
-    
-    .nav-links a:hover {
-      background: #34495e;
-    }
-    
-    .nav-links a.active {
-      background: #3498db;
-      font-weight: 600;
-    }
+    /* Page-specific overrides for Summary page */
     
     /* Sections */
     .section {
-      background: white;
-      border-radius: 8px;
-      padding: 20px;
-      margin-bottom: 20px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-lg);
+      padding: var(--spacing-lg);
+      margin-bottom: var(--spacing-lg);
     }
     
     .section-title {
-      font-size: 18px;
+      font-size: 16px;
       font-weight: 600;
-      margin-bottom: 15px;
-      color: #2c3e50;
-      border-bottom: 2px solid #3498db;
-      padding-bottom: 8px;
+      margin-bottom: var(--spacing-md);
+      color: var(--accent-light);
+      border-bottom: 1px solid var(--surface-border);
+      padding-bottom: var(--spacing-sm);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
     
     /* Station Info */
     .info-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 15px;
+      gap: var(--spacing-md);
     }
     
     .info-item {
@@ -97,16 +45,17 @@
     }
     
     .info-label {
-      font-size: 12px;
-      color: #7f8c8d;
+      font-size: 11px;
+      color: var(--accent-light);
       text-transform: uppercase;
-      margin-bottom: 4px;
+      letter-spacing: 0.5px;
+      margin-bottom: var(--spacing-xs);
     }
     
     .info-value {
       font-size: 16px;
       font-weight: 500;
-      color: #2c3e50;
+      color: var(--text-primary);
     }
     
     .mode-badge {
@@ -118,12 +67,12 @@
     }
     
     .mode-test {
-      background: #f39c12;
+      background: var(--warning);
       color: white;
     }
     
     .mode-production {
-      background: #27ae60;
+      background: var(--success);
       color: white;
     }
     
@@ -131,27 +80,30 @@
     .process-list {
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: var(--spacing-md);
     }
     
     .process-item {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 12px;
-      background: #f8f9fa;
-      border-radius: 6px;
+      padding: var(--spacing-md);
+      background: rgba(15, 23, 42, 0.4);
+      border-radius: var(--radius-md);
+      border: 1px solid var(--surface-border);
     }
     
     .process-name {
-      font-weight: 500;
+      font-weight: 600;
       font-size: 15px;
+      color: var(--text-primary);
     }
     
     .process-status {
       display: flex;
       align-items: center;
       gap: 20px;
+      color: var(--text-secondary);
     }
     
     .status-indicator {
@@ -161,52 +113,56 @@
       display: inline-block;
     }
     
-    .status-running { background: #27ae60; }
-    .status-stopped { background: #e74c3c; }
-    .status-stale { background: #f39c12; }
+    .status-running { background: var(--success); box-shadow: 0 0 8px var(--success); }
+    .status-stopped { background: var(--error); }
+    .status-stale { background: var(--warning); }
     
     /* Continuity */
     .continuity-info {
-      margin-bottom: 15px;
+      margin-bottom: var(--spacing-md);
     }
     
     .continuity-stat {
-      margin-bottom: 8px;
+      margin-bottom: var(--spacing-sm);
       font-size: 14px;
+      color: var(--text-secondary);
     }
     
     .continuity-label {
-      font-weight: 500;
-      color: #7f8c8d;
+      font-weight: 600;
+      color: var(--accent-light);
     }
     
     .gap-list {
-      margin-top: 10px;
+      margin-top: var(--spacing-md);
       max-height: 200px;
       overflow-y: auto;
     }
     
     .gap-item {
-      padding: 8px;
-      background: #fff3cd;
-      border-left: 3px solid #f39c12;
-      margin-bottom: 6px;
+      padding: var(--spacing-sm) var(--spacing-md);
+      background: var(--warning-light);
+      border-left: 3px solid var(--warning);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      margin-bottom: var(--spacing-sm);
       font-size: 13px;
+      color: var(--text-primary);
     }
     
     /* Storage */
     .storage-bar-container {
       width: 100%;
       height: 30px;
-      background: #ecf0f1;
+      background: rgba(15, 23, 42, 0.6);
       border-radius: 15px;
       overflow: hidden;
-      margin: 15px 0;
+      margin: var(--spacing-md) 0;
+      border: 1px solid var(--surface-border);
     }
     
     .storage-bar {
       height: 100%;
-      background: linear-gradient(90deg, #27ae60, #f39c12);
+      background: linear-gradient(90deg, var(--success), var(--warning));
       transition: width 0.5s;
       display: flex;
       align-items: center;
@@ -217,7 +173,7 @@
     }
     
     .storage-bar.critical {
-      background: linear-gradient(90deg, #e74c3c, #c0392b);
+      background: linear-gradient(90deg, var(--error), #c0392b);
     }
     
     /* Channel Status Table - Transposed */
@@ -227,18 +183,19 @@
     }
     
     thead th {
-      background: #34495e;
-      color: white;
-      padding: 10px 8px;
+      background: rgba(139, 92, 246, 0.3);
+      color: var(--text-primary);
+      padding: 12px 8px;
       text-align: center;
       font-weight: 600;
       font-size: 12px;
-      writing-mode: horizontal-tb;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
     
     tbody th {
-      background: #f8f9fa;
-      color: #2c3e50;
+      background: rgba(15, 23, 42, 0.4);
+      color: var(--accent-light);
       padding: 12px;
       text-align: left;
       font-weight: 600;
@@ -247,13 +204,14 @@
     }
     
     tbody tr {
-      border-bottom: 1px solid #ecf0f1;
+      border-bottom: 1px solid var(--surface-border);
     }
     
     td {
       padding: 10px 8px;
       font-size: 13px;
       text-align: center;
+      color: var(--text-primary);
     }
     
     .timing-badge {
@@ -264,23 +222,24 @@
       white-space: nowrap;
     }
     
-    .timing-tone { background: #d4edda; color: #155724; }
-    .timing-ntp { background: #fff3cd; color: #856404; }
-    .timing-wall { background: #e74c3c; color: white; }
+    .timing-tone { background: var(--success-light); color: var(--success); }
+    .timing-ntp { background: var(--warning-light); color: var(--warning); }
+    .timing-wall { background: var(--error); color: white; }
     
     .listen-button {
       padding: 6px 12px;
-      background: #3498db;
+      background: var(--accent);
       color: white;
       border: none;
       border-radius: 4px;
       cursor: pointer;
       font-size: 12px;
-      transition: background 0.2s, transform 0.1s;
+      transition: all var(--transition-fast);
     }
     
     .listen-button:hover {
-      background: #2980b9;
+      background: #6366f1;
+      transform: translateY(-1px);
     }
     
     .listen-button:active {
@@ -288,17 +247,18 @@
     }
     
     .listen-button.playing {
-      background: #27ae60;
+      background: var(--success);
       animation: pulse 1.5s infinite;
+      box-shadow: 0 0 12px var(--success);
     }
     
     .listen-button.loading {
-      background: #f39c12;
+      background: var(--warning);
       cursor: wait;
     }
     
     .listen-button.error {
-      background: #e74c3c;
+      background: var(--error);
     }
     
     @keyframes pulse {
@@ -312,14 +272,16 @@
       position: fixed;
       bottom: 20px;
       right: 20px;
-      background: #2c3e50;
-      color: white;
-      padding: 15px 20px;
-      border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      background: var(--surface);
+      border: 1px solid var(--accent);
+      color: var(--text-primary);
+      padding: var(--spacing-md) var(--spacing-lg);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
       z-index: 1000;
       display: none;
-      min-width: 250px;
+      min-width: 280px;
+      backdrop-filter: blur(8px);
     }
     
     .audio-player-panel.visible {
@@ -348,13 +310,13 @@
     }
     
     .audio-player-close:hover {
-      color: white;
+      color: var(--text-primary);
     }
     
     .audio-player-status {
       font-size: 12px;
-      color: #bdc3c7;
-      margin-bottom: 10px;
+      color: var(--text-secondary);
+      margin-bottom: var(--spacing-sm);
     }
     
     .audio-player-controls {
@@ -372,39 +334,33 @@
     }
     
     .audio-stop-btn {
-      background: #e74c3c;
+      background: var(--error);
       color: white;
     }
     
     .audio-stop-btn:hover {
-      background: #c0392b;
+      background: #dc2626;
     }
     
     .volume-slider {
       width: 100px;
+      accent-color: var(--accent);
     }
     
     /* Footer */
     .update-info {
       text-align: center;
-      padding: 15px;
-      color: #7f8c8d;
+      padding: var(--spacing-md);
+      color: var(--text-muted);
       font-size: 13px;
     }
     
-    /* Loading & Error States */
-    .loading {
-      text-align: center;
-      padding: 40px;
-      color: #7f8c8d;
-    }
-    
-    .error {
-      background: #f8d7da;
-      color: #721c24;
-      padding: 15px;
-      border-radius: 6px;
-      border-left: 4px solid #e74c3c;
+    /* Loading & Error States - use shared styles */
+    h4 {
+      color: var(--accent-light);
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
   </style>
 </head>
@@ -415,7 +371,6 @@
     
     <!-- New Analytics Components -->
     <div id="timingStatus" style="margin-bottom: 20px;"></div>
-    <div id="tonePowers" style="margin-bottom: 20px;"></div>
     
     <div id="content">
       <div class="loading">Loading...</div>
@@ -745,9 +700,11 @@
         html += '<div class="section">';
         html += renderProcesses(data.processes);
         html += renderContinuity(data.continuity);
-        html += renderStorage(data.storage);
+        // Storage removed - was showing filesystem, not grape-specific data
         html += '</div>';
-        html += renderChannels(data.channels || []);
+        // Sort channels by frequency before rendering
+        const sortedChannels = window.GRAPE_UTILS.sortByChannelFrequency(data.channels || [], 'name');
+        html += renderChannels(sortedChannels);
         
         document.getElementById('content').innerHTML = html;
         document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
@@ -1006,9 +963,9 @@
   </script>
   
   <!-- Load new analytics components -->
+  <script src="components/theme-toggle.js"></script>
   <script src="components/navigation.js"></script>
   <script src="components/timing-status-widget.js"></script>
-  <script src="components/tone-power-display.js"></script>
   <script>
     // Initialize timing status widget
     const timingWidget = new TimingStatusWidget('timingStatus', {
@@ -1016,11 +973,6 @@
       showAdoptions: true
     });
     
-    // Initialize tone power display
-    const tonePowerDisplay = new TonePowerDisplay('tonePowers', {
-      updateInterval: 30000,  // 30 seconds
-      showChannelNames: true
-    });
   </script>
 </body>
 </html>

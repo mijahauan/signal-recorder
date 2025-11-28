@@ -4,203 +4,177 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Carrier Analysis - GRAPE Signal Recorder</title>
+  <link rel="stylesheet" href="/styles.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  <script>
+    window.GRAPE_CURRENT_PAGE = 'carrier';
+  </script>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
+    /* Page-specific styles for Carrier Analysis */
+    
+    .page-header {
+      background: linear-gradient(135deg, #1e3a8a 0%, #312e81 100%);
+      padding: var(--spacing-lg) var(--spacing-xl);
+      border-radius: var(--radius-lg);
+      margin-bottom: var(--spacing-lg);
+      box-shadow: var(--shadow-lg);
     }
     
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #ecf0f1;
-      color: #2c3e50;
-      padding: 20px;
+    .page-header h1 {
+      color: #fff;
+      font-size: 24px;
+      margin-bottom: var(--spacing-sm);
     }
     
-    .header {
-      background: white;
-      padding: 20px;
-      border-radius: 8px;
-      margin-bottom: 20px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    
-    .nav-links {
-      display: flex;
-      gap: 15px;
-      margin-bottom: 15px;
-      padding-bottom: 10px;
-      border-bottom: 1px solid #ecf0f1;
-    }
-    
-    .nav-links a {
-      color: #3498db;
-      text-decoration: none;
-      font-weight: 500;
+    .page-header-subtitle {
+      color: var(--text-secondary);
       font-size: 14px;
     }
     
-    .nav-links a:hover {
-      color: #2980b9;
-      text-decoration: underline;
-    }
-    
-    .header h1 {
-      font-size: 24px;
-      margin-bottom: 10px;
-    }
-    
-    .header-controls {
+    .controls-row {
       display: flex;
-      gap: 10px;
+      gap: var(--spacing-md);
       align-items: center;
-      margin-top: 15px;
+      margin-top: var(--spacing-md);
       flex-wrap: wrap;
     }
     
-    button {
-      padding: 8px 16px;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 14px;
-      background: #3498db;
-      color: white;
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
     }
     
-    button:hover {
-      background: #2980b9;
-    }
-    
-    select {
-      padding: 8px 12px;
-      border: 1px solid #bdc3c7;
-      border-radius: 4px;
-      font-size: 14px;
-      background: white;
-      cursor: pointer;
-    }
-    
-    select:focus {
-      outline: none;
-      border-color: #3498db;
+    .control-group label {
+      color: var(--text-secondary);
+      font-size: 13px;
+      font-weight: 500;
     }
     
     .summary-banner {
-      background: white;
-      padding: 20px;
-      border-radius: 8px;
-      margin-bottom: 20px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      padding: var(--spacing-lg);
+      border-radius: var(--radius-lg);
+      margin-bottom: var(--spacing-lg);
     }
     
     .summary-banner h2 {
-      font-size: 18px;
-      margin-bottom: 15px;
+      font-size: 16px;
+      margin-bottom: var(--spacing-md);
+      color: var(--accent-light);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
     
     .summary-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 15px;
+      gap: var(--spacing-md);
     }
     
     .summary-item {
-      padding: 10px;
-      background: #f8f9fa;
-      border-radius: 4px;
+      padding: var(--spacing-md);
+      background: rgba(15, 23, 42, 0.4);
+      border-radius: var(--radius-md);
+      border: 1px solid var(--surface-border);
     }
     
     .summary-label {
-      font-size: 12px;
-      color: #7f8c8d;
-      margin-bottom: 5px;
+      font-size: 11px;
+      color: var(--accent-light);
+      margin-bottom: var(--spacing-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
     
     .summary-value {
       font-size: 20px;
       font-weight: 600;
+      color: var(--text-primary);
     }
     
-    .status-good { color: #27ae60; }
-    .status-warning { color: #f39c12; }
-    .status-critical { color: #e74c3c; }
+    .status-good { color: var(--success); }
+    .status-warning { color: var(--warning); }
+    .status-critical { color: var(--error); }
     
     .alerts {
-      margin-top: 15px;
-      padding: 10px;
-      background: #fff3cd;
-      border-left: 4px solid #f39c12;
-      border-radius: 4px;
+      margin-top: var(--spacing-md);
+      padding: var(--spacing-md);
+      background: var(--warning-light);
+      border-left: 4px solid var(--warning);
+      border-radius: 0 var(--radius-md) var(--radius-md) 0;
+      color: var(--text-primary);
     }
     
     .alerts.critical {
-      background: #f8d7da;
-      border-left-color: #e74c3c;
+      background: rgba(239, 68, 68, 0.15);
+      border-left-color: var(--error);
     }
     
     .channel-detail {
-      background: white;
-      border-radius: 8px;
-      padding: 20px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-lg);
+      padding: var(--spacing-lg);
     }
     
     .channel-detail.has-warning {
-      border-left: 4px solid #f39c12;
+      border-left: 4px solid var(--warning);
     }
     
     .channel-detail.has-critical {
-      border-left: 4px solid #e74c3c;
+      border-left: 4px solid var(--error);
     }
     
     .channel-header {
       font-size: 20px;
       font-weight: 600;
-      margin-bottom: 10px;
+      margin-bottom: var(--spacing-sm);
+      color: var(--text-primary);
     }
     
     .channel-subheader {
       font-size: 13px;
-      color: #7f8c8d;
-      margin-bottom: 15px;
+      color: var(--text-secondary);
+      margin-bottom: var(--spacing-md);
     }
     
     .spectrogram-container {
-      margin: 15px 0;
+      margin: var(--spacing-md) 0;
     }
     
     .spectrogram {
       width: 100%;
-      border-radius: 4px;
-      background: #f8f9fa;
+      border-radius: var(--radius-md);
+      background: rgba(15, 23, 42, 0.4);
     }
     
     .power-chart-container {
       width: 100%;
-      height: 200px;
-      margin-top: 10px;
-      background: white;
-      border-radius: 4px;
-      padding: 10px;
-      border: 1px solid #ecf0f1;
+      height: 220px;
+      margin-top: var(--spacing-md);
+      background: #ffffff;  /* White background like spectrogram empty area */
+      border-radius: var(--radius-md);
+      padding: var(--spacing-md);
+      border: 1px solid var(--surface-border);
     }
     
     .chart-label {
       font-size: 12px;
-      color: #7f8c8d;
-      margin-bottom: 5px;
+      color: var(--accent-light);
+      margin-bottom: var(--spacing-sm);
       font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
     
     .metrics {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-top: 10px;
+      gap: var(--spacing-sm);
+      margin-top: var(--spacing-sm);
     }
     
     .metric {
@@ -208,34 +182,36 @@
     }
     
     .metric-label {
-      color: #7f8c8d;
+      color: var(--text-muted);
       font-size: 11px;
     }
     
     .metric-value {
       font-weight: 600;
+      color: var(--text-primary);
     }
     
     .timing-badge {
       display: inline-block;
       padding: 3px 8px;
-      border-radius: 3px;
+      border-radius: 4px;
       font-size: 11px;
       font-weight: 600;
     }
     
-    .timing-tone { background: #d4edda; color: #155724; }
-    .timing-ntp { background: #fff3cd; color: #856404; }
-    .timing-wall { background: #f8d7da; color: #721c24; }
+    .timing-tone { background: var(--success-light); color: var(--success); }
+    .timing-ntp { background: var(--warning-light); color: var(--warning); }
+    .timing-wall { background: var(--error); color: white; }
     
-    .upload-current { color: #27ae60; }
-    .upload-delayed { color: #f39c12; }
-    .upload-stalled { color: #e74c3c; }
+    .upload-current { color: var(--success); }
+    .upload-delayed { color: var(--warning); }
+    .upload-stalled { color: var(--error); }
     
     .alert-item {
       font-size: 13px;
-      padding: 5px 0;
-      border-bottom: 1px solid #dee2e6;
+      padding: var(--spacing-xs) 0;
+      border-bottom: 1px solid var(--surface-border);
+      color: var(--text-primary);
     }
     
     .alert-item:last-child {
@@ -245,46 +221,50 @@
     .loading {
       text-align: center;
       padding: 40px;
-      color: #7f8c8d;
+      color: var(--text-muted);
     }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div class="nav-links">
-      <a href="/summary.html">Summary</a>
-      <a href="/carrier.html" style="font-weight: 700;">Carrier</a>
-      <a href="/discrimination.html">Discrimination</a>
-      <a href="/timing-dashboard-enhanced.html">Timing</a>
-      <a href="/analysis.html">Analysis</a>
+  <div class="container">
+    <!-- Unified Navigation -->
+    <div id="grape-navigation"></div>
+    
+    <div class="page-header">
+      <h1>📡 Carrier Analysis</h1>
+      <div class="page-header-subtitle">Data Quality • Spectrograms • Power Analysis</div>
+      <div class="controls-row">
+        <div class="control-group">
+          <label>Date:</label>
+          <select id="date-picker" class="select-control">
+            <option value="">Loading...</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>Channel:</label>
+          <select id="channel-picker" class="select-control">
+            <option value="">Loading...</option>
+          </select>
+        </div>
+        <button id="btn-refresh" class="btn btn-primary">🔄 Refresh</button>
+        <div class="control-group" style="margin-left: auto;">
+          <label>Auto-refresh:</label>
+          <input type="checkbox" id="auto-refresh" checked>
+          <span style="font-size: 12px; color: var(--text-muted);">(30s)</span>
+        </div>
+        <div style="font-size: 12px; color: var(--text-muted);">
+          Last updated: <span id="last-update">--</span>
+        </div>
+      </div>
     </div>
-    <h1>🎯 Carrier Analysis - Data Quality Dashboard</h1>
-    <div>Last updated: <span id="last-update">--</span></div>
-    <div class="header-controls">
-      <label>
-        Date: 
-        <select id="date-picker">
-          <option value="">Loading...</option>
-        </select>
-      </label>
-      <label>
-        Channel: 
-        <select id="channel-picker">
-          <option value="">Loading...</option>
-        </select>
-      </label>
-      <button id="btn-refresh">🔄 Refresh</button>
-      <label style="margin-left: auto;">
-        Auto-refresh: 
-        <input type="checkbox" id="auto-refresh" checked> 
-        <span style="font-size: 12px;">(30s)</span>
-      </label>
-    </div>
+  
+    <div id="summary-banner"></div>
+    <div id="channel-detail"></div>
+    <div id="loading" class="loading">Loading...</div>
   </div>
   
-  <div id="summary-banner"></div>
-  <div id="channel-detail"></div>
-  <div id="loading" class="loading">Loading...</div>
+  <script src="/components/theme-toggle.js"></script>
+  <script src="/components/navigation.js"></script>
 
   <script>
     let currentDate = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -343,14 +323,8 @@
         return;
       }
       
-      // Sort channels: WWV first, then CHU, by frequency
-      const sorted = [...channels].sort((a, b) => {
-        const aIsWWV = a.name.startsWith('WWV');
-        const bIsWWV = b.name.startsWith('WWV');
-        if (aIsWWV && !bIsWWV) return -1;
-        if (!aIsWWV && bIsWWV) return 1;
-        return a.name.localeCompare(b.name);
-      });
+      // Sort channels by frequency (WWV 2.5 first, WWV 25 last)
+      const sorted = window.GRAPE_UTILS.sortByChannelFrequency(channels, 'name');
       
       sorted.forEach(ch => {
         const option = document.createElement('option');
@@ -406,7 +380,7 @@
         document.getElementById('loading').style.display = 'none';
       } catch (err) {
         console.error('Error fetching carrier data:', err);
-        document.getElementById('loading').innerHTML = `<div style="color: #e74c3c;">Error loading data: ${err.message}</div>`;
+        document.getElementById('loading').innerHTML = `<div style="color: var(--error);">Error loading data: ${err.message}</div>`;
       }
     }
     
@@ -481,7 +455,10 @@
       let timingLabel = ch.timing_quality;
       if (ch.timing_quality === 'GPS_LOCKED' || ch.timing_quality === 'TONE_LOCKED') {
         timingClass = 'timing-tone';
-        timingLabel = 'GPS';
+        timingLabel = 'TONE';
+      } else if (ch.timing_quality === 'INTERPOLATED') {
+        timingClass = 'timing-ntp';  // Orange/yellow
+        timingLabel = 'INTERP';
       } else if (ch.timing_quality === 'NTP_SYNCED') {
         timingClass = 'timing-ntp';
         timingLabel = 'NTP';
@@ -511,36 +488,32 @@
             <strong>${ch.source_type || channelTypeLabel}</strong> • ${ch.sample_rate || 'N/A'}
           </div>
           
-          <div class="metrics" style="grid-template-columns: repeat(6, 1fr); margin-bottom: 15px;">
-            <div class="metric">
+          <div class="metrics" style="grid-template-columns: repeat(5, 1fr); margin-bottom: 15px;">
+            <div class="metric" title="Data completeness: % of expected RTP packets received in this minute">
               <div class="metric-label">Completeness</div>
               <div class="metric-value ${completenessClass}">${ch.completeness_pct !== null ? ch.completeness_pct.toFixed(1) + '%' : 'N/A'}</div>
             </div>
-            <div class="metric">
+            <div class="metric" title="RTP packet loss: % of packets lost due to network issues">
               <div class="metric-label">Packet Loss</div>
               <div class="metric-value">${ch.packet_loss_pct !== null ? ch.packet_loss_pct.toFixed(1) + '%' : 'N/A'}</div>
             </div>
-            <div class="metric">
-              <div class="metric-label">Timing Quality</div>
+            <div class="metric" title="TONE=locked to WWV/CHU tone, INTERP=aged tone ref, NTP=network time, WALL=fallback">
+              <div class="metric-label">Timing</div>
               <div class="metric-value"><span class="timing-badge ${timingClass}">${timingLabel}</span></div>
             </div>
-            <div class="metric">
-              <div class="metric-label">Upload Status</div>
+            <div class="metric" title="DRF upload status to wsprdaemon">
+              <div class="metric-label">Upload</div>
               <div class="metric-value ${uploadClass}">${uploadText}</div>
             </div>
-            <div class="metric">
-              <div class="metric-label">SNR</div>
-              <div class="metric-value">${ch.snr_db !== null ? ch.snr_db.toFixed(1) + ' dB' : 'N/A'}</div>
-            </div>
-            <div class="metric">
-              <div class="metric-label">Time Snap Age</div>
+            <div class="metric" title="Time since last tone detection">
+              <div class="metric-label">Tone Age</div>
               <div class="metric-value">${ch.time_snap_age_minutes !== null ? ch.time_snap_age_minutes + ' min' : 'N/A'}</div>
             </div>
           </div>
           
           ${ch.alerts.length > 0 ? `
-            <div style="margin-bottom: 15px; padding: 10px; background: #fff3cd; border-radius: 4px; font-size: 13px;">
-              ${ch.alerts.map(a => `<div>⚠️ ${a.message}</div>`).join('')}
+            <div style="margin-bottom: var(--spacing-md); padding: var(--spacing-md); background: var(--warning-light); border-radius: var(--radius-md); font-size: 13px; border-left: 3px solid var(--warning);">
+              ${ch.alerts.map(a => `<div style="color: var(--text-primary);">⚠️ ${a.message}</div>`).join('')}
             </div>
           ` : ''}
           
@@ -572,7 +545,7 @@
         if (!data.records || data.records.length === 0) {
           const ctx = document.getElementById('power-chart');
           if (ctx) {
-            ctx.parentElement.innerHTML = '<div style="text-align: center; padding: 40px; color: #7f8c8d;">No carrier power data available for this date</div>';
+            ctx.parentElement.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--text-muted);">No carrier power data available for this date</div>';
           }
           return;
         }
@@ -606,14 +579,15 @@
         const ctx = document.getElementById('power-chart');
         if (!ctx) return;
         
-        // Build datasets array - power data plus optional solar zenith
+        // Build datasets array - colors match spectrogram viridis colormap
+        // Yellow/orange for power (high values in spectrogram)
         const datasets = [
           {
             label: 'Mean Power',
             data: powerData,
-            borderColor: '#27ae60',
-            backgroundColor: 'rgba(39, 174, 96, 0.1)',
-            borderWidth: 1.5,
+            borderColor: '#fbbf24',  // Yellow - matches spectrogram high power
+            backgroundColor: 'rgba(251, 191, 36, 0.15)',
+            borderWidth: 2,
             pointRadius: 0,
             tension: 0.1,
             fill: true,
@@ -622,9 +596,9 @@
           {
             label: 'Peak Power',
             data: peakData,
-            borderColor: '#3498db',
-            backgroundColor: 'rgba(52, 152, 219, 0.05)',
-            borderWidth: 1,
+            borderColor: '#f97316',  // Orange - peak highlights
+            backgroundColor: 'rgba(249, 115, 22, 0.05)',
+            borderWidth: 1.5,
             pointRadius: 0,
             tension: 0.1,
             fill: false,
@@ -638,27 +612,45 @@
           // Convert solar timestamps to Date objects
           const solarLabels = solarZenithData.timestamps.map(ts => new Date(ts));
           
-          datasets.push({
-            label: 'Solar Elev. (WWV path)',
-            data: solarLabels.map((t, i) => ({ x: t, y: solarZenithData.wwv_solar_elevation[i] })),
-            borderColor: '#e74c3c',
-            borderWidth: 3,
-            pointRadius: 0,
-            tension: 0.3,
-            fill: false,
-            yAxisID: 'y2'
-          });
+          // Determine channel type to show appropriate solar paths
+          const isCHU = channelName.toUpperCase().startsWith('CHU');
           
-          datasets.push({
-            label: 'Solar Elev. (WWVH path)',
-            data: solarLabels.map((t, i) => ({ x: t, y: solarZenithData.wwvh_solar_elevation[i] })),
-            borderColor: '#9b59b6',
-            borderWidth: 3,
-            pointRadius: 0,
-            tension: 0.3,
-            fill: false,
-            yAxisID: 'y2'
-          });
+          if (isCHU && solarZenithData.chu_solar_elevation) {
+            // CHU channel: show CHU path solar elevation
+            datasets.push({
+              label: 'Solar Elev. (CHU path)',
+              data: solarLabels.map((t, i) => ({ x: t, y: solarZenithData.chu_solar_elevation[i] })),
+              borderColor: '#e67e22',  // Orange for CHU (matches WWVH)
+              borderWidth: 3,
+              pointRadius: 0,
+              tension: 0.3,
+              fill: false,
+              yAxisID: 'y2'
+            });
+          } else {
+            // WWV channel: show WWV and WWVH path solar elevation
+            datasets.push({
+              label: 'Solar Elev. (WWV path)',
+              data: solarLabels.map((t, i) => ({ x: t, y: solarZenithData.wwv_solar_elevation[i] })),
+              borderColor: '#e74c3c',  // Red for WWV path
+              borderWidth: 3,
+              pointRadius: 0,
+              tension: 0.3,
+              fill: false,
+              yAxisID: 'y2'
+            });
+            
+            datasets.push({
+              label: 'Solar Elev. (WWVH path)',
+              data: solarLabels.map((t, i) => ({ x: t, y: solarZenithData.wwvh_solar_elevation[i] })),
+              borderColor: '#9b59b6',  // Purple for WWVH path
+              borderWidth: 3,
+              pointRadius: 0,
+              tension: 0.3,
+              fill: false,
+              yAxisID: 'y2'
+            });
+          }
         } else {
           console.log('No solar zenith data available for carrier chart');
         }
@@ -681,7 +673,8 @@
                 position: 'top',
                 labels: {
                   boxWidth: 12,
-                  padding: 15
+                  padding: 15,
+                  color: '#1e293b'  // Dark text for white background
                 }
               },
               tooltip: {
@@ -730,8 +723,8 @@
                   }
                 },
                 ticks: {
+                  color: '#475569',  // Dark gray for white background
                   callback: function(value, index, ticks) {
-                    // Format as UTC - only show 3-hour marks
                     const d = new Date(value);
                     const hour = d.getUTCHours();
                     if (hour % 3 === 0) {
@@ -739,14 +732,15 @@
                     }
                     return '';
                   },
-                  maxTicksLimit: 9  // 00, 03, 06, 09, 12, 15, 18, 21, 24
+                  maxTicksLimit: 9
                 },
                 title: {
                   display: true,
-                  text: 'Time (UTC)'
+                  text: 'Time (UTC)',
+                  color: '#1e293b'
                 },
                 grid: {
-                  color: 'rgba(0,0,0,0.05)'
+                  color: 'rgba(100, 116, 139, 0.25)'  // Gray grid for white bg
                 }
               },
               y: {
@@ -754,10 +748,14 @@
                 position: 'left',
                 title: {
                   display: true,
-                  text: 'Power (dB)'
+                  text: 'Power (dB)',
+                  color: '#1e293b'
+                },
+                ticks: {
+                  color: '#475569'
                 },
                 grid: {
-                  color: 'rgba(0,0,0,0.05)'
+                  color: 'rgba(100, 116, 139, 0.25)'
                 }
               },
               y2: {
@@ -767,16 +765,18 @@
                 max: 90,
                 title: {
                   display: true,
-                  text: 'Solar Elev. (°)'
-                },
-                grid: {
-                  drawOnChartArea: false
+                  text: 'Solar Elev. (°)',
+                  color: '#1e293b'
                 },
                 ticks: {
+                  color: '#475569',
                   callback: function(value) {
                     if (value === 0) return '0° (horizon)';
                     return value + '°';
                   }
+                },
+                grid: {
+                  drawOnChartArea: false
                 }
               }
             }
@@ -787,7 +787,7 @@
         console.error('Error fetching power data:', err);
         const ctx = document.getElementById('power-chart');
         if (ctx) {
-          ctx.parentElement.innerHTML = '<div style="text-align: center; padding: 40px; color: #e74c3c;">Error loading carrier power data</div>';
+          ctx.parentElement.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--error);">Error loading carrier power data</div>';
         }
       }
     }
@@ -827,7 +827,8 @@
         if (response.ok) {
           solarZenithData = await response.json();
           console.log('Solar zenith loaded - WWV midpoint:', solarZenithData.wwv_midpoint, 
-                      'WWVH midpoint:', solarZenithData.wwvh_midpoint);
+                      'WWVH midpoint:', solarZenithData.wwvh_midpoint,
+                      'CHU midpoint:', solarZenithData.chu_midpoint);
         }
       } catch (err) {
         console.warn('Could not load solar zenith data:', err);

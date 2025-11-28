@@ -826,6 +826,117 @@ async function getStorageInfo(paths) {
 }
 
 /**
+ * Get gap analysis data from NPZ files
+ * Uses single Python call to batch process all files (fast)
+ */
+async function getGapAnalysis(paths, date, channelFilter = 'all') {
+  const archivesRoot = join(paths.dataRoot, 'archives');
+  
+  if (!fs.existsSync(archivesRoot)) {
+    return {
+      date, channel_filter: channelFilter, total_gaps: 0,
+      total_gap_minutes: 0, completeness_pct: 100, longest_gap_minutes: 0,
+      minutes_analyzed: 0, gaps: []
+    };
+  }
+  
+  // Build Python script to batch process all NPZ files
+  const pythonScript = `
+import numpy as np
+import os
+import json
+import sys
+
+archives_root = '${archivesRoot}'
+date_prefix = '${date}'
+channel_filter = '${channelFilter}'
+
+gaps = []
+total_gaps = 0
+total_gap_samples = 0
+total_minutes = 0
+sample_rate = 16000
+
+for channel_dir in os.listdir(archives_root):
+    channel_path = os.path.join(archives_root, channel_dir)
+    if not os.path.isdir(channel_path):
+        continue
+    
+    channel_name = channel_dir.replace('_', ' ')
+    if channel_filter != 'all' and channel_name != channel_filter:
+        continue
+    
+    for fname in sorted(os.listdir(channel_path)):
+        if not fname.endswith('.npz') or not fname.startswith(date_prefix):
+            continue
+        
+        total_minutes += 1
+        fpath = os.path.join(channel_path, fname)
+        
+        try:
+            d = np.load(fpath)
+            gc = int(d.get('gaps_count', 0)) if 'gaps_count' in d else 0
+            gf = int(d.get('gaps_filled', 0)) if 'gaps_filled' in d else 0
+            
+            if gc > 0:
+                total_gaps += gc
+                total_gap_samples += gf
+                
+                # Parse timestamp from filename
+                ts_part = fname.split('_')[0]  # 20251128T004800Z
+                if 'T' in ts_part:
+                    d_str, t_str = ts_part.split('T')
+                    t_str = t_str.rstrip('Z')
+                    start_time = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]}T{t_str[:2]}:{t_str[2:4]}:{t_str[4:6]}Z"
+                    
+                    gap_secs = gf / sample_rate
+                    gap_mins = gap_secs / 60
+                    severity = 'high' if gf > sample_rate * 30 else ('medium' if gf > sample_rate * 5 else 'low')
+                    
+                    gaps.append({
+                        'channel': channel_name,
+                        'start_time': start_time,
+                        'gap_count': gc,
+                        'samples_filled': gf,
+                        'duration_seconds': round(gap_secs, 2),
+                        'duration_minutes': round(gap_mins, 4),
+                        'severity': severity
+                    })
+        except Exception as e:
+            pass
+
+total_gap_minutes = total_gap_samples / sample_rate / 60
+completeness = ((total_minutes - total_gap_minutes) / total_minutes * 100) if total_minutes > 0 else 100
+longest = max([g['duration_seconds']/60 for g in gaps]) if gaps else 0
+
+result = {
+    'date': date_prefix,
+    'channel_filter': channel_filter,
+    'total_gaps': total_gaps,
+    'total_gap_minutes': round(total_gap_minutes, 2),
+    'completeness_pct': round(completeness, 2),
+    'longest_gap_minutes': round(longest, 3),
+    'minutes_analyzed': total_minutes,
+    'gaps': sorted(gaps, key=lambda x: x['start_time'], reverse=True)[:100]  # Limit to 100 recent
+}
+
+print(json.dumps(result))
+`;
+
+  try {
+    const { stdout } = await execAsync(`python3 -c "${pythonScript.replace(/"/g, '\\"')}"`, { timeout: 30000 });
+    return JSON.parse(stdout);
+  } catch (err) {
+    console.error('Gap analysis error:', err.message);
+    return {
+      date, channel_filter: channelFilter, total_gaps: 0,
+      total_gap_minutes: 0, completeness_pct: 100, longest_gap_minutes: 0,
+      minutes_analyzed: 0, gaps: [], error: err.message
+    };
+  }
+}
+
+/**
  * Check NTP synchronization status
  */
 async function getNTPStatus() {
@@ -1003,15 +1114,26 @@ async function getCarrierQuality(paths, date) {
             quality.packet_loss_pct = channelData.quality_metrics.last_packet_loss_pct || null;
           }
           
-          // Timing quality (all channels use time_snap from WWV/CHU tone detection)
+          // Timing quality (consistent with summary page logic)
+          // Source values: wwv_startup, chu_startup, wwvh_startup, ntp, wall_clock, archive_time_snap
           if (channelData.time_snap && channelData.time_snap.established) {
             const ageMinutes = (Date.now() / 1000 - channelData.time_snap.utc_timestamp) / 60;
             quality.time_snap_age_minutes = Math.round(ageMinutes);
             
-            if (ageMinutes < 5) {
+            const source = channelData.time_snap.source || '';
+            const sourceLower = source.toLowerCase();
+            const isToneSource = sourceLower.includes('wwv') || sourceLower.includes('chu');
+            
+            if (isToneSource && ageMinutes < 5) {
+              // Fresh tone detection (< 5 minutes) = actively tone-locked
               quality.timing_quality = 'TONE_LOCKED';
+            } else if (isToneSource && ageMinutes < 60) {
+              // Aged tone reference (5-60 min) = interpolated
+              quality.timing_quality = 'INTERPOLATED';
+            } else if (ntpStatus.synchronized) {
+              quality.timing_quality = 'NTP_SYNCED';
             } else {
-              quality.timing_quality = ntpStatus.synchronized ? 'NTP_SYNCED' : 'WALL_CLOCK';
+              quality.timing_quality = 'WALL_CLOCK';
             }
           } else {
             quality.timing_quality = ntpStatus.synchronized ? 'NTP_SYNCED' : 'WALL_CLOCK';
@@ -1210,6 +1332,23 @@ app.get('/api/v1/system/storage', async (req, res) => {
     const storage = await getStorageInfo(paths);
     res.json(storage);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/gaps?date=YYYYMMDD&channel=all
+ * Gap analysis data - reads from NPZ files to find data gaps
+ */
+app.get('/api/v1/gaps', async (req, res) => {
+  try {
+    const date = req.query.date || new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const channelFilter = req.query.channel || 'all';
+    
+    const gaps = await getGapAnalysis(paths, date, channelFilter);
+    res.json(gaps);
+  } catch (err) {
+    console.error('Gap analysis error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1427,6 +1566,20 @@ function loadDiscriminationRecords(channelName, date) {
         }
       }
       
+      // Parse inter-method validation arrays (columns 27-28)
+      let inter_method_agreements = null;
+      let inter_method_disagreements = null;
+      if (parts[27] && parts[27].trim() !== '') {
+        try {
+          inter_method_agreements = JSON.parse(parts[27].trim());
+        } catch (e) {}
+      }
+      if (parts[28] && parts[28].trim() !== '') {
+        try {
+          inter_method_disagreements = JSON.parse(parts[28].trim());
+        } catch (e) {}
+      }
+      
       records.push({
         timestamp_utc: timestamp,
         minute_timestamp: parseInt(parts[1]),
@@ -1448,7 +1601,18 @@ function loadDiscriminationRecords(channelName, date) {
         bcd_wwvh_amplitude: parts[17] !== '' ? parseFloat(parts[17]) : null,
         bcd_differential_delay_ms: parts[18] !== '' ? parseFloat(parts[18]) : null,
         bcd_correlation_quality: parts[19] !== '' ? parseFloat(parts[19]) : null,
-        bcd_windows: bcd_windows
+        bcd_windows: bcd_windows,
+        // New 500/600 Hz ground truth columns (21-24)
+        tone_500_600_detected: parts[21] === '1',
+        tone_500_600_power_db: parts[22] !== '' ? parseFloat(parts[22]) : null,
+        tone_500_600_freq_hz: parts[23] !== '' ? parseInt(parts[23]) : null,
+        tone_500_600_ground_truth_station: parts[24] || null,
+        // New BCD validation columns (25-26)
+        bcd_minute_validated: parts[25] === '1',
+        bcd_correlation_peak_quality: parts[26] !== '' ? parseFloat(parts[26]) : null,
+        // Inter-method cross-validation (27-28)
+        inter_method_agreements: inter_method_agreements,
+        inter_method_disagreements: inter_method_disagreements
       });
     } else if (parts.length >= 16) {
       let timestamp = parts[0].trim();
@@ -2829,17 +2993,26 @@ async function getTimingStatus(paths) {
         const confidence = state.time_snap.confidence || 0;
         
         // Classify timing quality
+        // Source values: wwv_startup, chu_startup, wwvh_startup, ntp, wall_clock, archive_time_snap
+        // Check if source is tone-based (contains wwv or chu)
+        const sourceLower = source.toLowerCase();
+        const isToneSource = sourceLower.includes('wwv') || sourceLower.includes('chu');
+        
         let timingClass;
-        if (source === 'TONE_DETECTED' && ageSeconds < 300) {
+        if (isToneSource && ageSeconds < 300) {
+          // Fresh tone detection (< 5 minutes) = actively tone-locked
           timingClass = 'TONE_LOCKED';
           channelBreakdown.tone_locked++;
-        } else if (source === 'NTP_SYNCED' || (source === 'TONE_DETECTED' && ageSeconds < 3600)) {
-          timingClass = 'NTP_SYNCED';
-          channelBreakdown.ntp_synced++;
-        } else if (ageSeconds < 3600) {
+        } else if (isToneSource && ageSeconds < 3600) {
+          // Aged tone reference (5 min - 1 hour) = interpolated
           timingClass = 'INTERPOLATED';
           channelBreakdown.interpolated++;
+        } else if (sourceLower === 'ntp' || sourceLower === 'ntp_synced') {
+          // NTP-synced
+          timingClass = 'NTP_SYNCED';
+          channelBreakdown.ntp_synced++;
         } else {
+          // Wall clock or very old reference
           timingClass = 'WALL_CLOCK';
           channelBreakdown.wall_clock++;
         }
@@ -3117,7 +3290,9 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
       wwv_amplitude: parseFloat(r.wwv_amplitude),
       wwvh_amplitude: parseFloat(r.wwvh_amplitude),
       differential_delay_ms: parseFloat(r.differential_delay_ms),
-      correlation_quality: parseFloat(r.correlation_quality)
+      correlation_quality: parseFloat(r.correlation_quality),
+      detection_type: r.detection_type || null,
+      amplitude_ratio_db: r.amplitude_ratio_db ? parseFloat(r.amplitude_ratio_db) : null
     })),
     count: bcdData.count
   };
@@ -3153,6 +3328,46 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
       method_weights: r.method_weights
     })),
     count: discData.count
+  };
+  
+  // 6. Extract 500/600 Hz ground truth from discrimination CSV
+  // These are exclusive broadcast minutes where only one station transmits 500/600 Hz
+  const groundTruthRecords = discData.records
+    .filter(r => r.tone_500_600_detected === '1' && r.tone_500_600_ground_truth_station)
+    .map(r => ({
+      timestamp_utc: r.timestamp_utc,
+      minute_number: parseInt(r.minute_number),
+      detected: true,
+      power_db: r.tone_500_600_power_db ? parseFloat(r.tone_500_600_power_db) : null,
+      freq_hz: r.tone_500_600_freq_hz ? parseInt(r.tone_500_600_freq_hz) : null,
+      ground_truth_station: r.tone_500_600_ground_truth_station,
+      dominant_station: r.dominant_station,
+      agrees: r.tone_500_600_ground_truth_station === r.dominant_station
+    }));
+  
+  result.methods.ground_truth_500_600 = {
+    status: groundTruthRecords.length > 0 ? 'OK' : 'NO_DATA',
+    records: groundTruthRecords,
+    count: groundTruthRecords.length,
+    agreements: groundTruthRecords.filter(r => r.agrees).length,
+    disagreements: groundTruthRecords.filter(r => !r.agrees).length
+  };
+  
+  // 7. Extract harmonic power ratios from discrimination CSV (Vote 8)
+  // These columns: harmonic_ratio_500_1000, harmonic_ratio_600_1200
+  const harmonicRecords = discData.records
+    .filter(r => r.harmonic_ratio_500_1000 || r.harmonic_ratio_600_1200)
+    .map(r => ({
+      timestamp_utc: r.timestamp_utc,
+      minute_number: parseInt(r.minute_number),
+      harmonic_ratio_500_1000: r.harmonic_ratio_500_1000 ? parseFloat(r.harmonic_ratio_500_1000) : null,
+      harmonic_ratio_600_1200: r.harmonic_ratio_600_1200 ? parseFloat(r.harmonic_ratio_600_1200) : null
+    }));
+  
+  result.methods.harmonic_ratio = {
+    status: harmonicRecords.length > 0 ? 'OK' : 'NO_DATA',
+    records: harmonicRecords,
+    count: harmonicRecords.length
   };
   
   return result;

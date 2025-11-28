@@ -4,7 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Timing Analysis Dashboard - GRAPE Signal Recorder</title>
+    <link rel="stylesheet" href="/styles.css">
     <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <script>
+        window.GRAPE_CURRENT_PAGE = 'timing';
+    </script>
     <style>
         * {
             margin: 0;
@@ -481,19 +485,11 @@
     </style>
 </head>
 <body>
-    <nav style="background: #1e3a8a; padding: 15px 30px; margin-bottom: 20px; border-radius: 8px;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-            <h2 style="margin: 0; font-size: 20px; color: #fff;">📡 GRAPE Signal Recorder</h2>
-            <div style="display: flex; gap: 15px; align-items: center;">
-                <a href="/summary.html" style="color: rgba(255,255,255,0.8); text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: background 0.2s;">Summary</a>
-                <a href="/carrier.html" style="color: rgba(255,255,255,0.8); text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: background 0.2s;">Carrier</a>
-                <a href="/discrimination.html" style="color: rgba(255,255,255,0.8); text-decoration: none; padding: 8px 16px; border-radius: 4px; transition: background 0.2s;">Discrimination</a>
-                <a href="/timing-dashboard-enhanced.html" style="color: #fff; background: rgba(255,255,255,0.2); text-decoration: none; padding: 8px 16px; border-radius: 4px; font-weight: 600;">Timing</a>
-            </div>
-        </div>
-    </nav>
+    <div class="container">
+        <!-- Unified Navigation -->
+        <div id="grape-navigation"></div>
 
-    <div class="header">
+        <div class="header">
         <h1>⏱️ Timing Analysis Dashboard</h1>
         <div class="live-indicator">
             <span class="live-dot"></span>
@@ -572,9 +568,11 @@
         function renderDashboard(primaryRef, healthSummary, transitions) {
             const container = document.getElementById('dashboard-content');
             
-            // Extract channel names for chart dropdowns
+            // Extract channel names for chart dropdowns, sorted by frequency
             if (healthSummary.channels && healthSummary.channels.length > 0) {
-                availableChannels = healthSummary.channels.map(ch => ch.channel);
+                availableChannels = window.GRAPE_UTILS.sortChannelsByFrequency(
+                    healthSummary.channels.map(ch => ch.channel)
+                );
             }
             
             container.innerHTML = `
@@ -759,7 +757,9 @@
         }
         
         function renderChannelTable(data) {
-            const rows = data.channels.map(ch => {
+            // Sort channels by frequency
+            const sortedChannels = window.GRAPE_UTILS.sortByChannelFrequency(data.channels, 'channel');
+            const rows = sortedChannels.map(ch => {
                 const healthClass = ch.health_score >= 90 ? 'excellent' :
                                    ch.health_score >= 70 ? 'good' :
                                    ch.health_score >= 50 ? 'fair' : 'poor';
@@ -1182,5 +1182,8 @@
         loadDashboard();
         startAutoRefresh();
     </script>
+    </div><!-- end container -->
+    <script src="/components/theme-toggle.js"></script>
+    <script src="/components/navigation.js"></script>
 </body>
 </html>
