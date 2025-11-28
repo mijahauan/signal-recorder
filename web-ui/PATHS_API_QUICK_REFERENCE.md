@@ -22,28 +22,36 @@ Adding a new path? Follow these steps:
 ### Archives (Raw 16 kHz NPZ)
 ```python
 # Python
-paths.get_archive_dir(channel_name)
+paths.get_archive_dir(channel_name)  # → {data_root}/archives/{CHANNEL}/
 ```
 ```javascript
 // JavaScript
-paths.getArchiveDir(channelName)
+paths.getArchiveDir(channelName)     // → {dataRoot}/archives/{CHANNEL}/
 ```
 
 ### Analytics Products
 ```python
 # Python
-paths.get_analytics_dir(channel_name)     # Base directory
-paths.get_decimated_dir(channel_name)     # 10 Hz NPZ (pre-DRF)
-paths.get_digital_rf_dir(channel_name)    # Digital RF HDF5
-paths.get_discrimination_dir(channel_name) # WWV/WWVH CSVs
-paths.get_quality_dir(channel_name)       # Quality CSVs
+paths.get_analytics_dir(channel_name)           # Base directory
+paths.get_decimated_dir(channel_name)           # 10 Hz NPZ (pre-DRF)
+paths.get_digital_rf_dir(channel_name)          # Digital RF HDF5
+paths.get_discrimination_dir(channel_name)      # Final weighted voting CSVs
+paths.get_bcd_discrimination_dir(channel_name)  # BCD 100 Hz correlation CSVs
+paths.get_tone_detections_dir(channel_name)     # 1000/1200 Hz tone CSVs
+paths.get_tick_windows_dir(channel_name)        # 5ms tick analysis CSVs
+paths.get_station_id_440hz_dir(channel_name)    # 440 Hz station ID CSVs
+paths.get_quality_dir(channel_name)             # Quality CSVs
 ```
 ```javascript
 // JavaScript
 paths.getAnalyticsDir(channelName)
-paths.getDecimatedDir(channelName)        // NEW - Added Nov 17, 2025
+paths.getDecimatedDir(channelName)
 paths.getDigitalRFDir(channelName)
 paths.getDiscriminationDir(channelName)
+paths.getBcdDiscriminationDir(channelName)
+paths.getToneDetectionsDir(channelName)
+paths.getTickWindowsDir(channelName)
+paths.getStationId440hzDir(channelName)
 paths.getQualityDir(channelName)
 ```
 
@@ -136,7 +144,7 @@ channel_dir = channel_name_to_dir(channel_name)
 
 ## Full Documentation
 
-See `WEB_UI_ANALYTICS_SYNC_PROTOCOL.md` for:
+See `WEB_UI_ARCHITECTURE.md` for:
 - Complete protocol and rules
 - Step-by-step examples
 - Migration guide

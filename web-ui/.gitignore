@@ -34,3 +34,7 @@ coverage/
 *.tmp
 *.temp
 
+# Runtime artifacts
+cookies.txt
+build-output.txt
+

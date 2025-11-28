@@ -68,4 +68,14 @@ test-data/
 # Temporary files
 *.tmp
 *.bak
+nohup.out
+
+# Runtime artifacts
+*.npz
+*.h5
+*.hdf5
+
+# Visualization outputs
+*.png
+!docs/**/*.png
 

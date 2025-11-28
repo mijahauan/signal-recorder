@@ -16,28 +16,37 @@ The [HamSCI GRAPE project](https://hamsci.org/grape) studies ionospheric disturb
 - 🌐 **Web UI** - Real-time monitoring, configuration, quality metrics
 - 🚀 **PSWS upload** - Automated rsync to HamSCI repository
 
-## Quick Start
+## Quick Start (Beta)
 
-**Prerequisites:** ka9q-radio, Linux with multicast, Python 3.8+, Node.js 16+
+**Prerequisites:** ka9q-radio running, Linux with multicast networking, Python 3.10+, Node.js 18+
 
 ```bash
-# Install
-git clone https://github.com/yourusername/signal-recorder.git
+# Clone repository
+git clone https://github.com/mijahauan/signal-recorder.git
 cd signal-recorder
-python3 -m venv venv && source venv/bin/activate && pip install -e .
-cd web-ui && pnpm install
 
-# Configure via Web UI
-cd web-ui && pnpm start  # http://localhost:3000
-# OR edit config/grape-config.toml manually
+# Create Python virtual environment
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -e .
 
-# Run (test mode safe for initial setup)
-signal-recorder daemon --config config/grape-config.toml
+# Copy and edit configuration template
+cp config/grape-config.toml.template config/grape-config.toml
+# Edit config/grape-config.toml with your station details and ka9q-radio address
+
+# Test the recorder (uses /tmp/grape-test by default)
+python -m signal_recorder.grape_recorder --config config/grape-config.toml
+
+# In another terminal, start Web UI
+cd web-ui
+npm install   # or: pnpm install
+npm start     # http://localhost:3000
 ```
 
-**Test vs Production:** Set `mode = "test"` in config for `/tmp/grape-test` (temporary), or `mode = "production"` for `/var/lib/signal-recorder` (persistent).
+**Modes:** Set `mode = "test"` (default, uses `/tmp/grape-test`) or `mode = "production"` (uses `/var/lib/signal-recorder`).
 
-**Monitor:** `http://localhost:3000/monitoring` - Real-time channel health, quality metrics, logs
+**Monitor:** Open `http://localhost:3000` for real-time channel health, quality metrics, and logs.
 
 ## Architecture
 
@@ -46,32 +55,56 @@ signal-recorder daemon --config config/grape-config.toml
 ```
 ka9q-radio (RTP multicast) → Core Recorder → Analytics → DRF Writer/Upload
                               16kHz NPZ      10Hz NPZ   Digital RF HDF5
-                              archives/      analytics/ → PSWS rsync
+                              archives/      analytics/ → PSWS sftp
 ```
 
-**1. Core Recorder** (`grape_channel_recorder_v2.py`) - Rock-solid archiving
-- RTP → resequencing → gap fill → 16 kHz NPZ (complete record)
-- ~300 lines, changes <5x/year, minimal dependencies
+### 1. Core Recorder (`src/signal_recorder/core_recorder.py`)
 
-**2. Analytics Service** (`analytics_service.py`) - 5 discrimination methods
-- Method 1: Timing Tones (1000/1200 Hz power ratio)
-- Method 2: Tick Windows (5ms coherent analysis)
-- Method 3: Station ID (440 Hz at minutes 1/2)
-- Method 4: BCD (100 Hz subcarrier)
-- Method 5: Weighted Voting (final determination)
-- Decimation: 16 kHz → 10 Hz (optimized 3-stage FIR)
-- Output: Separated CSVs per method + 10 Hz NPZ with embedded metadata
+Rock-solid RTP capture with scientific-grade metadata preservation:
+- RTP → resequencing → gap fill → 16 kHz NPZ (960,000 samples/minute)
+- Minimal dependencies, designed for maximum reliability
 
-**3. DRF Writer** (`drf_writer_service.py`) - Wsprdaemon-compatible
+**16 kHz NPZ Metadata** (self-contained scientific record):
+- **IQ Data:** Complex64 samples, gap-filled with zeros
+- **Timing Reference:** RTP timestamp of first sample, sample rate, SSRC
+- **Time_snap Anchor:** RTP/UTC calibration from WWV/CHU tone detection
+- **Tone Powers:** 1000 Hz (WWV) and 1200 Hz (WWVH) power levels in dB
+- **NTP Status:** Wall clock time, NTP offset at minute boundary
+- **Gap Provenance:** Detailed gap locations, sizes, and packet loss counts
+- **Quality Indicators:** Packets received vs expected, completeness
+
+### 2. Analytics Service (`src/signal_recorder/analytics_service.py`)
+
+Processes 16 kHz archives to derived products:
+
+**Discrimination Methods** (each writes independent CSV):
+- **Timing Tones:** 1000/1200 Hz power ratio (1/min)
+- **Tick Windows:** 5ms coherent/incoherent SNR analysis (6/min)
+- **440 Hz Station ID:** Unambiguous WWV/WWVH identification (2/hour)
+- **BCD Correlation:** 100 Hz time code dual-peak detection (15/min)
+- **Test Signals:** Minutes :08/:44 detection with ToA offset (2/hour)
+- **Weighted Voting:** Combines all methods for final determination
+
+**Additional Analytics:**
+- **Doppler Estimation:** Per-tick frequency shift measurement
+- **Timing Metrics:** Time_snap quality, NTP drift, timing accuracy
+- **Decimation:** 16 kHz → 10 Hz (optimized 3-stage FIR filter)
+
+**Output:** Separated CSVs per method + 10 Hz NPZ with embedded metadata
+
+### 3. DRF Writer (`src/signal_recorder/drf_batch_writer.py`)
+
+Wsprdaemon-compatible Digital RF output:
 - Reads 10 Hz NPZ → writes Digital RF HDF5 (float32 I/Q pairs)
-- Two modes: wsprdaemon-compatible (default) or enhanced metadata
-- Automated rsync upload to HamSCI PSWS
+- Multi-subchannel format: all 9 frequencies in single ch0
+- Automated SFTP upload to HamSCI PSWS with trigger directories
 
-**Design Principles:**
+### Design Principles
+
 - **Reprocessability:** 16 kHz archives preserved, analytics can rerun
-- **Canonical contracts:** All paths via `GRAPEPaths` API ([CANONICAL_CONTRACTS.md](CANONICAL_CONTRACTS.md))
+- **Self-Contained Files:** Each NPZ contains all metadata for standalone analysis
 - **Separation:** Core never stops, analytics restartable, DRF independent
-- **Time_snap:** WWV/CHU tones anchor RTP to UTC (±1ms GPS-quality)
+- **Time_snap:** WWV/CHU tones anchor RTP to UTC (±1ms GPS-quality timing)
 
 ## Quality Metrics
 
@@ -80,36 +113,42 @@ ka9q-radio (RTP multicast) → Core Recorder → Analytics → DRF Writer/Upload
 - **Packet Loss:** <1% healthy (indicates network issues)
 - **Time_snap Quality:** TONE_LOCKED (±1ms) > NTP_SYNCED (±10ms) > WALL_CLOCK (±seconds)
 
-## 🔬 WWV/WWVH Discrimination (5 Methods)
+## 🔬 WWV/WWVH Discrimination (6 Methods)
 
 Separate WWV (Fort Collins) and WWVH (Kauai) signals on shared frequencies (2.5, 5, 10, 15 MHz) using complementary measurement techniques:
 
-**Method 1: 440 Hz ID Tones** (2/hour)  
-Unambiguous station identification. WWVH transmits minute 1, WWV minute 2.  
-✅ Highest confidence - ground truth calibration
-
-**Method 2: BCD Correlation** (15/min) 🚀 PRIMARY  
+**Method 1: BCD Correlation** (15/min) 🚀 PRIMARY  
 Cross-correlation of 100 Hz BCD time code finds two peaks = two stations.  
 ✅ Highest temporal resolution - captures ionospheric dynamics  
 ✅ Measures amplitude AND differential delay simultaneously  
 ✅ Optimized performance: 3-second steps (Nov 2025)
 
-**Method 3: Timing Tones** (1/min)  
+**Method 2: Timing Tones** (1/min)  
 Power ratio of 1000 Hz (WWV) vs 1200 Hz (WWVH) marker tones.  
 ✅ Reliable baseline - works even with weak signals
 
-**Method 4: Tick Windows** (6/min)  
+**Method 3: Tick Windows** (6/min)  
 Per-second tick analysis with adaptive coherent/incoherent integration.  
 ✅ Sub-minute dynamics - tracks rapid propagation changes
 
-**Method 5: Weighted Voting** (1/min)  
+**Method 4: 440/500/600 Hz Tone Detection** (14 ground truth min/hour)  
+440 Hz station ID: WWVH minute 1, WWV minute 2.  
+500/600 Hz exclusive minutes: WWV-only (1,16,17,19), WWVH-only (2,43-51).  
+✅ Ground truth calibration - 100% certain identification when present
+
+**Method 5: Test Signal Detection** (2/hour)  
+Detect WWV/WWVH test signals at minutes :08 and :44 with ToA offset.  
+✅ High-precision ionospheric channel characterization
+
+**Method 6: Weighted Voting** (1/min)  
 Combines all methods with minute-specific weighting for final determination.  
 ✅ Robust - leverages strengths of each method
 
-**Why 5 Methods?**
+**Why 6 Methods?**
 - **Redundancy:** Multiple independent measurements validate each other
 - **Adaptability:** Different methods excel under different propagation conditions  
 - **Temporal Coverage:** From hourly calibration to sub-second dynamics
+- **Ground Truth:** 14 minutes/hour with 440/500/600 Hz exclusive broadcasts
 - **Cross-Validation:** Agreement confirms accuracy, disagreement reveals complexity
 
 **Quick Check:** View `http://localhost:3000/discrimination.html` for 7-panel analysis with method labels and performance statistics.
@@ -118,31 +157,29 @@ Combines all methods with minute-specific weighting for final determination.
 
 ## Web UI
 
-**Configuration:** Station setup, channel presets, PSWS credentials, TOML export  
+**🔊 Live Audio:** Click any channel to stream WWV/CHU audio directly in the browser  
 **Monitoring:** Real-time health, metrics, logs (auto-refresh 30s)  
-**Stack:** Node.js/Express, vanilla JS, JSON storage
+**Discrimination:** 7-panel analysis with per-method visualization  
+**Stack:** Node.js/Express, vanilla JS, WebSocket audio streaming
 
 ## Documentation
 
-**Core Contracts** (consult before code changes):
-- [CANONICAL_CONTRACTS.md](CANONICAL_CONTRACTS.md) - Project standards ⭐ START HERE
-- [ARCHITECTURE.md](ARCHITECTURE.md) - System design (WHY)
-- [DIRECTORY_STRUCTURE.md](DIRECTORY_STRUCTURE.md) - Paths & naming (WHERE)
-- [docs/API_REFERENCE.md](docs/API_REFERENCE.md) - Functions (WHAT)
-- [CONTEXT.md](CONTEXT.md) - AI assistant context transfer
+**Essential:**
+- [INSTALLATION.md](INSTALLATION.md) - Detailed setup guide
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System design
+- [CANONICAL_CONTRACTS.md](CANONICAL_CONTRACTS.md) - API standards
+- [config/grape-config.toml.template](config/grape-config.toml.template) - Configuration template
 
-**Setup & Operations:**
-- [INSTALLATION.md](INSTALLATION.md) - Detailed setup
-- [docs/DRF_WRITER_MODES.md](docs/DRF_WRITER_MODES.md) - Wsprdaemon vs enhanced metadata
-- [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - systemd configuration
-- [docs/troubleshooting.md](docs/troubleshooting.md) - Common issues
+**Reference:**
+- [docs/](docs/) - Feature documentation and guides
+- [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md) - Implementation details
 
 
 ## Requirements
 
-**Hardware:** SDR (RX888/Airspy/SDRPlay), HF antenna (2.5-25 MHz), Linux 1+ GB RAM  
-**Software:** ka9q-radio, Python 3.8+ (digital_rf≥3.0, scipy≥1.7, numpy≥1.20), Node.js 16+, rsync  
-**Network:** Multicast-capable, internet for upload, ports 3000 (web UI), 5004 (RTP)
+**Hardware:** SDR (RX888/Airspy/SDRPlay), HF antenna (2.5-25 MHz), Linux 2+ GB RAM  
+**Software:** ka9q-radio, Python 3.10+, Node.js 18+, rsync, libhdf5-dev  
+**Network:** Multicast-capable LAN, internet for PSWS upload
 
 ## Configuration Example
 
@@ -182,66 +219,15 @@ enabled = false  # Set true after PSWS credentials configured
 
 See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
-## Recent Updates
+## Status
 
-**November 26, 2025 - Live Audio Streaming** ✅
-- **New:** Listen to any WWV/CHU channel directly from the Summary page
-- **Audio Button:** Click 🔈 on any channel row to start streaming
-- **Architecture:** AM demodulation with AGC, 12 kHz audio via WebSocket
-- **Audio SSRC:** IQ_SSRC + 999 (e.g., 10 MHz uses SSRC 10000999)
-- **Files:** `radiod_audio_client.py`, `monitoring-server-v3.js` (Ka9qRadioProxy), `summary.html` (GRAPEAudioPlayer)
-- **Dependencies:** Added `ws` package for WebSocket support
-
-**November 26, 2025 - Geographic BCD Discrimination & Spectrogram Solar Overlays** ✅
-- **Geographic Peak Assignment:** BCD dual-peak discrimination now uses geographic ToA prediction to correctly assign WWV/WWVH to early/late correlation peaks based on receiver location
-- **Test Signal ToA Offset:** Added time-of-arrival offset measurement for test signals (minutes :08/:44) providing high-precision ionospheric channel characterization
-- **Carrier Page Fixed:** Date picker now scans 10 Hz NPZ files in `analytics/{channel}/decimated/` instead of requiring pre-existing spectrograms
-- **Solar Zenith Overlays:** Spectrograms now include WWV path (red) and WWVH path (purple) solar elevation curves
-- **Spectrogram Generation:** `scripts/generate_spectrograms_from_10hz.py` generates 24-hour spectrograms from decimated NPZ files with automatic solar zenith overlay
-- See `CONTEXT.md` for technical details and next session goals
-
-**November 26, 2025 - Timing Dashboard & Wall Clock Stability** ✅
-- **Fixed:** `ntp_wall_clock_time` now uses stable RTP-derived prediction instead of jittery `time.time()` capture
-- **Result:** Sub-microsecond wall clock stability (was ±2 seconds due to packet arrival jitter)
-- **New:** Interactive timing dashboard with drift analysis and time source timeline charts
-- **New:** Quality level legend explaining TONE_LOCKED, NTP_SYNCED, INTERPOLATED, WALL_CLOCK
-- **Web UI:** `http://localhost:3000/timing-dashboard-enhanced.html` - Real-time timing visualization
-- See timing documentation in `docs/TIMING_ANALYSIS_UI_DESIGN.md`
-
-**November 24, 2025 - Analytics Metadata Integration** ✅
-- Analytics now reads and validates recorder-provided time_snap metadata
-- Archive time_snap adoption: Analytics automatically uses superior timing references from NPZ files
-- Tone power cross-validation: Compares recorder startup measurements with analytics detections
-- Complete metadata flow verified: Recorder → NPZ → Analytics → Decimated NPZ → DRF/Upload
-- All 6 analytics pipelines tested and validated end-to-end
-- See [SESSION_2025-11-24_ANALYTICS_METADATA_INTEGRATION.md](SESSION_2025-11-24_ANALYTICS_METADATA_INTEGRATION.md) for details
-
-**November 20, 2025 - DRF Writer Production Ready** ✅
-- Digital RF output now fully wsprdaemon-compatible (PSWS upload ready)
-- Two modes: wsprdaemon-compatible (default) or enhanced metadata
-- Float32 I/Q pairs with is_complex=True flag
-- Proper writer lifecycle with explicit close after each file
-- See [SESSION_2025-11-20_WSPRDAEMON_DRF_COMPATIBILITY.md](SESSION_2025-11-20_WSPRDAEMON_DRF_COMPATIBILITY.md)
-
-**November 20, 2025 - Canonical Contracts** ✅
-- Established project-wide standards and enforcement
-- GRAPEPaths API mandatory for all file operations
-- Unified API_REFERENCE.md with complete function signatures
-- Validation tool: scripts/validate_api_compliance.py
-- See [CANONICAL_CONTRACTS.md](CANONICAL_CONTRACTS.md)
-
-**November 23, 2025 - Core Recorder Timing Fix** ✅
-- Fixed incomplete NPZ files caused by wall clock boundary check
-- RTP timestamp now primary reference (sample count = sole trigger)
-- Files correctly contain 960,000 samples (60 seconds @ 16 kHz)
-- Embedded time_snap, tone powers, and gap metadata in all NPZ files
-- See [CORE_RECORDER_BUG_NOTES.md](CORE_RECORDER_BUG_NOTES.md)
+**Beta Release** - Core functionality complete and tested. Daily recording and PSWS upload operational at AC0G since November 2025.
 
 ## Credits & Support
 
 **Credits:** Phil Karn/KA9Q (ka9q-radio), MIT Haystack (Digital RF), Nathaniel Frissell/W2NAF (HamSCI GRAPE), Rob Robinett/AI6VN (wsprdaemon inspiration), Michael Hauan/AC0G (this implementation)
 
-**Community:** [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io) | [GitHub Issues](https://github.com/yourusername/signal-recorder/issues)
+**Community:** [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io) | [GitHub Issues](https://github.com/mijahauan/signal-recorder/issues)
 
 **PSWS Access:** Contact HamSCI coordinators to register station and receive credentials
 

@@ -1,7 +1,7 @@
 # GRAPE Directory Structure - Canonical Reference
 
 **Status:** CANONICAL - This is the single source of truth for all file paths  
-**Last Updated:** 2025-11-20  
+**Last Updated:** 2025-11-28  
 **Enforcement:** ALL code MUST use `src/signal_recorder/paths.py` GRAPEPaths API
 
 ---
@@ -23,10 +23,18 @@ From `config/grape-config.toml`:
 [recorder]
 mode = "test"                              # or "production"
 test_data_root = "/tmp/grape-test"
-production_data_root = "/var/lib/signal-recorder"
+production_data_root = "/var/spool/signal-recorder"  # Proposed for post-beta
 ```
 
 Current mode determines `data_root` for all paths below.
+
+**Beta Testing:** Use `mode = "test"` with `/tmp/grape-test/`.
+
+**Production Mode (Post-Beta):** Will adopt Linux standard directory structure:
+- `/etc/signal-recorder/` - Configuration files
+- `/var/log/signal-recorder/` - Log files  
+- `/usr/local/bin/` - Executables
+- `/var/spool/signal-recorder/` - Generated data and analytics
 
 ---
 
@@ -39,8 +47,15 @@ ${data_root}/
 │   └── {CHANNEL}/                         # e.g., WWV_5_MHz, CHU_3_33_MHz
 │       └── YYYYMMDDTHHMMSSZ_{FREQ}_iq.npz
 │           # Example: 20251119T120000Z_5000000_iq.npz
-│           # Fields: iq (complex64), sample_rate, unix_timestamp,
-│           #         rtp_timestamp, gaps_detected
+│           # Fields:
+│           #   iq (complex64)           - Gap-filled IQ samples
+│           #   rtp_timestamp            - RTP timestamp of first sample
+│           #   sample_rate              - 16000 Hz
+│           #   time_snap_rtp/utc/source - Timing anchor reference
+│           #   tone_power_1000/1200_hz_db - Tone powers for discrimination
+│           #   ntp_wall_clock_time      - Wall clock at minute boundary
+│           #   gaps_filled/gaps_count   - Gap statistics
+│           #   packets_received/expected - Packet statistics
 │
 ├── analytics/                             # Per-channel analytics products
 │   └── {CHANNEL}/                         # e.g., WWV_5_MHz
@@ -57,14 +72,14 @@ ${data_root}/
 │       │                   └── {CHANNEL}/
 │       │                       └── rf@{TIMESTAMP}.h5
 │       │
-│       ├── tone_detections/               # Method 1: 1000/1200 Hz timing tones
+│       ├── tone_detections/               # Method 2: 1000/1200 Hz timing tones
 │       │   └── {CHANNEL}_tones_YYYYMMDD.csv
 │       │       # Columns: timestamp_utc, station, frequency_hz, 
 │       │       #          duration_sec, timing_error_ms, snr_db,
 │       │       #          tone_power_db, confidence
 │       │       # One row per detected tone
 │       │
-│       ├── tick_windows/                  # Method 2: 5ms tick analysis
+│       ├── tick_windows/                  # Method 3: 5ms tick analysis
 │       │   └── {CHANNEL}_ticks_YYYYMMDD.csv
 │       │       # Columns: timestamp_utc, window_second,
 │       │       #          coherent_wwv_snr_db, coherent_wwvh_snr_db,
@@ -74,22 +89,35 @@ ${data_root}/
 │       │       #          ratio_db, tick_count
 │       │       # One row per 10-second window (6 per minute)
 │       │
-│       ├── station_id_440hz/              # Method 3: 440 Hz station ID
+│       ├── station_id_440hz/              # Method 4: 440 Hz station ID
 │       │   └── {CHANNEL}_440hz_YYYYMMDD.csv
 │       │       # Columns: timestamp_utc, minute_number,
 │       │       #          wwv_detected, wwvh_detected,
 │       │       #          wwv_power_db, wwvh_power_db
 │       │       # One row per detection (minutes 1 & 2 only)
 │       │
-│       ├── bcd_discrimination/            # Method 4: 100 Hz BCD subcarrier
+│       ├── bcd_discrimination/            # Method 1 (PRIMARY): 100 Hz BCD
 │       │   └── {CHANNEL}_bcd_YYYYMMDD.csv
 │       │       # Columns: timestamp_utc, window_start_sec,
 │       │       #          wwv_amplitude, wwvh_amplitude,
 │       │       #          differential_delay_ms, correlation_quality,
 │       │       #          amplitude_ratio_db
-│       │       # One row per BCD window (multiple per minute)
+│       │       # One row per 3-second window (15+ per minute)
 │       │
-│       ├── discrimination/                # Method 5: Final weighted voting
+│       ├── test_signals/                  # Test signal detection (min :08/:44)
+│       │   └── {CHANNEL}_testsig_YYYYMMDD.csv
+│       │       # Columns: timestamp_utc, minute_number, detected,
+│       │       #          station, confidence, toa_offset_ms
+│       │       # One row per detection opportunity (2 per hour)
+│       │
+│       ├── doppler/                       # Per-tick Doppler estimates
+│       │   └── {CHANNEL}_doppler_YYYYMMDD.csv
+│       │       # Columns: timestamp_utc, wwv_doppler_hz, wwvh_doppler_hz
+│       │
+│       ├── timing_metrics/                # Time_snap quality tracking
+│       │   └── {CHANNEL}_timing_YYYYMMDD.csv
+│       │
+│       ├── discrimination/                # Final weighted voting
 │       │   └── {CHANNEL}_discrimination_YYYYMMDD.csv
 │       │       # Columns: timestamp_utc, minute_timestamp, minute_number,
 │       │       #          wwv_detected, wwvh_detected,

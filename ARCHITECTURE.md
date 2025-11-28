@@ -1,6 +1,6 @@
 # GRAPE Signal Recorder - System Architecture
 
-**Last Updated:** November 20, 2025  
+**Last Updated:** November 28, 2025  
 **Status:** CANONICAL - Single source of truth for system design  
 **Version:** V2 (Three-Service Architecture)
 
@@ -47,10 +47,15 @@ The GRAPE Signal Recorder is a specialized system for recording, processing, and
 
 **Core Mission:**
 Record WWV/WWVH/CHU time signals to study ionospheric disturbances through:
-1. Timing variations (±1ms precision via tone detection)
-2. Signal strength (WWV vs WWVH power ratios)
-3. Propagation delays (differential delay between stations)
-4. Carrier Doppler shifts (±5 Hz window)
+1. **Timing variations** (±1ms precision via tone detection)
+2. **WWV/WWVH discrimination** on the 4 shared frequencies (2.5, 5, 10, 15 MHz)
+3. **Propagation delays** (differential delay between WWV Fort Collins and WWVH Kauai)
+4. **Carrier Doppler shifts** (±5 Hz window for ionospheric dynamics)
+
+**Channel Configuration (9 frequencies):**
+- **Shared frequencies (4):** 2.5, 5, 10, 15 MHz - WWV and WWVH both transmit, requiring discrimination
+- **WWV-only (2):** 20, 25 MHz - WWV exclusive
+- **CHU (3):** 3.33, 7.85, 14.67 MHz - Canadian time standard
 
 ---
 
@@ -103,7 +108,7 @@ Core Recorder (Stable)  →  Analytics (Evolving)  →  Consumers (Flexible)
 
 ### 5. Independent Discrimination Methods
 
-**Decision:** Five separate analysis methods, each with dedicated CSV output.
+**Decision:** Six separate analysis methods for WWV/WWVH discrimination on shared frequencies, each with dedicated CSV output.
 
 **Why?**
 - **Independent Reprocessing:** Update one method without rerunning others
@@ -113,11 +118,12 @@ Core Recorder (Stable)  →  Analytics (Evolving)  →  Consumers (Flexible)
 - **Scientific Rigor:** Document how each conclusion was reached
 
 **Methods:**
-1. Timing Tones (1000/1200 Hz)
-2. Tick Windows (5ms tick analysis)
-3. Station ID (440 Hz tones)
-4. BCD Discrimination (100 Hz subcarrier)
-5. Weighted Voting (final determination)
+1. BCD Correlation (100 Hz subcarrier) - PRIMARY, highest temporal resolution
+2. Timing Tones (1000/1200 Hz power ratio)
+3. Tick Windows (5ms coherent analysis)
+4. 440/500/600 Hz Tones (14 ground truth minutes/hour)
+5. Test Signal Detection (minutes :08, :44 with ToA offset)
+6. Weighted Voting (final determination)
 
 ---
 
@@ -404,105 +410,115 @@ JSON Response → Chart.js plots
 
 ## WWV/WWVH Discrimination
 
-### Why 5 Methods?
+### The Discrimination Challenge
 
-**Problem:** Single method fails when propagation conditions change.
+**Problem:** On 4 shared frequencies (2.5, 5, 10, 15 MHz), WWV (Fort Collins, CO) and WWVH (Kauai, HI) transmit simultaneously. Their signals mix in the ionosphere, arriving at different times and strengths depending on propagation conditions. Separating these signals is essential for ionospheric research.
 
-**Solution:** Multiple independent analyses, combine via weighted voting.
+**Solution:** Multiple independent analysis methods, each exploiting different signal characteristics, combined via weighted voting.
 
-### The Five Methods
+### Discrimination Methods
 
-#### Method 1: Timing Tones (1000/1200 Hz)
+#### Method 1: BCD Correlation (🚀 PRIMARY)
 
-**What:** Detect WWV (1000 Hz) and WWVH (1200 Hz) timing tones.
+**What:** Cross-correlate 100 Hz BCD time code to find two peaks representing the two stations.
+
+**When:** 3-second sliding windows throughout each minute (15+ measurements/minute).
+
+**Outputs:**
+- WWV/WWVH amplitudes from dual-peak detection
+- Differential delay (ms) - propagation path difference
+- Geographic peak assignment using receiver location
+- Correlation quality (0-1)
+
+**Why Primary:** Highest temporal resolution, measures both amplitude AND timing simultaneously.
+
+#### Method 2: Timing Tones (1000/1200 Hz)
+
+**What:** Power ratio of WWV's 1000 Hz vs WWVH's 1200 Hz marker tones.
 
 **When:** First 0.8 seconds of each minute.
 
 **Outputs:**
-- WWV/WWVH power (dB)
-- Differential delay (ms)
-- Tone detections list
+- 1000 Hz power (dB) - WWV indicator
+- 1200 Hz power (dB) - WWVH indicator
+- Power ratio (dB)
 
-**Use:**
-- WWV/CHU → time_snap (timing reference)
-- WWVH → propagation analysis (scientific goal)
+**Use:** Reliable baseline, works even with weak signals.
 
-**Failure Mode:** Weak signals, propagation fade.
+#### Method 3: Tick Windows (5ms coherent analysis)
 
-#### Method 2: Tick Windows (5ms ticks)
+**What:** Analyze 5ms tick marks using adaptive coherent/incoherent integration.
 
-**What:** Analyze 5ms tick marks using coherent integration.
-
-**When:** Every 10 seconds (windows at 0, 10, 20, 30, 40, 50).
+**When:** 6 windows per minute (at seconds 0, 10, 20, 30, 40, 50).
 
 **Outputs:**
 - Coherent/incoherent SNR for WWV/WWVH
 - Phase coherence quality (0-1)
-- WWV/WWVH power ratio
+- Integration method selected (coherent when phase stable)
 
-**Use:** Robust when continuous carrier present.
+**Use:** Sub-minute dynamics, tracks rapid propagation changes.
 
-**Failure Mode:** Noisy conditions, weak coherence.
+#### Method 4: 440/500/600 Hz Tone Detection
 
-#### Method 3: Station ID (440 Hz)
+**What:** Detect station-identifying tones from the WWV/WWVH broadcast schedule.
 
-**What:** Detect 440 Hz station identification tones.
+**440 Hz Station ID:**
+- Minute 1: WWVH broadcasts 440 Hz (WWV broadcasts 600 Hz)
+- Minute 2: WWV broadcasts 440 Hz (WWVH broadcasts 600 Hz)
 
-**When:** Minute 1 (WWVH), Minute 2 (WWV).
-
-**Outputs:**
-- WWV detected (minute 2)
-- WWVH detected (minute 1)
-- Power (dB)
-
-**Use:** Clear station identification when present.
-
-**Failure Mode:** Voice announcements may be absent or weak.
-
-#### Method 4: BCD Discrimination (100 Hz)
-
-**What:** Analyze 100 Hz BCD time code subcarrier.
-
-**When:** Throughout minute (sliding windows).
+**500/600 Hz Ground Truth (14 minutes/hour):**
+- WWV-only: Minutes 1, 16, 17, 19 (WWVH silent or different tone)
+- WWVH-only: Minutes 2, 43-51 (WWV silent or different tone)
 
 **Outputs:**
-- WWV/WWVH amplitude
-- Differential delay (ms)
-- Correlation quality (0-1)
-- Window-by-window results
+- Station detected (WWV/WWVH)
+- Tone frequency and power (dB)
+- Harmonic analysis: 500→1000 Hz (WWV), 600→1200 Hz (WWVH)
 
-**Use:** Works when subcarrier is strong.
+**Use:** Ground truth calibration - 100% certain identification when present.
 
-**Failure Mode:** Low SNR, subcarrier interference.
+#### Method 5: Test Signal Detection
 
-#### Method 5: Weighted Voting (Final)
+**What:** Detect WWV/WWVH test signals at minutes :08 and :44.
 
-**What:** Combine all methods with confidence levels.
+**When:** Minutes 8 and 44 of each hour.
 
-**When:** After all methods complete.
+**Outputs:**
+- Detection confidence
+- Time-of-arrival offset (ms) - ionospheric channel characterization
+- Station identified from schedule
+
+**Use:** High-precision ToA measurement for path delay analysis.
+
+#### Method 6: Weighted Voting (Final Determination)
+
+**What:** Combine all methods with minute-specific weighting.
 
 **Outputs:**
 - Dominant station (WWV/WWVH/BALANCED/UNKNOWN)
-- Confidence (HIGH/MEDIUM/LOW)
+- Confidence level
 - All individual method results
 
-**Use:** Final determination for visualization and analysis.
+**Use:** Final determination for visualization and scientific analysis.
+
+### Additional Analytics
+
+- **Doppler Estimation:** Per-tick frequency shift measurement for ionospheric dynamics
+- **Timing Metrics:** Time_snap quality, NTP drift, timing accuracy tracking
 
 ### CSV Output Structure
 
 **Separated by Method:**
 ```
 analytics/{channel}/
-├── tone_detections/
-│   └── {CHANNEL}_tones_YYYYMMDD.csv
-├── tick_windows/
-│   └── {CHANNEL}_ticks_YYYYMMDD.csv
-├── station_id_440hz/
-│   └── {CHANNEL}_440hz_YYYYMMDD.csv
-├── bcd_discrimination/
-│   └── {CHANNEL}_bcd_YYYYMMDD.csv
-└── discrimination/
-    └── {CHANNEL}_discrimination_YYYYMMDD.csv (final voting)
+├── tone_detections/          # 1000/1200 Hz timing tones
+├── tick_windows/             # 5ms tick coherent analysis
+├── station_id_440hz/         # 440 Hz station ID (minutes 1,2)
+├── bcd_discrimination/       # 100 Hz BCD dual-peak (PRIMARY)
+├── test_signals/             # Minutes :08/:44 detection
+├── doppler/                  # Per-tick Doppler estimates
+├── timing_metrics/           # Time_snap quality tracking
+└── discrimination/           # Final weighted voting results
 ```
 
 **Benefits:**

@@ -1,7 +1,7 @@
 # Web UI Architecture - GRAPE Signal Recorder
 
-**Last Updated**: Nov 18, 2025  
-**Status**: Production
+**Last Updated**: Nov 28, 2025  
+**Status**: Beta Testing
 
 ---
 
@@ -58,8 +58,9 @@
 │ HTML Dashboards (Browser)                                        │
 │ ├─ summary.html       - Main system status                       │
 │ ├─ carrier.html       - Carrier analysis & spectrograms          │
-│ ├─ discrimination.html - WWV/WWVH differential delays            │
-│ └─ timing-dashboard.html - Timing quality metrics                │
+│ ├─ discrimination.html - WWV/WWVH 6-method discrimination         │
+│ ├─ timing-dashboard-enhanced.html - Timing quality metrics       │
+│ └─ gaps.html          - Gap analysis                             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -71,16 +72,18 @@
 
 **Purpose**: Single source of truth for all data file locations
 
-**Synchronization**: Must stay in sync with Python `PathConfig` class
+**Synchronization**: Must stay in sync with Python `GRAPEPaths` class (`src/signal_recorder/paths.py`)
 
 **Key Paths**:
 ```javascript
 {
   dataRoot: "/path/to/data",
   archives: "/path/to/data/archives/{channel}/",
-  decimated: "/path/to/data/decimated/{channel}/",
+  analytics: "/path/to/data/analytics/{channel}/",
+  decimated: "/path/to/data/analytics/{channel}/decimated/",
   spectrograms: "/path/to/data/spectrograms/{date}/",
-  discrimination: "/path/to/data/discrimination/{channel}/{date}.csv",
+  discrimination: "/path/to/data/analytics/{channel}/discrimination/{date}.csv",
+  bcd_discrimination: "/path/to/data/analytics/{channel}/bcd_discrimination/{date}.csv",
   status: {
     core: "/path/to/data/status/core_recorder_status.json",
     analytics: "/path/to/data/status/analytics_status.json"
@@ -135,14 +138,17 @@ GET /spectrograms/:date/:subdirectory/:filename - Image files
 - **Features**: Date navigation, frequency selection
 
 #### discrimination.html
-- **Purpose**: WWV/WWVH differential delays
-- **Data**: CSV time series (timestamp, WWV timing, WWVH timing, differential delay)
-- **Visualization**: Time series charts, statistics
+- **Purpose**: WWV/WWVH discrimination (6 methods)
+- **Data**: Per-method CSVs (BCD, timing tones, ticks, 440Hz, test signals)
+- **Visualization**: 7-panel analysis with method labels
 
-#### timing-dashboard.html
+#### timing-dashboard-enhanced.html
 - **Purpose**: Timing quality monitoring
 - **Data**: time_snap events, timing quality annotations
-- **Status**: Needs work (per user)
+
+#### gaps.html
+- **Purpose**: Gap analysis and data completeness
+- **Data**: Gap statistics from NPZ metadata
 
 ---
 
@@ -155,10 +161,12 @@ GET /spectrograms/:date/:subdirectory/:filename - Image files
    ↓ Writes NPZ/CSV/JSON
    
 2. File System
-   ├─ /data/archives/{channel}/YYYYMMDD_HHMMSS_iq.npz
-   ├─ /data/decimated/{channel}/YYYYMMDD_HHMMSS_10hz.npz
-   ├─ /data/spectrograms/{date}/{type}/{frequency}.png
-   └─ /data/discrimination/{channel}/YYYYMMDD.csv
+   ├─ /data/archives/{channel}/YYYYMMDDTHHMMSSZ_{freq}_iq.npz
+   ├─ /data/analytics/{channel}/decimated/
+   ├─ /data/analytics/{channel}/bcd_discrimination/
+   ├─ /data/analytics/{channel}/discrimination/
+   ├─ /data/spectrograms/{date}/
+   └─ ... (6 discrimination method directories)
    
 3. grape-paths.js
    ↓ Provides file paths
@@ -172,14 +180,17 @@ GET /spectrograms/:date/:subdirectory/:filename - Image files
 
 ### Path Configuration Sync
 
-**Python** (`src/signal_recorder/path_config.py`):
+**Python** (`src/signal_recorder/paths.py`):
 ```python
-class PathConfig:
-    def __init__(self, data_root):
-        self.data_root = data_root
-        self.archives = os.path.join(data_root, "archives")
-        self.decimated = os.path.join(data_root, "decimated")
-        # ... etc
+class GRAPEPaths:
+    def __init__(self, data_root: Path):
+        self.data_root = Path(data_root)
+    
+    def get_archive_dir(self, channel_name: str) -> Path:
+        return self.data_root / 'archives' / channel_name_to_dir(channel_name)
+    
+    def get_analytics_dir(self, channel_name: str) -> Path:
+        return self.data_root / 'analytics' / channel_name_to_dir(channel_name)
 ```
 
 **JavaScript** (`web-ui/grape-paths.js`):
@@ -198,39 +209,31 @@ module.exports = {
 
 ## Startup
 
-### Production Start (Recommended)
+### Beta Testing (Manual Start)
 
-From project root:
+**Recorder** (Terminal 1):
 ```bash
-./start-dual-service.sh
+cd ~/signal-recorder
+source venv/bin/activate
+python -m signal_recorder.grape_recorder --config config/grape-config.toml
 ```
 
-This starts:
-1. Core recorder (Python)
-2. Analytics service (Python)
-3. Monitoring server (Node.js) → `web-ui/monitoring-server-v3.js`
-
-### Manual Web UI Start
-
-From `web-ui/` directory:
+**Web UI** (Terminal 2):
 ```bash
-./start-monitoring.sh
+cd ~/signal-recorder/web-ui
+npm start
 ```
 
-Or directly:
+### Direct Start with Custom Data Root
+
 ```bash
-node monitoring-server-v3.js
-# With custom data root:
+cd web-ui
 node monitoring-server-v3.js /path/to/data
 ```
 
-### Test Mode Start
+### Production (Post-Beta)
 
-```bash
-./start-summary-test.sh
-# Reads config from ../config/grape-config.toml
-# Uses test_data_root or production_data_root
-```
+Systemd services in `systemd/` directory (not yet recommended).
 
 ---
 
@@ -247,7 +250,8 @@ web-ui/
 ├── summary.html                 # ⭐ Main dashboard
 ├── carrier.html                 # ⭐ Carrier analysis
 ├── discrimination.html          # ⭐ WWV/WWVH discrimination
-├── timing-dashboard.html        # ⭐ Timing quality (needs work)
+├── timing-dashboard-enhanced.html # ⭐ Timing quality
+├── gaps.html                    # ⭐ Gap analysis
 ├── discrimination.js            # Chart logic for discrimination
 │
 ├── utils/                       # Server utilities
@@ -389,7 +393,7 @@ cd /home/mjh/git/signal-recorder
 
 ## Related Documentation
 
-- **Python PathConfig**: `src/signal_recorder/path_config.py`
+- **Python GRAPEPaths**: `src/signal_recorder/paths.py`
 - **Path Validation**: `scripts/validate-paths-sync.sh`
 - **API Reference**: `web-ui/PATHS_API_QUICK_REFERENCE.md`
 - **Operational Summary**: `../OPERATIONAL_SUMMARY.md`

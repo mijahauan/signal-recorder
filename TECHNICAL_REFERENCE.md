@@ -1,46 +1,51 @@
 # GRAPE Signal Recorder - Technical Reference
 
-**Quick reference for developers. For full history see PROJECT_NARRATIVE.md**
+**Quick reference for developers working on the GRAPE Signal Recorder.**
 
 ---
 
 ## Current Operational Configuration
 
-**18 input channels** monitoring **9 frequencies of interest**:
-- 9× Wide bandwidth (16 kHz IQ) - WWV/CHU tone detection
-- 9× Carrier channels (200 Hz IQ) - Direct Doppler observation
+**9 channels** monitoring 9 frequencies at 16 kHz IQ:
+- **Shared frequencies (4):** 2.5, 5, 10, 15 MHz - WWV and WWVH both transmit
+- **WWV-only (2):** 20, 25 MHz
+- **CHU (3):** 3.33, 7.85, 14.67 MHz
 
 **Data products generated**:
-1. **16 kHz wide NPZ** - Primary scientific record (KEEP)
-2. **10 Hz decimated from 16 kHz** - High-quality timing (UPLOAD CANDIDATE)
-3. **10 Hz decimated from 200 Hz** - Clean carrier (UPLOAD CANDIDATE)
-4. **Tone detection records** - time_snap, gap analysis
-5. **WWV/WWVH discrimination** - Differential delays (4 shared frequencies)
+1. **16 kHz NPZ archives** - Complete scientific record with embedded metadata
+2. **10 Hz decimated NPZ** - For Digital RF conversion
+3. **Discrimination CSVs** - Per-method analysis (BCD, tones, ticks, 440Hz, test signals)
+4. **Digital RF HDF5** - Wsprdaemon-compatible format for PSWS upload
+5. **Timing metrics** - Time_snap quality, NTP drift tracking
 
-**Goal**: Archive wide NPZ, upload best 10 Hz product with metadata, provide WWV/WWVH discrimination data.
-
-**See**: `OPERATIONAL_SUMMARY.md` for complete details.
+**Goal**: Archive raw 16 kHz IQ, generate 10 Hz Digital RF with metadata for PSWS upload, provide WWV/WWVH discrimination on 4 shared frequencies.
 
 ---
 
-## System Architecture (Current)
+## System Architecture
 
-### Two-Service Design
+### Three-Service Design
 
 ```
-Core Recorder (core_recorder.py)
-├─ RTP reception & resequencing (18 channels)
-├─ Gap detection & filling
-└─ NPZ archive writing (960,000 or 12,000 samples/minute)
+Core Recorder (grape_recorder.py via core_recorder.py)
+├─ RTP reception & resequencing (9 channels)
+├─ Startup tone detection (time_snap establishment)
+├─ Gap detection & zero-filling
+└─ NPZ archive writing (960,000 samples/minute @ 16 kHz)
 
-Analytics Service (analytics_service.py)
-├─ Quality metrics
-├─ Tone detection (time_snap) - wide channels only
-├─ Decimation (16kHz → 10Hz or 200Hz → 10Hz)
-└─ Digital RF writing (future)
+Analytics Service (analytics_service.py) - per channel
+├─ 6 discrimination methods (BCD, tones, ticks, 440Hz, test signals, voting)
+├─ Doppler estimation
+├─ Decimation (16 kHz → 10 Hz)
+└─ Timing metrics
+
+DRF Batch Writer (drf_batch_writer.py)
+├─ 10 Hz NPZ → Digital RF HDF5
+├─ Multi-subchannel format (9 frequencies in ch0)
+└─ SFTP upload to PSWS with trigger directories
 ```
 
-**Why split?** Core stability vs analytics experimentation. Analytics bugs don't stop data collection.
+**Why split?** Core stability vs analytics experimentation. Analytics can restart without data loss.
 
 ---
 
@@ -87,21 +92,52 @@ WWV 10 MHz:  RTP 302,700,560  ← 1.4M sample offset!
 
 ## NPZ Archive Format
 
-**Critical fields** (scientific record):
+**16 kHz Archive Fields** (self-contained scientific record):
 
 ```python
 {
-    "iq": complex64[960000],          # IQ samples
-    "rtp_timestamp": int,              # CRITICAL: RTP of iq[0]
-    "sample_rate": 16000,
-    "gaps_filled": int,                # Zero-filled samples
-    "gaps_count": int,                 # Number of discontinuities
-    "packets_received": int,
-    "packets_expected": int
+    # PRIMARY DATA
+    "iq": complex64[960000],              # Gap-filled IQ samples (60 sec @ 16 kHz)
+    
+    # TIMING REFERENCE
+    "rtp_timestamp": uint32,              # RTP timestamp of iq[0]
+    "rtp_ssrc": uint32,                   # RTP stream identifier
+    "sample_rate": int,                   # 16000 Hz
+    
+    # TIME_SNAP ANCHOR (embedded for self-contained files)
+    "time_snap_rtp": uint32,              # RTP at timing anchor
+    "time_snap_utc": float,               # UTC at timing anchor
+    "time_snap_source": str,              # "wwv_startup", "ntp", etc.
+    "time_snap_confidence": float,        # Confidence 0-1
+    "time_snap_station": str,             # "WWV", "CHU", "NTP"
+    
+    # TONE POWERS (for discrimination - avoids re-detection)
+    "tone_power_1000_hz_db": float,       # WWV/CHU marker tone
+    "tone_power_1200_hz_db": float,       # WWVH marker tone
+    "wwvh_differential_delay_ms": float,  # WWVH-WWV propagation delay
+    
+    # METADATA
+    "frequency_hz": float,                # Center frequency
+    "channel_name": str,                  # "WWV 10 MHz"
+    "unix_timestamp": float,              # RTP-derived file timestamp
+    "ntp_wall_clock_time": float,         # Wall clock at minute boundary
+    "ntp_offset_ms": float,               # NTP offset from centralized cache
+    
+    # QUALITY INDICATORS
+    "gaps_filled": int,                   # Total zero-filled samples
+    "gaps_count": int,                    # Number of discontinuities
+    "packets_received": int,              # Actual packets
+    "packets_expected": int,              # Expected packets
+    
+    # GAP DETAILS (scientific provenance)
+    "gap_rtp_timestamps": uint32[],       # RTP where each gap started
+    "gap_sample_indices": uint32[],       # Sample index of each gap
+    "gap_samples_filled": uint32[],       # Samples filled per gap
+    "gap_packets_lost": uint32[]          # Packets lost per gap
 }
 ```
 
-**Why RTP timestamp?** Enables precise UTC reconstruction after time_snap.
+**Why embedded time_snap?** Each file is self-contained - can reconstruct UTC without external state.
 
 ---
 
@@ -164,80 +200,76 @@ All samples: utc = time_snap_utc + (rtp - time_snap_rtp) / 16000
 
 **Accuracy**: ±1ms when fresh, degrades ~1ms/hour
 
-### Carrier Channels: NTP Timing
-
-**Problem**: 200 Hz bandwidth cannot capture 1000 Hz tones.
-
-**Solution**: Use NTP_SYNCED (±10ms) for carrier channels.
-
-**Rationale**: 
-- ±10ms → <0.01 Hz frequency uncertainty
-- Science goal: ±0.1 Hz Doppler → 10× margin
-- Continuous data (no propagation fade gaps)
-
 ---
 
-## Tone Detector Timing Bug (Nov 17, 2025)
+## WWV/WWVH Discrimination
 
-**Bug**: 30-second offset in all detections.
+### The 4 Shared Frequencies
 
-```python
-# WRONG: current_unix_time is buffer MIDDLE
-onset_time = current_unix_time + (onset_sample_idx / self.sample_rate)
+On 2.5, 5, 10, and 15 MHz, both WWV (Fort Collins, CO) and WWVH (Kauai, HI) transmit simultaneously. Discrimination is required to separate these signals for ionospheric research.
 
-# CORRECT: onset_sample_idx relative to buffer START
-onset_time = buffer_start_time + (onset_sample_idx / self.sample_rate)
+### WWV/WWVH Tone Schedule
+
+**440/500/600 Hz tones** provide ground truth discrimination during specific minutes:
+
+| Minute | WWV Tone | WWVH Tone | Ground Truth |
+|--------|----------|-----------|--------------|
+| 1 | 600 Hz | **440 Hz** | WWVH 440 Hz ID |
+| 2 | **440 Hz** | 600 Hz | WWV 440 Hz ID |
+| 3-15 | 500/600 Hz | 500/600 Hz | (alternating) |
+| 16, 17, 19 | 500/600 Hz | **silent** | WWV-only |
+| 43-51 | **silent** | 500/600 Hz | WWVH-only |
+
+**Ground truth minutes (14 per hour):**
+- **WWV-only**: Minutes 1, 16, 17, 19 (WWVH silent or different tone)
+- **WWVH-only**: Minutes 2, 43-51 (WWV silent or different tone)
+
+**Timing tones (constant):**
+- **1000 Hz**: WWV/CHU marker tone (first 0.8 sec of each minute)
+- **1200 Hz**: WWVH marker tone (first 0.8 sec of each minute)
+
+### 6 Discrimination Methods
+
+Each method writes to its own daily CSV for independent reprocessing:
+
+1. **BCD Correlation (PRIMARY)** - 100 Hz time code dual-peak detection
+   - 3-second sliding windows, 15+ measurements/minute
+   - Measures amplitude AND differential delay simultaneously
+   - Geographic peak assignment based on receiver location
+
+2. **Timing Tones** - 1000 Hz (WWV) vs 1200 Hz (WWVH) power ratio
+   - First 0.8 seconds of each minute
+   - Reliable baseline even with weak signals
+
+3. **Tick Windows** - 5ms tick coherent/incoherent analysis
+   - 6 windows per minute (at seconds 0, 10, 20, 30, 40, 50)
+   - Adaptive integration method selection
+
+4. **440/500/600 Hz Tone Detection** - Ground truth identification
+   - Minute 1: WWVH 440 Hz, Minute 2: WWV 440 Hz
+   - 500/600 Hz exclusive minutes provide additional ground truth
+   - Harmonic analysis: 500→1000 Hz (WWV), 600→1200 Hz (WWVH)
+
+5. **Test Signal Detection** - Minutes :08 and :44
+   - Time-of-arrival offset measurement
+   - High-precision ionospheric channel characterization
+
+6. **Weighted Voting** - Combines all methods
+   - Minute-specific confidence weighting based on tone schedule
+   - 440 Hz minutes: Highest weight to tone detection
+   - Ground truth minutes: High weight to 500/600 Hz detection
+   - BCD minutes (0, 8-10, 29-30): Highest weight to BCD
+   - Final determination: WWV/WWVH/BALANCED/UNKNOWN
+
+### Timing Purpose
+
+```
+WWV (1000 Hz)  → time_snap (timing reference)
+CHU (1000 Hz)  → time_snap (timing reference)
+WWVH (1200 Hz) → Propagation study (science data)
 ```
 
-**Symptoms**: ±29.5 sec errors (half of 60-sec buffer)
-
-**Fix**: Use buffer_start_time as reference
-
-**Lesson**: Always document buffer reference points (start vs middle vs end)
-
----
-
-## Channel Types
-
-### Wide Channels (16 kHz)
-
-**Purpose**: Full WWV/CHU signal capture
-- Sample rate: 16 kHz complex IQ
-- Bandwidth: ±8 kHz
-- Timing: TONE_LOCKED (GPS quality)
-- Detections: WWV (1000 Hz), WWVH (1200 Hz), CHU (1000 Hz)
-
-### Carrier Channels (200 Hz)
-
-**Purpose**: Doppler analysis of 10 Hz carrier
-- Sample rate: 200 Hz complex IQ (radiod minimum)
-- Effective rate: ~98 Hz (49% packet reception)
-- Bandwidth: ±100 Hz
-- Timing: NTP_SYNCED (no tones)
-- Science goal: ±0.1 Hz Doppler → ±3 km path resolution
-
----
-
-## WWV/WWVH Purpose Separation
-
-**Critical distinction**:
-
-```
-WWV (1000 Hz)  → TIME_SNAP (timing reference)
-WWVH (1200 Hz) → PROPAGATION STUDY (science data)
-CHU (1000 Hz)  → TIME_SNAP (timing reference)
-```
-
-**Code pattern**:
-```python
-for detection in results:
-    if detection.use_for_time_snap:
-        update_time_snap_reference(detection)  # WWV or CHU
-    else:
-        analyze_differential_delay(detection)   # WWVH propagation
-```
-
-**Differential delay** = WWV - WWVH (ionospheric path difference)
+**Differential delay** = WWVH - WWV arrival time difference (ionospheric path)
 
 ---
 
@@ -269,56 +301,48 @@ class GRAPEPaths {
 
 ## Configuration
 
-### Core Recorder
-
-**File**: `config/core-recorder.toml`
+**File**: `config/grape-config.toml` (copy from `config/grape-config.toml.template`)
 
 ```toml
-[core]
-mode = "production"
-data_root = "/tmp/grape-test"
+[station]
+callsign = "W1ABC"
+grid_square = "FN31pr"
 
 [ka9q]
-multicast_address = "239.103.26.231"
-status_address = "239.192.152.141"
-port = 5004
+status_address = "myhost-hf-status.local"  # mDNS name from radiod config
 
-[channels]
-[[channels.channel]]
-ssrc = 5000000
-frequency_hz = 5000000
+[recorder]
+mode = "test"                              # "test" or "production"
+test_data_root = "/tmp/grape-test"
+production_data_root = "/var/spool/signal-recorder"
+
+[[recorder.channels]]
+ssrc = 10000000
+frequency_hz = 10000000
+preset = "iq"
 sample_rate = 16000
-description = "WWV 5 MHz"
-```
-
-### Analytics Service
-
-```toml
-[analytics]
-quality_enabled = true
-tone_detection_enabled = true
-decimation_enabled = true
-digital_rf_enabled = true
+description = "WWV 10 MHz"
+enabled = true
+processor = "grape"
 ```
 
 ---
 
 ## Startup
 
-**Production**:
+**Beta Testing** (manual execution):
 ```bash
-./start-dual-service.sh
+# Terminal 1: Core recorder
+cd ~/signal-recorder
+source venv/bin/activate
+python -m signal_recorder.grape_recorder --config config/grape-config.toml
+
+# Terminal 2: Web UI
+cd ~/signal-recorder/web-ui
+npm start
 ```
 
-Starts:
-1. `core_recorder.py` - RTP → NPZ
-2. `analytics_service.py` per channel - NPZ → products
-3. `monitoring-server-v3.js` - Web UI
-
-**Direct**:
-```bash
-./start-core-recorder-direct.sh
-```
+**Production** (post-beta): Will use systemd services in `systemd/` directory.
 
 ---
 
@@ -326,138 +350,153 @@ Starts:
 
 ```
 ka9q-radio (radiod)
-    ↓ RTP multicast
-Core Recorder
-    ↓ NPZ archives (16 kHz or 200 Hz)
-    ↓ /tmp/grape-test/archives/{channel}/
-Analytics Service
-    ├→ Quality CSV: /tmp/grape-test/analytics/{channel}/quality/
-    ├→ Tone detection → time_snap state
-    ├→ Decimated NPZ: /tmp/grape-test/analytics/{channel}/decimated/
-    ├→ Digital RF: /tmp/grape-test/analytics/{channel}/digital_rf/
-    └→ Discrimination: /tmp/grape-test/analytics/{channel}/discrimination/
+    ↓ RTP multicast (mDNS discovery via ka9q-python)
+Core Recorder (grape_recorder.py)
+    ↓ 16 kHz NPZ archives with embedded metadata
+    ↓ {data_root}/archives/{channel}/
+Analytics Service (per channel)
+    ├→ Discrimination CSVs: analytics/{channel}/bcd_discrimination/
+    ├→ Discrimination CSVs: analytics/{channel}/tone_detections/
+    ├→ Discrimination CSVs: analytics/{channel}/tick_windows/
+    ├→ Discrimination CSVs: analytics/{channel}/station_id_440hz/
+    ├→ Discrimination CSVs: analytics/{channel}/test_signals/
+    ├→ Doppler CSVs: analytics/{channel}/doppler/
+    ├→ Timing metrics: analytics/{channel}/timing_metrics/
+    ├→ Decimated NPZ: analytics/{channel}/decimated/
+    └→ Final voting: analytics/{channel}/discrimination/
+DRF Batch Writer
+    ├→ Digital RF HDF5: digital_rf/{date}/{station}/
+    └→ SFTP upload to PSWS with trigger directories
 ```
 
 ---
 
 ## Key Modules
 
-### Core
-- `core_recorder.py` - Main RTP → NPZ recorder
-- `core_npz_writer.py` - NPZ file format
+### Core Recorder (`src/signal_recorder/`)
+- `grape_recorder.py` - Main entry point
+- `core_recorder.py` - RTP reception, channel management
+- `core_npz_writer.py` - 16 kHz NPZ with embedded metadata
 - `packet_resequencer.py` - RTP packet ordering & gap detection
+- `startup_tone_detector.py` - Initial time_snap establishment
 
-### Analytics
-- `analytics_service.py` - Main processor (watches NPZ files)
-- `tone_detector.py` - WWV/CHU/WWVH detection
-- `decimation.py` - 16kHz → 10Hz anti-aliasing
-- `digital_rf_writer.py` - DRF HDF5 format
+### Analytics (`src/signal_recorder/`)
+- `analytics_service.py` - NPZ watcher, multi-method processor
+- `wwvh_discrimination.py` - BCD correlation, dual-peak detection
+- `tone_detector.py` - 1000/1200 Hz timing tones
+- `decimation.py` - 16 kHz → 10 Hz (3-stage FIR)
+- `discrimination_csv_writers.py` - Per-method CSV output
+
+### DRF & Upload
+- `drf_batch_writer.py` - 10 Hz NPZ → Digital RF HDF5
+- Wsprdaemon-compatible multi-subchannel format
 
 ### Infrastructure
-- `paths.py` - Path management (Python)
+- `paths.py` - Centralized path management (GRAPEPaths API)
 - `channel_manager.py` - Channel configuration
-- `radiod_health.py` - ka9q-radio health monitoring
 
-### Web UI
-- `monitoring-server-v3.js` - Express server
-- `grape-paths.js` - Path management (JavaScript)
+### Web UI (`web-ui/`)
+- `monitoring-server-v3.js` - Express API server
+- `grape-paths.js` - JavaScript path management (synced with Python)
 
 ---
 
 ## Dependencies
 
-**Core** (minimal):
-- numpy, scipy (signal processing)
-- No analytics dependencies
+**Python** (installed via `pip install -e .`):
+- `ka9q-python` - Interface to ka9q-radio (from github.com/mijahauan/ka9q-python)
+- `numpy>=1.24.0` - Array operations
+- `scipy>=1.10.0` - Signal processing, decimation
+- `digital_rf>=2.6.0` - Digital RF HDF5 format
+- `zeroconf` - mDNS discovery for radiod
+- `toml` - Configuration parsing
+- `soundfile` - Audio file I/O (compatibility)
 
-**Analytics**:
-- numpy, scipy (decimation)
-- digital_rf (HDF5 writing)
-
-**Both**:
-- ka9q-python library (radiod control)
-- toml (configuration)
+**Node.js** (for web-ui):
+- `express` - API server
+- `ws` - WebSocket support
+- See `web-ui/package.json` for full list
 
 **Installation**:
 ```bash
-pip install -r requirements.txt
-pip install -e /home/mjh/git/ka9q-python
+cd ~/signal-recorder
+python3 -m venv venv
+source venv/bin/activate
+pip install -e .
 ```
 
 ---
 
 ## Testing
 
-### Verify Imports
+### Verify Installation
 ```bash
 source venv/bin/activate
-python3 -c "import signal_recorder; print('OK')"
+python3 -c "import digital_rf; print('Digital RF OK')"
+python3 -c "from ka9q import discover_channels; print('ka9q-python OK')"
 ```
 
-### Test Core Recorder
+### Test Recorder
 ```bash
-./start-core-recorder-direct.sh
-# Should see RTP packets → NPZ files
+python -m signal_recorder.grape_recorder --config config/grape-config.toml
+# Should see: channel connections, NPZ file writes
 ```
 
-### Test Analytics
+### Verify Output Files
 ```bash
-# Requires NPZ archives in data_root
-ls /tmp/grape-test/archives/WWV_5_MHz/*.npz
-python3 -m signal_recorder.analytics_service \
-    --archive-dir /tmp/grape-test/archives/WWV_5_MHz \
-    --output-dir /tmp/grape-test/analytics/WWV_5_MHz \
-    --channel-name "WWV 5 MHz"
+ls /tmp/grape-test/archives/WWV_10_MHz/*.npz
+# Should show timestamped NPZ files
 ```
 
 ---
 
 ## Debugging
 
-### Monitor Core Recorder
+### Check NPZ Contents
 ```bash
-tail -f /tmp/grape-test/logs/core-recorder.log
-```
-
-### Monitor Analytics
-```bash
-tail -f /tmp/grape-test/logs/analytics-wwv5.log | grep -E '(time_snap|quality|tone)'
-```
-
-### Check time_snap Status
-```bash
-jq '.time_snap' /tmp/grape-test/state/analytics-wwv5.json
-```
-
-### Verify Data Quality
-```bash
-# Check recent NPZ
 python3 -c "
 import numpy as np
 from pathlib import Path
-f = sorted(Path('/tmp/grape-test/archives/WWV_5_MHz/').glob('*.npz'))[-1]
-d = np.load(f)
+f = sorted(Path('/tmp/grape-test/archives/WWV_10_MHz/').glob('*.npz'))[-1]
+d = np.load(f, allow_pickle=True)
+print(f'File: {f.name}')
 print(f'Samples: {len(d[\"iq\"])}')
-print(f'Non-zero: {np.count_nonzero(d[\"iq\"])}')
 print(f'Gaps: {d[\"gaps_count\"]}')
 print(f'Completeness: {100*(1 - d[\"gaps_filled\"]/len(d[\"iq\"])):.1f}%')
+print(f'Time_snap source: {d[\"time_snap_source\"]}')
+print(f'1000 Hz power: {d[\"tone_power_1000_hz_db\"]:.1f} dB')
 "
+```
+
+### Check Web UI API
+```bash
+curl http://localhost:3000/api/v1/summary | jq
 ```
 
 ---
 
 ## Common Issues
 
-### Issue: No time_snap established
+### Issue: Cannot connect to radiod
 
-**Symptom**: WALL_CLOCK or NTP_SYNCED timing, no GPS_LOCKED
+**Symptom**: "Failed to discover channels" error
 
 **Causes**:
-1. Poor propagation (no WWV tone detected)
-2. Wrong channel (carrier channels use NTP, not tone)
-3. Tone detector threshold too strict
+1. radiod not running
+2. mDNS name not resolving
+3. Multicast network issue
 
-**Fix**: Check logs for tone detection attempts. Adjust threshold if needed.
+**Fix**: 
+```bash
+# Check radiod is running
+sudo systemctl status radiod@rx888
+
+# Test mDNS resolution
+avahi-resolve -n myhost-hf-status.local
+
+# Test ka9q-python discovery
+python3 -c "from ka9q import discover_channels; print(discover_channels('myhost-hf-status.local'))"
+```
 
 ### Issue: High packet loss
 
@@ -468,18 +507,20 @@ print(f'Completeness: {100*(1 - d[\"gaps_filled\"]/len(d[\"iq\"])):.1f}%')
 2. CPU overload
 3. radiod issues
 
-**Fix**: Check `radiod` health, reduce channel count, check network.
+**Fix**: Check network buffers, reduce channel count if needed:
+```bash
+sudo sysctl -w net.core.rmem_max=26214400
+```
 
-### Issue: Timing jumps
+### Issue: Timing quality degraded
 
-**Symptom**: INTERPOLATED or WALL_CLOCK after GPS_LOCKED
+**Symptom**: time_snap_source shows "ntp" instead of "wwv_startup"
 
 **Causes**:
-1. Propagation fade (time_snap expired)
-2. System clock adjusted
-3. NTP sync lost
+1. Poor propagation (no WWV/CHU signal)
+2. Startup tone detection failed
 
-**Fix**: Normal for propagation fades. Check NTP status: `chronyc tracking`
+**Fix**: Normal during poor propagation. System falls back to NTP timing (±10ms vs ±1ms).
 
 ---
 
@@ -487,51 +528,46 @@ print(f'Completeness: {100*(1 - d[\"gaps_filled\"]/len(d[\"iq\"])):.1f}%')
 
 ### Core Recorder
 - CPU: <5% per channel
-- Memory: ~100 MB per channel
-- Disk write: ~2 MB/min (compressed NPZ)
+- Memory: ~100 MB total
+- Disk write: ~2 MB/min per channel (compressed NPZ)
 - Latency: <100 ms (RTP → disk)
 
 ### Analytics
-- CPU: 20-40% per channel (FFT heavy)
-- Memory: ~500 MB per channel
-- Processing: <2× real-time
-- Can lag behind (batch processing)
+- CPU: Variable (batch processing)
+- Processing: Can lag behind real-time
+- 6 discrimination methods per minute per channel
 
 ---
 
-## Scientific Quality Metrics
+## Quality Metrics
 
-### Timing Quality
-- GPS_LOCKED: >90% of time (good propagation)
-- NTP_SYNCED: Continuous for carrier channels
-- Time_snap accuracy: ±1ms
+### Timing Quality Levels
+- **TONE_LOCKED** (±1ms): time_snap from WWV/CHU startup tone
+- **NTP_SYNCED** (±10ms): NTP fallback
+- **WALL_CLOCK** (±seconds): Unsynchronized
 
 ### Data Completeness
-- Target: >95% samples received
-- Gaps: Transparently logged
-- Zero-filled: Maintains sample count
-
-### Doppler Resolution
-- Wide channels: Sub-Hz (after tone correction)
-- Carrier channels: ±0.1 Hz (goal: ±3 km path)
+- Target: >99% samples received
+- Gaps: Zero-filled, logged in NPZ metadata
+- Packet loss: <1% healthy
 
 ---
 
 ## References
 
 ### Key Documents
-- `PROJECT_NARRATIVE.md` - Complete history
-- `CONTEXT.md` - System overview
-- `ARCHITECTURE.md` - Technical details
-- `CORE_ANALYTICS_SPLIT_DESIGN.md` - Split rationale
+- `ARCHITECTURE.md` - System design decisions
+- `DIRECTORY_STRUCTURE.md` - Path conventions
+- `CANONICAL_CONTRACTS.md` - API standards
+- `INSTALLATION.md` - Setup guide
 
 ### External
-- ka9q-radio source: `/home/mjh/git/ka9q-radio/`
-- KA9Q timing: `pcmrecord.c` lines 607-899
-- RTP RFC 3550: Network byte order specification
+- ka9q-radio: https://github.com/ka9q/ka9q-radio
+- ka9q-python: https://github.com/mijahauan/ka9q-python
+- Digital RF: MIT Haystack Observatory
 
 ---
 
-**Version**: 1.0  
-**Last Updated**: Nov 18, 2025  
-**Purpose**: Quick technical reference for developers
+**Version**: 2.0  
+**Last Updated**: November 28, 2025  
+**Purpose**: Technical reference for GRAPE Signal Recorder developers

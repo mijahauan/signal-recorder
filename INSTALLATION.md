@@ -28,17 +28,19 @@ Complete setup guide for installing and configuring the GRAPE signal recorder.
 - **Antenna**: HF antenna covering 2.5-25 MHz
   - Dipole, long wire, or active antenna
 - **Computer**: 
-  - Linux system (Ubuntu 20.04+ recommended)
+  - Linux system (Debian 11+, Ubuntu 20.04+, or similar)
   - 2+ GB RAM
   - 10+ GB disk space for data archive
-  - Gigabit Ethernet (for multicast)
+  - Network with multicast support
 
 ### Software Requirements
-- **Operating System**: Linux (Ubuntu 20.04, 22.04, or Debian 11+)
-- **Python**: 3.8 or newer
-- **Node.js**: 16 or newer (for web UI)
+- **Operating System**: Linux (Debian 11+ or Ubuntu 20.04+)
+- **Python**: 3.10 or newer
+- **Node.js**: 18 or newer (for web UI)
 - **Git**: For cloning repository
 - **SSH**: For PSWS uploads
+- **ka9q-radio**: Running on this machine or accessible via multicast
+- **ka9q-python**: Python interface to ka9q-radio (installed automatically)
 
 ---
 
@@ -104,8 +106,9 @@ echo "net.ipv4.conf.all.mc_forwarding=1" | sudo tee -a /etc/sysctl.conf
 sudo sysctl -p
 ```
 
-**Configure firewall:**
+**Configure firewall (if ufw is installed):**
 ```bash
+# Only needed if ufw is active
 sudo ufw allow 5004/udp   # RTP packets
 sudo ufw allow 3000/tcp   # Web UI
 ```
@@ -157,8 +160,8 @@ Create `/etc/radio/radiod@rx888.conf`:
 [global]
 hardware = rx888
 description = GRAPE RX888 Station
-status = 239.192.152.141  # Multicast address for status
-data = 239.160.155.125    # Multicast address for data
+status = myhost-hf-status.local    # mDNS name for status multicast
+data = myhost-hf-data.local        # mDNS name for data multicast
 
 [rx888]
 device = 0
@@ -166,17 +169,16 @@ samprate = 64800000
 antenna = HF
 gain = 0
 
-# Let GRAPE recorder create channels dynamically
+# GRAPE recorder creates channels dynamically
 ```
+
+**Note:** The `status` and `data` entries use mDNS names (`.local`) which are published by radiod via Avahi. This allows the GRAPE recorder to discover radiod even if running on a different machine.
 
 ### 5. Start radiod
 
 ```bash
 # Test run
 sudo radiod -c /etc/radio/radiod@rx888.conf
-
-# Check status
-control -v 239.192.152.141
 
 # Set up as systemd service (recommended)
 sudo systemctl enable radiod@rx888
@@ -191,7 +193,7 @@ sudo systemctl start radiod@rx888
 
 ```bash
 cd ~
-git clone https://github.com/yourusername/signal-recorder.git
+git clone https://github.com/mijahauan/signal-recorder.git
 cd signal-recorder
 ```
 
@@ -213,27 +215,33 @@ pip install -e .
 ```
 
 This installs:
-- `digital_rf>=3.0.0` - Digital RF format support
-- `scipy>=1.7.0` - Signal processing (decimation)
-- `numpy>=1.20.0` - Array operations
-- `toml>=0.10.0` - Configuration parsing
+- `ka9q-python` - Interface to ka9q-radio (from https://github.com/mijahauan/ka9q-python.git)
+- `digital_rf>=2.6.0` - Digital RF format support (HamSCI PSWS compatible)
+- `scipy>=1.10.0` - Signal processing (decimation)
+- `numpy>=1.24.0` - Array operations
+- `zeroconf` - mDNS discovery for radiod
+- `toml` - Configuration parsing
 
 ### 4. Verify Installation
 
 ```bash
-signal-recorder --help
-# Should show CLI help
-
+# Test Python imports
 python3 -c "import digital_rf; print('Digital RF OK')"
 python3 -c "import scipy.signal; print('scipy OK')"
+python3 -c "from ka9q import discover_channels; print('ka9q-python OK')"
 ```
 
-### 5. Create Data Directories
+### 5. Data Directories
 
+**Test mode** (default): Data is stored in `/tmp/grape-test/` - no setup required.
+
+**Production mode**: When ready for permanent operation, data goes to `/var/lib/signal-recorder/`. This requires:
 ```bash
-sudo mkdir -p /var/lib/signal-recorder/{archive,upload_queue}
+sudo mkdir -p /var/lib/signal-recorder
 sudo chown -R $USER:$USER /var/lib/signal-recorder
 ```
+
+The mode is controlled by `recorder.mode` in `grape-config.toml`.
 
 ---
 
@@ -255,13 +263,17 @@ mkdir -p data
 ### 3. Test Web Server
 
 ```bash
-pnpm start  # or: npm start
+npm start  # or: pnpm start
 # Should show: "Server running on http://localhost:3000"
 ```
 
 ### 4. Access Web Interface
 
-Open browser: `http://localhost:3000`
+Open browser: `http://<hostname>:3000`
+
+If running on the same machine, use `http://localhost:3000`.  
+If running on a remote server, use the server's hostname or IP address.
+
 - **Username**: `admin`
 - **Password**: `admin`
 
@@ -294,22 +306,26 @@ Open browser: `http://localhost:3000`
    - Click "Save Configuration"
    - File saved to: `config/grape-<callsign>.toml`
 
-### Manual Configuration (Advanced)
+### Manual Configuration (Recommended for Beta)
 
-Create `config/grape-<callsign>.toml`:
+Copy the template and edit:
+
+```bash
+cp config/grape-config.toml.template config/grape-config.toml
+```
+
+Key settings in `config/grape-config.toml`:
 
 ```toml
 [station]
-callsign = "AC0G"
-grid_square = "EM38ww"
-instrument_id = "RX888"
-description = "GRAPE station with RX888 MkII"
+callsign = "W1ABC"                    # Your callsign
+grid_square = "FN31pr"                # Your Maidenhead grid
 
 [ka9q]
-status_address = "239.192.152.141"
+status_address = "myhost-hf-status.local"  # mDNS name from radiod config
 
 [recorder]
-archive_dir = "/var/lib/signal-recorder/archive"
+mode = "test"                         # Use "test" initially, "production" later
 recording_interval = 60
 
 [[recorder.channels]]
@@ -346,31 +362,28 @@ console_output = true
 
 ## First Run & Testing
 
-### 1. Verify radiod is Running
-
-```bash
-control -v 239.192.152.141
-# Should show: "0 channels; choose SSRC, create new SSRC, or hit return"
-```
-
-### 2. Create Channels
+### 1. Verify radiod is Accessible
 
 ```bash
 cd ~/signal-recorder
 source venv/bin/activate
-signal-recorder create-channels --config config/grape-<callsign>.toml
+
+# Test ka9q-python can discover radiod
+python3 -c "
+from ka9q import discover_channels
+channels = discover_channels('myhost-hf-status.local')  # Your status address
+print(f'Found {len(channels)} channels')
+"
 ```
 
-**Verify channels created:**
-```bash
-control -v 239.192.152.141
-# Should now list your WWV/CHU channels
-```
+Replace `myhost-hf-status.local` with your radiod's status address.
 
-### 3. Test Recording (5 minutes)
+### 2. Test Recording
 
 ```bash
-signal-recorder daemon --config config/grape-<callsign>.toml
+cd ~/signal-recorder
+source venv/bin/activate
+python -m signal_recorder.grape_recorder --config config/grape-config.toml
 ```
 
 **Watch for:**
@@ -382,133 +395,74 @@ signal-recorder daemon --config config/grape-<callsign>.toml
 
 **Press Ctrl+C to stop after 5 minutes.**
 
-### 4. Verify Output Files
+### 3. Verify Output Files
+
+In test mode, data is stored in `/tmp/grape-test/`:
 
 ```bash
-ls -lh /var/lib/signal-recorder/archive/
-# Should show directories: WWV-2.5/, WWV-10.0/, etc.
+ls -lh /tmp/grape-test/archives/
+# Should show directories: WWV_2.5_MHz/, WWV_10_MHz/, CHU_3.33_MHz/, etc.
 
-ls -lh /var/lib/signal-recorder/archive/WWV-10.0/
-# Should show rf@*.h5 files and metadata/ directory
+ls /tmp/grape-test/archives/WWV_10_MHz/
+# Should show .npz files with timestamps like: 20251128_143000_WWV_10_MHz.npz
 ```
 
-### 5. Check Data Quality
+### 4. Check Web UI
+
+In a separate terminal:
 
 ```bash
-# View stats file
-cat /tmp/signal-recorder-stats.json | python3 -m json.tool
-
-# Check logs
-tail -50 /tmp/signal-recorder-daemon.log
+cd ~/signal-recorder/web-ui
+npm start
 ```
 
-**Look for:**
-- `"completeness_pct": 99.x`
-- `"packet_loss_pct": 0.x`
-- `"timing_drift_mean_ms": -X.X` (should be < ±50ms)
+Open `http://<hostname>:3000` in your browser to see:
+- Channel status and completeness
+- Real-time quality metrics
+- Spectrogram generation (once data accumulates)
 
 ---
 
 ## Production Deployment
 
-### 1. Create systemd Service
+> **Note:** Systemd-based deployment is planned for after beta testing. For now, run services manually in screen/tmux sessions.
 
-Create `/etc/systemd/system/signal-recorder.service`:
-
-```ini
-[Unit]
-Description=GRAPE Signal Recorder Daemon
-After=network-online.target radiod@rx888.service
-Requires=radiod@rx888.service
-
-[Service]
-Type=simple
-User=YOUR_USERNAME
-Group=YOUR_USERNAME
-WorkingDirectory=/home/YOUR_USERNAME/signal-recorder
-ExecStart=/home/YOUR_USERNAME/signal-recorder/venv/bin/signal-recorder daemon --config /home/YOUR_USERNAME/signal-recorder/config/grape-YOUR_CALLSIGN.toml
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**Replace:**
-- `YOUR_USERNAME` with your Linux username
-- `YOUR_CALLSIGN` with your actual callsign
-
-### 2. Create Web UI Service
-
-Create `/etc/systemd/system/signal-recorder-webui.service`:
-
-```ini
-[Unit]
-Description=GRAPE Signal Recorder Web UI
-After=network-online.target
-
-[Service]
-Type=simple
-User=YOUR_USERNAME
-Group=YOUR_USERNAME
-WorkingDirectory=/home/YOUR_USERNAME/signal-recorder/web-ui
-ExecStart=/usr/bin/pnpm start
-Restart=always
-RestartSec=10
-Environment="NODE_ENV=production"
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 3. Enable and Start Services
+### Running in Background (Beta)
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable signal-recorder
-sudo systemctl enable signal-recorder-webui
-sudo systemctl start signal-recorder
-sudo systemctl start signal-recorder-webui
+# Terminal 1: Core recorder
+cd ~/signal-recorder
+source venv/bin/activate
+python -m signal_recorder.grape_recorder --config config/grape-config.toml
+
+# Terminal 2: Web UI
+cd ~/signal-recorder/web-ui
+npm start
 ```
 
-### 4. Check Service Status
+Or use `screen` or `tmux` to keep processes running after logout.
 
-```bash
-sudo systemctl status signal-recorder
-sudo systemctl status signal-recorder-webui
+### Transitioning to Production Mode
 
-# View logs
-sudo journalctl -u signal-recorder -f
-sudo journalctl -u signal-recorder-webui -f
-```
+When ready to switch from test to production:
 
-### 5. Set Up Log Rotation
+1. Edit `config/grape-config.toml`:
+   ```toml
+   [recorder]
+   mode = "production"  # Change from "test"
+   ```
 
-Create `/etc/logrotate.d/signal-recorder`:
+2. Create production directories:
+   ```bash
+   sudo mkdir -p /var/lib/signal-recorder
+   sudo chown -R $USER:$USER /var/lib/signal-recorder
+   ```
 
-```
-/tmp/signal-recorder-daemon.log {
-    daily
-    rotate 7
-    compress
-    missingok
-    notifempty
-    copytruncate
-}
+3. Restart the recorder
 
-/tmp/signal-recorder-upload.log {
-    daily
-    rotate 7
-    compress
-    missingok
-    notifempty
-    copytruncate
-}
-```
+### Future: systemd Services
+
+Systemd service files are in `systemd/` but not yet tested for general deployment. This will be addressed post-beta.
 
 ---
 
@@ -568,11 +522,9 @@ ssh_key_path = "~/.ssh/psws_key"
 upload_interval = 300  # 5 minutes
 ```
 
-### 6. Restart Daemon
+### 6. Restart Recorder
 
-```bash
-sudo systemctl restart signal-recorder
-```
+Restart the recorder process (Ctrl+C and re-run, or restart your screen/tmux session).
 
 ### 7. Monitor Uploads
 
@@ -580,8 +532,8 @@ sudo systemctl restart signal-recorder
 # Check upload logs
 tail -f /tmp/signal-recorder-upload.log
 
-# Or use web UI monitoring tab
-http://localhost:3000/monitoring
+# Or use web UI
+# Open http://<hostname>:3000 in browser
 ```
 
 ---
@@ -590,36 +542,30 @@ http://localhost:3000/monitoring
 
 ### No Channels Discovered
 
-**Symptom**: `control -v` shows "0 channels"
+**Symptom**: Recorder can't find radiod
 
 **Solutions:**
 ```bash
 # 1. Check radiod is running
 sudo systemctl status radiod@rx888
 
-# 2. Verify multicast address
-grep "status =" /etc/radio/radiod@rx888.conf
+# 2. Verify mDNS name resolves
+avahi-resolve -n myhost-hf-status.local
 
-# 3. Test multicast connectivity
-ping 239.192.152.141
-# Should get "Destination Host Unreachable" (that's OK - multicast doesn't respond to ping)
+# 3. Test ka9q-python discovery
+cd ~/signal-recorder && source venv/bin/activate
+python3 -c "
+from ka9q import discover_channels
+try:
+    channels = discover_channels('myhost-hf-status.local')
+    print(f'Found {len(channels)} channels')
+except Exception as e:
+    print(f'Error: {e}')
+"
 
 # 4. Check network interface supports multicast
 ip link show
 # Look for "MULTICAST" flag
-
-# 5. Manually create one channel to test
-control 239.192.152.141 <<EOF
-10000000
-0
-iq
-16000
-0
-0
-EOF
-
-# Verify
-control -v 239.192.152.141
 ```
 
 ### RTP Packets Not Received
@@ -628,23 +574,16 @@ control -v 239.192.152.141
 
 **Solutions:**
 ```bash
-# 1. Verify channels exist
-control -v 239.192.152.141
-
-# 2. Check RTP multicast address
-# Should match radiod config "data =" setting
-
-# 3. Test RTP reception with tcpdump
+# 1. Check RTP multicast traffic is arriving
 sudo tcpdump -i any -n udp port 5004
 # Should show RTP packets
 
-# 4. Check firewall
+# 2. Check firewall (if ufw is installed)
 sudo ufw status
 sudo ufw allow 5004/udp
 
-# 5. Verify SSRC in config matches radiod
-control -v 239.192.152.141
-# Compare SSRCs to config file
+# 3. Verify SSRC in config matches radiod channel configuration
+# The SSRC should match the frequency (e.g., 10000000 for 10 MHz)
 ```
 
 ### Low Completeness (<95%)
@@ -720,32 +659,32 @@ chmod 600 ~/.ssh/psws_key
 ssh -i ~/.ssh/psws_key user_<callsign>@pswsnetwork.eng.ua.edu \
     "ls -ld /var/psws/archive/data/GRAPE/<CALLSIGN>"
 
-# 4. Test manual rsync
+# 4. Test manual rsync (adjust path for test vs production mode)
 rsync -avz --dry-run \
     -e "ssh -i ~/.ssh/psws_key" \
-    /var/lib/signal-recorder/archive/WWV-10.0/ \
-    user_<callsign>@pswsnetwork.eng.ua.edu:/var/psws/archive/data/GRAPE/<CALLSIGN>/WWV-10.0/
+    /tmp/grape-test/archives/WWV_10_MHz/ \
+    user_<callsign>@pswsnetwork.eng.ua.edu:/var/psws/archive/data/GRAPE/<CALLSIGN>/WWV_10_MHz/
 ```
 
 ### Web UI Won't Start
 
-**Symptom**: `pnpm start` fails
+**Symptom**: `npm start` fails
 
 **Solutions:**
 ```bash
 # 1. Check Node.js version
-node --version  # Should be 16+
+node --version  # Should be 18+
 
 # 2. Reinstall dependencies
 cd ~/signal-recorder/web-ui
 rm -rf node_modules
-pnpm install
+npm install
 
 # 3. Check port 3000 availability
-sudo netstat -tlnp | grep 3000
+ss -tlnp | grep 3000
 
 # 4. Try different port
-PORT=3001 pnpm start
+PORT=3001 npm start
 ```
 
 ---
@@ -754,10 +693,9 @@ PORT=3001 pnpm start
 
 After successful installation:
 
-1. **✅ Monitor for 24 hours** - Verify 🟢 healthy status
-2. **✅ Enable PSWS uploads** - After SSH key setup
-3. **✅ Set up email alerts** - (optional, see docs/monitoring.md)
-4. **✅ Join HamSCI community** - [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io)
+1. **Monitor for 24 hours** - Verify healthy status in web UI
+2. **Enable PSWS uploads** - After SSH key setup
+3. **Join HamSCI community** - [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io)
 
 ---
 
@@ -782,18 +720,14 @@ uname -a
 python3 --version
 node --version
 
-# Service status
+# Check if radiod is running
 sudo systemctl status radiod@rx888
-sudo systemctl status signal-recorder
 
-# Recent logs
-sudo journalctl -u signal-recorder -n 100 --no-pager
+# Configuration (redact any sensitive info)
+cat config/grape-config.toml
 
-# Configuration (redact passwords!)
-cat config/grape-<callsign>.toml
-
-# Stats snapshot
-cat /tmp/signal-recorder-stats.json | python3 -m json.tool
+# Check output files exist
+ls -la /tmp/grape-test/archives/
 ```
 
 ---

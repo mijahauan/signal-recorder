@@ -1,77 +1,38 @@
 # GRAPE Signal Recorder - AI Context Document
 
 **Last Updated:** 2025-11-28  
-**Next Session Goal:** Repository cleanup and beta release preparation
+**Status:** Beta release ready - repository cleaned up
 
 ---
 
-## 🎯 IMMEDIATE TASK: Beta Release Preparation
+## 🎯 Current State: Beta Release Ready
 
-### Current State: Core Functionality Complete ✅
+The GRAPE Signal Recorder is functionally complete for beta testing:
+- **Recording:** 16 kHz IQ capture from ka9q-radio ✅
+- **Analytics:** WWV/WWVH discrimination with 5 voting methods ✅
+- **Decimation:** 10 Hz NPZ files for all 9 channels ✅
+- **DRF Upload:** Multi-subchannel Digital RF to PSWS ✅ (tested Nov 28)
+- **Repository:** Cleaned up for external testers ✅
 
-The GRAPE Signal Recorder is now functionally complete for beta testing:
-- **Recording:** 16 kHz IQ capture from ka9q-radio working
-- **Analytics:** WWV/WWVH discrimination with 8 voting methods operational
-- **Decimation:** 10 Hz NPZ files generated for all 9 channels
-- **DRF Upload:** Multi-subchannel Digital RF uploaded to PSWS (tested Nov 28)
-
-### Next Session: Repository Cleanup
-
-**Goal:** Clean up the repository of interim artifacts before creating a beta release for external testers.
-
-#### Files/Directories to Review for Removal
-
-**Interim Test Scripts (root directory):**
-```
-test-*.py                    # Various test scripts
-check-*.py                   # Debug/check scripts  
-debug-*.py                   # Debug scripts
-*_test.py                    # Test files
-```
-
-**Session Notes (may consolidate or archive):**
-```
-SESSION_*.md                 # Development session notes
-*_SUCCESS.md                 # Success verification docs
-*_QUICKSTART.md              # May keep or consolidate
-```
-
-**Potentially Obsolete:**
-```
-src/signal_recorder/drf_writer_service.py   # Superseded by drf_batch_writer.py?
-src/signal_recorder/uploader.py             # Check if still needed
-DIFFERENTIAL_DELAY_LOGIC.md                 # Development notes
-```
-
-**Review for Relevance:**
-```
-docs/*.md                    # Keep useful, remove obsolete
-wsprdaemon/                  # Reference code - keep or document
-nohup.out                    # Runtime artifact - gitignore
-```
-
-#### Beta Release Checklist
-
-- [ ] Remove or archive development session notes
-- [ ] Consolidate test scripts or move to `tests/` directory
-- [ ] Update README.md for beta users
-- [ ] Create INSTALLATION.md with step-by-step setup
-- [ ] Verify all systemd service files are current
-- [ ] Clean up `config/grape-config.toml` comments
-- [ ] Ensure `.gitignore` covers runtime artifacts
-- [ ] Tag release as v0.1.0-beta
-
-### Quick Reference: Working System
+### Quick Start for Beta Testers
 
 ```bash
-# Daily DRF upload (automatic via systemd timer, or manual)
-TARGET_DATE="2025-11-28" /home/wsprdaemon/signal-recorder/scripts/daily-drf-upload.sh
+# Clone and setup
+git clone https://github.com/mijahauan/signal-recorder.git
+cd signal-recorder
+python3 -m venv venv && source venv/bin/activate
+pip install -e .
 
-# Check upload state
-cat /tmp/grape-test/upload/upload-state.json | python3 -m json.tool
+# Configure
+cp config/grape-config.toml.template config/grape-config.toml
+# Edit with your station info and ka9q-radio address
 
-# Verify PSWS connection
-echo "ls OBS2025*" | sftp -i ~/.ssh/id_rsa S000171@pswsnetwork.eng.ua.edu
+# Run recorder
+python -m signal_recorder.grape_recorder --config config/grape-config.toml
+
+# Web UI (separate terminal)
+cd web-ui && npm install && npm start
+# Open http://localhost:3000
 ```
 
 ---
