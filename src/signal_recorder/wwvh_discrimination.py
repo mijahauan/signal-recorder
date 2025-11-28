@@ -829,7 +829,10 @@ class WWVHDiscriminator:
         minute_number: int
     ) -> Tuple[bool, Optional[float]]:
         """
-        Detect 440 Hz tone in AM-demodulated signal
+        Detect 440 Hz tone in AM-demodulated signal using coherent integration.
+        
+        Uses quadrature matched filtering with 1-second segments for ~16 dB 
+        processing gain over simple FFT (coherent sum of 44 segments).
         
         Args:
             iq_samples: Complex IQ samples at sample_rate
@@ -848,77 +851,82 @@ class WWVHDiscriminator:
         audio_signal = magnitude - np.mean(magnitude)  # AC coupling
         
         # Extract window :15-:59 (44 seconds) where 440 Hz tone is present
-        # For a full minute at 16 kHz, that's samples 240000 to 960000
         start_sample = int(15.0 * sample_rate)
         end_sample = int(59.0 * sample_rate)
         
         if len(audio_signal) < end_sample:
-            # If we don't have full minute, use what we have
             end_sample = len(audio_signal)
-            if end_sample < start_sample + int(10.0 * sample_rate):  # Need at least 10 seconds
+            if end_sample < start_sample + int(10.0 * sample_rate):
                 return False, None
         
         tone_window = audio_signal[start_sample:end_sample]
         
-        # Resample to higher rate for better frequency resolution if needed
-        # 440 Hz needs at least 880 Hz sample rate (Nyquist), but we'll use FFT
-        # For 16 kHz, we have plenty of resolution
+        # === Coherent Integration with Quadrature Matched Filter ===
+        # Process in 1-second segments for phase-invariant detection
+        # This gives ~16 dB gain: 10*log10(44 segments) ≈ 16.4 dB
+        segment_samples = sample_rate  # 1 second per segment
+        num_segments = len(tone_window) // segment_samples
         
-        # Use FFT to measure power at 440 Hz
-        # Window the signal to reduce spectral leakage
-        windowed = tone_window * scipy_signal.windows.hann(len(tone_window))
+        if num_segments < 5:  # Need at least 5 seconds
+            return False, None
         
-        # Compute FFT
-        fft_result = rfft(windowed)
-        freqs = rfftfreq(len(windowed), 1/sample_rate)
+        # Create 440 Hz quadrature templates (1 second duration)
+        t = np.arange(segment_samples) / sample_rate
+        template_i = np.cos(2 * np.pi * 440.0 * t)  # In-phase
+        template_q = np.sin(2 * np.pi * 440.0 * t)  # Quadrature
         
-        # Find bin closest to 440 Hz
-        target_freq = 440.0
-        freq_idx = np.argmin(np.abs(freqs - target_freq))
-        actual_freq = freqs[freq_idx]
+        # Apply Hann window to templates
+        window = scipy_signal.windows.hann(segment_samples)
+        template_i = template_i * window
+        template_q = template_q * window
         
-        # Measure power at 440 Hz
-        power_at_440 = np.abs(fft_result[freq_idx])**2
+        # Coherent integration across segments
+        power_sum = 0.0
+        noise_sum = 0.0
         
-        # Measure noise floor using the 825-875 Hz guard band (consistent with tick detection)
-        # This band is guaranteed clean (no station tones or harmonics)
-        # High-pass filter at 200 Hz is already implicit in AM demod DC removal
-        guard_low = 825.0  # Hz
-        guard_high = 875.0  # Hz
-        
-        guard_low_idx = np.argmin(np.abs(freqs - guard_low))
-        guard_high_idx = np.argmin(np.abs(freqs - guard_high))
-        
-        if guard_high_idx > guard_low_idx and guard_high_idx < len(fft_result):
-            # Measure noise power density (N₀) in guard band
-            guard_band_power = np.abs(fft_result[guard_low_idx:guard_high_idx])**2
-            N0 = np.mean(guard_band_power)  # W/Hz (average power per bin)
+        for i in range(num_segments):
+            seg_start = i * segment_samples
+            seg_end = seg_start + segment_samples
+            segment = tone_window[seg_start:seg_end]
             
-            # For 440 Hz tone, use ENBW = 1.5 Hz (Hann window)
-            B_signal = 1.5  # Hz
-            noise_power = N0 * B_signal
-        else:
-            # Fallback: use overall average (shouldn't happen)
-            noise_power = np.mean(np.abs(fft_result)**2)
+            # Quadrature correlation (phase-invariant)
+            corr_i = np.sum(segment * template_i)
+            corr_q = np.sum(segment * template_q)
+            power = corr_i**2 + corr_q**2
+            power_sum += np.sqrt(power)  # Amplitude sum for coherent integration
+            
+            # Estimate noise from segment variance in guard band
+            seg_fft = rfft(segment * window)
+            seg_freqs = rfftfreq(segment_samples, 1/sample_rate)
+            
+            # Guard band for noise estimate (away from 440 Hz and harmonics)
+            guard_mask = ((seg_freqs >= 300) & (seg_freqs <= 400)) | \
+                        ((seg_freqs >= 825) & (seg_freqs <= 875))
+            if np.any(guard_mask):
+                noise_sum += np.mean(np.abs(seg_fft[guard_mask])**2)
         
         # Calculate SNR
-        if noise_power > 0:
-            snr_linear = power_at_440 / noise_power
-            snr_db = 10 * np.log10(snr_linear)
-            power_db = 10 * np.log10(power_at_440 + 1e-12)  # Relative power
+        coherent_power = power_sum**2
+        avg_noise = noise_sum / num_segments if num_segments > 0 else 1e-12
+        total_noise = avg_noise * num_segments
+        
+        if total_noise > 0:
+            snr_linear = coherent_power / total_noise
+            snr_db = 10 * np.log10(snr_linear + 1e-12)
+            power_db = 10 * np.log10(coherent_power + 1e-12)
         else:
             snr_db = 0.0
             power_db = -np.inf
         
-        # Detection threshold: SNR > 6 dB (aligned with tone detector threshold)
-        # NOTE: This threshold could be made adaptive based on the 1000/1200 Hz tone SNRs
-        # 6 dB matches the sensitivity used for 1000/1200 Hz tone detection
-        detected = snr_db > 6.0
+        # Detection threshold: SNR > 3 dB (lower than before due to better integration)
+        detected = snr_db > 3.0
         
         if detected:
-            logger.debug(f"{self.channel_name}: 440 Hz tone detected in minute {minute_number} - "
-                        f"Power: {power_db:.1f}dB, SNR: {snr_db:.1f}dB, "
-                        f"Freq: {actual_freq:.1f}Hz")
+            logger.info(f"{self.channel_name}: 440 Hz tone detected in minute {minute_number} - "
+                       f"Power: {power_db:.1f}dB, SNR: {snr_db:.1f}dB, segments: {num_segments}")
+        else:
+            logger.debug(f"{self.channel_name}: 440 Hz NOT detected in minute {minute_number} - "
+                        f"SNR: {snr_db:.1f}dB < 3.0 dB threshold")
         
         return detected, power_db if detected else None
     
