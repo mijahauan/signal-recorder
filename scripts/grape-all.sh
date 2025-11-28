@@ -8,7 +8,6 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ACTION=""
 CONFIG=""
 
-# Parse arguments
 for arg in "$@"; do
     case $arg in
         -start) ACTION="start" ;;
@@ -25,7 +24,6 @@ if [ -z "$ACTION" ]; then
     exit 1
 fi
 
-# Get data root from config
 get_data_root() {
     if [ -f "$CONFIG" ]; then
         MODE=$(grep '^mode' "$CONFIG" | cut -d'"' -f2)
@@ -41,9 +39,7 @@ get_data_root() {
 
 DATA_ROOT=$(get_data_root)
 
-# ============================================================================
 case $ACTION in
-# ============================================================================
 start)
     echo "🚀 Starting All GRAPE Services"
     echo "================================================================"
@@ -63,7 +59,6 @@ start)
     echo "📊 Dashboard: http://localhost:3000/"
     ;;
 
-# ============================================================================
 stop)
     echo "🛑 Stopping All GRAPE Services"
     echo "================================================================"
@@ -76,12 +71,10 @@ stop)
     echo "✅ All services stopped"
     ;;
 
-# ============================================================================
 status)
     echo "📊 GRAPE Service Status"
     echo "================================================================"
     
-    # Core
     CORE_COUNT=$(pgrep -f "signal_recorder.core_recorder" 2>/dev/null | wc -l)
     if [ "$CORE_COUNT" -gt 0 ]; then
         echo "✅ Core Recorder:     RUNNING (PIDs: $(pgrep -f 'signal_recorder.core_recorder' | tr '\n' ' '))"
@@ -89,7 +82,6 @@ status)
         echo "⭕ Core Recorder:     STOPPED"
     fi
     
-    # Analytics
     ANALYTICS_COUNT=$(pgrep -f "signal_recorder.analytics_service" 2>/dev/null | wc -l)
     if [ "$ANALYTICS_COUNT" -gt 0 ]; then
         echo "✅ Analytics:         RUNNING ($ANALYTICS_COUNT/9 channels)"
@@ -97,7 +89,6 @@ status)
         echo "⭕ Analytics:         STOPPED"
     fi
     
-    # Web-UI
     WEBUI_COUNT=$(pgrep -f "monitoring-server" 2>/dev/null | wc -l)
     if [ "$WEBUI_COUNT" -gt 0 ]; then
         echo "✅ Web-UI:            RUNNING → http://localhost:3000/"
