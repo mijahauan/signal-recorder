@@ -1,0 +1,15 @@
+[Unit]
+Description=GRAPE Daily DRF Upload Timer
+Documentation=https://github.com/wsprdaemon/signal-recorder
+
+[Timer]
+# Run at 00:30 UTC daily (process previous day's data)
+OnCalendar=*-*-* 00:30:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+# Accuracy - don't wake system just for this
+AccuracySec=60
+
+[Install]
+WantedBy=timers.target

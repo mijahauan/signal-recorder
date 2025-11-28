@@ -243,22 +243,32 @@ class DRFWriterService:
             logger.warning(f"Could not load time_snap: {e}")
             return None
     
-    def discover_new_files(self) -> List[Path]:
+    def discover_new_files(self, date_filter: str = None) -> List[Path]:
         """
         Discover new 10Hz NPZ files to process
+        
+        Args:
+            date_filter: Only include files for this date (YYYY-MM-DD format)
         
         Returns files in strict chronological order to ensure monotonic DRF writes
         """
         # Find all 10Hz decimated NPZ files
-        all_files = list(self.input_dir.glob('*_iq_10hz.npz'))
+        if date_filter:
+            # Filter by date in filename (format: YYYYMMDDTHHMMSSZ_...)
+            date_prefix = date_filter.replace('-', '')  # 2025-11-28 -> 20251128
+            all_files = list(self.input_dir.glob(f'{date_prefix}T*_iq_10hz.npz'))
+            logger.debug(f"Date filter {date_filter} -> prefix {date_prefix}, found {len(all_files)} files")
+        else:
+            all_files = list(self.input_dir.glob('*_iq_10hz.npz'))
         
-        # Filter to new files (after last processed)
-        if self.last_processed_file:
+        # Filter to new files (after last processed) unless date_filter is set
+        # With date_filter, we always process all files for that date
+        if self.last_processed_file and not date_filter:
             # Use filename comparison for strict chronological order
             last_name = self.last_processed_file.name
             new_files = [f for f in all_files if f.name > last_name]
         else:
-            # First run - process all files
+            # First run or date-filtered batch - process all matching files
             new_files = all_files
         
         # CRITICAL: Sort by filename (ISO timestamp) to ensure chronological order
@@ -281,11 +291,13 @@ class DRFWriterService:
             logger.info(f"Closed Digital RF writer for {self.current_day}")
         
         # Create directory structure
-        safe_channel_name = self.channel_name.replace(' ', '_')
+        # WSPRDAEMON COMPATIBILITY: Use 'ch0' as channel name (not frequency-based name)
+        # The frequency info is in metadata, not the directory structure
+        drf_channel_name = 'ch0' if self.wsprdaemon_compatible else self.channel_name.replace(' ', '_')
         drf_dir = self.output_dir / 'digital_rf' / day_date.strftime('%Y%m%d') / \
                   f"{self.station_config['callsign']}_{self.station_config['grid_square']}" / \
                   f"{self.station_config['receiver_name']}@{self.station_config['psws_station_id']}_{self.station_config['psws_instrument_id']}" / \
-                  f"OBS{day_date.isoformat()}T00-00" / safe_channel_name
+                  f"OBS{day_date.isoformat()}T00-00" / drf_channel_name
         
         drf_dir.mkdir(parents=True, exist_ok=True)
         
@@ -461,15 +473,18 @@ class DRFWriterService:
             logger.info(f"  UTC timestamp: {utc_timestamp}")
             logger.info(f"  Output dtype: {iq_float.dtype}, shape: {iq_float.shape}")
             
-            # Write at calculated_index (not self.next_index) to ensure correct timestamp
-            write_index = int(calculated_index)
-            self.drf_writer.rf_write(iq_float, write_index)
+            # CRITICAL: Do NOT pass sample index to rf_write!
+            # Digital RF adds the passed index TO start_global_index, causing double-counting.
+            # Let it auto-advance from start_global_index (set during writer creation).
+            # This matches wsprdaemon's wav2grape.py behavior.
+            # 
+            # Limitation: This means gaps in input data will result in gaps in output.
+            # Files arriving out of order will be skipped (handled by next_index check above).
+            self.drf_writer.rf_write(iq_float)
             
-            # CRITICAL: Close writer to flush data to disk
-            # Digital RF buffers writes and only flushes on close()
-            self.drf_writer.close()
-            self.drf_writer = None
-            logger.debug("Closed DRF writer to flush data")
+            # NOTE: Don't close the writer here! Keep it open for subsequent writes.
+            # It will be closed when the day changes or at service shutdown.
+            # Digital RF handles buffering internally.
             
             # Write metadata to parallel channels (if present in archive)
             self._write_metadata_channels(archive, calculated_index)
@@ -510,9 +525,20 @@ class DRFWriterService:
             # Non-fatal - log but continue
             logger.warning(f"Failed to write enhanced metadata: {e}")
     
-    def run(self, poll_interval: float = 10.0):
-        """Main processing loop"""
+    def run(self, poll_interval: float = 10.0, date_filter: str = None, one_shot: bool = False):
+        """Main processing loop
+        
+        Args:
+            poll_interval: Seconds between polls for new files
+            date_filter: Only process files for this date (YYYY-MM-DD format)
+            one_shot: Process all matching files once and exit
+        """
         logger.info("DRF Writer Service started")
+        if date_filter:
+            logger.info(f"  Date filter: {date_filter}")
+        if one_shot:
+            logger.info("  Mode: one-shot (will exit after processing)")
+        
         self.running = True
         
         try:
@@ -523,8 +549,8 @@ class DRFWriterService:
                     if time_snap:
                         logger.debug(f"Time snap: {time_snap.source} @ {time_snap.utc_timestamp}")
                     
-                    # Discover new files
-                    new_files = self.discover_new_files()
+                    # Discover new files (with optional date filter)
+                    new_files = self.discover_new_files(date_filter=date_filter)
                     
                     if not new_files:
                         logger.debug("No new files to process")
@@ -559,6 +585,11 @@ class DRFWriterService:
                     if new_files:
                         self._save_state()
                     
+                    # One-shot mode: exit after processing
+                    if one_shot:
+                        logger.info(f"One-shot mode: processed {len(new_files)} files, exiting")
+                        break
+                    
                     # Sleep until next poll
                     time.sleep(poll_interval)
                     
@@ -572,6 +603,13 @@ class DRFWriterService:
             logger.info("Shutdown requested")
         finally:
             self.running = False
+            # Close DRF writer to flush buffered data
+            if self.drf_writer:
+                try:
+                    self.drf_writer.close()
+                    logger.info("Closed DRF writer")
+                except Exception as e:
+                    logger.warning(f"Error closing DRF writer: {e}")
             self._save_state()
             logger.info(f"DRF Writer Service stopped ({self.files_processed} files processed)")
 
@@ -595,6 +633,10 @@ def main():
                        help='Polling interval in seconds')
     parser.add_argument('--log-level', default='INFO',
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
+    parser.add_argument('--date-filter', type=str, default=None,
+                       help='Only process files for this date (YYYY-MM-DD format)')
+    parser.add_argument('--one-shot', action='store_true',
+                       help='Process all matching files once and exit (no polling)')
     
     # Station metadata
     parser.add_argument('--callsign', required=True, help='Station callsign')
@@ -645,7 +687,11 @@ def main():
     )
     
     # Run
-    return service.run(poll_interval=args.poll_interval) or 0
+    return service.run(
+        poll_interval=args.poll_interval,
+        date_filter=args.date_filter,
+        one_shot=args.one_shot
+    ) or 0
 
 
 if __name__ == '__main__':

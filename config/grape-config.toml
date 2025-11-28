@@ -146,34 +146,6 @@ description = "CHU 14.67 MHz"
 enabled = true
 processor = "grape"
 
-# ============================================================================
-# OBSOLETE SECTIONS (V1 Legacy - Not Used by V2 Recorder)
-# ============================================================================
-# The V2 GRAPE recorder performs inline processing and Digital RF writing.
-# These settings are ignored. Kept for reference only.
-
-# [processor]
-# enabled = false
-
-# [processor.grape]
-# process_time = "00:05"
-# process_timezone = "UTC"
-# expected_files_per_day = 1440
-# max_gap_minutes = 5
-# repair_gaps = true
-# interpolate_max_minutes = 2
-# output_sample_rate = 10
-# output_format = "digital_rf"
-
-# ============================================================================
-# Upload Configuration (Not Yet Implemented)
-# ============================================================================
-# Upload functionality exists but needs configuration fixes before enabling.
-# See GRAPE_UPLOAD_IMPLEMENTATION.md for required changes:
-#   - Change protocol from "rsync" to "sftp"
-#   - Fix user, ssh_key, remote_base_path
-#   - Add trigger directory creation
-
 [uploader]
 enabled = false  # Set to true when PSWS account is verified and SSH key installed
 protocol = "sftp"  # PSWS requires SFTP
@@ -191,12 +163,18 @@ max_queue_size_gb = 100
 host = "pswsnetwork.eng.ua.edu"
 port = 22
 user = "S000171"  # Station ID from [station.id]
-ssh_key = "/home/mjh/.ssh/id_ed25519"
+ssh_key = "/home/wsprdaemon/.ssh/id_rsa"
 remote_base_path = "/"  # PSWS requires upload to home directory
-bandwidth_limit_kbps = 100  # 100 kbps per wsprdaemon
+bandwidth_limit_kbps = 0  # 0 = unlimited; set non-zero for ISP-imposed bandwidth constraints
 verify_after_upload = true
 delete_after_upload = false
 create_trigger_directory = true  # CRITICAL: Signals PSWS to process data
+
+[uploader.metadata]
+# Extended metadata includes timing quality and gap analysis from 16 kHz source
+# When false: wsprdaemon-compatible minimal metadata only
+# When true: adds time_snap calibration data, gap analysis, timing quality metrics
+include_extended_metadata = false
 
 [logging]
 level = "DEBUG"
