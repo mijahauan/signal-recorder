@@ -80,7 +80,14 @@ class BCDWindowRecord:
 
 @dataclass
 class TestSignalRecord:
-    """Record from test signal detection (minutes 8 and 44)"""
+    """Record from test signal detection (minutes 8 and 44) - Channel Sounding
+    
+    Enhanced with comprehensive channel characterization:
+    - Multi-tone: Detection confidence and frequency selectivity (FSS)
+    - White noise: Dual segment analysis for transient detection
+    - Chirps: Delay spread estimation from matched filter
+    - Bursts: High-precision ToA from single-cycle pulses
+    """
     timestamp_utc: str
     minute_number: int
     detected: bool
@@ -88,8 +95,18 @@ class TestSignalRecord:
     confidence: float
     multitone_score: float
     chirp_score: float
-    snr_db: Optional[float]
+    noise_correlation: float = 0.0  # Average of noise1 and noise2 scores
+    snr_db: Optional[float] = None
     toa_offset_ms: Optional[float] = None  # Time of arrival offset from expected
+    burst_toa_offset_ms: Optional[float] = None  # High-precision ToA from single-cycle bursts
+    delay_spread_ms: Optional[float] = None  # Multipath delay spread from chirp
+    coherence_time_sec: Optional[float] = None  # Channel coherence time from fading
+    # Frequency Selectivity Score (FSS) - path-specific fingerprint
+    frequency_selectivity_db: Optional[float] = None
+    # Dual noise segment analysis for transient detection
+    noise1_score: Optional[float] = None  # Noise segment at 10-12s
+    noise2_score: Optional[float] = None  # Noise segment at 37-39s
+    noise_coherence_diff: Optional[float] = None  # |N1-N2|, high = transient event
 
 
 @dataclass
@@ -303,12 +320,24 @@ class DiscriminationCSVWriters:
         
         Note: Station assignment is schedule-based (minute 8 = WWV, minute 44 = WWVH).
         The test signal is identical for both stations - value is in ToA/SNR measurement.
+        
+        Enhanced fields include:
+        - noise_correlation: White noise matched filter score (high BT product)
+        - delay_spread_ms: Multipath delay spread from chirp analysis
+        - coherence_time_sec: Channel coherence time from multi-tone fading
+        - frequency_selectivity_db: FSS path signature
+        - noise1_score, noise2_score: Dual noise segment scores
+        - noise_coherence_diff: Transient event indicator
+        - burst_toa_offset_ms: High-precision ToA from single-cycle bursts
         """
         timestamp = datetime.fromisoformat(record.timestamp_utc.replace('Z', '+00:00')).timestamp()
         csv_path = self._get_csv_path(self.test_signal_dir, f"{self.channel_dir}_test_signal", timestamp)
         
         fieldnames = ['timestamp_utc', 'minute_number', 'detected', 'station',
-                     'confidence', 'multitone_score', 'chirp_score', 'snr_db', 'toa_offset_ms']
+                     'confidence', 'multitone_score', 'chirp_score', 'noise_correlation',
+                     'snr_db', 'toa_offset_ms', 'burst_toa_offset_ms',
+                     'delay_spread_ms', 'coherence_time_sec',
+                     'frequency_selectivity_db', 'noise1_score', 'noise2_score', 'noise_coherence_diff']
         
         file_exists = csv_path.exists()
         
@@ -325,8 +354,16 @@ class DiscriminationCSVWriters:
                 'confidence': f"{record.confidence:.4f}",
                 'multitone_score': f"{record.multitone_score:.4f}",
                 'chirp_score': f"{record.chirp_score:.4f}",
+                'noise_correlation': f"{record.noise_correlation:.4f}",
                 'snr_db': f"{record.snr_db:.2f}" if record.snr_db is not None else '',
-                'toa_offset_ms': f"{record.toa_offset_ms:.2f}" if record.toa_offset_ms is not None else ''
+                'toa_offset_ms': f"{record.toa_offset_ms:.2f}" if record.toa_offset_ms is not None else '',
+                'burst_toa_offset_ms': f"{record.burst_toa_offset_ms:.2f}" if record.burst_toa_offset_ms is not None else '',
+                'delay_spread_ms': f"{record.delay_spread_ms:.2f}" if record.delay_spread_ms is not None else '',
+                'coherence_time_sec': f"{record.coherence_time_sec:.2f}" if record.coherence_time_sec is not None else '',
+                'frequency_selectivity_db': f"{record.frequency_selectivity_db:.2f}" if record.frequency_selectivity_db is not None else '',
+                'noise1_score': f"{record.noise1_score:.4f}" if record.noise1_score is not None else '',
+                'noise2_score': f"{record.noise2_score:.4f}" if record.noise2_score is not None else '',
+                'noise_coherence_diff': f"{record.noise_coherence_diff:.4f}" if record.noise_coherence_diff is not None else ''
             })
     
     def write_bcd_windows(self, timestamp_utc: str, windows: List[Dict[str, Any]]):

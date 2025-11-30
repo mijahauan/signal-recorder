@@ -153,7 +153,7 @@ class CoreRecorder:
         
         # Initialize quota manager (75% threshold, keep min 7 days)
         self.quota_manager = QuotaManager(
-            data_root=self.paths.data_root,
+            data_root=self.output_dir,
             threshold_percent=75.0,
             min_days_to_keep=7,
             dry_run=False

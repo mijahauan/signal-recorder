@@ -157,8 +157,19 @@ class DiscriminationResult:
     test_signal_confidence: Optional[float] = None
     test_signal_multitone_score: Optional[float] = None
     test_signal_chirp_score: Optional[float] = None
+    test_signal_noise_correlation: Optional[float] = None  # Average noise score (N1+N2)/2
     test_signal_snr_db: Optional[float] = None
     test_signal_toa_offset_ms: Optional[float] = None  # Time of arrival offset from expected
+    test_signal_burst_toa_offset_ms: Optional[float] = None  # High-precision ToA from single-cycle bursts
+    test_signal_delay_spread_ms: Optional[float] = None  # Multipath delay spread from chirp
+    test_signal_coherence_time_sec: Optional[float] = None  # Channel coherence time from fading
+    # Frequency Selectivity Score (FSS) - path-specific fingerprint
+    # FSS = 10*log10((P_2kHz + P_3kHz) / (P_4kHz + P_5kHz))
+    test_signal_frequency_selectivity_db: Optional[float] = None
+    # Dual noise segment analysis for transient interference detection
+    test_signal_noise1_score: Optional[float] = None  # Noise segment at 10-12s
+    test_signal_noise2_score: Optional[float] = None  # Noise segment at 37-39s
+    test_signal_noise_coherence_diff: Optional[float] = None  # |N1-N2|, high = transient event
     # Doppler estimation (ionospheric channel characterization)
     doppler_wwv_hz: Optional[float] = None
     doppler_wwvh_hz: Optional[float] = None
@@ -774,6 +785,48 @@ class WWVHDiscriminator:
                     logger.debug(f"{self.channel_name}: Timing coherence vote: {result.test_signal_station} "
                                f"(ToA offset={result.test_signal_toa_offset_ms:.2f}ms, BCD delay={result.bcd_differential_delay_ms:.1f}ms)")
         
+        # === VOTE 7b: Chirp Delay Spread Channel Quality Assessment ===
+        # When chirps are detected, delay spread indicates multipath severity.
+        # Low delay spread (<2ms) = clean channel = high confidence in timing
+        # High delay spread (>5ms) = multipath = reduce confidence in all timing methods
+        if minute_number in [8, 44] and result.test_signal_delay_spread_ms is not None:
+            delay_spread = result.test_signal_delay_spread_ms
+            if delay_spread < 2.0:
+                # Clean channel - boost confidence in dominant station
+                w_channel_quality = 2.0
+                if result.test_signal_station:
+                    if result.test_signal_station == 'WWV':
+                        wwv_score += w_channel_quality
+                    else:
+                        wwvh_score += w_channel_quality
+                    total_weight += w_channel_quality
+                    logger.debug(f"{self.channel_name}: Channel quality vote: {result.test_signal_station} "
+                               f"(delay_spread={delay_spread:.1f}ms - clean channel)")
+            elif delay_spread > 5.0:
+                # Significant multipath - log warning, don't add weight (reduces overall confidence)
+                logger.warning(f"{self.channel_name}: High delay spread ({delay_spread:.1f}ms) indicates multipath - "
+                              "timing measurements may be unreliable")
+        
+        # === VOTE 7c: Coherence Time Quality Gating ===
+        # Short coherence time (<0.5s) indicates fast fading channel.
+        # This affects reliability of all timing methods during that minute.
+        if minute_number in [8, 44] and result.test_signal_coherence_time_sec is not None:
+            coherence_time = result.test_signal_coherence_time_sec
+            if coherence_time < 0.5:
+                logger.info(f"{self.channel_name}: Short coherence time ({coherence_time:.2f}s) - "
+                           "fast fading channel, timing precision may be degraded")
+            elif coherence_time > 2.0:
+                # Stable channel - boost confidence slightly
+                w_stability = 1.0
+                if result.test_signal_station:
+                    if result.test_signal_station == 'WWV':
+                        wwv_score += w_stability
+                    else:
+                        wwvh_score += w_stability
+                    total_weight += w_stability
+                    logger.debug(f"{self.channel_name}: Channel stability vote: {result.test_signal_station} "
+                               f"(coherence_time={coherence_time:.1f}s - stable channel)")
+        
         # === VOTE 8: Harmonic Power Ratio Cross-Validation ===
         # The 2nd harmonic of 500 Hz is 1000 Hz (WWV timing marker)
         # The 2nd harmonic of 600 Hz is 1200 Hz (WWVH timing marker)
@@ -799,6 +852,126 @@ class WWVHDiscriminator:
                         wwvh_score += w_harmonic
                         total_weight += w_harmonic
                         logger.debug(f"{self.channel_name}: Harmonic ratio vote: WWVH (600→1200 stronger by {-ratio_diff:.1f}dB)")
+        
+        # === VOTE 9: Frequency Selectivity Score (FSS) - Geographic Path Validator ===
+        # The ionosphere's frequency-dependent attenuation creates a path "fingerprint"
+        # FSS = 10*log10((P_2kHz + P_3kHz) / (P_4kHz + P_5kHz))
+        # 
+        # This vote confirms that the measured path characteristic matches the EXPECTED
+        # geographic path for the scheduled station:
+        # - WWV (continental): Short-to-medium path, relatively flat response → FSS < 3.0 dB
+        # - WWVH (trans-oceanic): Long path, heavy high-freq attenuation → FSS > 5.0 dB
+        #
+        # This is a GEOGRAPHIC VALIDATOR: it only adds weight when FSS confirms the schedule
+        w_fss = 2.0  # Strong weight - independent geographic confirmation
+        if result.test_signal_frequency_selectivity_db is not None:
+            fss = result.test_signal_frequency_selectivity_db
+            scheduled_station = result.test_signal_station  # 'WWV' (min 8) or 'WWVH' (min 44)
+            
+            if scheduled_station == 'WWV':
+                # WWV path expected to be flatter (< 3.0 dB)
+                if fss < 3.0:
+                    wwv_score += w_fss
+                    total_weight += w_fss
+                    agreements.append('TS_FSS_WWV')
+                    logger.debug(f"{self.channel_name}: FSS Vote: WWV confirmed "
+                                f"(FSS={fss:.1f}dB < 3.0dB, matches continental path)")
+                elif fss > 5.0:
+                    # Dispersive path when WWV expected - geographic mismatch
+                    disagreements.append('TS_FSS_geographic_mismatch')
+                    logger.warning(f"{self.channel_name}: FSS geographic mismatch: "
+                                  f"FSS={fss:.1f}dB > 5.0dB but WWV (continental) scheduled")
+                else:
+                    logger.debug(f"{self.channel_name}: FSS={fss:.1f}dB (ambiguous, no vote)")
+                    
+            elif scheduled_station == 'WWVH':
+                # WWVH path expected to be more dispersive (> 5.0 dB)
+                if fss > 5.0:
+                    wwvh_score += w_fss
+                    total_weight += w_fss
+                    agreements.append('TS_FSS_WWVH')
+                    logger.debug(f"{self.channel_name}: FSS Vote: WWVH confirmed "
+                                f"(FSS={fss:.1f}dB > 5.0dB, matches trans-oceanic path)")
+                elif fss < 3.0:
+                    # Clean path when WWVH expected - geographic mismatch
+                    disagreements.append('TS_FSS_geographic_mismatch')
+                    logger.warning(f"{self.channel_name}: FSS geographic mismatch: "
+                                  f"FSS={fss:.1f}dB < 3.0dB but WWVH (trans-oceanic) scheduled")
+                else:
+                    logger.debug(f"{self.channel_name}: FSS={fss:.1f}dB (ambiguous, no vote)")
+        
+        # === VOTE 10: Noise Coherence Transient Detection ===
+        # If |Noise1 - Noise2| is large, a transient event occurred during the test signal
+        # This flags potential interference that could corrupt other measurements
+        if result.test_signal_noise_coherence_diff is not None:
+            noise_diff = result.test_signal_noise_coherence_diff
+            if noise_diff > 0.2:  # >20% difference between noise segments
+                disagreements.append('transient_noise_event')
+                n1 = result.test_signal_noise1_score
+                n2 = result.test_signal_noise2_score
+                logger.warning(f"{self.channel_name}: ⚠️ Transient noise event detected "
+                              f"(N1={n1:.2f if n1 else 0}, N2={n2:.2f if n2 else 0}, "
+                              f"diff={noise_diff:.2f})")
+            elif noise_diff < 0.05:
+                # Very stable noise floor - boost confidence in all test signal metrics
+                agreements.append('TS_noise_stable')
+                logger.debug(f"{self.channel_name}: Noise coherence stable (diff={noise_diff:.3f})")
+        
+        # === VOTE 11: High-Precision Timing Cross-Validation ===
+        # Burst ToA is the HIGHEST AUTHORITY for timing (single-cycle = best resolution)
+        # Cross-validate against chirp delay spread to detect multipath issues
+        if result.test_signal_burst_toa_offset_ms is not None:
+            burst_toa = result.test_signal_burst_toa_offset_ms
+            delay_spread = result.test_signal_delay_spread_ms
+            
+            # If delay spread is low, burst ToA is highly reliable
+            if delay_spread is not None and delay_spread < 2.0:
+                agreements.append('TS_timing_high_precision')
+                logger.debug(f"{self.channel_name}: High-precision burst ToA={burst_toa:.2f}ms "
+                            f"(delay_spread={delay_spread:.1f}ms - clean channel)")
+            elif delay_spread is not None and delay_spread > 5.0:
+                # High delay spread means multipath - timing less reliable
+                disagreements.append('TS_timing_multipath')
+                logger.warning(f"{self.channel_name}: Burst ToA={burst_toa:.2f}ms may be degraded "
+                              f"(delay_spread={delay_spread:.1f}ms - multipath)")
+        
+        # === VOTE 12: Spreading Factor - Channel Physics Validation ===
+        # The Spreading Factor L = τ_D × f_D combines delay spread and Doppler spread
+        # to create a single channel quality metric based on fundamental physics.
+        # 
+        # Doppler spread f_D ≈ 1/(π × τ_c) where τ_c is coherence time
+        # L < 0.05: Underspread channel (clean, timing reliable)
+        # L > 1.0:  Overspread channel (severely degraded, timing unreliable)
+        #
+        # This uses two independent test signal measurements for cross-validation
+        if (result.test_signal_delay_spread_ms is not None and 
+            result.test_signal_coherence_time_sec is not None):
+            
+            tau_c = result.test_signal_coherence_time_sec
+            tau_D_ms = result.test_signal_delay_spread_ms
+            
+            # Estimate Doppler spread from coherence time
+            if tau_c > 0.01:  # Avoid division by very small values
+                f_D_est = 1.0 / (np.pi * tau_c)  # Hz
+                
+                # Calculate Spreading Factor (dimensionless)
+                # L = τ_D (seconds) × f_D (Hz)
+                L = (tau_D_ms / 1000.0) * f_D_est
+                
+                if L > 1.0:
+                    # Overspread channel - timing severely unreliable
+                    disagreements.append('channel_overspread')
+                    logger.warning(f"{self.channel_name}: ❌ Channel overspread: L={L:.3f} (>1.0), "
+                                  f"timing severely unreliable (τ_D={tau_D_ms:.1f}ms, τ_c={tau_c:.2f}s)")
+                elif L > 0.3:
+                    # Moderately spread - timing degraded
+                    logger.debug(f"{self.channel_name}: Channel moderately spread: L={L:.3f} "
+                                f"(τ_D={tau_D_ms:.1f}ms, τ_c={tau_c:.2f}s)")
+                elif L < 0.05:
+                    # Underspread - clean channel, high confidence
+                    agreements.append('channel_underspread_clean')
+                    logger.debug(f"{self.channel_name}: ✓ Channel clean: L={L:.3f} (<0.05), "
+                                f"confirms stable channel (τ_D={tau_D_ms:.1f}ms, τ_c={tau_c:.2f}s)")
         
         # === FINAL DECISION ===
         if total_weight > 0:
@@ -2643,15 +2816,26 @@ class WWVHDiscriminator:
                 result.test_signal_confidence = test_detection.confidence
                 result.test_signal_multitone_score = test_detection.multitone_score
                 result.test_signal_chirp_score = test_detection.chirp_score
+                result.test_signal_noise_correlation = test_detection.noise_correlation
                 result.test_signal_snr_db = test_detection.snr_db
                 result.test_signal_toa_offset_ms = test_detection.toa_offset_ms
+                result.test_signal_burst_toa_offset_ms = test_detection.burst_toa_offset_ms
+                result.test_signal_delay_spread_ms = test_detection.delay_spread_ms
+                result.test_signal_coherence_time_sec = test_detection.coherence_time_sec
+                result.test_signal_frequency_selectivity_db = test_detection.frequency_selectivity_db
+                result.test_signal_noise1_score = test_detection.noise1_score
+                result.test_signal_noise2_score = test_detection.noise2_score
+                result.test_signal_noise_coherence_diff = test_detection.noise_coherence_diff
                 
                 if test_detection.detected:
-                    toa_str = f", ToA={test_detection.toa_offset_ms:+.2f}ms" if test_detection.toa_offset_ms else ""
+                    toa_str = f", ToA={test_detection.toa_offset_ms:+.2f}ms" if test_detection.toa_offset_ms is not None else ""
                     snr_str = f", SNR={test_detection.snr_db:.1f}dB" if test_detection.snr_db else ""
+                    fss_str = f", FSS={test_detection.frequency_selectivity_db:.1f}dB" if test_detection.frequency_selectivity_db else ""
+                    delay_str = f", delay_spread={test_detection.delay_spread_ms:.1f}ms" if test_detection.delay_spread_ms else ""
+                    coh_str = f", coherence={test_detection.coherence_time_sec:.1f}s" if test_detection.coherence_time_sec else ""
                     logger.info(f"{self.channel_name}: ✨ Test signal detected! "
                                f"Station={test_detection.station} (schedule-based), "
-                               f"confidence={test_detection.confidence:.3f}{snr_str}{toa_str}")
+                               f"confidence={test_detection.confidence:.3f}{snr_str}{toa_str}{fss_str}{delay_str}{coh_str}")
                     
                     # High-confidence test signal overrides other methods
                     if test_detection.confidence > 0.7:

@@ -1398,8 +1398,16 @@ class AnalyticsService:
                     confidence=result.test_signal_confidence or 0.0,
                     multitone_score=result.test_signal_multitone_score or 0.0,
                     chirp_score=result.test_signal_chirp_score or 0.0,
+                    noise_correlation=result.test_signal_noise_correlation or 0.0,
                     snr_db=result.test_signal_snr_db,
-                    toa_offset_ms=result.test_signal_toa_offset_ms
+                    toa_offset_ms=result.test_signal_toa_offset_ms,
+                    burst_toa_offset_ms=result.test_signal_burst_toa_offset_ms,
+                    delay_spread_ms=result.test_signal_delay_spread_ms,
+                    coherence_time_sec=result.test_signal_coherence_time_sec,
+                    frequency_selectivity_db=result.test_signal_frequency_selectivity_db,
+                    noise1_score=result.test_signal_noise1_score,
+                    noise2_score=result.test_signal_noise2_score,
+                    noise_coherence_diff=result.test_signal_noise_coherence_diff
                 )
                 self.csv_writers.write_test_signal(test_signal_record)
             
