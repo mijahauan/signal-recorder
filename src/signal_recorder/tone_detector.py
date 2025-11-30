@@ -3,7 +3,7 @@
 Multi-Station Tone Detector - Standalone Implementation
 
 Detects WWV/WWVH/CHU time signal tones using phase-invariant quadrature
-matched filtering. Extracted from grape_rtp_recorder.py for reusability.
+matched filtering. Standalone implementation for reusability.
 
 Stations:
 - WWV (Fort Collins): 1000 Hz, 0.8s → Primary time_snap reference

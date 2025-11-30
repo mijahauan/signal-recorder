@@ -12,7 +12,7 @@ These files are from the original **generic signal recorder** design that predat
 
 ## Why They're Not Used
 
-The **active GRAPE implementation** (`grape_rtp_recorder.py`) replaced these with:
+The **active implementation** (`rtp_receiver.py`, `core_recorder.py`) replaced these with:
 
 | Legacy Component | GRAPE Replacement | Why Changed |
 |------------------|-------------------|-------------|
@@ -32,7 +32,8 @@ These files are kept for:
 ## Do Not Import
 
 Active code should **not** import from this directory. Use:
-- `grape_rtp_recorder.py` - Main daemon
+- `rtp_receiver.py` - Generic RTP reception
+- `core_recorder.py` - Main recording daemon
 - `channel_manager.py` - Channel operations
 - `control_discovery.py` - Channel discovery
 

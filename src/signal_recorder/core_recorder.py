@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import subprocess
 
-from .grape_rtp_recorder import RTPReceiver  # Reuse existing RTP receiver
+from .rtp_receiver import RTPReceiver, RTPHeader
 from .packet_resequencer import PacketResequencer, RTPPacket, GapInfo
 from .core_npz_writer import CoreNPZWriter, GapRecord
 from .channel_manager import ChannelManager
@@ -568,7 +568,7 @@ class ChannelProcessor:
         shared state access must be protected by self._lock.
         
         Args:
-            header: RTPHeader object from grape_rtp_recorder.py
+            header: RTPHeader object from rtp_receiver.py
             payload: RTP payload bytes (IQ samples)
         """
         try:
