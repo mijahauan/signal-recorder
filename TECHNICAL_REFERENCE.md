@@ -228,7 +228,7 @@ On 2.5, 5, 10, and 15 MHz, both WWV (Fort Collins, CO) and WWVH (Kauai, HI) tran
 - **1000 Hz**: WWV/CHU marker tone (first 0.8 sec of each minute)
 - **1200 Hz**: WWVH marker tone (first 0.8 sec of each minute)
 
-### 8 Voting Methods + 9 Cross-Validation Checks
+### 12 Voting Methods + 12 Cross-Validation Checks
 
 Each method writes to its own daily CSV for independent reprocessing:
 
@@ -244,18 +244,29 @@ Each method writes to its own daily CSV for independent reprocessing:
 | 5 | 500/600 Hz Ground Truth | **10-15** | 12 exclusive min/hour |
 | 6 | Doppler Stability | 2 | std ratio (independent of power) |
 | 7 | Timing Coherence | 3 | Test + BCD ToA agreement |
+| 8 | Harmonic Ratio | 1.5 | 500→1000 Hz, 600→1200 Hz ratios |
+| 9 | FSS Path Signature | 2 | Frequency Selectivity Score |
+| 10 | Noise Coherence | flag | Transient interference detection |
+| 11 | Burst ToA | validation | High-precision timing cross-check |
+| 12 | Spreading Factor | flag | Channel physics L = τ_D × f_D |
 
-**Weight 5 Details (500/600 Hz Ground Truth):**
-- **weight=15:** Exclusive minutes M16, M17, M19 (WWV-only), M43-51 (WWVH-only)
-- **weight=10:** Mixed minutes M1, M2 (share with 440 Hz)
-
-**Vote 6 (Doppler Stability):**
+**Vote 9 (FSS Geographic Validator):**
 ```python
-std_ratio_db = 10 * log10(doppler_wwv_std / doppler_wwvh_std)
-if std_ratio_db < -3.0:  # WWV more stable
-    wwv_score += 2.0
-elif std_ratio_db > 3.0:  # WWVH more stable
-    wwvh_score += 2.0
+# FSS = 10*log10((P_2kHz + P_3kHz) / (P_4kHz + P_5kHz))
+w_fss = 2.0
+if scheduled_station == 'WWV' and fss < 3.0:  # Continental path
+    wwv_score += w_fss
+elif scheduled_station == 'WWVH' and fss > 5.0:  # Trans-oceanic path
+    wwvh_score += w_fss
+```
+
+**Vote 12 (Spreading Factor):**
+```python
+# L = τ_D × f_D where f_D = 1/(π × τ_c)
+if L > 1.0:  # Overspread channel
+    disagreements.append('channel_overspread')
+elif L < 0.05:  # Clean channel
+    agreements.append('channel_underspread_clean')
 ```
 
 #### Cross-Validation Checks (Phase 6)
@@ -271,12 +282,16 @@ elif std_ratio_db > 3.0:  # WWVH more stable
 | 7 | Doppler-Power | `doppler_power_agree` | +agreement |
 | 8 | Coherence quality | `high_coherence_boost` / `low_coherence_downgrade` | ± |
 | 9 | Harmonic signature | `harmonic_signature_wwv/wwvh` | +agreement |
+| 10 | FSS geographic | `TS_FSS_WWV` / `TS_FSS_WWVH` | +agreement |
+| 11 | Noise transient | `transient_noise_event` | +disagreement |
+| 12 | Spreading factor | `channel_overspread` / `channel_underspread_clean` | ± |
 
 **Confidence Adjustment:**
 - ≥2 agreements + 0 disagreements → HIGH
 - ≥2 disagreements → MEDIUM
 - More disagreements than agreements → LOW
 - Low coherence (<0.3) → LOW (forced)
+- Channel overspread → timing unreliable
 
 ### Timing Purpose
 
@@ -585,11 +600,20 @@ sudo sysctl -w net.core.rmem_max=26214400
 
 ---
 
-**Version**: 2.1  
-**Last Updated**: November 28, 2025  
+**Version**: 2.2  
+**Last Updated**: November 29, 2025  
 **Purpose**: Technical reference for GRAPE Signal Recorder developers
 
-**Recent Changes (Nov 28, 2025):**
+**Recent Changes (Nov 29, 2025):**
+- 12 voting methods (was 8) - added FSS, noise coherence, spreading factor
+- 12 cross-validation checks (was 9)
+- Test signal fully exploited as channel sounding instrument:
+  - Frequency Selectivity Score (FSS) for geographic path validation
+  - Dual noise segment comparison for transient detection
+  - Chirp delay spread for multipath characterization
+  - Spreading Factor L = τ_D × f_D for channel physics
+
+**Previous Changes (Nov 28, 2025):**
 - 8 voting methods (was 6)
 - 9 cross-validation checks added
 - 500/600 Hz weight boosted to 15 for exclusive minutes

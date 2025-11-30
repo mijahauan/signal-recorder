@@ -11,7 +11,7 @@ The [HamSCI GRAPE project](https://hamsci.org/grape) studies ionospheric disturb
 **Key Capabilities:**
 - 📡 **Multi-channel recording** - Simultaneous WWV 2.5-25 MHz, CHU 3.33-14.67 MHz
 - 🎯 **GPS-quality timing** - ±1ms via tone detection (time_snap mechanism)
-- 🔬 **8 voting methods** - BCD, timing tones, ticks, 440/500/600 Hz, Doppler stability, weighted voting
+- 🔬 **12 voting methods** - BCD, timing tones, ticks, 440/500/600 Hz, Doppler stability, test signal channel sounding
 - 📊 **Digital RF output** - 10 Hz IQ + metadata (wsprdaemon-compatible)
 - 🌐 **Web UI** - Real-time monitoring, configuration, quality metrics
 - 🚀 **PSWS upload** - Automated rsync to HamSCI repository
@@ -88,7 +88,7 @@ Processes 16 kHz archives to derived products:
 - **Tick Windows:** 5ms coherent/incoherent SNR analysis (6/min)
 - **440 Hz Station ID:** Unambiguous WWV/WWVH identification (2/hour)
 - **BCD Correlation:** 100 Hz time code dual-peak detection (15/min)
-- **Test Signals:** Minutes :08/:44 detection with ToA offset (2/hour)
+- **Test Signals:** Minutes :08/:44 channel sounding (FSS, delay spread, noise coherence, ToA)
 - **Weighted Voting:** Combines all methods for final determination
 
 **Additional Analytics:**
@@ -119,7 +119,7 @@ Wsprdaemon-compatible Digital RF output:
 - **Packet Loss:** <1% healthy (indicates network issues)
 - **Time_snap Quality:** TONE_LOCKED (±1ms) > NTP_SYNCED (±10ms) > WALL_CLOCK (±seconds)
 
-## 🔬 WWV/WWVH Discrimination (8 Voting Methods)
+## 🔬 WWV/WWVH Discrimination (12 Voting Methods)
 
 Separate WWV (Fort Collins) and WWVH (Kauai) signals on shared frequencies (2.5, 5, 10, 15 MHz) using complementary measurement techniques:
 
@@ -135,8 +135,24 @@ Separate WWV (Fort Collins) and WWVH (Kauai) signals on shared frequencies (2.5,
 | 5 | **500/600 Hz Ground Truth** | 10-15 | 12 exclusive minutes/hour (weight=15 for M16-19, M43-51) |
 | 6 | **Doppler Stability** | 2 | Lower std = cleaner path (independent of power) |
 | 7 | **Timing Coherence** | 3 | Test signal + BCD ToA agreement |
+| 8 | **Harmonic Ratio** | 1.5 | 500→1000 Hz, 600→1200 Hz ratios |
+| 9 | **FSS Path Signature** | 2 | Frequency Selectivity Score geographic validator |
+| 10 | **Noise Coherence** | flag | Transient interference detection |
+| 11 | **Burst ToA** | validation | High-precision timing cross-check |
+| 12 | **Spreading Factor** | flag | Channel physics L = τ_D × f_D |
 
-### Inter-Method Cross-Validation (9 checks)
+### Test Signal Channel Sounding (Minutes :08/:44)
+
+The WWV/WWVH scientific test signal is fully exploited as a **channel sounding instrument**:
+
+| Segment | Metric | Use |
+|---------|--------|-----|
+| **Multi-tone** (13-23s) | FSS = 10·log₁₀((P₂ₖ+P₃ₖ)/(P₄ₖ+P₅ₖ)) | Geographic path validation |
+| **White Noise** (10-12s, 37-39s) | N1 vs N2 coherence | Transient interference detection |
+| **Chirps** (24-32s) | Delay spread τ_D | Multipath characterization |
+| **Bursts** (34-36s) | High-precision ToA | Sub-ms timing reference |
+
+### Inter-Method Cross-Validation (12 checks)
 
 Beyond voting, independent measurements validate each other:
 - **Power vs Timing** - BCD delay should match power ratio direction
@@ -144,12 +160,16 @@ Beyond voting, independent measurements validate each other:
 - **Doppler-Power Agreement** - Δf_D magnitude correlates with power
 - **Coherence Quality** - Low coherence (<0.3) downgrades confidence
 - **Harmonic Signature** - 500→1000 Hz, 600→1200 Hz ratios confirm station
+- **FSS Geographic** - Path fingerprint matches scheduled station
+- **Noise Transient** - N1/N2 difference flags interference events
+- **Spreading Factor** - L = τ_D × f_D validates channel physics
 
-### Why 8 Methods?
+### Why 12 Methods?
 - **Redundancy:** Multiple independent measurements validate each other
 - **Adaptability:** Different methods excel under different propagation conditions  
 - **Temporal Coverage:** From hourly calibration to sub-second dynamics
 - **Ground Truth:** 14 minutes/hour with 440/500/600 Hz exclusive broadcasts
+- **Channel Sounding:** Test signal provides complete ionospheric characterization
 - **Cross-Validation:** Agreement confirms accuracy, disagreement reveals mixed propagation
 
 **Quick Check:** View `http://localhost:3000/discrimination.html` for 7-panel analysis with method labels and performance statistics.
@@ -224,12 +244,19 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 **Beta Release** - Core functionality complete and tested. Daily recording and PSWS upload operational at AC0G since November 2025.
 
-### Recent Updates (Nov 28, 2025)
+### Recent Updates (Nov 29, 2025)
+- **Test Signal Channel Sounding:** Full exploitation of :08/:44 scientific test signal
+  - Frequency Selectivity Score (FSS) as geographic path validator
+  - Dual noise segment comparison for transient detection
+  - Chirp delay spread for multipath characterization
+  - Spreading Factor L = τ_D × f_D for channel physics validation
+- **12 Voting Methods:** Extended from 8 with FSS, noise coherence, spreading factor
+- **12 Cross-Validation Checks:** Added FSS geographic, noise transient, spreading factor
+
+### Previous Updates (Nov 28, 2025)
 - **Discrimination Refinement:** 8 voting methods + 9 cross-validation checks
 - **500/600 Hz Weight Boost:** Exclusive minutes (M16-19, M43-51) now weight=15
 - **Doppler Stability Vote:** Uses std ratio for channel quality (independent of power)
-- **Coherence Quality Check:** Low coherence downgrades confidence
-- **Harmonic Signature Check:** Validates 500/600 Hz harmonics at 1000/1200 Hz
 - **440 Hz Detection:** Coherent integration for ~30 dB processing gain
 - **Service Scripts:** `scripts/grape-*.sh` for easy start/stop/status
 

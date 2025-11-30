@@ -1,70 +1,85 @@
 # GRAPE Signal Recorder - AI Context Document
 
-**Last Updated:** 2025-11-28 (late afternoon session)  
-**Status:** Beta release ready - enhanced inter-method cross-validation
+**Last Updated:** 2025-11-29 (evening session)  
+**Status:** Beta release ready - test signal channel sounding complete
 
 ---
 
-## 🎯 Current Focus: Discrimination Refinement
+## 🎯 Next Session Focus: Recording Architecture Deep Dive
 
-The core system is complete. Current work focuses on **tuning the WWV/WWVH discrimination methodology** to maximize scientific value.
+The discrimination system is now complete with 12 voting methods and 12 cross-validation checks. The **next session should focus on the recording architecture** - understanding how RTP data flows from ka9q-radio through to NPZ archives.
 
-### Immediate Priorities for Next Session
+### Key Areas to Explore
 
-1. **Discrimination Scoring Weights** - The weighted voting system needs tuning:
-   - 500/600 Hz ground truth (weight=10) can be overridden by other methods (combined weight=12)
-   - User chose to keep current balance - disagreements show mixed propagation
-   - Consider adaptive weights based on signal conditions
-   
-2. **Differential Doppler Display** - Maximize information in Vote 6 panel:
-   - Current: Shows WWV/WWVH Δf_D traces with solar elevation
-   - Want: Better visualization of coherence window, quality metrics
-   - Data available: `doppler_wwv_hz`, `doppler_wwvh_hz`, `doppler_quality`, coherence time
-   
-3. **440 Hz Detection Sensitivity** - Improved this session:
-   - Changed from simple FFT to coherent integration (~30 dB gain)
-   - Now matches 1000/1200 Hz detector sensitivity
-   - Should see WWV 440 Hz at minute :02 more often
+1. **RTP Reception & Resequencing**
+   - `grape_rtp_recorder.py` - RTPReceiver class handles multicast reception
+   - `packet_resequencer.py` - Handles out-of-order packets, gap detection
+   - Critical: Big-endian byte order (`'>i2'`), Q+jI phase convention
 
-### Recent Session Work (Nov 28)
+2. **Core Recorder Architecture**
+   - `core_recorder.py` - Main orchestration, channel management
+   - `core_npz_writer.py` - NPZ archive creation with embedded metadata
+   - Invariant: 960,000 samples/minute (exactly), gaps zero-filled
 
-- ✅ **440 Hz Coherent Integration:** Quadrature matched filter with 44 one-second segments
-- ✅ **Timing Dashboard:** Refined categories (TONE_LOCKED, TONE_STABLE, TONE_AGED)
-- ✅ **Service Scripts:** `scripts/grape-*.sh` with -start|-stop|-status flags
-- ✅ **Major Cleanup:** Organized 140+ files into `archive/` directories
-- ✅ **Ground Truth Analysis:** Explained why disagreements occur (mixed propagation)
-- ✅ **Doppler-Power Agreement:** Check 7 validates power ratio with Δf_D magnitude
-- ✅ **Coherence Quality Check:** Check 8 downgrades confidence when min coherence < 0.3
-- ✅ **Harmonic Signature Check:** Check 9 validates 500/600 Hz harmonics at 1000/1200 Hz
-- ✅ **500/600 Hz Weight Boost:** Exclusive minutes (M16-19, M43-51) now weight=15 (was 10)
-- ✅ **Vote 6 Simplification:** Changed from ΔfD mean to std ratio for independence
+3. **Time_snap Mechanism**
+   - `startup_tone_detector.py` - Initial RTP→UTC calibration via tone detection
+   - Formula: `utc = time_snap_utc + (rtp_ts - time_snap_rtp) / sample_rate`
+   - Accuracy: ±1ms when fresh, degrades ~1ms/hour
 
-### Quick Start for Beta Testers
+4. **Channel Manager**
+   - `channel_manager.py` - SSRC mapping, ka9q-radio discovery
+   - Each channel has independent RTP clock (cannot share time_snap between channels)
 
-```bash
-# Clone and setup
-git clone https://github.com/mijahauan/signal-recorder.git
-cd signal-recorder
-python3 -m venv venv && source venv/bin/activate
-pip install -e .
+### Recording Architecture Files
 
-# Configure
-cp config/grape-config.toml.template config/grape-config.toml
-# Edit with your station info and ka9q-radio address
+| File | Purpose | Key Classes |
+|------|---------|-------------|
+| `grape_rtp_recorder.py` | RTP multicast reception | `RTPReceiver` |
+| `core_recorder.py` | Main recording loop | `GrapeRecorder` |
+| `core_npz_writer.py` | NPZ with metadata | `NPZWriter` |
+| `packet_resequencer.py` | Packet ordering | `PacketResequencer` |
+| `startup_tone_detector.py` | Initial timing | `StartupToneDetector` |
+| `channel_manager.py` | Channel config | `ChannelManager` |
+| `radiod_health.py` | ka9q-radio status | `RadiodHealthChecker` |
+| `session_tracker.py` | Session boundaries | `SessionBoundaryTracker` |
 
-# Start all services
-./scripts/grape-all.sh -start
+### Architecture Questions to Address
 
-# Or individually:
-./scripts/grape-core.sh -start
-./scripts/grape-analytics.sh -start
-./scripts/grape-ui.sh -start
+- How does RTP timestamp relate to sample index?
+- What happens when packets arrive out of order?
+- How are gaps detected and filled?
+- How does time_snap calibration work?
+- What metadata is embedded in each NPZ?
+- How do multiple channels coordinate?
 
-# Check status
-./scripts/grape-all.sh -status
+### Critical Bug History (for context)
 
-# Web UI: http://localhost:3000
-```
+Three bugs corrupted all data before Oct 30, 2025:
+1. **Byte Order:** `np.int16` (little) → `'>i2'` (big-endian network order)
+2. **I/Q Phase:** `I + jQ` → `Q + jI` (carrier centered at 0 Hz)
+3. **Payload Offset:** Hardcoded `12` → calculate from RTP header
+
+---
+
+## Recent Session Work (Nov 29)
+
+### Test Signal Channel Sounding (Complete)
+
+The WWV/WWVH scientific test signal is now fully exploited:
+
+| Segment | Metric | Vote |
+|---------|--------|------|
+| **Multi-tone** (13-23s) | FSS = 10·log₁₀((P₂ₖ+P₃ₖ)/(P₄ₖ+P₅ₖ)) | Vote 9 (+2.0 weight) |
+| **White Noise** (10-12s, 37-39s) | N1 vs N2 coherence diff | Vote 10 (flag) |
+| **Chirps** (24-32s) | Delay spread τ_D | Vote 7b, 12 |
+| **Bursts** (34-36s) | High-precision ToA | Vote 11 (validation) |
+
+### New Discrimination Features
+
+- **Vote 9 (FSS):** Geographic path validator - WWV < 3.0 dB, WWVH > 5.0 dB
+- **Vote 10 (Noise):** Transient interference detection via N1/N2 comparison
+- **Vote 11 (Burst):** High-precision ToA cross-validation with delay spread
+- **Vote 12 (Spreading Factor):** L = τ_D × f_D channel physics validation
 
 ---
 
@@ -72,7 +87,7 @@ cp config/grape-config.toml.template config/grape-config.toml
 
 **GRAPE Signal Recorder** captures WWV/WWVH/CHU time station signals via ka9q-radio SDR and:
 1. Records 16 kHz IQ archives (NPZ format, 1-minute files)
-2. Analyzes for WWV/WWVH discrimination (8 voting methods)
+2. Analyzes for WWV/WWVH discrimination (12 voting methods)
 3. Decimates to 10 Hz for Digital RF format
 4. Uploads to PSWS (HamSCI Personal Space Weather Station network)
 
@@ -95,39 +110,28 @@ ka9q-radio RTP → Core Recorder (16kHz NPZ) → Analytics Service
 
 ## 2. 🗂️ Key Production Files
 
-### Core Services
+### Core Recording (Focus for Next Session)
 | File | Purpose |
 |------|---------|
-| `src/signal_recorder/core_recorder.py` | 16 kHz IQ recording from ka9q-radio |
+| `src/signal_recorder/grape_rtp_recorder.py` | RTP multicast reception |
+| `src/signal_recorder/core_recorder.py` | Main recording orchestration |
+| `src/signal_recorder/core_npz_writer.py` | 16 kHz NPZ with embedded metadata |
+| `src/signal_recorder/packet_resequencer.py` | RTP packet ordering, gap detection |
+| `src/signal_recorder/startup_tone_detector.py` | Time_snap establishment |
+| `src/signal_recorder/channel_manager.py` | Channel configuration |
+
+### Analytics
+| File | Purpose |
+|------|---------|
 | `src/signal_recorder/analytics_service.py` | Discrimination, decimation, tone detection |
-| `src/signal_recorder/drf_batch_writer.py` | Multi-subchannel DRF creator (9 channels → ch0) |
-| `src/signal_recorder/upload_tracker.py` | JSON state tracking for uploads |
+| `src/signal_recorder/wwvh_discrimination.py` | 12 voting methods, cross-validation |
+| `src/signal_recorder/wwv_test_signal.py` | Test signal channel sounding |
 
 ### Upload System
 | File | Purpose |
 |------|---------|
-| `scripts/daily-drf-upload.sh` | Daily upload orchestration script |
-| `systemd/grape-daily-upload.service` | Systemd service unit |
-| `systemd/grape-daily-upload.timer` | Systemd timer (00:30 UTC daily) |
-| `docs/DRF_UPLOAD_SYSTEM.md` | Complete upload system documentation |
-
-### DRF Format (wsprdaemon-compatible)
-- **Structure:** Single `ch0` with 9 subchannels (all frequencies)
-- **Data:** Horizontally stacked IQ: `[WWV2.5 | CHU3.33 | ... | WWV25]`
-- **Metadata:** `callsign`, `grid_square`, `lat`, `long`, `center_frequencies[]`, `uuid_str`
-- **Trigger:** `cOBS{date}_\#{instrument}_\#{timestamp}` signals PSWS to process
-
-### Configuration (`config/grape-config.toml`)
-```toml
-[uploader.sftp]
-host = "pswsnetwork.eng.ua.edu"
-user = "S000171"
-ssh_key = "/home/wsprdaemon/.ssh/id_rsa"
-bandwidth_limit_kbps = 0  # 0 = unlimited
-
-[uploader.metadata]
-include_extended_metadata = false  # Set true for timing/gap data
-```
+| `src/signal_recorder/drf_batch_writer.py` | Multi-subchannel DRF creator |
+| `scripts/daily-drf-upload.sh` | Daily upload orchestration |
 
 ---
 
@@ -138,10 +142,9 @@ include_extended_metadata = false  # Set true for timing/gap data
 | **Callsign** | AC0G |
 | **Grid Square** | EM38ww |
 | **PSWS Station ID** | S000171 |
-| **Instrument ID** | 172 |
 | **Location** | Kansas, USA (38.92°N, 92.17°W) |
 
-### Channels (9 total, sorted by frequency)
+### Channels (9 total)
 | Frequency | Station | SSRC |
 |-----------|---------|------|
 | 2.5 MHz | WWV | 20025 |
@@ -156,135 +159,89 @@ include_extended_metadata = false  # Set true for timing/gap data
 
 ---
 
-## 4. 🔧 Quick Reference Commands
+## 4. 🔬 Discrimination System (12 Methods)
 
-```bash
-# Activate environment
-cd /home/wsprdaemon/signal-recorder && source venv/bin/activate
+### Weighted Voting
 
-# Start web UI (port 3000)
-cd web-ui && node monitoring-server-v3.js
+| Vote | Method | Weight | Description |
+|------|--------|--------|-------------|
+| 0 | Test Signal | 15 | Minutes :08/:44 |
+| 1 | 440 Hz Station ID | 10 | WWVH min 1, WWV min 2 |
+| 2 | BCD Amplitude | 2-10 | 100 Hz time code |
+| 3 | 1000/1200 Hz Power | 1-10 | Timing tone ratio |
+| 4 | Tick SNR | 5 | 59-tick coherent |
+| 5 | 500/600 Hz | 10-15 | Exclusive minutes |
+| 6 | Doppler Stability | 2 | std ratio |
+| 7 | Timing Coherence | 3 | Test + BCD ToA |
+| 8 | Harmonic Ratio | 1.5 | 500→1000, 600→1200 |
+| 9 | FSS Path | 2 | Geographic validator |
+| 10 | Noise Coherence | flag | Transient detection |
+| 11 | Burst ToA | validation | Timing cross-check |
+| 12 | Spreading Factor | flag | L = τ_D × f_D |
 
-# Check services
-systemctl status grape-core-recorder grape-radiod-monitor
+### Cross-Validation Checks (12 total)
 
-# Data locations
-ls /tmp/grape-test/archives/WWV_10_MHz/          # Raw 16kHz NPZ
-ls /tmp/grape-test/analytics/WWV_10_MHz/decimated/  # 10Hz NPZ
-ls /tmp/grape-test/analytics/WWV_10_MHz/digital_rf/ # DRF output
-```
-
----
-
-## 5. � Discrimination System Details
-
-### Weighted Voting (8 Methods)
-
-The discrimination system uses weighted voting across multiple independent methods:
-
-| Vote | Method | Weight | Minutes Active |
-|------|--------|--------|----------------|
-| 0 | Test Signal | 15 | :08, :44 only |
-| 1 | 440 Hz Station ID | 10 | :01 (WWVH), :02 (WWV) |
-| 2 | BCD Amplitude Ratio | 2-10 | All (higher in BCD minutes) |
-| 3 | 1000/1200 Hz Power Ratio | 1-10 | All |
-| 4 | Tick SNR Average | 5 | All |
-| 5 | 500/600 Hz Ground Truth | 10-15 | 14 exclusive minutes/hour (15 for M16-19, M43-51) |
-| 6 | Doppler Stability (std ratio) | 2 | When quality > 0.3, std ratio > 3 dB |
-| 7 | Timing Coherence | 3 | :08, :44 when test signal + BCD |
-
-**Key Insight:** Ground truth (Vote 5) can be overridden when other methods collectively disagree. This is by design - a "disagreement" shows mixed propagation where dominant station differs from ground truth detection.
-
-### Inter-Method Cross-Validation (Phase 6)
-
-Beyond voting, independent measurements validate each other via `_cross_validate_methods()`:
-
-| # | Check | Agreement Condition | Effect |
-|---|-------|---------------------|--------|
-| 1 | Power vs Timing | WWVH louder + WWV arrives first | +agreement |
-| 2 | Per-tick Voting | Tick power matches FFT ratio | +agreement |
-| 3 | Geographic Delay | BCD delay within 10ms of predicted | +agreement |
-| 4 | 440 Hz Ground Truth | Power agrees with min 1/2 detection | +agreement |
-| 5 | BCD Correlation | Quality > 5.0 confirms minute lock | +agreement |
-| 6 | 500/600 Hz Ground Truth | Power agrees with exclusive tone | +agreement |
-| 7 | **Doppler-Power** | Δf_D magnitude agrees with power ratio | +agreement |
-| 8 | **Coherence Quality** | min(Q_wwv, Q_wwvh) < 0.3 → unreliable | +disagreement |
-| 9 | **Harmonic Signature** | P_1000/P_500 or P_1200/P_600 confirms station | +agreement |
-
-Checks 7-9 were added 2025-11-28 to exploit orthogonal measurements we already collect.
-
-### Key Files for Discrimination
-
-| File | Purpose |
-|------|---------|
-| `src/signal_recorder/wwvh_discrimination.py` | Main discrimination logic, all 8 voting methods |
-| `src/signal_recorder/tone_detector.py` | 1000/1200 Hz matched filter detection |
-| `web-ui/discrimination.html` | 7-panel visualization UI |
-
-### CSV Outputs (per channel)
-
-```
-analytics/{channel}/tone_detections/     # 1000/1200 Hz power, timing
-analytics/{channel}/tick_windows/        # Per-second tick SNR
-analytics/{channel}/station_id_440hz/    # 440 Hz ground truth
-analytics/{channel}/bcd_discrimination/  # BCD correlation peaks
-analytics/{channel}/discrimination/      # Final weighted voting result
-analytics/{channel}/doppler/             # Differential Doppler measurements
-```
+| # | Check | Token |
+|---|-------|-------|
+| 1-6 | Power, timing, geographic, ground truth | Various |
+| 7 | Doppler-Power agreement | `doppler_power_agree` |
+| 8 | Coherence quality | `high_coherence_boost` |
+| 9 | Harmonic signature | `harmonic_signature_*` |
+| 10 | FSS geographic | `TS_FSS_WWV/WWVH` |
+| 11 | Noise transient | `transient_noise_event` |
+| 12 | Spreading factor | `channel_overspread` |
 
 ---
 
-## 6. 📋 Session History
-
-### Nov 28 Afternoon: Discrimination Refinement
-- **440 Hz Coherent Integration:** ~30 dB processing gain via quadrature matched filter
-- **Timing Dashboard:** TONE_LOCKED (<5min), TONE_STABLE (low drift), TONE_AGED (>5min)
-- **Service Scripts:** `grape-all.sh`, `grape-analytics.sh`, `grape-core.sh`, `grape-ui.sh`
-- **Repository Cleanup:** 88 dev-history docs, 22 shell scripts, 14 test scripts → `archive/`
-- **Analysis:** Ground truth disagreements explained (mixed propagation, not bugs)
-
-### Nov 28 Morning: DRF Upload System
-- **Multi-subchannel DRF Writer:** All 9 frequencies in single ch0 (wsprdaemon-compatible)
-- **Upload Tracker:** JSON state file tracks successful uploads
-- **Tested:** 35MB uploaded to PSWS in 28 seconds
-
-### Nov 27: UI & Gap Analysis
-- **Gap Analysis Page:** Batch NPZ processing, scatter timeline
-- **Channel Sorting:** All pages sort by frequency
-
----
-
-## 7. 📚 Documentation Structure
-
-| Location | Content |
-|----------|---------|
-| `README.md` | Project overview, quick start, architecture |
-| `ARCHITECTURE.md` | Detailed system design |
-| `TECHNICAL_REFERENCE.md` | Implementation details |
-| `INSTALLATION.md` | Setup guide |
-| `docs/` | Feature-specific documentation |
-| `archive/dev-history/` | Session notes and design docs |
-| `archive/shell-scripts/` | Legacy scripts (superseded by grape-*.sh) |
-| `archive/test-scripts/` | Development test scripts |
-
----
-
-## 8. 🔧 Service Control
+## 5. 🔧 Service Control
 
 ```bash
 # All services
 ./scripts/grape-all.sh -start|-stop|-status
 
 # Individual services
-./scripts/grape-core.sh -start       # Core recorder (ka9q-radio → 16kHz NPZ)
+./scripts/grape-core.sh -start       # Core recorder
 ./scripts/grape-analytics.sh -start  # Analytics (9 channels)
 ./scripts/grape-ui.sh -start         # Web UI (port 3000)
 ```
 
 ---
 
-## 9. 🎯 Next Session Goals
+## 6. 📋 Session History
 
-1. **Tune Discrimination Weights:** Experiment with ground truth authority vs. mixed propagation detection
-2. **Enhance Doppler Display:** Show coherence window (T_c), add statistics, improve visualization
-3. **Validate 440 Hz Improvement:** Confirm WWV minute :02 detections with new coherent integration
+### Nov 29: Test Signal Channel Sounding
+- FSS geographic validator (Vote 9)
+- Noise coherence transient detection (Vote 10)
+- Burst ToA cross-validation (Vote 11)
+- Spreading Factor physics check (Vote 12)
+- Extended to 12 voting methods + 12 cross-validation checks
+
+### Nov 28: Discrimination Refinement
+- 440 Hz coherent integration (~30 dB gain)
+- Service scripts (`grape-*.sh`)
+- 500/600 Hz weight boost (15 for exclusive minutes)
+- Doppler stability vote (std ratio)
+
+### Nov 27: DRF Upload & UI
+- Multi-subchannel DRF writer
+- Gap analysis page
+- Upload tracker
+
+---
+
+## 7. 🎯 Next Session: Recording Architecture
+
+**Goal:** Understand and potentially optimize the RTP→NPZ recording pipeline.
+
+**Files to Read:**
+1. `grape_rtp_recorder.py` - Start here, understand RTPReceiver
+2. `core_recorder.py` - Main orchestration
+3. `packet_resequencer.py` - Gap detection logic
+4. `core_npz_writer.py` - Metadata embedding
+
+**Questions to Answer:**
+1. What is the packet loss rate in practice?
+2. How often do packets arrive out of order?
+3. Is the resequencer buffer size optimal?
+4. Can we improve time_snap accuracy?
+5. Are there race conditions in multi-channel recording?
