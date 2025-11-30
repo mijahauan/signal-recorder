@@ -224,9 +224,9 @@ class RecordingSession:
             
             self.state = SessionState.STOPPING
             
-            # Finish current segment if active
+            # Finish current segment if active (final=True to flush resequencer)
             if self.current_segment:
-                self._finish_segment()
+                self._finish_segment(final=True)
             
             # Unregister callback
             self.rtp_receiver.unregister_callback(self.config.ssrc)
@@ -281,11 +281,13 @@ class RecordingSession:
                 
                 # Check if segment complete
                 if self._is_segment_complete():
+                    logger.debug(f"Segment complete: {self.segment_sample_count} >= {self.samples_per_segment}")
                     self._finish_segment()
                     
                     # Start next segment if not stopping
                     if self.state != SessionState.STOPPING:
                         self.state = SessionState.WAITING
+                        logger.debug(f"State -> WAITING for next segment")
                         
         except Exception as e:
             logger.error(f"Error processing RTP packet: {e}", exc_info=True)
@@ -385,15 +387,21 @@ class RecordingSession:
             return False  # Continuous mode
         return self.segment_sample_count >= self.samples_per_segment
     
-    def _finish_segment(self):
-        """Finish current segment"""
+    def _finish_segment(self, final: bool = False):
+        """Finish current segment
+        
+        Args:
+            final: If True, this is the last segment (flush resequencer)
+        """
         if not self.current_segment:
             return
         
-        # Flush resequencer
-        buffered = self.resequencer.flush()
-        for samples, gap_info in buffered:
-            self._write_samples(samples, 0, gap_info)
+        # Only flush resequencer on final segment (session stop)
+        # For continuous recording, keep buffer intact between segments
+        if final:
+            buffered = self.resequencer.flush()
+            for samples, gap_info in buffered:
+                self._write_samples(samples, 0, gap_info)
         
         # Notify writer
         result = None
