@@ -1,58 +1,126 @@
 # GRAPE Signal Recorder - AI Context Document
 
-**Last Updated:** 2025-11-29 (evening session)  
-**Status:** Beta release ready - test signal channel sounding complete
+**Last Updated:** 2025-11-30 (afternoon session)  
+**Status:** Generic recording infrastructure complete, GRAPE refactor pending
 
 ---
 
-## 🎯 Next Session Focus: Recording Architecture Deep Dive
+## 🎯 Next Session Focus: GRAPE Recorder Refactor
 
-The discrimination system is now complete with 12 voting methods and 12 cross-validation checks. The **next session should focus on the recording architecture** - understanding how RTP data flows from ka9q-radio through to NPZ archives.
+The generic recording infrastructure is now complete and tested. The **next session should refactor `core_recorder.py`** to use the new `RecordingSession` class.
 
-### Key Areas to Explore
+### Completed Infrastructure (Nov 30)
 
-1. **RTP Reception & Resequencing**
-   - `grape_rtp_recorder.py` - RTPReceiver class handles multicast reception
-   - `packet_resequencer.py` - Handles out-of-order packets, gap detection
-   - Critical: Big-endian byte order (`'>i2'`), Q+jI phase convention
+| Component | Status | Location |
+|-----------|--------|----------|
+| **ka9q-python 2.5.0** | ✅ Released | `venv/lib/python3.11/site-packages/ka9q/` |
+| `pass_all_packets` mode | ✅ | `rtp_recorder.py` |
+| GPS_TIME/RTP_TIMESNAP | ✅ | `discovery.py`, `control.py` |
+| `rtp_to_wallclock()` | ✅ | `rtp_recorder.py` |
+| **signal-recorder** | | `src/signal_recorder/` |
+| `rtp_receiver.py` | ✅ Updated | Uses ka9q for parsing/timing |
+| `recording_session.py` | ✅ New | Generic session manager |
+| `test_recording_session.py` | ✅ Passing | Live radiod test |
 
-2. **Core Recorder Architecture**
-   - `core_recorder.py` - Main orchestration, channel management
-   - `core_npz_writer.py` - NPZ archive creation with embedded metadata
-   - Invariant: 960,000 samples/minute (exactly), gaps zero-filled
+### Architecture Layers (Current)
 
-3. **Time_snap Mechanism**
-   - `startup_tone_detector.py` - Initial RTP→UTC calibration via tone detection
-   - Formula: `utc = time_snap_utc + (rtp_ts - time_snap_rtp) / sample_rate`
-   - Accuracy: ±1ms when fresh, degrades ~1ms/hour
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              Application (GRAPE, WSPR, CODAR, etc.)             │
+│  Implements SegmentWriter protocol for app-specific storage     │
+├─────────────────────────────────────────────────────────────────┤
+│                    RecordingSession (NEW)                        │
+│  - RTP reception + PacketResequencer                            │
+│  - Time-based segmentation                                       │
+│  - Transport timing (wallclock from radiod)                      │
+│  - Callbacks to SegmentWriter                                    │
+├─────────────────────────────────────────────────────────────────┤
+│                    rtp_receiver.py                               │
+│  - Multi-SSRC demultiplexing (efficient single socket)          │
+│  - Uses ka9q.parse_rtp_header()                                 │
+│  - Uses ka9q.rtp_to_wallclock() for timing                      │
+├─────────────────────────────────────────────────────────────────┤
+│                    ka9q-python 2.5.0                             │
+│  - RTP parsing, timing (GPS_TIME/RTP_TIMESNAP)                  │
+│  - Channel control, discovery                                    │
+│  - pass_all_packets mode for external resequencing              │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-4. **Channel Manager**
-   - `channel_manager.py` - SSRC mapping, ka9q-radio discovery
-   - Each channel has independent RTP clock (cannot share time_snap between channels)
+### Timing Model (Important!)
 
-### Recording Architecture Files
+**Two layers of timing are now cleanly separated:**
 
-| File | Purpose | Key Classes |
-|------|---------|-------------|
-| `grape_rtp_recorder.py` | RTP multicast reception | `RTPReceiver` |
-| `core_recorder.py` | Main recording loop | `GrapeRecorder` |
-| `core_npz_writer.py` | NPZ with metadata | `NPZWriter` |
-| `packet_resequencer.py` | Packet ordering | `PacketResequencer` |
-| `startup_tone_detector.py` | Initial timing | `StartupToneDetector` |
-| `channel_manager.py` | Channel config | `ChannelManager` |
-| `radiod_health.py` | ka9q-radio status | `RadiodHealthChecker` |
-| `session_tracker.py` | Session boundaries | `SessionBoundaryTracker` |
+| Layer | Source | Purpose |
+|-------|--------|---------|
+| **Transport Timing** | radiod GPS_TIME/RTP_TIMESNAP | When SDR sampled the data |
+| **Payload Timing** | App-specific (e.g., WWV tones) | Timing markers in content |
 
-### Architecture Questions to Address
+- `rtp_to_wallclock()` provides transport timing (always available if radiod sends it)
+- GRAPE still needs payload timing (tone detection) for sub-ms accuracy
+- Other apps (WSPR, CODAR) may only need transport timing
 
-- How does RTP timestamp relate to sample index?
-- What happens when packets arrive out of order?
-- How are gaps detected and filled?
-- How does time_snap calibration work?
-- What metadata is embedded in each NPZ?
-- How do multiple channels coordinate?
+---
 
-### Critical Bug History (for context)
+## 🔧 GRAPE Refactor Plan
+
+### Files to Create
+
+1. **`grape_npz_writer.py`** - Implements `SegmentWriter` protocol
+   ```python
+   class GrapeNPZWriter(SegmentWriter):
+       def start_segment(self, segment_info, metadata): ...
+       def write_samples(self, samples, rtp_timestamp, gap_info): ...
+       def finish_segment(self, segment_info) -> Path: ...
+   ```
+
+2. **`grape_recorder.py`** - Two-phase GRAPE recorder
+   ```python
+   class GrapeRecorder:
+       # Phase 1: Startup (2 minutes)
+       # - Buffer samples
+       # - Tone detection for time_snap
+       # - Uses raw RTPReceiver callbacks
+       
+       # Phase 2: Recording (after time_snap)
+       # - Create RecordingSession with GrapeNPZWriter
+       # - Periodic tone re-validation
+   ```
+
+### Refactoring Steps
+
+1. **Extract NPZ writing logic** from `ChannelProcessor` → `GrapeNPZWriter`
+2. **Create `GrapeRecorder`** wrapper with startup/recording phases
+3. **Simplify `ChannelProcessor`** to use `RecordingSession` after startup
+4. **Update `CoreRecorder`** to use new classes
+5. **Test with live radiod** to verify NPZ output matches current
+
+### Key GRAPE-Specific Logic to Preserve
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| Startup buffering | `ChannelProcessor.__init__` | 120s buffer for tone detection |
+| Tone detection | `StartupToneDetector` | Minute boundary → time_snap |
+| NPZ format | `CoreNPZWriter` | Metadata, gap records |
+| Periodic validation | `ChannelProcessor` | Every 5 min tone check |
+
+### Test Verification
+
+After refactor, verify:
+```bash
+# Run recorder for 5 minutes
+./scripts/grape-core.sh -start
+sleep 300
+./scripts/grape-core.sh -stop
+
+# Check NPZ output
+ls -la data/local/raw/*/
+python3 -c "import numpy as np; d = np.load('data/local/raw/.../file.npz'); print(d.files)"
+```
+
+---
+
+## Critical Bug History (for context)
 
 Three bugs corrupted all data before Oct 30, 2025:
 1. **Byte Order:** `np.int16` (little) → `'>i2'` (big-endian network order)
@@ -61,7 +129,25 @@ Three bugs corrupted all data before Oct 30, 2025:
 
 ---
 
-## Recent Session Work (Nov 29)
+## Recent Session Work (Nov 30)
+
+### Generic Recording Infrastructure (Complete)
+
+- **ka9q-python 2.5.0**: Added `pass_all_packets` mode, GPS timing
+- **rtp_receiver.py**: Now uses ka9q for parsing, adds wallclock to callbacks
+- **recording_session.py**: New generic session manager with SegmentWriter protocol
+- **test_recording_session.py**: Live test passes (2 segments, timing, no gaps)
+
+### Key Design Decisions
+
+1. **Keep rtp_receiver.py** - Multi-SSRC demux on single socket is more efficient
+2. **Separate transport vs payload timing** - Clean architectural boundary
+3. **SegmentWriter protocol** - Apps implement storage, RecordingSession handles flow
+4. **Don't flush between segments** - Resequencer state persists for continuous streams
+
+---
+
+## Previous Session Work (Nov 29)
 
 ### Test Signal Channel Sounding (Complete)
 
@@ -209,6 +295,15 @@ ka9q-radio RTP → Core Recorder (16kHz NPZ) → Analytics Service
 
 ## 6. 📋 Session History
 
+### Nov 30: Generic Recording Infrastructure
+- **ka9q-python 2.5.0** released with `pass_all_packets` mode
+- GPS_TIME/RTP_TIMESNAP timing support
+- `rtp_receiver.py` updated to use ka9q for parsing/timing
+- **`recording_session.py`** - New generic session manager
+- `SegmentWriter` protocol for app-specific storage
+- Live test passing with radiod (segments, timing, no gaps)
+- Branch: `feature/generic-rtp-recorder`
+
 ### Nov 29: Test Signal Channel Sounding
 - FSS geographic validator (Vote 9)
 - Noise coherence transient detection (Vote 10)
@@ -226,22 +321,3 @@ ka9q-radio RTP → Core Recorder (16kHz NPZ) → Analytics Service
 - Multi-subchannel DRF writer
 - Gap analysis page
 - Upload tracker
-
----
-
-## 7. 🎯 Next Session: Recording Architecture
-
-**Goal:** Understand and potentially optimize the RTP→NPZ recording pipeline.
-
-**Files to Read:**
-1. `grape_rtp_recorder.py` - Start here, understand RTPReceiver
-2. `core_recorder.py` - Main orchestration
-3. `packet_resequencer.py` - Gap detection logic
-4. `core_npz_writer.py` - Metadata embedding
-
-**Questions to Answer:**
-1. What is the packet loss rate in practice?
-2. How often do packets arrive out of order?
-3. Is the resequencer buffer size optimal?
-4. Can we improve time_snap accuracy?
-5. Are there race conditions in multi-channel recording?
