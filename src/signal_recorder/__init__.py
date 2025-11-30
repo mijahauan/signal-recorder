@@ -23,7 +23,12 @@ __author__ = "GRAPE Signal Recorder Project"
 # NOTE: V2 recorder stack archived to archive/legacy-code/v2-recorder/ (Nov 18, 2025)
 # CURRENT stack: core_recorder.py + analytics_service.py
 # Generic RTP receiver extracted to rtp_receiver.py (Nov 30, 2025)
+# Generic recording session added (Nov 30, 2025)
 from .rtp_receiver import RTPReceiver, RTPHeader
+from .recording_session import (
+    RecordingSession, SessionConfig, SessionState, 
+    SegmentInfo, SessionMetrics, SegmentWriter
+)
 
 # Channel management
 from .channel_manager import ChannelManager
@@ -42,6 +47,13 @@ __all__ = [
     # Generic RTP reception
     "RTPReceiver",
     "RTPHeader",
+    # Generic recording session
+    "RecordingSession",
+    "SessionConfig",
+    "SessionState",
+    "SegmentInfo",
+    "SessionMetrics",
+    "SegmentWriter",
     # Channel management
     "ChannelManager",
     "discover_channels_via_control",
