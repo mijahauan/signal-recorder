@@ -2,6 +2,7 @@
 
 **Status:** MANDATORY - All code must follow these contracts  
 **Created:** 2025-11-20  
+**Updated:** 2025-11-30  
 **Purpose:** Single source of truth for project standards and references
 
 ---
@@ -12,7 +13,7 @@ Canonical contracts are the **authoritative references** that all GRAPE code mus
 
 ---
 
-## 📚 The Three Pillars
+## 📚 The Four Pillars
 
 ### 1. Directory Structure Contract
 **File:** `DIRECTORY_STRUCTURE.md`  
@@ -71,6 +72,40 @@ def detect_timing_tones(
 - RTP timestamp as primary time reference
 - NPZ archives enable reprocessability
 - Independent discrimination methods
+
+### 4. SegmentWriter Protocol Contract
+**File:** `src/signal_recorder/recording_session.py`  
+**Purpose:** HOW applications implement storage
+
+**Protocol Definition:**
+```python
+class SegmentWriter(Protocol):
+    """Protocol for app-specific segment storage"""
+    
+    def start_segment(self, segment_info: SegmentInfo, metadata: Dict[str, Any]) -> None:
+        """Called when a new segment begins"""
+        ...
+    
+    def write_samples(self, samples: np.ndarray, rtp_timestamp: int, 
+                      gap_info: Optional[GapInfo]) -> None:
+        """Called for each batch of samples"""
+        ...
+    
+    def finish_segment(self, segment_info: SegmentInfo) -> Any:
+        """Called when segment ends, returns result (e.g., file path)"""
+        ...
+    
+    def update_time_snap(self, time_snap: Any) -> None:
+        """Update timing reference (app-specific)"""
+        ...
+```
+
+**Example Implementation:** `GrapeNPZWriter` in `grape_npz_writer.py`
+
+**When to Implement:**
+- Creating a new output format (WAV, Digital RF, HDF5, etc.)
+- Recording for a different application (WSPR, CODAR, etc.)
+- Custom segment handling requirements
 
 ---
 
@@ -171,13 +206,14 @@ When contracts need updating:
 
 ## 📝 Summary
 
-These three documents form the **foundation** of the GRAPE project:
+These four documents form the **foundation** of the GRAPE project:
 
 | Contract | Purpose | When to Use |
 |----------|---------|-------------|
 | `DIRECTORY_STRUCTURE.md` | File paths and naming | Every file operation |
 | `docs/API_REFERENCE.md` | Function signatures | Every function call |
 | `ARCHITECTURE.md` | System design | Understanding context |
+| `SegmentWriter` protocol | Storage abstraction | Adding new output formats |
 
 **Golden Rule:** When in doubt, consult the contracts. If contracts are unclear, improve them first.
 

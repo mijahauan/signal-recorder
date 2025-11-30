@@ -56,7 +56,7 @@ cp config/grape-config.toml.template config/grape-config.toml
 
 ## Architecture
 
-**Three-service design** for reliability and reprocessability:
+**Three-service design** built on a **generic recording infrastructure**:
 
 ```
 ka9q-radio (RTP multicast) → Core Recorder → Analytics → DRF Writer/Upload
@@ -64,9 +64,29 @@ ka9q-radio (RTP multicast) → Core Recorder → Analytics → DRF Writer/Upload
                               archives/      analytics/ → PSWS sftp
 ```
 
+### Generic Recording Infrastructure (New in V3)
+
+The recording layer uses a **protocol-based design** enabling multiple applications:
+
+```
+Application Layer (GrapeRecorder, WsprRecorder, etc.)
+        ↓
+SegmentWriter Protocol (GrapeNPZWriter, WAVWriter, etc.)
+        ↓
+RecordingSession (generic RTP → segments)
+        ↓
+RTPReceiver + ka9q-python (multicast, parsing, timing)
+```
+
+**Key Abstractions:**
+- **SegmentWriter Protocol** - Apps implement storage format
+- **RecordingSession** - Generic packet flow, resequencing, segmentation
+- **RTPReceiver** - Multi-SSRC demultiplexing, transport timing
+
 ### 1. Core Recorder (`src/signal_recorder/core_recorder.py`)
 
 Rock-solid RTP capture with scientific-grade metadata preservation:
+- Uses `GrapeRecorder` with two-phase operation (startup → recording)
 - RTP → resequencing → gap fill → 16 kHz NPZ (960,000 samples/minute)
 - Minimal dependencies, designed for maximum reliability
 
@@ -244,7 +264,17 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 **Beta Release** - Core functionality complete and tested. Daily recording and PSWS upload operational at AC0G since November 2025.
 
-### Recent Updates (Nov 29, 2025)
+### Recent Updates (Nov 30, 2025)
+- **Generic Recording Infrastructure** - Protocol-based design for multi-app support
+  - `RecordingSession` - Generic RTP→segments session manager
+  - `SegmentWriter` protocol - App-specific storage abstraction
+  - Clean separation: transport timing (radiod) vs payload timing (app-specific)
+- **GRAPE Refactor** - Now uses generic infrastructure
+  - `GrapeRecorder` - Two-phase startup/recording
+  - `GrapeNPZWriter` - SegmentWriter for NPZ output
+  - Enables future apps (WSPR, CODAR) to reuse core infrastructure
+
+### Previous Updates (Nov 29, 2025)
 - **Test Signal Channel Sounding:** Full exploitation of :08/:44 scientific test signal
   - Frequency Selectivity Score (FSS) as geographic path validator
   - Dual noise segment comparison for transient detection

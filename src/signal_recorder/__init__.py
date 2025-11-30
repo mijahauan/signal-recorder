@@ -30,6 +30,10 @@ from .recording_session import (
     SegmentInfo, SessionMetrics, SegmentWriter
 )
 
+# GRAPE-specific components (refactored Nov 30, 2025)
+from .grape_recorder import GrapeRecorder, GrapeConfig, GrapeState
+from .grape_npz_writer import GrapeNPZWriter
+
 # Channel management
 from .channel_manager import ChannelManager
 from ka9q import discover_channels, ChannelInfo, RadiodControl
@@ -54,6 +58,11 @@ __all__ = [
     "SegmentInfo",
     "SessionMetrics",
     "SegmentWriter",
+    # GRAPE-specific
+    "GrapeRecorder",
+    "GrapeConfig",
+    "GrapeState",
+    "GrapeNPZWriter",
     # Channel management
     "ChannelManager",
     "discover_channels_via_control",

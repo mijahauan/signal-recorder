@@ -27,8 +27,9 @@
 ### Three-Service Design
 
 ```
-Core Recorder (grape_recorder.py via core_recorder.py)
-├─ RTP reception & resequencing (9 channels)
+Core Recorder (core_recorder.py → GrapeRecorder)
+├─ Generic: RTPReceiver → RecordingSession → SegmentWriter
+├─ GRAPE-specific: GrapeRecorder (two-phase: startup → recording)
 ├─ Startup tone detection (time_snap establishment)
 ├─ Gap detection & zero-filling
 └─ NPZ archive writing (960,000 samples/minute @ 16 kHz)
@@ -405,14 +406,20 @@ DRF Batch Writer
 
 ## Key Modules
 
-### Core Recorder (`src/signal_recorder/`)
-- `grape_recorder.py` - Main entry point
-- `core_recorder.py` - RTP reception, channel management
-- `core_npz_writer.py` - 16 kHz NPZ with embedded metadata
+### Generic Recording Infrastructure (`src/signal_recorder/`)
+- `recording_session.py` - Generic RTP→segments session manager (NEW)
+- `rtp_receiver.py` - Multi-SSRC RTP demultiplexer
 - `packet_resequencer.py` - RTP packet ordering & gap detection
-- `startup_tone_detector.py` - Initial time_snap establishment
 
-### Analytics (`src/signal_recorder/`)
+### GRAPE Application (`src/signal_recorder/`)
+- `grape_recorder.py` - Two-phase recorder (startup → recording) (NEW)
+- `grape_npz_writer.py` - SegmentWriter for NPZ output (NEW)
+- `core_recorder.py` - Top-level orchestration
+- `startup_tone_detector.py` - Initial time_snap establishment
+- `channel_manager.py` - Channel configuration
+
+### Legacy (deprecated)
+- `core_npz_writer.py` - Original NPZ writer (superseded by grape_npz_writer.py)
 - `analytics_service.py` - NPZ watcher, multi-method processor
 - `wwvh_discrimination.py` - BCD correlation, dual-peak detection
 - `tone_detector.py` - 1000/1200 Hz timing tones
@@ -600,11 +607,21 @@ sudo sysctl -w net.core.rmem_max=26214400
 
 ---
 
-**Version**: 2.2  
-**Last Updated**: November 29, 2025  
+**Version**: 3.0  
+**Last Updated**: November 30, 2025  
 **Purpose**: Technical reference for GRAPE Signal Recorder developers
 
-**Recent Changes (Nov 29, 2025):**
+**Recent Changes (Nov 30, 2025):**
+- **Generic Recording Infrastructure** - Protocol-based design for multi-app support
+  - `RecordingSession` - Generic RTP→segments manager
+  - `SegmentWriter` protocol - App-specific storage abstraction
+  - Transport timing (radiod GPS_TIME) vs Payload timing (app-specific)
+- **GRAPE Refactor** - Uses new infrastructure
+  - `GrapeRecorder` - Two-phase startup/recording
+  - `GrapeNPZWriter` - SegmentWriter implementation for NPZ
+  - `ChannelProcessor` removed (deprecated)
+
+**Previous Changes (Nov 29, 2025):**
 - 12 voting methods (was 8) - added FSS, noise coherence, spreading factor
 - 12 cross-validation checks (was 9)
 - Test signal fully exploited as channel sounding instrument:

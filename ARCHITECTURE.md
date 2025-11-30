@@ -1,8 +1,8 @@
 # GRAPE Signal Recorder - System Architecture
 
-**Last Updated:** November 28, 2025  
+**Last Updated:** November 30, 2025  
 **Status:** CANONICAL - Single source of truth for system design  
-**Version:** V2 (Three-Service Architecture)
+**Version:** V3 (Generic Recording Infrastructure + Three-Service Architecture)
 
 ---
 
@@ -16,15 +16,16 @@ This document explains **WHY** the GRAPE system is designed the way it is. For *
 
 1. [Executive Summary](#executive-summary)
 2. [Design Philosophy](#design-philosophy)
-3. [Three-Service Architecture](#three-service-architecture)
-4. [Key Design Decisions](#key-design-decisions)
-5. [Data Flow](#data-flow)
-6. [Timing Architecture](#timing-architecture)
-7. [WWV/WWVH Discrimination](#wwvwwvh-discrimination)
-8. [Directory Structure](#directory-structure)
-9. [Service Management](#service-management)
-10. [Performance & Reliability](#performance--reliability)
-11. [Failure Recovery](#failure-recovery)
+3. [Generic Recording Infrastructure](#generic-recording-infrastructure)
+4. [Three-Service Architecture](#three-service-architecture)
+5. [Key Design Decisions](#key-design-decisions)
+6. [Data Flow](#data-flow)
+7. [Timing Architecture](#timing-architecture)
+8. [WWV/WWVH Discrimination](#wwvwwvh-discrimination)
+9. [Directory Structure](#directory-structure)
+10. [Service Management](#service-management)
+11. [Performance & Reliability](#performance--reliability)
+12. [Failure Recovery](#failure-recovery)
 
 ---
 
@@ -138,6 +139,124 @@ Core Recorder (Stable)  →  Analytics (Evolving)  →  Consumers (Flexible)
 7. Doppler-Power agreement (Δf_D vs power ratio)
 8. Coherence quality confidence adjustment
 9. Harmonic signature validation (500→1000, 600→1200 Hz)
+
+---
+
+## Generic Recording Infrastructure
+
+**New in V3 (November 30, 2025):** The recording layer has been refactored into a **generic, protocol-based design** that separates concerns and enables different applications to use the same core infrastructure.
+
+### Layer Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         APPLICATION LAYER                                │
+│  GrapeRecorder, WsprRecorder (future), CodarRecorder (future), etc.     │
+│  - App-specific startup logic (buffering, detection)                    │
+│  - App-specific timing (tone detection, GPS sync, etc.)                 │
+│  - Creates & configures RecordingSession + SegmentWriter                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                         SEGMENT WRITER PROTOCOL                          │
+│  GrapeNPZWriter, DigitalRFWriter (future), WAVWriter (future), etc.     │
+│  - start_segment(segment_info, metadata)                                │
+│  - write_samples(samples, rtp_timestamp, gap_info)                      │
+│  - finish_segment(segment_info) → result                                │
+│  - update_time_snap(time_snap)                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                         RECORDING SESSION (generic)                      │
+│  RecordingSession                                                        │
+│  - RTP packet reception (callbacks from RTPReceiver)                    │
+│  - PacketResequencer (out-of-order handling, gap detection)             │
+│  - Time-based segmentation (configurable duration, default 60s)         │
+│  - Calls SegmentWriter callbacks                                        │
+│  - Session metrics (packets, gaps, timing)                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                         RTP RECEIVER                                     │
+│  RTPReceiver + ka9q-python                                              │
+│  - Multi-SSRC demultiplexing (efficient single socket)                  │
+│  - RTP header parsing (sequence, timestamp, SSRC)                       │
+│  - Transport timing (GPS_TIME/RTP_TIMESNAP → wallclock)                 │
+│  - Callback registration per SSRC                                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│                         TRANSPORT (ka9q-radio)                           │
+│  UDP multicast, RTP protocol                                            │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Abstractions
+
+#### 1. SegmentWriter Protocol
+
+Apps implement this protocol to define their storage format:
+
+```python
+class SegmentWriter(Protocol):
+    def start_segment(self, segment_info: SegmentInfo, metadata: Dict) -> None: ...
+    def write_samples(self, samples: np.ndarray, rtp_timestamp: int, 
+                      gap_info: Optional[GapInfo]) -> None: ...
+    def finish_segment(self, segment_info: SegmentInfo) -> Any: ...
+    def update_time_snap(self, time_snap: Any) -> None: ...
+```
+
+#### 2. RecordingSession
+
+Generic session manager that handles:
+- RTP packet flow from receiver
+- Packet resequencing and gap detection
+- Time-based segment boundaries
+- Invoking SegmentWriter callbacks
+
+#### 3. RTPReceiver
+
+Handles raw RTP reception:
+- Multicast socket management
+- Per-SSRC callback routing
+- Optional transport timing (wallclock from radiod)
+
+### Timing Model (Two Layers)
+
+| Layer | Source | Purpose |
+|-------|--------|---------|
+| **Transport Timing** | radiod GPS_TIME/RTP_TIMESNAP | When SDR captured samples |
+| **Payload Timing** | App-specific (WWV tones, etc.) | Markers within the signal |
+
+- Transport timing is **generic** (handled by `RTPReceiver` and ka9q-python)
+- Payload timing is **app-specific** (e.g., `StartupToneDetector` for GRAPE)
+
+### Adding a New Application
+
+To create a new recorder (e.g., for WSPR):
+
+```python
+# 1. Implement SegmentWriter for your output format
+class WsprWAVWriter:
+    def start_segment(self, segment_info, metadata): ...
+    def write_samples(self, samples, rtp_timestamp, gap_info): ...
+    def finish_segment(self, segment_info): ...  # → return WAV path
+
+# 2. Create application recorder with your startup logic
+class WsprRecorder:
+    def __init__(self, config, rtp_receiver):
+        self.writer = WsprWAVWriter(...)
+        self.session = RecordingSession(
+            ssrc=config.ssrc,
+            sample_rate=config.sample_rate,
+            segment_writer=self.writer,
+            segment_duration=120.0,  # 2-minute WSPR cycles
+        )
+    
+    def start(self):
+        self.session.start(self.rtp_receiver)
+```
+
+### What Each Layer Provides
+
+| Layer | Provides | Apps Don't Need To |
+|-------|----------|-------------------|
+| **RTPReceiver** | Multicast, demux, parsing | Handle sockets, parse headers |
+| **RecordingSession** | Resequencing, segmentation, gaps | Manage packet ordering, detect gaps |
+| **SegmentWriter** | Storage abstraction | Know about RTP internals |
+| **Application** | Domain logic, timing | Reinvent packet handling |
 
 ---
 
@@ -816,7 +935,20 @@ Web UI
 
 ## Version History
 
-### V2 (November 2025) - Current
+### V3 (November 30, 2025) - Current
+- **Generic Recording Infrastructure** - Protocol-based design
+  - `RecordingSession` - Generic RTP→segments manager
+  - `SegmentWriter` protocol - App-specific storage
+  - Clean transport/payload timing separation
+- **GRAPE Refactor** - Uses new infrastructure
+  - `GrapeRecorder` - Two-phase (startup → recording)
+  - `GrapeNPZWriter` - SegmentWriter for NPZ output
+  - `ChannelProcessor` removed (deprecated)
+- Three-service architecture (Core, Analytics, DRF Writer)
+- 12 voting methods + 12 cross-validation checks
+- Canonical contracts established (Nov 20, 2025)
+
+### V2 (November 2025)
 - Three-service architecture (Core, Analytics, DRF Writer)
 - 10 Hz NPZ as central pivot point
 - **Eight voting methods** with weighted scoring

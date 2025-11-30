@@ -1,13 +1,47 @@
 # GRAPE Signal Recorder - AI Context Document
 
-**Last Updated:** 2025-11-30 (afternoon session)  
-**Status:** Generic recording infrastructure complete, GRAPE refactor pending
+**Last Updated:** 2025-11-30 (end of session)  
+**Status:** Generic infrastructure complete, ready for WSPR demo
 
 ---
 
-## 🎯 Next Session Focus: GRAPE Recorder Refactor
+## ✅ GRAPE Refactor Complete (Nov 30 evening)
 
-The generic recording infrastructure is now complete and tested. The **next session should refactor `core_recorder.py`** to use the new `RecordingSession` class.
+The GRAPE recorder has been refactored to use the new generic recording infrastructure.
+
+### New Components Created
+
+| Component | File | Description |
+|-----------|------|-------------|
+| **GrapeNPZWriter** | `grape_npz_writer.py` | Implements `SegmentWriter` protocol for NPZ output |
+| **GrapeRecorder** | `grape_recorder.py` | Two-phase recorder (startup buffering → recording) |
+| **GrapeConfig** | `grape_recorder.py` | Configuration dataclass for GRAPE |
+
+### Architecture (Refactored)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    CoreRecorder (orchestration)                  │
+│  - Channel management, health monitoring, NTP cache             │
+├─────────────────────────────────────────────────────────────────┤
+│                    GrapeRecorder (per-channel)                   │
+│  - Phase 1: Startup buffering + tone detection                 │
+│  - Phase 2: RecordingSession with GrapeNPZWriter               │
+├─────────────────────────────────────────────────────────────────┤
+│                    RecordingSession (generic)                    │
+│  - RTP reception + PacketResequencer                            │
+│  - Time-based segmentation (60s)                                │
+│  - Transport timing (wallclock from radiod)                     │
+├─────────────────────────────────────────────────────────────────┤
+│                    GrapeNPZWriter                                │
+│  - SegmentWriter implementation                                  │
+│  - NPZ output with time_snap, gap tracking                      │
+├─────────────────────────────────────────────────────────────────┤
+│                    rtp_receiver.py + ka9q-python                 │
+│  - Multi-SSRC demultiplexing                                     │
+│  - RTP parsing, GPS timing                                       │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ### Completed Infrastructure (Nov 30)
 
@@ -62,61 +96,69 @@ The generic recording infrastructure is now complete and tested. The **next sess
 
 ---
 
-## 🔧 GRAPE Refactor Plan
+## 🎯 Next Session Focus: WSPR Recorder Demo
+
+Build a demonstration WSPR recorder using the generic recording infrastructure. This will validate the architecture and provide a working example for wsprdaemon integration.
+
+### Goals
+
+1. **Create `WsprWAVWriter`** - SegmentWriter that outputs 2-minute WAV files
+2. **Create `WsprRecorder`** - Simple recorder (no startup phase needed)
+3. **Test with live radiod** - Record WSPR band audio
+4. **Document the pattern** - Show how easy it is to add new applications
+
+### WSPR Recording Requirements
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| **Segment duration** | 120 seconds | WSPR transmission cycle |
+| **Sample rate** | 12000 Hz | Standard WSPR audio rate |
+| **Output format** | WAV (16-bit PCM) | Compatible with wsprd decoder |
+| **Timing** | Even 2-minute boundaries | WSPR protocol requirement |
+| **Frequencies** | 7.0386, 10.1387, 14.0956 MHz | WSPR dial frequencies |
+
+### Implementation Plan
+
+```python
+# 1. WsprWAVWriter - SegmentWriter for WAV output
+class WsprWAVWriter:
+    def start_segment(self, segment_info, metadata):
+        # Open WAV file for 2-minute segment
+    
+    def write_samples(self, samples, rtp_timestamp, gap_info):
+        # Append audio samples (real part of IQ or FM demod)
+    
+    def finish_segment(self, segment_info) -> Path:
+        # Close WAV, return path for wsprd processing
+
+# 2. WsprRecorder - Simple application recorder
+class WsprRecorder:
+    def __init__(self, config, rtp_receiver):
+        self.writer = WsprWAVWriter(...)
+        self.session = RecordingSession(
+            ssrc=config.ssrc,
+            sample_rate=12000,
+            segment_writer=self.writer,
+            segment_duration=120.0,  # 2-minute WSPR cycle
+        )
+```
 
 ### Files to Create
 
-1. **`grape_npz_writer.py`** - Implements `SegmentWriter` protocol
-   ```python
-   class GrapeNPZWriter(SegmentWriter):
-       def start_segment(self, segment_info, metadata): ...
-       def write_samples(self, samples, rtp_timestamp, gap_info): ...
-       def finish_segment(self, segment_info) -> Path: ...
-   ```
+| File | Purpose |
+|------|---------|
+| `wspr_wav_writer.py` | SegmentWriter for WAV output |
+| `wspr_recorder.py` | WSPR-specific recorder |
+| `examples/wspr_demo.py` | Standalone demo script |
 
-2. **`grape_recorder.py`** - Two-phase GRAPE recorder
-   ```python
-   class GrapeRecorder:
-       # Phase 1: Startup (2 minutes)
-       # - Buffer samples
-       # - Tone detection for time_snap
-       # - Uses raw RTPReceiver callbacks
-       
-       # Phase 2: Recording (after time_snap)
-       # - Create RecordingSession with GrapeNPZWriter
-       # - Periodic tone re-validation
-   ```
+### Reference: wsprdaemon Integration
 
-### Refactoring Steps
+wsprdaemon currently uses:
+- `kiwirecorder.py` or `kiwiclient` for audio capture
+- `wsprd` for decoding
+- 2-minute audio files at 12 kHz
 
-1. **Extract NPZ writing logic** from `ChannelProcessor` → `GrapeNPZWriter`
-2. **Create `GrapeRecorder`** wrapper with startup/recording phases
-3. **Simplify `ChannelProcessor`** to use `RecordingSession` after startup
-4. **Update `CoreRecorder`** to use new classes
-5. **Test with live radiod** to verify NPZ output matches current
-
-### Key GRAPE-Specific Logic to Preserve
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| Startup buffering | `ChannelProcessor.__init__` | 120s buffer for tone detection |
-| Tone detection | `StartupToneDetector` | Minute boundary → time_snap |
-| NPZ format | `CoreNPZWriter` | Metadata, gap records |
-| Periodic validation | `ChannelProcessor` | Every 5 min tone check |
-
-### Test Verification
-
-After refactor, verify:
-```bash
-# Run recorder for 5 minutes
-./scripts/grape-core.sh -start
-sleep 300
-./scripts/grape-core.sh -stop
-
-# Check NPZ output
-ls -la data/local/raw/*/
-python3 -c "import numpy as np; d = np.load('data/local/raw/.../file.npz'); print(d.files)"
-```
+This demo will show how ka9q-radio + signal-recorder can replace the audio capture portion
 
 ---
 
@@ -295,7 +337,14 @@ ka9q-radio RTP → Core Recorder (16kHz NPZ) → Analytics Service
 
 ## 6. 📋 Session History
 
-### Nov 30: Generic Recording Infrastructure
+### Nov 30: GRAPE Refactor (Evening)
+- **`grape_npz_writer.py`** - SegmentWriter implementation for GRAPE
+- **`grape_recorder.py`** - Two-phase recorder (startup → recording)
+- **`core_recorder.py`** updated to use GrapeRecorder
+- **`test_grape_refactor.py`** - Live test script
+- ChannelProcessor preserved but now deprecated
+
+### Nov 30: Generic Recording Infrastructure (Afternoon)
 - **ka9q-python 2.5.0** released with `pass_all_packets` mode
 - GPS_TIME/RTP_TIMESNAP timing support
 - `rtp_receiver.py` updated to use ka9q for parsing/timing
