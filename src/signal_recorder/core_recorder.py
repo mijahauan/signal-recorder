@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import subprocess
 
-from .rtp_receiver import RTPReceiver, RTPHeader
+from .rtp_receiver import RTPReceiver, RTPHeader  # RTPHeader now from ka9q-python
 from .packet_resequencer import PacketResequencer, RTPPacket, GapInfo
 from .core_npz_writer import CoreNPZWriter, GapRecord
 from .channel_manager import ChannelManager
@@ -557,7 +557,7 @@ class ChannelProcessor:
         logger.info(f"ChannelProcessor initialized: {description} (SSRC {ssrc})")
         logger.info(f"  Startup mode: Buffering {self.startup_buffer_duration}s for time_snap establishment")
     
-    def process_rtp_packet(self, header, payload: bytes):
+    def process_rtp_packet(self, header, payload: bytes, wallclock: Optional[float] = None):
         """
         Process incoming RTP packet (thread-safe)
         
@@ -568,8 +568,10 @@ class ChannelProcessor:
         shared state access must be protected by self._lock.
         
         Args:
-            header: RTPHeader object from rtp_receiver.py
+            header: RTPHeader object from ka9q-python
             payload: RTP payload bytes (IQ samples)
+            wallclock: Optional Unix timestamp from radiod (GPS_TIME/RTP_TIMESNAP)
+                      This is transport timing, not payload timing.
         """
         try:
             # CRITICAL: Lock must protect ALL shared state access throughout entire method

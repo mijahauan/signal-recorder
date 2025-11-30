@@ -29,6 +29,9 @@ from .rtp_receiver import RTPReceiver, RTPHeader
 from .channel_manager import ChannelManager
 from ka9q import discover_channels, ChannelInfo, RadiodControl
 
+# ka9q timing functions (GPS_TIME/RTP_TIMESNAP support)
+from ka9q import rtp_to_wallclock, parse_rtp_header
+
 # Re-export ka9q functions for backward compatibility
 discover_channels_via_control = discover_channels  # Legacy alias
 
@@ -44,6 +47,9 @@ __all__ = [
     "discover_channels_via_control",
     "ChannelInfo",
     "RadiodControl",
+    # Timing (from ka9q-python)
+    "rtp_to_wallclock",
+    "parse_rtp_header",
     # Upload
     "UploadManager",
     "SSHRsyncUpload",

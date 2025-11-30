@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Generic RTP Receiver
+Generic RTP Receiver with ka9q-python Integration
 
 Receives RTP packets from multicast and demultiplexes by SSRC.
-Designed for reuse across different applications.
+Uses ka9q-python for RTP parsing and timing (GPS_TIME/RTP_TIMESNAP).
 
-This module was extracted from grape_rtp_recorder.py to provide
-a generic, application-independent RTP reception capability.
+This module provides efficient multi-SSRC demultiplexing on a single
+socket, while leveraging ka9q-python's timing capabilities.
 """
 
 import socket
@@ -14,39 +14,31 @@ import struct
 import threading
 import logging
 from typing import Dict, Optional, Callable
-from dataclasses import dataclass
+
+# Use ka9q-python for RTP parsing and timing
+from ka9q import parse_rtp_header, RTPHeader, rtp_to_wallclock, ChannelInfo
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class RTPHeader:
-    """Parsed RTP header fields"""
-    version: int
-    padding: bool
-    extension: bool
-    csrc_count: int
-    marker: bool
-    payload_type: int
-    sequence: int
-    timestamp: int
-    ssrc: int
+# Re-export RTPHeader from ka9q for backward compatibility
+# RTPHeader is now imported from ka9q above
 
 
 class RTPReceiver:
     """
     Receives RTP packets from multicast and demultiplexes by SSRC.
     
-    This is a generic RTP receiver that can be used for any application
-    requiring multicast RTP reception. Callbacks are registered per-SSRC
-    to handle different streams independently.
+    Uses ka9q-python for RTP parsing and timing. Callbacks receive:
+    - RTPHeader (from ka9q)
+    - payload bytes
+    - wallclock time (from ka9q's rtp_to_wallclock, if timing info available)
     
     Example:
         receiver = RTPReceiver('239.192.152.141', port=5004)
         receiver.register_callback(ssrc=10000000, callback=my_handler)
         receiver.start()
-        # ... later ...
-        receiver.stop()
+        # Callback signature: callback(header: RTPHeader, payload: bytes, wallclock: Optional[float])
     """
     
     def __init__(self, multicast_address: str, port: int = 5004):
@@ -63,17 +55,23 @@ class RTPReceiver:
         self.socket = None
         self.thread = None
         self.callbacks: Dict[int, Callable] = {}  # ssrc -> callback
+        self.channel_info: Dict[int, ChannelInfo] = {}  # ssrc -> ChannelInfo for timing
         
-    def register_callback(self, ssrc: int, callback: Callable):
+    def register_callback(self, ssrc: int, callback: Callable, channel_info: Optional[ChannelInfo] = None):
         """
         Register callback for specific SSRC.
         
         Args:
             ssrc: RTP SSRC identifier
-            callback: Function to call with (RTPHeader, payload_bytes)
+            callback: Function to call with (RTPHeader, payload_bytes, wallclock_time)
+                     wallclock_time is None if timing info not available
+            channel_info: Optional ChannelInfo with timing data (gps_time, rtp_timesnap)
+                         If provided, enables wallclock time calculation
         """
         self.callbacks[ssrc] = callback
-        logger.info(f"Registered callback for SSRC {ssrc}")
+        if channel_info:
+            self.channel_info[ssrc] = channel_info
+        logger.info(f"Registered callback for SSRC {ssrc} (timing: {'enabled' if channel_info else 'disabled'})")
         
     def unregister_callback(self, ssrc: int):
         """
@@ -84,7 +82,21 @@ class RTPReceiver:
         """
         if ssrc in self.callbacks:
             del self.callbacks[ssrc]
-            logger.info(f"Unregistered callback for SSRC {ssrc}")
+        if ssrc in self.channel_info:
+            del self.channel_info[ssrc]
+        logger.info(f"Unregistered callback for SSRC {ssrc}")
+    
+    def update_channel_info(self, ssrc: int, channel_info: ChannelInfo):
+        """
+        Update timing info for a channel (call when status stream updates).
+        
+        Args:
+            ssrc: RTP SSRC identifier
+            channel_info: Updated ChannelInfo with fresh gps_time/rtp_timesnap
+        """
+        if ssrc in self.callbacks:
+            self.channel_info[ssrc] = channel_info
+            logger.debug(f"Updated timing info for SSRC {ssrc}")
         
     def start(self):
         """Start receiving RTP packets"""
@@ -140,8 +152,8 @@ class RTPReceiver:
                 data, addr = self.socket.recvfrom(8192)
                 packet_count += 1
                 
-                # Parse RTP header
-                header = self._parse_rtp_header(data)
+                # Parse RTP header using ka9q-python
+                header = parse_rtp_header(data)
                 if not header:
                     continue
                 
@@ -149,9 +161,12 @@ class RTPReceiver:
                 if header.ssrc not in ssrc_seen:
                     ssrc_seen.add(header.ssrc)
                     has_callback = header.ssrc in self.callbacks
+                    has_timing = header.ssrc in self.channel_info
                     logger.debug(f"First packet from SSRC {header.ssrc}: "
                                 f"seq={header.sequence}, ts={header.timestamp}, "
-                                f"payload={len(data)-12} bytes, callback={'YES' if has_callback else 'NO'}")
+                                f"payload={len(data)-12} bytes, "
+                                f"callback={'YES' if has_callback else 'NO'}, "
+                                f"timing={'YES' if has_timing else 'NO'}")
                     if not has_callback:
                         logger.debug(f"No callback registered for SSRC {header.ssrc}. "
                                     f"Registered SSRCs: {list(self.callbacks.keys())}")
@@ -178,51 +193,19 @@ class RTPReceiver:
                 
                 payload = data[payload_offset:]
                 
-                # Dispatch to appropriate callback
+                # Calculate wallclock time if timing info available
+                wallclock = None
+                channel_info = self.channel_info.get(header.ssrc)
+                if channel_info:
+                    wallclock = rtp_to_wallclock(header.timestamp, channel_info)
+                
+                # Dispatch to appropriate callback with timing
                 callback = self.callbacks.get(header.ssrc)
                 if callback:
-                    callback(header, payload)
+                    callback(header, payload, wallclock)
                     
             except Exception as e:
                 if self.running:
                     logger.error(f"Error receiving RTP packet: {e}")
                     
-    @staticmethod
-    def _parse_rtp_header(data: bytes) -> Optional[RTPHeader]:
-        """
-        Parse RTP packet header.
-        
-        Args:
-            data: Raw packet bytes
-            
-        Returns:
-            RTPHeader if valid, None otherwise
-        """
-        if len(data) < 12:
-            return None
-            
-        # Parse fixed header (12 bytes)
-        b0, b1, seq, ts, ssrc = struct.unpack('>BBHII', data[:12])
-        
-        version = (b0 >> 6) & 0x3
-        padding = bool((b0 >> 5) & 0x1)
-        extension = bool((b0 >> 4) & 0x1)
-        csrc_count = b0 & 0xF
-        
-        marker = bool((b1 >> 7) & 0x1)
-        payload_type = b1 & 0x7F
-        
-        if version != 2:
-            return None
-            
-        return RTPHeader(
-            version=version,
-            padding=padding,
-            extension=extension,
-            csrc_count=csrc_count,
-            marker=marker,
-            payload_type=payload_type,
-            sequence=seq,
-            timestamp=ts,
-            ssrc=ssrc
-        )
+    # Note: _parse_rtp_header removed - now using ka9q.parse_rtp_header()
