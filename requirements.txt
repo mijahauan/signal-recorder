@@ -26,3 +26,4 @@ ka9q @ git+https://github.com/mijahauan/ka9q-python.git@v2.1.0
 pandas>=2.0.0
 matplotlib>=3.7.0
 
+ka9q-radio>=3.1.0
