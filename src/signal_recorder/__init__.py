@@ -1,22 +1,34 @@
 """
-GRAPE Signal Recorder - WWV/CHU timing signal recorder for HamSCI
+Signal Recorder - Generic RTP stream recording with GRAPE specialization
 
-Specialized system for recording time-standard radio signals from ka9q-radio
-and uploading to the HamSCI PSWS repository.
+A generic system for subscribing to and recording RTP streams from ka9q-radio,
+with specialized support for GRAPE (WWV/CHU timing signals) and WSPR.
 
-Features:
-- Direct RTP packet reception (no external tools)
-- scipy-based decimation (16 kHz → 10 Hz IQ)
-- Digital RF format with HamSCI metadata
-- Real-time quality monitoring (completeness, timing drift, packet loss)
-- Web-based configuration and monitoring
+Key Features:
+- SSRC-free API: Specify frequency, mode, sample rate - SSRC handled internally
+- Automatic stream sharing: Same spec = same stream
+- Protocol-based storage: Implement SegmentWriter for any output format
+- Multi-app coordination: Discovery prevents SSRC collisions
+
+Quick Start:
+    from signal_recorder import subscribe_stream
+    
+    # Get a stream (no SSRC needed!)
+    stream = subscribe_stream(
+        radiod="radiod.local",
+        frequency_hz=10.0e6,
+        preset="iq",
+        sample_rate=16000
+    )
+    
+    print(f"Receiving on {stream.multicast_address}:{stream.port}")
 
 See ARCHITECTURE.md for design details.
 
 Copyright 2025
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "GRAPE Signal Recorder Project"
 
 # Core components
@@ -38,7 +50,23 @@ from .grape_npz_writer import GrapeNPZWriter
 from .wspr_recorder import WsprRecorder, WsprConfig, WsprState, create_wspr_recorder
 from .wspr_wav_writer import WsprWAVWriter
 
-# Channel management
+# Stream API - SSRC-free interface (NEW Dec 2025)
+from .stream_spec import StreamSpec, StreamRequest
+from .stream_handle import StreamHandle, StreamInfo
+from .stream_manager import StreamManager
+from .stream_api import (
+    subscribe_stream,
+    subscribe_iq,
+    subscribe_usb,
+    subscribe_am,
+    subscribe_batch,
+    discover_streams,
+    find_stream,
+    get_manager,
+    close_all,
+)
+
+# Channel management (lower-level)
 from .channel_manager import ChannelManager
 from ka9q import discover_channels, ChannelInfo, RadiodControl
 
@@ -52,28 +80,44 @@ discover_channels_via_control = discover_channels  # Legacy alias
 from .uploader import UploadManager, SSHRsyncUpload
 
 __all__ = [
-    # Generic RTP reception
+    # === Stream API (primary interface) ===
+    "subscribe_stream",
+    "subscribe_iq",
+    "subscribe_usb",
+    "subscribe_am",
+    "subscribe_batch",
+    "discover_streams",
+    "find_stream",
+    "get_manager",
+    "close_all",
+    # Stream types
+    "StreamSpec",
+    "StreamRequest",
+    "StreamHandle",
+    "StreamInfo",
+    "StreamManager",
+    # === Generic recording infrastructure ===
     "RTPReceiver",
     "RTPHeader",
-    # Generic recording session
     "RecordingSession",
     "SessionConfig",
     "SessionState",
     "SegmentInfo",
     "SessionMetrics",
     "SegmentWriter",
-    # GRAPE-specific
+    # === Application-specific recorders ===
+    # GRAPE
     "GrapeRecorder",
     "GrapeConfig",
     "GrapeState",
     "GrapeNPZWriter",
-    # WSPR-specific
+    # WSPR
     "WsprRecorder",
     "WsprConfig",
     "WsprState",
     "WsprWAVWriter",
     "create_wspr_recorder",
-    # Channel management
+    # === Lower-level (advanced use) ===
     "ChannelManager",
     "discover_channels_via_control",
     "ChannelInfo",

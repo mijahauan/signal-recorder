@@ -1,51 +1,217 @@
 # Signal Recorder - AI Context Document
 
 **Last Updated:** 2025-12-01  
-**Status:** Two applications validated (GRAPE + WSPR), ready for API consolidation
+**Status:** Stream API v1.1.0 complete. Next: Debug spectrogram 24-hour coverage.
 
 ---
 
-## 🎯 Next Session: Robust Multi-Application API
+## 🎯 Next Session: Spectrogram 24-Hour Coverage Issue
 
-The pipeline from **radiod → ka9q-python → signal-recorder → application payload** has been validated with two different applications (GRAPE and WSPR). The next step is to consolidate learnings into a clean, robust API that any application can use.
+### Problem
 
-### Goal
+Spectrograms are **not filling the whole 24-hour graph**. The user expects spectrograms to show a full 24-hour day (00:00-23:59 UTC), but they appear incomplete.
 
-Create a simple, documented API that allows any application to:
-1. Subscribe to RTP streams from ka9q-radio (by SSRC or frequency)
-2. Receive properly decoded samples (IQ or mono audio)
-3. Handle time-aligned segmentation (optional)
-4. Write application-specific output files
+### Possible Causes to Investigate
 
-### Current Architecture (Working)
+1. **Data gaps in 10 Hz decimated NPZ files**
+   - Check: `analytics/{channel}/decimated/` for missing minute files
+   - Files named: `YYYYMMDDTHHMMSSZ_freq_iq_10hz.npz`
+   - Each file = 1 minute of 10 Hz data (600 samples)
+
+2. **Analytics service not processing all minutes**
+   - Check: `scripts/grape-analytics.sh` service status
+   - Look for errors in analytics processing logs
+   - Gap in 16 kHz NPZ files → gap in decimated files
+
+3. **Spectrogram generation reading wrong time range**
+   - Script: `scripts/generate_spectrograms_from_10hz.py`
+   - X-axis may only show actual data range, not full 24 hours
+   - See: `docs/features/PARTIAL_DAY_SPECTROGRAM_FIX.md` for context
+
+4. **Channel restart causing data loss**
+   - radiod restart or channel recreation causes gaps
+   - Check: core_recorder.py logs for channel recovery events
+
+5. **DRF writer not keeping up**
+   - Digital RF writes from decimated NPZ
+   - Check: `drf_batch_writer.py` backlog
+
+### Diagnostic Commands
+
+```bash
+# Count decimated files per channel for a specific date
+ls -la analytics/WWV_10_MHz/decimated/20251201*_iq_10hz.npz | wc -l
+# Expected: 1440 files (one per minute)
+
+# Check for gaps in file timestamps
+ls analytics/WWV_10_MHz/decimated/20251201*_iq_10hz.npz | head -20
+ls analytics/WWV_10_MHz/decimated/20251201*_iq_10hz.npz | tail -20
+
+# Check analytics service
+./scripts/grape-analytics.sh -status
+
+# Check for errors in logs
+journalctl -u grape-analytics --since "00:00" | grep -i error
+
+# Generate spectrogram for today
+python3 scripts/generate_spectrograms_from_10hz.py --date 20251201 --channel "WWV 10 MHz"
+```
+
+### Key Files for Investigation
+
+| File | Purpose |
+|------|---------|
+| `scripts/generate_spectrograms_from_10hz.py` | Main spectrogram generator |
+| `src/signal_recorder/analytics_service.py` | Creates decimated NPZ files |
+| `scripts/check_and_generate_spectrograms.py` | Checks/triggers generation |
+| `docs/features/PARTIAL_DAY_SPECTROGRAM_FIX.md` | Previous partial-day fix |
+| `docs/features/AUTOMATIC_SPECTROGRAM_GENERATION.md` | Generation system docs |
+
+### Data Flow for Spectrograms
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│              Application Layer (GRAPE, WSPR, future apps)       │
-│  - Implements SegmentWriter protocol                           │
-│  - App-specific: WsprWAVWriter, GrapeNPZWriter                 │
-├─────────────────────────────────────────────────────────────────┤
-│              Application Recorder (optional convenience layer)  │
-│  - WsprRecorder, GrapeRecorder                                 │
-│  - Configures RecordingSession with app-specific settings      │
-├─────────────────────────────────────────────────────────────────┤
-│              RecordingSession (generic)                         │
-│  - Packet resequencing + gap detection                         │
-│  - Time-based segmentation with boundary alignment             │
-│  - Payload decoding (IQ vs mono auto-detection)                │
-│  - Callbacks to SegmentWriter                                  │
-├─────────────────────────────────────────────────────────────────┤
-│              RTPReceiver                                        │
-│  - Single socket, multi-SSRC demultiplexing                    │
-│  - Uses ka9q-python for parsing                                │
-├─────────────────────────────────────────────────────────────────┤
-│              ka9q-python 2.5.0                                  │
-│  - RTP header parsing, GPS timing                              │
-│  - Channel control and discovery                               │
-└─────────────────────────────────────────────────────────────────┘
+radiod RTP → core_recorder.py → 16 kHz NPZ (1-minute files)
+                                     ↓
+                            analytics_service.py
+                                     ↓
+                            10 Hz decimated NPZ
+                                     ↓
+                     generate_spectrograms_from_10hz.py
+                                     ↓
+                            PNG spectrograms
+                                     ↓
+                            Web UI display
 ```
 
-### Key Learnings from WSPR Demo
+**Any gap in the pipeline = gap in spectrogram**
+
+### Questions to Answer
+
+1. How many decimated files exist for the problem date?
+2. What time range do the files cover?
+3. Are there gaps between files?
+4. Is the spectrogram script reading all files?
+5. Is the X-axis set to show full 24 hours or just data range?
+
+---
+
+## ✅ Stream API Complete (Dec 1, 2025)
+
+The robust multi-application API is now implemented. Applications specify **what they want** (frequency, preset, sample rate) and the system handles **SSRC allocation internally**.
+
+### Key Design Decision: SSRC Hidden from Apps
+
+**Why:** SSRC is just an internal index that radiod uses - applications shouldn't care about it.
+
+**Before (manual SSRC):**
+```python
+# Old way - app had to know/manage SSRC
+control.create_channel(ssrc=20100, frequency_hz=10e6, preset="iq", ...)
+receiver.register_callback(ssrc=20100, callback=...)
+```
+
+**After (SSRC-free):**
+```python
+# New way - just say what you want
+stream = subscribe_stream(
+    radiod="radiod.local",
+    frequency_hz=10.0e6,
+    preset="iq",
+    sample_rate=16000
+)
+# System allocates SSRC, shares existing streams, handles lifecycle
+```
+
+### New Files Created
+
+| File | Purpose |
+|------|---------|
+| `stream_spec.py` | `StreamSpec` - content-based stream identity |
+| `stream_handle.py` | `StreamHandle` - opaque handle apps receive |
+| `stream_manager.py` | `StreamManager` - lifecycle, SSRC allocation, sharing |
+| `stream_api.py` | `subscribe_stream()` - high-level entry point |
+| `examples/simple_stream_demo.py` | Demo of new API |
+
+### API Functions
+
+```python
+from signal_recorder import (
+    subscribe_stream,      # Main entry point
+    subscribe_iq,          # Convenience: IQ mode
+    subscribe_usb,         # Convenience: USB mode  
+    subscribe_am,          # Convenience: AM mode
+    subscribe_batch,       # Multiple streams, same params
+    discover_streams,      # See what exists
+    find_stream,           # Find compatible existing stream
+)
+```
+
+### Automatic Stream Sharing
+
+Same `StreamSpec` (frequency + preset + sample_rate) = same stream:
+
+```python
+# Both get same underlying stream (efficient)
+stream1 = subscribe_stream(radiod, frequency_hz=10e6, preset="iq", sample_rate=16000)
+stream2 = subscribe_stream(radiod, frequency_hz=10e6, preset="iq", sample_rate=16000)
+# stream1.multicast_address == stream2.multicast_address ✓
+```
+
+### Multi-App Coordination
+
+Different apps, same frequency, different parameters = different streams:
+
+```python
+# GRAPE: IQ for Doppler analysis
+grape = subscribe_stream(radiod, frequency_hz=10e6, preset="iq", sample_rate=16000)
+
+# Audio monitor: AM for listening  
+audio = subscribe_stream(radiod, frequency_hz=10e6, preset="am", sample_rate=12000)
+
+# Different streams (different preset/rate), no collision
+```
+
+### Architecture (Updated)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              APPLICATION                                     │
+│                                                                              │
+│   stream = subscribe_stream(frequency_hz=10e6, preset="iq", ...)            │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           STREAM API (new)                                   │
+│                                                                              │
+│   StreamManager                                                              │
+│   - SSRC allocation (internal, deterministic hash)                          │
+│   - Stream sharing (same StreamSpec = same stream)                          │
+│   - Discovery integration (find existing compatible streams)                │
+│   - Reference counting (cleanup on release)                                 │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    RECORDING INFRASTRUCTURE (existing)                       │
+│                                                                              │
+│   RecordingSession → RTPReceiver → ka9q-python → radiod                    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Next Steps
+
+1. **Test with live radiod** - Run `examples/simple_stream_demo.py`
+2. **Update GRAPE** to use new API (optional - current code still works)
+3. **Update WSPR demo** to use new API
+4. **Document** multi-app coordination patterns
+
+---
+
+## Previous: Key Learnings from WSPR Demo
 
 1. **Payload Format Detection** - radiod sends different formats:
    - IQ mode (GRAPE): float32 interleaved I/Q → 120 complex samples/packet
@@ -56,32 +222,9 @@ Create a simple, documented API that allows any application to:
    - `align_to_boundary=True` with `segment_duration_sec=120.0`
    - Session waits until position-in-cycle < 2 seconds before starting
 
-3. **SSRC Convention** - radiod uses frequency-in-kHz as SSRC:
-   - 10.1387 MHz → SSRC 10139
-   - Applications must know or discover the SSRC mapping
-
-4. **Sample Rate Matching** - Session config must match radiod config:
+3. **Sample Rate Matching** - Session config must match radiod config:
    - WSPR: `samprate = 12000` in radiod, `sample_rate=12000` in session
    - GRAPE: `samprate = 16000` in radiod, `sample_rate=16000` in session
-
-### API Design Considerations
-
-| Aspect | Current | Proposed Improvement |
-|--------|---------|---------------------|
-| **SSRC discovery** | Manual | Auto-discover from multicast |
-| **Payload format** | Heuristic | Explicit config or metadata from radiod |
-| **Sample rate** | Manual config | Query from radiod status |
-| **Boundary alignment** | Generic (any duration) | Keep generic, well-documented |
-| **Error handling** | Basic logging | Structured errors, retry logic |
-
-### Files to Refactor/Create
-
-| File | Purpose |
-|------|--------|
-| `recording_session.py` | Clean up payload detection, add explicit format config |
-| `stream_config.py` (new) | Unified config: SSRC, sample_rate, format, segment_duration |
-| `radiod_discovery.py` (new) | Auto-discover streams from radiod status |
-| `examples/simple_recorder.py` | Minimal example for new apps |
 
 ---
 
@@ -402,6 +545,16 @@ ka9q-radio RTP → Core Recorder (16kHz NPZ) → Analytics Service
 ---
 
 ## 6. 📋 Session History
+
+### Dec 1: Stream API Implementation (Morning)
+- **`stream_spec.py`** - StreamSpec content-based identity (freq + preset + rate)
+- **`stream_handle.py`** - StreamHandle opaque handle for apps
+- **`stream_manager.py`** - SSRC allocation, stream sharing, lifecycle
+- **`stream_api.py`** - `subscribe_stream()` high-level entry point
+- **`docs/STREAM_API.md`** - Comprehensive documentation
+- **`examples/simple_stream_demo.py`** - Demo of SSRC-free API
+- Version bump to 1.1.0
+- Key insight: SSRC is internal index, apps specify content (freq/preset/rate)
 
 ### Nov 30: GRAPE Refactor (Evening)
 - **`grape_npz_writer.py`** - SegmentWriter implementation for GRAPE
