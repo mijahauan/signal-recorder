@@ -35,8 +35,8 @@ from pathlib import Path
 # Add parent directory to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from signal_recorder.rtp_receiver import RTPReceiver
-from signal_recorder.wspr_recorder import WsprRecorder, WsprConfig
+from grape_recorder.rtp_receiver import RTPReceiver
+from grape_recorder.wspr_recorder import WsprRecorder, WsprConfig
 
 # Common WSPR dial frequencies (Hz)
 WSPR_FREQUENCIES = {

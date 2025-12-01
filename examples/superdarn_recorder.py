@@ -13,7 +13,7 @@ This example shows how to set up channels for SuperDARN monitoring
 without any GRAPE/WWV/recording assumptions.
 """
 
-from signal_recorder.radiod_control import RadiodControl
+from grape_recorder.radiod_control import RadiodControl
 import time
 
 def create_superdarn_channels(control, frequency_list, bandwidth_hz=50000):

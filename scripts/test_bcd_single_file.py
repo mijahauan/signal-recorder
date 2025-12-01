@@ -9,8 +9,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from signal_recorder.grape.analytics_service import NPZArchive
-from signal_recorder.wwvh_discrimination import WWVHDiscriminator
+from grape_recorder.grape.analytics_service import NPZArchive
+from grape_recorder.grape.wwvh_discrimination import WWVHDiscriminator
 
 def main():
     # Find a recent NPZ file

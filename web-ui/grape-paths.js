@@ -2,7 +2,7 @@
  * GRAPE Paths - JavaScript/Node.js Implementation
  * 
  * Centralized path management for GRAPE data structures.
- * MUST stay synchronized with Python implementation in src/signal_recorder/paths.py
+ * MUST stay synchronized with Python implementation in src/grape_recorder/paths.py
  * 
  * Architecture:
  *   data_root/

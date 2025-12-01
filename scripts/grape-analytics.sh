@@ -44,7 +44,7 @@ start)
     echo "▶️  Starting Analytics Services..."
     
     # Stop existing first
-    pkill -f "signal_recorder.analytics_service" 2>/dev/null
+    pkill -f "grape_recorder.grape.analytics_service" 2>/dev/null
     sleep 1
     
     if [ ! -f "$CONFIG" ]; then
@@ -65,7 +65,7 @@ start)
         freq_hz=$(echo "$freq_mhz * 1000000" | bc | cut -d. -f1)
         channel_dir="WWV_${freq_mhz}_MHz"
         
-        nohup python3 -m signal_recorder.analytics_service \
+        nohup python3 -m grape_recorder.grape.analytics_service \
           --archive-dir "$DATA_ROOT/archives/$channel_dir" \
           --output-dir "$DATA_ROOT/analytics/$channel_dir" \
           --channel-name "WWV ${freq_mhz} MHz" \
@@ -88,7 +88,7 @@ start)
         freq_hz=${CHU_FREQS[$freq_mhz]}
         channel_dir="CHU_${freq_mhz}_MHz"
         
-        nohup python3 -m signal_recorder.analytics_service \
+        nohup python3 -m grape_recorder.grape.analytics_service \
           --archive-dir "$DATA_ROOT/archives/$channel_dir" \
           --output-dir "$DATA_ROOT/analytics/$channel_dir" \
           --channel-name "CHU ${freq_mhz} MHz" \
@@ -105,7 +105,7 @@ start)
     done
     
     sleep 2
-    COUNT=$(pgrep -f "signal_recorder.analytics_service" 2>/dev/null | wc -l)
+    COUNT=$(pgrep -f "grape_recorder.grape.analytics_service" 2>/dev/null | wc -l)
     echo "   ✅ Started $COUNT/9 channels"
     echo "   📄 Logs: $DATA_ROOT/logs/analytics-*.log"
     ;;
@@ -113,25 +113,25 @@ start)
 stop)
     echo "🛑 Stopping Analytics Services..."
     
-    COUNT=$(pgrep -f "signal_recorder.analytics_service" 2>/dev/null | wc -l)
+    COUNT=$(pgrep -f "grape_recorder.grape.analytics_service" 2>/dev/null | wc -l)
     if [ "$COUNT" -eq 0 ]; then
         echo "   ℹ️  Not running"
         exit 0
     fi
     
-    pkill -f "signal_recorder.analytics_service" 2>/dev/null
+    pkill -f "grape_recorder.grape.analytics_service" 2>/dev/null
     sleep 2
     
-    REMAINING=$(pgrep -f "signal_recorder.analytics_service" 2>/dev/null | wc -l)
+    REMAINING=$(pgrep -f "grape_recorder.grape.analytics_service" 2>/dev/null | wc -l)
     if [ "$REMAINING" -gt 0 ]; then
-        pkill -9 -f "signal_recorder.analytics_service" 2>/dev/null
+        pkill -9 -f "grape_recorder.grape.analytics_service" 2>/dev/null
     fi
     
     echo "   ✅ Stopped $COUNT services"
     ;;
 
 status)
-    COUNT=$(pgrep -f "signal_recorder.analytics_service" 2>/dev/null | wc -l)
+    COUNT=$(pgrep -f "grape_recorder.grape.analytics_service" 2>/dev/null | wc -l)
     if [ "$COUNT" -gt 0 ]; then
         echo "✅ Analytics: RUNNING ($COUNT/9 channels)"
     else

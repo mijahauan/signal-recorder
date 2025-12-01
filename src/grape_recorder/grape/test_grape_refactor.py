@@ -5,7 +5,7 @@ Test script for refactored GRAPE recorder
 Tests the new GrapeRecorder → RecordingSession → GrapeNPZWriter pipeline
 with live data from ka9q-radio.
 
-Run with: python3 -m signal_recorder.test_grape_refactor
+Run with: python3 -m grape_recorder.test_grape_refactor
 """
 
 import sys

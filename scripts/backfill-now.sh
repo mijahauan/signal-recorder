@@ -11,7 +11,7 @@ echo ""
 
 source venv/bin/activate
 
-python3 -m signal_recorder.gap_backfill \
+python3 -m grape_recorder.gap_backfill \
   --archive-dir "/tmp/grape-test/archives/${CHANNEL// /_}" \
   --discrimination-csv "/tmp/grape-test/analytics/${CHANNEL// /_}/discrimination/${CHANNEL// /_}_discrimination_$(date +%Y%m%d).csv"
 
@@ -23,8 +23,8 @@ echo ""
 python3 << 'EOF'
 import sys
 sys.path.insert(0, 'src')
-from signal_recorder.gap_backfill import find_gaps
-from signal_recorder.interfaces.data_models import NPZArchive
+from grape_recorder.gap_backfill import find_gaps
+from grape_recorder.interfaces.data_models import NPZArchive
 from pathlib import Path
 import os
 

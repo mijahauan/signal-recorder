@@ -12,7 +12,7 @@ CODAR Requirements:
 This demonstrates setting up for oceanographic radar monitoring.
 """
 
-from signal_recorder.radiod_control import RadiodControl
+from grape_recorder.radiod_control import RadiodControl
 import time
 
 def create_codar_channels(control, site_config):

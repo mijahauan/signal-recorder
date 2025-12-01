@@ -24,7 +24,7 @@ from scipy.stats import entropy
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-from signal_recorder.paths import GRAPEPaths
+from grape_recorder.paths import GRAPEPaths
 
 class QualityAnalyzer:
     """Analyze decimation and timing quality for dashboard"""

@@ -21,9 +21,9 @@ import sys
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from signal_recorder.wwvh_discrimination import WWVHDiscriminator
-from signal_recorder.discrimination_csv_writers import DiscriminationCSVWriters
-from signal_recorder.paths import load_paths_from_config
+from grape_recorder.grape.wwvh_discrimination import WWVHDiscriminator
+from grape_recorder.grape.discrimination_csv_writers import DiscriminationCSVWriters
+from grape_recorder.paths import load_paths_from_config
 import numpy as np
 
 logging.basicConfig(
@@ -46,7 +46,7 @@ def reprocess_day(date_str: str, channel_name: str, data_root: str):
     """
     
     # Setup paths using GRAPEPaths API
-    from signal_recorder.paths import GRAPEPaths
+    from grape_recorder.paths import GRAPEPaths
     paths = GRAPEPaths(data_root)
     archive_dir = paths.get_archive_dir(channel_name)
     analytics_dir = paths.get_analytics_dir(channel_name)

@@ -17,7 +17,7 @@ import sys
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from signal_recorder.wwvh_discrimination import WWVHDiscriminator
+from grape_recorder.grape.wwvh_discrimination import WWVHDiscriminator
 import numpy as np
 import csv
 
@@ -32,7 +32,7 @@ def reprocess_timerange(date_str: str, channel_name: str, start_hour: int, end_h
     """Reprocess discrimination for a specific time range"""
     
     # Setup paths using GRAPEPaths API
-    from signal_recorder.paths import GRAPEPaths, channel_name_to_dir
+    from grape_recorder.paths import GRAPEPaths, channel_name_to_dir
     paths = GRAPEPaths(data_root)
     archive_dir = paths.get_archive_dir(channel_name)
     output_dir = paths.get_discrimination_dir(channel_name)

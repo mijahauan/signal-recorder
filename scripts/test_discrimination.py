@@ -28,8 +28,8 @@ import logging
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from signal_recorder.wwvh_discrimination import WWVHDiscriminator, DiscriminationResult
-from signal_recorder.wwv_geographic_predictor import WWVGeographicPredictor
+from grape_recorder.grape.wwvh_discrimination import WWVHDiscriminator, DiscriminationResult
+from grape_recorder.grape.wwv_geographic_predictor import WWVGeographicPredictor
 
 # Setup logging
 logging.basicConfig(

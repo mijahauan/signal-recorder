@@ -8,7 +8,7 @@ specify what they want (frequency, mode, sample rate) and receive
 a handle for consuming the stream.
 
 Example:
-    from signal_recorder import subscribe_stream
+    from grape_recorder import subscribe_stream
     
     # Get a stream - no SSRC needed
     stream = subscribe_stream(
@@ -25,7 +25,7 @@ Example:
     stream.release()
 
 For more control, use StreamManager directly:
-    from signal_recorder import StreamManager
+    from grape_recorder import StreamManager
     
     manager = StreamManager("radiod.local")
     stream = manager.subscribe(frequency_hz=10.0e6, preset="iq")

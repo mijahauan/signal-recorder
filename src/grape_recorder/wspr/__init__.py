@@ -6,7 +6,7 @@ This package provides WSPR-specific components:
 - WsprWAVWriter: SegmentWriter for 16-bit mono WAV output
 
 Example:
-    from signal_recorder.wspr import WsprRecorder, WsprConfig
+    from grape_recorder.wspr import WsprRecorder, WsprConfig
     
     config = WsprConfig(
         frequency_hz=14095600,

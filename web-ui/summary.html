@@ -369,7 +369,10 @@
     <!-- Unified Navigation -->
     <div id="grape-navigation"></div>
     
-    <!-- New Analytics Components -->
+    <!-- Station Information (rendered first, above timing) -->
+    <div id="stationInfo"></div>
+    
+    <!-- Timing Status Widget -->
     <div id="timingStatus" style="margin-bottom: 20px;"></div>
     
     <div id="content">
@@ -440,6 +443,10 @@
         <div class="section">
           <div class="section-title">Station Information</div>
           <div class="info-grid">
+            <div class="info-item">
+              <div class="info-label">Station ID</div>
+              <div class="info-value">${station.id || station.station_id || 'N/A'}</div>
+            </div>
             <div class="info-item">
               <div class="info-label">Callsign</div>
               <div class="info-value">${station.callsign}</div>
@@ -695,8 +702,10 @@
         const response = await fetch('/api/v1/summary');
         const data = await response.json();
         
+        // Render station info to its own panel (above timing status)
+        document.getElementById('stationInfo').innerHTML = renderStationInfo(data.station);
+        
         let html = '';
-        html += renderStationInfo(data.station);
         html += '<div class="section">';
         html += renderProcesses(data.processes);
         html += renderContinuity(data.continuity);

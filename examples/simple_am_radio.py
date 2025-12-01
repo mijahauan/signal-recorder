@@ -6,7 +6,7 @@ Listen to WWV time signal on 10 MHz
 Demonstrates: Minimal code to create a channel and start receiving
 """
 
-from signal_recorder.radiod_control import RadiodControl
+from grape_recorder.radiod_control import RadiodControl
 
 def main():
     # Connect to radiod

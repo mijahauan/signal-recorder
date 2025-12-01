@@ -5,7 +5,7 @@ Example: Using RadiodStreamManager to request RTP streams
 This demonstrates the clean API for requesting and managing radiod streams.
 """
 
-from signal_recorder import RadiodStreamManager
+from grape_recorder import RadiodStreamManager
 import logging
 
 # Enable logging to see what's happening

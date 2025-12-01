@@ -11,7 +11,7 @@ Key Features:
 - Multi-app coordination: Discovery prevents SSRC collisions
 
 Quick Start:
-    from signal_recorder import subscribe_stream
+    from grape_recorder import subscribe_stream
     
     # Get a stream (no SSRC needed!)
     stream = subscribe_stream(
@@ -33,7 +33,7 @@ __author__ = "GRAPE Signal Recorder Project"
 
 # =============================================================================
 # CORE INFRASTRUCTURE (application-agnostic)
-# Moved to signal_recorder/core/ package (Dec 1, 2025)
+# Moved to grape_recorder/core/ package (Dec 1, 2025)
 # =============================================================================
 from .core import (
     RTPReceiver, RTPHeader,
@@ -44,7 +44,7 @@ from .core import (
 
 # =============================================================================
 # STREAM API (SSRC-free interface)
-# Moved to signal_recorder/stream/ package (Dec 1, 2025)
+# Moved to grape_recorder/stream/ package (Dec 1, 2025)
 # =============================================================================
 from .stream import (
     StreamSpec, StreamRequest,
@@ -63,7 +63,7 @@ from .stream import (
 
 # =============================================================================
 # GRAPE APPLICATION (WWV/WWVH/CHU time signals)
-# Moved to signal_recorder/grape/ package (Dec 1, 2025)
+# Moved to grape_recorder/grape/ package (Dec 1, 2025)
 # =============================================================================
 from .grape import (
     GrapeRecorder, GrapeConfig, GrapeState,
@@ -72,7 +72,7 @@ from .grape import (
 
 # =============================================================================
 # WSPR APPLICATION (Weak Signal Propagation Reporter)
-# Moved to signal_recorder/wspr/ package (Dec 1, 2025)
+# Moved to grape_recorder/wspr/ package (Dec 1, 2025)
 # =============================================================================
 from .wspr import (
     WsprRecorder, WsprConfig, WsprState,
@@ -148,7 +148,7 @@ __all__ = [
 
 # =============================================================================
 # Package structure (Dec 1, 2025):
-#   signal_recorder/
+#   grape_recorder/
 #   ├── core/       - Application-agnostic: RTP, resequencing, sessions
 #   ├── stream/     - Stream API: subscribe, discover, manage
 #   ├── grape/      - GRAPE app: WWV/WWVH/CHU recording & analysis

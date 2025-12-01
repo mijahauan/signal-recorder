@@ -1,5 +1,5 @@
 """
-Setup script for signal-recorder package
+Setup script for grape-recorder package
 """
 
 from setuptools import setup, find_packages
@@ -10,14 +10,14 @@ readme_file = Path(__file__).parent / "README.md"
 long_description = readme_file.read_text() if readme_file.exists() else ""
 
 setup(
-    name="signal-recorder",
-    version="0.1.0",
-    author="Signal Recorder Project",
-    author_email="",
-    description="Automated recording and upload system for ka9q-radio streams",
+    name="grape-recorder",
+    version="3.0.0",
+    author="Michael J. Hauan",
+    author_email="ac0g@hauan.org",
+    description="GRAPE recorder for WWV/WWVH/CHU time standard signals via ka9q-radio",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/mijahauan/signal-recorder",
+    url="https://github.com/mijahauan/grape-recorder",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     classifiers=[
@@ -38,7 +38,7 @@ setup(
         "soundfile>=0.12.0",
         "digital_rf>=2.6.0",
         "zeroconf>=0.132.0",  # For mDNS discovery
-        "ka9q @ git+https://github.com/mijahauan/ka9q-python.git@v2.1.0",  # ka9q-radio control library
+        "ka9q @ git+https://github.com/mijahauan/ka9q-python.git@v3.2.0",  # ka9q-radio control library
     ],
     extras_require={
         "dev": [
@@ -51,7 +51,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "signal-recorder=signal_recorder.cli:main",
+            "grape-recorder=grape_recorder.cli:main",
         ],
     },
 )

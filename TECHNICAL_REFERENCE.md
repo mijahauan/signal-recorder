@@ -312,7 +312,7 @@ WWVH (1200 Hz) → Propagation study (science data)
 
 **Solution**: Centralized APIs
 
-**Python** (`src/signal_recorder/paths.py`):
+**Python** (`src/grape_recorder/paths.py`):
 ```python
 class GRAPEPaths:
     def get_quality_csv_path(self, channel):
@@ -347,7 +347,7 @@ status_address = "myhost-hf-status.local"  # mDNS name from radiod config
 [recorder]
 mode = "test"                              # "test" or "production"
 test_data_root = "/tmp/grape-test"
-production_data_root = "/var/spool/signal-recorder"
+production_data_root = "/var/spool/grape-recorder"
 
 [[recorder.channels]]
 ssrc = 10000000
@@ -366,12 +366,12 @@ processor = "grape"
 **Beta Testing** (manual execution):
 ```bash
 # Terminal 1: Core recorder
-cd ~/signal-recorder
+cd ~/grape-recorder
 source venv/bin/activate
-python -m signal_recorder.grape_recorder --config config/grape-config.toml
+python -m grape_recorder.grape_recorder --config config/grape-config.toml
 
 # Terminal 2: Web UI
-cd ~/signal-recorder/web-ui
+cd ~/grape-recorder/web-ui
 npm start
 ```
 
@@ -406,18 +406,18 @@ DRF Batch Writer
 
 ## Key Modules
 
-### Core Infrastructure (`src/signal_recorder/core/`)
+### Core Infrastructure (`src/grape_recorder/core/`)
 - `recording_session.py` - Generic RTP→segments session manager
 - `rtp_receiver.py` - Multi-SSRC RTP demultiplexer
 - `packet_resequencer.py` - RTP packet ordering & gap detection
 
-### Stream API (`src/signal_recorder/stream/`)
+### Stream API (`src/grape_recorder/stream/`)
 - `stream_api.py` - `subscribe_stream()` and convenience functions
 - `stream_manager.py` - SSRC allocation, lifecycle, stream sharing
 - `stream_spec.py` - Content-based stream identity
 - `stream_handle.py` - Opaque handle returned to applications
 
-### GRAPE Application (`src/signal_recorder/grape/`)
+### GRAPE Application (`src/grape_recorder/grape/`)
 - `grape_recorder.py` - Two-phase recorder (startup → recording)
 - `grape_npz_writer.py` - SegmentWriter for NPZ output
 - `core_recorder.py` - Top-level GRAPE orchestration
@@ -428,7 +428,7 @@ DRF Batch Writer
 - `decimation.py` - 16 kHz → 10 Hz (3-stage FIR)
 - `discrimination_csv_writers.py` - Per-method CSV output
 
-### WSPR Application (`src/signal_recorder/wspr/`)
+### WSPR Application (`src/grape_recorder/wspr/`)
 - `wspr_recorder.py` - Simple recorder for WSPR
 - `wspr_wav_writer.py` - SegmentWriter for 16-bit WAV output
 
@@ -464,7 +464,7 @@ DRF Batch Writer
 
 **Installation**:
 ```bash
-cd ~/signal-recorder
+cd ~/grape-recorder
 python3 -m venv venv
 source venv/bin/activate
 pip install -e .
@@ -483,7 +483,7 @@ python3 -c "from ka9q import discover_channels; print('ka9q-python OK')"
 
 ### Test Recorder
 ```bash
-python -m signal_recorder.grape_recorder --config config/grape-config.toml
+python -m grape_recorder.grape_recorder --config config/grape-config.toml
 # Should see: channel connections, NPZ file writes
 ```
 

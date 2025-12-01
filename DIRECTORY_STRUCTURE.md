@@ -2,7 +2,7 @@
 
 **Status:** CANONICAL - This is the single source of truth for all file paths  
 **Last Updated:** 2025-11-28  
-**Enforcement:** ALL code MUST use `src/signal_recorder/paths.py` GRAPEPaths API
+**Enforcement:** ALL code MUST use `src/grape_recorder/paths.py` GRAPEPaths API
 
 ---
 
@@ -23,7 +23,7 @@ From `config/grape-config.toml`:
 [recorder]
 mode = "test"                              # or "production"
 test_data_root = "/tmp/grape-test"
-production_data_root = "/var/spool/signal-recorder"  # Proposed for post-beta
+production_data_root = "/var/spool/grape-recorder"  # Proposed for post-beta
 ```
 
 Current mode determines `data_root` for all paths below.
@@ -31,10 +31,10 @@ Current mode determines `data_root` for all paths below.
 **Beta Testing:** Use `mode = "test"` with `/tmp/grape-test/`.
 
 **Production Mode (Post-Beta):** Will adopt Linux standard directory structure:
-- `/etc/signal-recorder/` - Configuration files
-- `/var/log/signal-recorder/` - Log files  
+- `/etc/grape-recorder/` - Configuration files
+- `/var/log/grape-recorder/` - Log files  
 - `/usr/local/bin/` - Executables
-- `/var/spool/signal-recorder/` - Generated data and analytics
+- `/var/spool/grape-recorder/` - Generated data and analytics
 
 ---
 
@@ -237,12 +237,12 @@ analytics_YYYYMMDD.log
 
 ## GRAPEPaths API Reference
 
-All code MUST use this API. Located in `src/signal_recorder/paths.py`.
+All code MUST use this API. Located in `src/grape_recorder/paths.py`.
 
 ### Initialization
 
 ```python
-from signal_recorder.paths import GRAPEPaths, load_paths_from_config
+from grape_recorder.paths import GRAPEPaths, load_paths_from_config
 
 # From config file (recommended - respects test/production mode)
 paths = load_paths_from_config('/path/to/grape-config.toml')
@@ -330,7 +330,7 @@ paths.get_status_dir() -> Path
 
 ```python
 # ✅ CORRECT - Using GRAPEPaths API
-from signal_recorder.paths import load_paths_from_config
+from grape_recorder.paths import load_paths_from_config
 
 paths = load_paths_from_config()
 csv_file = paths.get_discrimination_dir(channel_name) / f"{channel_dir}_discrimination_{date}.csv"
@@ -370,6 +370,6 @@ const csvPath = paths.getDiscriminationCSV(channelName, date);
 ## See Also
 
 - `docs/API_REFERENCE.md` - Function signatures and data models
-- `src/signal_recorder/paths.py` - Implementation
+- `src/grape_recorder/paths.py` - Implementation
 - `web-ui/grape-paths.js` - JavaScript implementation
 - `config/grape-config.toml` - Configuration

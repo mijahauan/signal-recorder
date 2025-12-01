@@ -27,8 +27,8 @@ from typing import Dict, List
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from signal_recorder.rtp_receiver import RTPReceiver
-from signal_recorder.wspr_recorder import WsprRecorder, WsprConfig
+from grape_recorder.rtp_receiver import RTPReceiver
+from grape_recorder.wspr_recorder import WsprRecorder, WsprConfig
 
 # WSPR dial frequencies and their corresponding SSRCs (freq in kHz)
 WSPR_BANDS = {

@@ -27,7 +27,7 @@ import sys
 class ComplianceChecker:
     def __init__(self, repo_root: Path):
         self.repo_root = repo_root
-        self.src_dir = repo_root / 'src' / 'signal_recorder'
+        self.src_dir = repo_root / 'src' / 'grape_recorder'
         self.scripts_dir = repo_root / 'scripts'
         self.violations = []
         

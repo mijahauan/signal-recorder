@@ -111,6 +111,50 @@
       border-left-color: var(--error);
     }
     
+    .gap-timeline {
+      margin-top: var(--spacing-md);
+      padding: var(--spacing-md);
+      background: rgba(15, 23, 42, 0.4);
+      border-radius: var(--radius-md);
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    
+    .gap-item {
+      display: flex;
+      justify-content: space-between;
+      padding: var(--spacing-sm) 0;
+      border-bottom: 1px solid var(--surface-border);
+      font-size: 13px;
+    }
+    
+    .gap-item:last-child {
+      border-bottom: none;
+    }
+    
+    .gap-time {
+      color: var(--text-secondary);
+      font-family: monospace;
+    }
+    
+    .gap-duration {
+      font-weight: 600;
+    }
+    
+    .gap-duration.low { color: var(--text-muted); }
+    .gap-duration.medium { color: var(--warning); }
+    .gap-duration.high { color: var(--error); }
+    
+    .no-gaps {
+      margin-top: var(--spacing-md);
+      padding: var(--spacing-md);
+      background: rgba(34, 197, 94, 0.15);
+      border-left: 4px solid var(--success);
+      border-radius: 0 var(--radius-md) var(--radius-md) 0;
+      color: var(--success);
+      font-size: 14px;
+    }
+    
     .channel-detail {
       background: var(--surface);
       border: 1px solid var(--surface-border);
@@ -261,6 +305,39 @@
     let autoRefreshInterval = null;
     let availableDates = [];
     let allChannels = [];
+    let solarZenithData = null;  // Solar zenith data for overlay
+    
+    /**
+     * Load solar zenith data for the current date
+     * Used for overlaying solar elevation on carrier power charts
+     * Note: Static spectrogram images already have solar zenith baked in from Python
+     */
+    async function loadSolarZenith() {
+      try {
+        // Get station info for grid square
+        const stationResponse = await fetch('/api/v1/station/info');
+        let gridSquare = 'EM38ww'; // Default fallback
+        if (stationResponse.ok) {
+          const stationInfo = await stationResponse.json();
+          if (stationInfo.grid_square) {
+            gridSquare = stationInfo.grid_square;
+          }
+        }
+        
+        // Fetch solar zenith data for current date
+        const response = await fetch(`/api/v1/solar-zenith?date=${currentDate}&grid=${gridSquare}`);
+        if (response.ok) {
+          solarZenithData = await response.json();
+          console.log('Solar zenith data loaded:', solarZenithData.timestamps?.length, 'points');
+        } else {
+          console.warn('Could not load solar zenith data:', response.status);
+          solarZenithData = null;
+        }
+      } catch (err) {
+        console.warn('Error loading solar zenith data:', err);
+        solarZenithData = null;
+      }
+    }
     
     // Fetch available dates and populate dropdown
     async function loadAvailableDates() {
@@ -337,8 +414,9 @@
     });
     
     // Channel selection
-    document.getElementById('channel-picker').addEventListener('change', (e) => {
+    document.getElementById('channel-picker').addEventListener('change', async (e) => {
       currentChannel = e.target.value;
+      await renderChannelQuality();  // Update quality metrics for new channel
       renderSelectedChannel();
     });
     
@@ -360,7 +438,7 @@
         const data = await response.json();
         allChannels = data.channels;
         populateChannelPicker(allChannels);
-        renderSummary(data.system_summary, data.channels);
+        await renderChannelQuality();
         renderSelectedChannel();
         document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
         document.getElementById('loading').style.display = 'none';
@@ -370,60 +448,129 @@
       }
     }
     
-    function renderSummary(summary, channels) {
-      const allAlerts = channels.flatMap(c => c.alerts);
-      const criticalAlerts = allAlerts.filter(a => a.severity === 'critical');
-      const warnings = allAlerts.filter(a => a.severity === 'warning');
+    // Channel-specific gap data cache
+    let channelGapData = null;
+    
+    // Fetch gap data for the selected channel
+    async function fetchChannelGaps() {
+      if (!currentChannel || !currentDate) return null;
       
-      let statusClass = 'status-good';
-      let statusText = '✅ GOOD';
-      if (summary.critical_alerts > 0) {
-        statusClass = 'status-critical';
-        statusText = '❌ CRITICAL';
-      } else if (summary.warnings > 2) {
-        statusClass = 'status-warning';
-        statusText = '⚠️ WARNING';
+      try {
+        const channelKey = currentChannel.replace(/ /g, '_');
+        const response = await fetch(`/api/v1/gaps?date=${currentDate}&channel=${channelKey}`);
+        if (response.ok) {
+          channelGapData = await response.json();
+          return channelGapData;
+        }
+      } catch (err) {
+        console.warn('Error fetching gap data:', err);
       }
+      return null;
+    }
+    
+    // Render channel-specific quality metrics with gap information
+    async function renderChannelQuality() {
+      const ch = allChannels.find(c => c.name === currentChannel);
+      if (!ch) {
+        document.getElementById('summary-banner').innerHTML = '';
+        return;
+      }
+      
+      // Fetch gap data for this channel
+      await fetchChannelGaps();
+      
+      // Determine coverage status
+      const coverage = channelGapData?.completeness_pct ?? 100;
+      let coverageClass = 'status-good';
+      let coverageIcon = '✅';
+      if (coverage < 90) {
+        coverageClass = 'status-critical';
+        coverageIcon = '❌';
+      } else if (coverage < 98) {
+        coverageClass = 'status-warning';
+        coverageIcon = '⚠️';
+      }
+      
+      const totalGaps = channelGapData?.total_gaps ?? 0;
+      const totalGapMinutes = channelGapData?.total_gap_minutes ?? 0;
+      const longestGap = channelGapData?.longest_gap_minutes ?? 0;
+      const gaps = channelGapData?.gaps ?? [];
+      
+      // Format date for display
+      const formattedDate = currentDate.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
       
       let html = `
         <div class="summary-banner">
-          <h2>System-Wide Quality Summary</h2>
+          <h2>📊 ${ch.name} Quality - ${formattedDate}</h2>
           <div class="summary-grid">
             <div class="summary-item">
-              <div class="summary-label">Overall Status</div>
-              <div class="summary-value ${statusClass}">${statusText}</div>
+              <div class="summary-label">Data Coverage</div>
+              <div class="summary-value ${coverageClass}">${coverageIcon} ${coverage.toFixed(1)}%</div>
             </div>
             <div class="summary-item">
-              <div class="summary-label">Channels Operating</div>
-              <div class="summary-value">${summary.channels_active}/${summary.channels_total}</div>
+              <div class="summary-label">Gap Events</div>
+              <div class="summary-value">${totalGaps.toLocaleString()}</div>
             </div>
             <div class="summary-item">
-              <div class="summary-label">Average Completeness</div>
-              <div class="summary-value">${summary.average_completeness.toFixed(1)}%</div>
+              <div class="summary-label">Total Gap Time</div>
+              <div class="summary-value">${formatGapDuration(totalGapMinutes)}</div>
             </div>
             <div class="summary-item">
-              <div class="summary-label">Alerts</div>
-              <div class="summary-value">
-                ${summary.critical_alerts > 0 ? `<span class="status-critical">${summary.critical_alerts} Critical</span> ` : ''}
-                ${summary.warnings > 0 ? `<span class="status-warning">${summary.warnings} Warning(s)</span>` : ''}
-                ${summary.critical_alerts === 0 && summary.warnings === 0 ? '<span class="status-good">None</span>' : ''}
-              </div>
+              <div class="summary-label">Longest Gap</div>
+              <div class="summary-value">${formatGapDuration(longestGap)}</div>
             </div>
           </div>
       `;
       
-      if (allAlerts.length > 0) {
+      // Show significant gaps (>= 5 minutes) that explain black bars in spectrogram
+      const significantGaps = gaps.filter(g => g.duration_minutes >= 5).slice(0, 20);
+      
+      if (significantGaps.length > 0) {
         html += `
-          <div class="alerts ${criticalAlerts.length > 0 ? 'critical' : ''}">
-            <strong>${criticalAlerts.length > 0 ? '🔴' : '🟡'} Active Alerts:</strong>
-            ${allAlerts.slice(0, 5).map(a => `<div class="alert-item">${a.message}</div>`).join('')}
-            ${allAlerts.length > 5 ? `<div class="alert-item">... and ${allAlerts.length - 5} more</div>` : ''}
-          </div>
+          <div class="gap-timeline">
+            <div style="font-size: 12px; color: var(--accent-light); margin-bottom: var(--spacing-sm); text-transform: uppercase;">
+              Significant Gaps (≥5 min) - explains black bars in spectrogram
+            </div>
         `;
+        
+        significantGaps.forEach(gap => {
+          const time = new Date(gap.start_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+          const severityClass = gap.severity === 'high' ? 'high' : (gap.severity === 'medium' ? 'medium' : 'low');
+          html += `
+            <div class="gap-item">
+              <span class="gap-time">${time} UTC</span>
+              <span class="gap-duration ${severityClass}">${formatGapDuration(gap.duration_minutes)}</span>
+            </div>
+          `;
+        });
+        
+        const allSignificant = gaps.filter(g => g.duration_minutes >= 5);
+        if (allSignificant.length > 20) {
+          html += `<div class="gap-item" style="color: var(--text-muted);">... and ${allSignificant.length - 20} more</div>`;
+        }
+        
+        html += '</div>';
+      } else if (totalGaps === 0 && coverage >= 99) {
+        html += `<div class="no-gaps">✅ No data gaps detected for this date</div>`;
+      } else if (significantGaps.length === 0 && gaps.length > 0) {
+        html += `<div class="no-gaps">✅ All gaps are minor (<5 minutes)</div>`;
       }
       
       html += '</div>';
       document.getElementById('summary-banner').innerHTML = html;
+    }
+    
+    // Format gap duration for display
+    function formatGapDuration(minutes) {
+      if (minutes < 1) {
+        return `${Math.round(minutes * 60)}s`;
+      } else if (minutes < 60) {
+        return `${minutes.toFixed(1)} min`;
+      } else {
+        const hours = Math.floor(minutes / 60);
+        const mins = Math.round(minutes % 60);
+        return `${hours}h ${mins}m`;
+      }
     }
     
     async function renderSelectedChannel() {
@@ -530,6 +677,7 @@
     // Initial load
     async function init() {
       await loadAvailableDates();
+      await loadSolarZenith();  // Load solar zenith data for initial date
       fetchData();
       startAutoRefresh();
     }

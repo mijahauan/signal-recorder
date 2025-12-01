@@ -99,7 +99,7 @@ class GRAPEPaths:
     """Central path manager for GRAPE data structures.
     
     Usage:
-        from signal_recorder.paths import GRAPEPaths
+        from grape_recorder.paths import GRAPEPaths
         
         paths = GRAPEPaths('/tmp/grape-test')
         

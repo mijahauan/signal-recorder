@@ -753,7 +753,7 @@ Web UI
 ### Systemd Integration
 
 **Core Recorder:**
-- `signal-recorder@{channel}.service`
+- `grape-recorder@{channel}.service`
 - Restart: Always
 - Stop: Graceful (finish current minute)
 
@@ -980,8 +980,8 @@ Web UI
 ---
 
 **For detailed implementation, see:**
-- Path management: `src/signal_recorder/paths.py`
-- Discrimination: `src/signal_recorder/wwvh_discrimination.py`
-- Tone detection: `src/signal_recorder/tone_detector.py`
-- Analytics service: `src/signal_recorder/analytics_service.py`
-- CSV writers: `src/signal_recorder/discrimination_csv_writers.py`
+- Path management: `src/grape_recorder/paths.py`
+- Discrimination: `src/grape_recorder/wwvh_discrimination.py`
+- Tone detection: `src/grape_recorder/tone_detector.py`
+- Analytics service: `src/grape_recorder/analytics_service.py`
+- CSV writers: `src/grape_recorder/discrimination_csv_writers.py`

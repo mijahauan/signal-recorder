@@ -11,7 +11,7 @@ Key Components:
 - StartupToneDetector: WWV/CHU tone-based time_snap establishment
 
 Example:
-    from signal_recorder.grape import GrapeRecorder, GrapeConfig
+    from grape_recorder.grape import GrapeRecorder, GrapeConfig
     
     config = GrapeConfig(
         channel_name="WWV 10 MHz",

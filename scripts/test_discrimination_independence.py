@@ -18,7 +18,7 @@ import numpy as np
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from signal_recorder.wwvh_discrimination import WWVHDiscriminator
+from grape_recorder.grape.wwvh_discrimination import WWVHDiscriminator
 from datetime import datetime, timezone
 
 logging.basicConfig(

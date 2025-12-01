@@ -15,15 +15,15 @@ The v2.0.0 package restructure moved GRAPE modules into the `grape/` subpackage.
 ```bash
 $ ./scripts/grape-all.sh -start
 ❌ Failed to start
-/home/wsprdaemon/signal-recorder/venv/bin/python3: No module named signal_recorder.core_recorder
+/home/wsprdaemon/grape-recorder/venv/bin/python3: No module named grape_recorder.core_recorder
 ```
 
 ### Root Cause
 
 | Old Path (broken) | New Path (v2.0.0) |
 |-------------------|-------------------|
-| `signal_recorder.core_recorder` | `signal_recorder.grape.core_recorder` |
-| `signal_recorder.analytics_service` | `signal_recorder.grape.analytics_service` |
+| `grape_recorder.core_recorder` | `grape_recorder.grape.core_recorder` |
+| `grape_recorder.analytics_service` | `grape_recorder.grape.analytics_service` |
 
 ### Files That Need Updates
 
@@ -31,11 +31,11 @@ $ ./scripts/grape-all.sh -start
 
 | File | Issue |
 |------|-------|
-| `scripts/grape-core.sh` | Uses `python3 -m signal_recorder.core_recorder` |
-| `scripts/grape-analytics.sh` | Uses `python3 -m signal_recorder.analytics_service` |
-| `scripts/grape-all.sh` | Uses `pgrep -f "signal_recorder.core_recorder"` for status |
+| `scripts/grape-core.sh` | Uses `python3 -m grape_recorder.core_recorder` |
+| `scripts/grape-analytics.sh` | Uses `python3 -m grape_recorder.analytics_service` |
+| `scripts/grape-all.sh` | Uses `pgrep -f "grape_recorder.core_recorder"` for status |
 
-**Fix**: Change module paths from `signal_recorder.X` to `signal_recorder.grape.X`
+**Fix**: Change module paths from `grape_recorder.X` to `grape_recorder.grape.X`
 
 #### 2. Web-UI (may have stale references)
 
@@ -68,7 +68,7 @@ $ ./scripts/grape-all.sh -start
 ## v2.0.0 Package Structure
 
 ```
-src/signal_recorder/
+src/grape_recorder/
 ├── core/                    # Application-agnostic infrastructure
 │   ├── __init__.py
 │   ├── rtp_receiver.py      # RTP multicast, SSRC demux
@@ -110,11 +110,11 @@ The main `__init__.py` re-exports classes for backward compatibility:
 
 ```python
 # These WORK (class imports):
-from signal_recorder import GrapeRecorder, AnalyticsService
+from grape_recorder import GrapeRecorder, AnalyticsService
 
 # But -m invocation requires FULL path:
-python3 -m signal_recorder.grape.core_recorder      # ✅ Works
-python3 -m signal_recorder.core_recorder            # ❌ Fails
+python3 -m grape_recorder.grape.core_recorder      # ✅ Works
+python3 -m grape_recorder.core_recorder            # ❌ Fails
 ```
 
 ---
@@ -159,30 +159,30 @@ paths.getDiscriminationDir('WWV 10 MHz') // .../discrimination/
 
 ```bash
 # CURRENT (broken):
-nohup python3 -m signal_recorder.core_recorder --config "$CONFIG" \
+nohup python3 -m grape_recorder.core_recorder --config "$CONFIG" \
 
 # FIX:
-nohup python3 -m signal_recorder.grape.core_recorder --config "$CONFIG" \
+nohup python3 -m grape_recorder.grape.core_recorder --config "$CONFIG" \
 ```
 
 ### grape-analytics.sh (lines 68, 91)
 
 ```bash
 # CURRENT (broken):
-nohup python3 -m signal_recorder.analytics_service \
+nohup python3 -m grape_recorder.analytics_service \
 
 # FIX:
-nohup python3 -m signal_recorder.grape.analytics_service \
+nohup python3 -m grape_recorder.grape.analytics_service \
 ```
 
 ### grape-all.sh (status detection, lines 78-85)
 
 ```bash
 # CURRENT (broken):
-CORE_COUNT=$(pgrep -f "signal_recorder.core_recorder" 2>/dev/null | wc -l)
+CORE_COUNT=$(pgrep -f "grape_recorder.core_recorder" 2>/dev/null | wc -l)
 
 # FIX:
-CORE_COUNT=$(pgrep -f "signal_recorder.grape.core_recorder" 2>/dev/null | wc -l)
+CORE_COUNT=$(pgrep -f "grape_recorder.grape.core_recorder" 2>/dev/null | wc -l)
 ```
 
 ---

@@ -1,5 +1,5 @@
 """
-Allow running signal_recorder modules with python -m
+Allow running grape_recorder modules with python -m
 """
 
 import sys

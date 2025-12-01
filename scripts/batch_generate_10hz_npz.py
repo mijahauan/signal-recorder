@@ -77,7 +77,7 @@ def decimate_npz(npz_16khz: Path, npz_10hz: Path, overwrite: bool = False) -> bo
 
 def process_channel(data_root: Path, channel_name: str, overwrite: bool = False):
     """Process all NPZ files for a channel."""
-    from signal_recorder.paths import GRAPEPaths
+    from grape_recorder.paths import GRAPEPaths
     paths = GRAPEPaths(data_root)
     
     archive_dir = paths.get_archive_dir(channel_name)
@@ -132,7 +132,7 @@ def main():
     
     args = parser.parse_args()
     
-    from signal_recorder.paths import GRAPEPaths, channel_dir_to_name
+    from grape_recorder.paths import GRAPEPaths, channel_dir_to_name
     paths = GRAPEPaths(args.data_root)
     
     archives_root = args.data_root / 'archives'

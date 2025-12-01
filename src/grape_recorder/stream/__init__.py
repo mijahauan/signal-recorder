@@ -6,7 +6,7 @@ Applications specify what they want (frequency, mode, sample rate) and
 the system handles SSRC allocation internally.
 
 Example:
-    from signal_recorder.stream import subscribe_stream
+    from grape_recorder.stream import subscribe_stream
     
     stream = subscribe_stream(
         radiod="radiod.local",

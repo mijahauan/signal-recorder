@@ -11,7 +11,7 @@ Group=mjh
 WorkingDirectory=/home/mjh/git/signal-recorder
 
 # Core recorder with test configuration
-ExecStart=/home/mjh/git/signal-recorder/venv/bin/python3 -m signal_recorder.grape_recorder \
+ExecStart=/home/mjh/git/signal-recorder/venv/bin/python3 -m grape_recorder.grape.core_recorder \
     --config /home/mjh/git/signal-recorder/config/grape-config.toml \
     --data-root /tmp/grape-test
 

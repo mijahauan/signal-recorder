@@ -12,7 +12,7 @@ import csv
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from signal_recorder.quality_metrics import format_quality_summary, MinuteQualityMetrics
+from grape_recorder.quality_metrics import format_quality_summary, MinuteQualityMetrics
 
 
 def load_minute_metrics_from_csv(csv_path: Path):

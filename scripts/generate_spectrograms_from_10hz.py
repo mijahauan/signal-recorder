@@ -297,7 +297,7 @@ def generate_combined_chart(day_data: DayData, output_path: Path, channel_name: 
         
         # === Add Solar Zenith Overlay to Power Panel ===
         try:
-            from signal_recorder.solar_zenith_calculator import calculate_solar_zenith_for_day
+            from grape_recorder.grape.solar_zenith_calculator import calculate_solar_zenith_for_day
             
             logger.info(f"Calculating solar zenith for grid {grid_square}...")
             solar_data = calculate_solar_zenith_for_day(date_obj.strftime('%Y%m%d'), grid_square)
@@ -420,7 +420,7 @@ def main():
     logger.info(f"Generating spectrograms from 10 Hz data for: {date_display}")
     
     # Setup paths using GRAPEPaths
-    from signal_recorder.paths import GRAPEPaths
+    from grape_recorder.paths import GRAPEPaths
     paths = GRAPEPaths(args.data_root)
     analytics_base = Path(args.data_root) / 'analytics'  # For iteration only
     output_dir = Path(args.data_root) / 'spectrograms'

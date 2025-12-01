@@ -14,7 +14,7 @@ echo "🔍 GRAPE Paths API Validation"
 echo "=============================="
 echo ""
 echo "Testing path consistency between:"
-echo "  • Python:     src/signal_recorder/paths.py"
+echo "  • Python:     src/grape_recorder/paths.py"
 echo "  • JavaScript: web-ui/grape-paths.js"
 echo ""
 

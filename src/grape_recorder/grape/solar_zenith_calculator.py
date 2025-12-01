@@ -11,7 +11,7 @@ Solar elevation at the path midpoint correlates with D-layer absorption
 and propagation conditions on HF time signal frequencies.
 
 Usage:
-    python -m signal_recorder.solar_zenith_calculator --date 20251127 --grid EM38ww
+    python -m grape_recorder.solar_zenith_calculator --date 20251127 --grid EM38ww
 """
 
 import math

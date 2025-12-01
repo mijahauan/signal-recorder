@@ -22,8 +22,8 @@ The [HamSCI GRAPE project](https://hamsci.org/grape) studies ionospheric disturb
 
 ```bash
 # Clone repository
-git clone https://github.com/mijahauan/signal-recorder.git
-cd signal-recorder
+git clone https://github.com/mijahauan/grape-recorder.git
+cd grape-recorder
 
 # Create Python virtual environment
 python3 -m venv venv
@@ -50,7 +50,7 @@ cp config/grape-config.toml.template config/grape-config.toml
 ./scripts/grape-ui.sh -start|-stop|-status     # Web UI only
 ```
 
-**Modes:** Set `mode = "test"` (default, uses `/tmp/grape-test`) or `mode = "production"` (uses `/var/lib/signal-recorder`).
+**Modes:** Set `mode = "test"` (default, uses `/tmp/grape-test`) or `mode = "production"` (uses `/var/lib/grape-recorder`).
 
 **Monitor:** Open `http://localhost:3000` for real-time channel health, quality metrics, and logs.
 
@@ -83,7 +83,7 @@ RTPReceiver + ka9q-python (multicast, parsing, timing)
 - **RecordingSession** - Generic packet flow, resequencing, segmentation
 - **RTPReceiver** - Multi-SSRC demultiplexing, transport timing
 
-### 1. Core Recorder (`src/signal_recorder/grape/core_recorder.py`)
+### 1. Core Recorder (`src/grape_recorder/grape/core_recorder.py`)
 
 Rock-solid RTP capture with scientific-grade metadata preservation:
 - Uses `GrapeRecorder` with two-phase operation (startup → recording)
@@ -99,7 +99,7 @@ Rock-solid RTP capture with scientific-grade metadata preservation:
 - **Gap Provenance:** Detailed gap locations, sizes, and packet loss counts
 - **Quality Indicators:** Packets received vs expected, completeness
 
-### 2. Analytics Service (`src/signal_recorder/grape/analytics_service.py`)
+### 2. Analytics Service (`src/grape_recorder/grape/analytics_service.py`)
 
 Processes 16 kHz archives to derived products:
 
@@ -118,7 +118,7 @@ Processes 16 kHz archives to derived products:
 
 **Output:** Separated CSVs per method + 10 Hz NPZ with embedded metadata
 
-### 3. DRF Writer (`src/signal_recorder/grape/drf_batch_writer.py`)
+### 3. DRF Writer (`src/grape_recorder/grape/drf_batch_writer.py`)
 
 Wsprdaemon-compatible Digital RF output:
 - Reads 10 Hz NPZ → writes Digital RF HDF5 (float32 I/Q pairs)
@@ -300,7 +300,7 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 **Credits:** Phil Karn/KA9Q (ka9q-radio), MIT Haystack (Digital RF), Nathaniel Frissell/W2NAF (HamSCI GRAPE), Rob Robinett/AI6VN (wsprdaemon inspiration), Michael Hauan/AC0G (this implementation)
 
-**Community:** [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io) | [GitHub Issues](https://github.com/mijahauan/signal-recorder/issues)
+**Community:** [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io) | [GitHub Issues](https://github.com/mijahauan/grape-recorder/issues)
 
 **PSWS Access:** Contact HamSCI coordinators to register station and receive credentials
 

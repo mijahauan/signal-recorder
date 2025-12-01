@@ -75,14 +75,14 @@ status)
     echo "📊 GRAPE Service Status"
     echo "================================================================"
     
-    CORE_COUNT=$(pgrep -f "signal_recorder.core_recorder" 2>/dev/null | wc -l)
+    CORE_COUNT=$(pgrep -f "grape_recorder.grape.core_recorder" 2>/dev/null | wc -l)
     if [ "$CORE_COUNT" -gt 0 ]; then
-        echo "✅ Core Recorder:     RUNNING (PIDs: $(pgrep -f 'signal_recorder.core_recorder' | tr '\n' ' '))"
+        echo "✅ Core Recorder:     RUNNING (PIDs: $(pgrep -f 'grape_recorder.grape.core_recorder' | tr '\n' ' '))"
     else
         echo "⭕ Core Recorder:     STOPPED"
     fi
     
-    ANALYTICS_COUNT=$(pgrep -f "signal_recorder.analytics_service" 2>/dev/null | wc -l)
+    ANALYTICS_COUNT=$(pgrep -f "grape_recorder.grape.analytics_service" 2>/dev/null | wc -l)
     if [ "$ANALYTICS_COUNT" -gt 0 ]; then
         echo "✅ Analytics:         RUNNING ($ANALYTICS_COUNT/9 channels)"
     else

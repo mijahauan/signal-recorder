@@ -238,7 +238,7 @@ def main():
     args = parser.parse_args()
     
     # Convert channel name to directory name
-    from signal_recorder.paths import GRAPEPaths
+    from grape_recorder.paths import GRAPEPaths
     paths = GRAPEPaths(args.data_root)
     archive_dir = paths.get_archive_dir(args.channel)
     

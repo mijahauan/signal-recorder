@@ -26,9 +26,9 @@ from functools import partial
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from signal_recorder.grape.analytics_service import NPZArchive
-from signal_recorder.tone_detector import MultiStationToneDetector
-from signal_recorder.wwvh_discrimination import WWVHDiscriminator, DiscriminationResult
+from grape_recorder.grape.analytics_service import NPZArchive
+from grape_recorder.grape.tone_detector import MultiStationToneDetector
+from grape_recorder.grape.wwvh_discrimination import WWVHDiscriminator, DiscriminationResult
 
 logging.basicConfig(
     level=logging.INFO,
@@ -267,7 +267,7 @@ def main():
         return 1
     
     # Setup paths
-    from signal_recorder.paths import GRAPEPaths
+    from grape_recorder.paths import GRAPEPaths
     paths = GRAPEPaths(args.data_root)
     archive_dir = paths.get_archive_dir(args.channel)
     discrimination_dir = paths.get_discrimination_dir(args.channel)

@@ -41,7 +41,7 @@ def main():
     print()
     
     # Check for discrimination CSV files
-    from signal_recorder.paths import GRAPEPaths
+    from grape_recorder.paths import GRAPEPaths
     paths = GRAPEPaths(data_root)
     analytics_dir = data_root / 'analytics'  # For existence check only
     if not analytics_dir.exists():

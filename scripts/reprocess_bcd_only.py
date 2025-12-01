@@ -24,8 +24,8 @@ from datetime import datetime, timezone
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from signal_recorder.wwvh_discrimination import WWVHDiscriminator
-from signal_recorder.paths import GRAPEPaths, channel_name_to_dir
+from grape_recorder.grape.wwvh_discrimination import WWVHDiscriminator
+from grape_recorder.paths import GRAPEPaths, channel_name_to_dir
 
 logging.basicConfig(
     level=logging.INFO,

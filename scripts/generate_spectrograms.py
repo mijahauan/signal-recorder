@@ -302,7 +302,7 @@ def main():
     logger.info(f"Generating spectrograms for date: {date_display}")
     
     # Setup paths using GRAPEPaths
-    from signal_recorder.paths import GRAPEPaths
+    from grape_recorder.paths import GRAPEPaths
     paths = GRAPEPaths(args.data_root)
     archive_base = Path(args.data_root) / 'archives'  # For iteration only
     if args.output_dir:

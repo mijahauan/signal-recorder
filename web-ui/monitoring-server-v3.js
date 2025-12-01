@@ -377,6 +377,7 @@ function formatUptime(seconds) {
  */
 function getStationInfo() {
   return {
+    id: config.station?.id || 'not configured',  // PSWS Station ID
     callsign: config.station?.callsign || 'UNKNOWN',
     grid_square: config.station?.grid_square || 'UNKNOWN',
     receiver: config.station?.receiver_name || 'GRAPE',
@@ -826,98 +827,163 @@ async function getStorageInfo(paths) {
 }
 
 /**
- * Get gap analysis data from NPZ files
- * Uses single Python call to batch process all files (fast)
+ * Get gap analysis data from 10Hz decimated NPZ files
+ * Calculates coverage based on which minutes have files vs missing
+ * This matches what the spectrogram shows (black bars = missing files)
  */
 async function getGapAnalysis(paths, date, channelFilter = 'all') {
-  const archivesRoot = join(paths.dataRoot, 'archives');
+  const analyticsRoot = join(paths.dataRoot, 'analytics');
   
-  if (!fs.existsSync(archivesRoot)) {
+  if (!fs.existsSync(analyticsRoot)) {
     return {
       date, channel_filter: channelFilter, total_gaps: 0,
-      total_gap_minutes: 0, completeness_pct: 100, longest_gap_minutes: 0,
+      total_gap_minutes: 0, completeness_pct: 0, longest_gap_minutes: 0,
       minutes_analyzed: 0, gaps: []
     };
   }
   
-  // Build Python script to batch process all NPZ files
+  // Build Python script to analyze file coverage from decimated 10Hz files
   const pythonScript = `
-import numpy as np
 import os
 import json
-import sys
+from datetime import datetime, timedelta
+from collections import defaultdict
 
-archives_root = '${archivesRoot}'
+analytics_root = '${analyticsRoot}'
 date_prefix = '${date}'
-channel_filter = '${channelFilter}'
+channel_filter = '${channelFilter}'.replace('_', ' ')
 
-gaps = []
-total_gaps = 0
-total_gap_samples = 0
-total_minutes = 0
-sample_rate = 16000
+# Parse target date
+year = int(date_prefix[:4])
+month = int(date_prefix[4:6])
+day = int(date_prefix[6:8])
+target_date = datetime(year, month, day)
 
-for channel_dir in os.listdir(archives_root):
-    channel_path = os.path.join(archives_root, channel_dir)
+# Determine how many minutes to analyze (full day or partial if today)
+now = datetime.utcnow()
+if target_date.date() == now.date():
+    # Today - only analyze up to current minute
+    total_expected_minutes = now.hour * 60 + now.minute
+else:
+    # Past day - full 24 hours
+    total_expected_minutes = 1440
+
+if total_expected_minutes == 0:
+    total_expected_minutes = 1  # Avoid division by zero
+
+# Find all channel decimated directories
+channels_to_check = []
+for channel_dir in os.listdir(analytics_root):
+    channel_path = os.path.join(analytics_root, channel_dir, 'decimated')
     if not os.path.isdir(channel_path):
         continue
     
     channel_name = channel_dir.replace('_', ' ')
-    if channel_filter != 'all' and channel_name != channel_filter:
+    if channel_filter != 'all' and channel_filter != channel_name:
         continue
     
-    for fname in sorted(os.listdir(channel_path)):
-        if not fname.endswith('.npz') or not fname.startswith(date_prefix):
+    channels_to_check.append((channel_name, channel_path))
+
+all_gaps = []
+total_files_found = 0
+total_gap_minutes = 0
+longest_gap = 0
+
+for channel_name, decimated_path in channels_to_check:
+    # Find all 10Hz NPZ files for this date
+    # Filename format: YYYYMMDDTHHMMSSZ_freq_iq_10hz.npz
+    minutes_with_data = set()
+    
+    for fname in os.listdir(decimated_path):
+        if not fname.endswith('_iq_10hz.npz') or not fname.startswith(date_prefix):
             continue
         
-        total_minutes += 1
-        fpath = os.path.join(channel_path, fname)
-        
+        # Extract minute from filename: 20251201T153000Z -> minute 930 (15*60 + 30)
         try:
-            d = np.load(fpath)
-            gc = int(d.get('gaps_count', 0)) if 'gaps_count' in d else 0
-            gf = int(d.get('gaps_filled', 0)) if 'gaps_filled' in d else 0
-            
-            if gc > 0:
-                total_gaps += gc
-                total_gap_samples += gf
-                
-                # Parse timestamp from filename
-                ts_part = fname.split('_')[0]  # 20251128T004800Z
-                if 'T' in ts_part:
-                    d_str, t_str = ts_part.split('T')
-                    t_str = t_str.rstrip('Z')
-                    start_time = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]}T{t_str[:2]}:{t_str[2:4]}:{t_str[4:6]}Z"
-                    
-                    gap_secs = gf / sample_rate
-                    gap_mins = gap_secs / 60
-                    severity = 'high' if gf > sample_rate * 30 else ('medium' if gf > sample_rate * 5 else 'low')
-                    
-                    gaps.append({
+            ts_part = fname.split('_')[0]  # 20251201T153000Z
+            if 'T' in ts_part:
+                time_str = ts_part.split('T')[1].rstrip('Z')
+                hour = int(time_str[0:2])
+                minute = int(time_str[2:4])
+                minute_of_day = hour * 60 + minute
+                minutes_with_data.add(minute_of_day)
+                total_files_found += 1
+        except:
+            pass
+    
+    # Find gaps (missing minutes)
+    missing_minutes = []
+    for m in range(total_expected_minutes):
+        if m not in minutes_with_data:
+            missing_minutes.append(m)
+    
+    # Consolidate consecutive missing minutes into gap ranges
+    if missing_minutes:
+        gap_start = missing_minutes[0]
+        gap_length = 1
+        
+        for i in range(1, len(missing_minutes)):
+            if missing_minutes[i] == missing_minutes[i-1] + 1:
+                gap_length += 1
+            else:
+                # End current gap, start new one
+                if gap_length >= 1:  # Only report gaps >= 1 minute
+                    gap_hour = gap_start // 60
+                    gap_min = gap_start % 60
+                    start_time = f"{date_prefix[:4]}-{date_prefix[4:6]}-{date_prefix[6:8]}T{gap_hour:02d}:{gap_min:02d}:00Z"
+                    severity = 'high' if gap_length >= 30 else ('medium' if gap_length >= 5 else 'low')
+                    all_gaps.append({
                         'channel': channel_name,
                         'start_time': start_time,
-                        'gap_count': gc,
-                        'samples_filled': gf,
-                        'duration_seconds': round(gap_secs, 2),
-                        'duration_minutes': round(gap_mins, 4),
+                        'start_minute': gap_start,
+                        'duration_minutes': gap_length,
+                        'duration_seconds': gap_length * 60,
                         'severity': severity
                     })
-        except Exception as e:
-            pass
+                    if gap_length > longest_gap:
+                        longest_gap = gap_length
+                gap_start = missing_minutes[i]
+                gap_length = 1
+        
+        # Don't forget the last gap
+        if gap_length >= 1:
+            gap_hour = gap_start // 60
+            gap_min = gap_start % 60
+            start_time = f"{date_prefix[:4]}-{date_prefix[4:6]}-{date_prefix[6:8]}T{gap_hour:02d}:{gap_min:02d}:00Z"
+            severity = 'high' if gap_length >= 30 else ('medium' if gap_length >= 5 else 'low')
+            all_gaps.append({
+                'channel': channel_name,
+                'start_time': start_time,
+                'start_minute': gap_start,
+                'duration_minutes': gap_length,
+                'duration_seconds': gap_length * 60,
+                'severity': severity
+            })
+            if gap_length > longest_gap:
+                longest_gap = gap_length
+        
+        total_gap_minutes += len(missing_minutes)
 
-total_gap_minutes = total_gap_samples / sample_rate / 60
-completeness = ((total_minutes - total_gap_minutes) / total_minutes * 100) if total_minutes > 0 else 100
-longest = max([g['duration_seconds']/60 for g in gaps]) if gaps else 0
+# Calculate coverage
+if channel_filter != 'all':
+    completeness = (total_files_found / total_expected_minutes * 100) if total_expected_minutes > 0 else 0
+    gap_minutes = total_expected_minutes - total_files_found
+else:
+    # For 'all', average across channels
+    num_channels = len(channels_to_check) if channels_to_check else 1
+    completeness = (total_files_found / (total_expected_minutes * num_channels) * 100) if total_expected_minutes > 0 else 0
+    gap_minutes = total_gap_minutes / num_channels if num_channels > 0 else 0
 
 result = {
     'date': date_prefix,
-    'channel_filter': channel_filter,
-    'total_gaps': total_gaps,
-    'total_gap_minutes': round(total_gap_minutes, 2),
-    'completeness_pct': round(completeness, 2),
-    'longest_gap_minutes': round(longest, 3),
-    'minutes_analyzed': total_minutes,
-    'gaps': sorted(gaps, key=lambda x: x['start_time'], reverse=True)[:100]  # Limit to 100 recent
+    'channel_filter': channel_filter if channel_filter != 'all' else 'all',
+    'total_gaps': len(all_gaps),
+    'total_gap_minutes': round(gap_minutes, 1),
+    'completeness_pct': round(min(completeness, 100), 1),
+    'longest_gap_minutes': longest_gap,
+    'minutes_analyzed': total_expected_minutes,
+    'files_found': total_files_found,
+    'gaps': sorted(all_gaps, key=lambda x: x['start_minute'])[:50]  # Chronological, limit to 50
 }
 
 print(json.dumps(result))
@@ -930,7 +996,7 @@ print(json.dumps(result))
     console.error('Gap analysis error:', err.message);
     return {
       date, channel_filter: channelFilter, total_gaps: 0,
-      total_gap_minutes: 0, completeness_pct: 100, longest_gap_minutes: 0,
+      total_gap_minutes: 0, completeness_pct: 0, longest_gap_minutes: 0,
       minutes_analyzed: 0, gaps: [], error: err.message
     };
   }
@@ -3560,7 +3626,7 @@ app.get('/api/v1/solar-zenith', async (req, res) => {
     // Call Python calculator - use project root (parent of web-ui directory)
     const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
     const pythonPath = join(projectRoot, 'venv', 'bin', 'python3');
-    const scriptPath = join(projectRoot, 'src', 'signal_recorder', 'solar_zenith_calculator.py');
+    const scriptPath = join(projectRoot, 'src', 'signal_recorder', 'grape', 'solar_zenith_calculator.py');
     
     const cmd = `${pythonPath} ${scriptPath} --date ${date} --grid ${grid} --interval 5`;
     

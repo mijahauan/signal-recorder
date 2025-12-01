@@ -1,2 +1,0 @@
-[console_scripts]
-signal-recorder = signal_recorder.cli:main

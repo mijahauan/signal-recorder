@@ -43,8 +43,8 @@ case $ACTION in
 start)
     echo "▶️  Starting Core Recorder..."
     
-    if pgrep -f "signal_recorder.core_recorder" > /dev/null; then
-        echo "   ℹ️  Already running (PID: $(pgrep -f 'signal_recorder.core_recorder'))"
+    if pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
+        echo "   ℹ️  Already running (PID: $(pgrep -f 'grape_recorder.grape.core_recorder'))"
         exit 0
     fi
     
@@ -56,7 +56,7 @@ start)
     mkdir -p "$DATA_ROOT/logs"
     cd "$PROJECT_DIR"
     
-    nohup python3 -m signal_recorder.core_recorder --config "$CONFIG" \
+    nohup python3 -m grape_recorder.grape.core_recorder --config "$CONFIG" \
         > "$DATA_ROOT/logs/core-recorder.log" 2>&1 &
     
     PID=$!
@@ -75,24 +75,24 @@ start)
 stop)
     echo "🛑 Stopping Core Recorder..."
     
-    if ! pgrep -f "signal_recorder.core_recorder" > /dev/null; then
+    if ! pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
         echo "   ℹ️  Not running"
         exit 0
     fi
     
-    pkill -f "signal_recorder.core_recorder" 2>/dev/null
+    pkill -f "grape_recorder.grape.core_recorder" 2>/dev/null
     sleep 2
     
-    if pgrep -f "signal_recorder.core_recorder" > /dev/null; then
-        pkill -9 -f "signal_recorder.core_recorder" 2>/dev/null
+    if pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
+        pkill -9 -f "grape_recorder.grape.core_recorder" 2>/dev/null
     fi
     
     echo "   ✅ Stopped"
     ;;
 
 status)
-    if pgrep -f "signal_recorder.core_recorder" > /dev/null; then
-        echo "✅ Core Recorder: RUNNING (PID: $(pgrep -f 'signal_recorder.core_recorder'))"
+    if pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
+        echo "✅ Core Recorder: RUNNING (PID: $(pgrep -f 'grape_recorder.grape.core_recorder'))"
     else
         echo "⭕ Core Recorder: STOPPED"
     fi

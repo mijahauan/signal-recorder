@@ -72,7 +72,7 @@ else
 fi
 
 # Check if already uploaded using tracker
-ALREADY_UPLOADED=$(python -m signal_recorder.upload_tracker \
+ALREADY_UPLOADED=$(python -m grape_recorder.upload_tracker \
     --state-file "$UPLOAD_STATE_FILE" \
     --station-id "$PSWS_STATION_ID" \
     check --date "$YESTERDAY" 2>/dev/null || echo "false")
@@ -102,7 +102,7 @@ fi
 log "INFO" "Creating multi-subchannel DRF dataset..."
 START_TIME=$(date +%s)
 
-python -m signal_recorder.drf_batch_writer \
+python -m grape_recorder.drf_batch_writer \
     --analytics-root "$DATA_ROOT/analytics" \
     --output-dir "$OUTPUT_DIR" \
     --date "$YESTERDAY" \
@@ -118,7 +118,7 @@ DRF_STATUS=${PIPESTATUS[0]}
 
 if [[ $DRF_STATUS -ne 0 ]]; then
     log "ERROR" "DRF batch writer failed"
-    python -m signal_recorder.upload_tracker \
+    python -m grape_recorder.upload_tracker \
         --state-file "$UPLOAD_STATE_FILE" \
         --station-id "$PSWS_STATION_ID" \
         record --date "$YESTERDAY" --status failed --error "DRF batch writer failed"
@@ -130,7 +130,7 @@ OBS_PATH="$OUTPUT_DIR/${CALLSIGN}_${GRID_SQUARE}/${RECEIVER_NAME}@${PSWS_STATION
 
 if [[ ! -d "$OBS_PATH" ]]; then
     log "ERROR" "OBS directory not found: $OBS_PATH"
-    python -m signal_recorder.upload_tracker \
+    python -m grape_recorder.upload_tracker \
         --state-file "$UPLOAD_STATE_FILE" \
         --station-id "$PSWS_STATION_ID" \
         record --date "$YESTERDAY" --status failed --error "OBS directory not created"
@@ -215,7 +215,7 @@ if [[ $UPLOAD_STATUS -eq 0 ]]; then
     log "INFO" "  Size: $(numfmt --to=iec $UPLOAD_SIZE)"
     
     # Record success
-    python -m signal_recorder.upload_tracker \
+    python -m grape_recorder.upload_tracker \
         --state-file "$UPLOAD_STATE_FILE" \
         --station-id "$PSWS_STATION_ID" \
         record \
@@ -232,7 +232,7 @@ else
     log "ERROR" "❌ Upload failed with status $UPLOAD_STATUS"
     
     # Record failure
-    python -m signal_recorder.upload_tracker \
+    python -m grape_recorder.upload_tracker \
         --state-file "$UPLOAD_STATE_FILE" \
         --station-id "$PSWS_STATION_ID" \
         record \

@@ -192,7 +192,7 @@ def measure_test_signal_toa(iq_samples: np.ndarray, sample_rate: int) -> dict:
     """
     Measure test signal Time-of-Arrival offset from expected 13.0s start.
     """
-    from signal_recorder.wwv_test_signal import WWVTestSignalDetector
+    from grape_recorder.wwv_test_signal import WWVTestSignalDetector
     
     detector = WWVTestSignalDetector(sample_rate=sample_rate)
     
@@ -223,7 +223,7 @@ def station_agreement_check(archive: dict, channel_name: str = 'WWV_10_MHz') -> 
     When both methods agree, we have high confidence.
     When they disagree, investigate (fading, multipath, etc.)
     """
-    from signal_recorder.wwvh_discrimination import WWVHDiscriminator
+    from grape_recorder.grape.wwvh_discrimination import WWVHDiscriminator
     
     iq = archive['iq']
     sr = int(archive['sample_rate'])
