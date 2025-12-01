@@ -2,8 +2,8 @@
 # GRAPE Analytics Services Control (all 9 channels)
 # Usage: grape-analytics.sh -start|-stop|-status [config-file]
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Source common settings (sets PYTHON, PROJECT_DIR, etc.)
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 ACTION=""
 CONFIG=""
@@ -17,27 +17,14 @@ for arg in "$@"; do
     esac
 done
 
-CONFIG="${CONFIG:-$PROJECT_DIR/config/grape-config.toml}"
+CONFIG="${CONFIG:-$DEFAULT_CONFIG}"
 
 if [ -z "$ACTION" ]; then
     echo "Usage: $0 -start|-stop|-status [config-file]"
     exit 1
 fi
 
-get_data_root() {
-    if [ -f "$CONFIG" ]; then
-        MODE=$(grep '^mode' "$CONFIG" | cut -d'"' -f2)
-        if [ "$MODE" = "production" ]; then
-            grep '^production_data_root' "$CONFIG" | cut -d'"' -f2
-        else
-            grep '^test_data_root' "$CONFIG" | cut -d'"' -f2
-        fi
-    else
-        echo "/tmp/grape-test"
-    fi
-}
-
-DATA_ROOT=$(get_data_root)
+DATA_ROOT=$(get_data_root "$CONFIG")
 
 case $ACTION in
 start)
@@ -60,12 +47,12 @@ start)
     mkdir -p "$DATA_ROOT/logs" "$DATA_ROOT/state"
     cd "$PROJECT_DIR"
     
-    # WWV Channels
+    # WWV Channels (PYTHON is set by common.sh)
     for freq_mhz in 2.5 5 10 15 20 25; do
         freq_hz=$(echo "$freq_mhz * 1000000" | bc | cut -d. -f1)
         channel_dir="WWV_${freq_mhz}_MHz"
         
-        nohup python3 -m grape_recorder.grape.analytics_service \
+        nohup $PYTHON -m grape_recorder.grape.analytics_service \
           --archive-dir "$DATA_ROOT/archives/$channel_dir" \
           --output-dir "$DATA_ROOT/analytics/$channel_dir" \
           --channel-name "WWV ${freq_mhz} MHz" \
@@ -88,7 +75,7 @@ start)
         freq_hz=${CHU_FREQS[$freq_mhz]}
         channel_dir="CHU_${freq_mhz}_MHz"
         
-        nohup python3 -m grape_recorder.grape.analytics_service \
+        nohup $PYTHON -m grape_recorder.grape.analytics_service \
           --archive-dir "$DATA_ROOT/archives/$channel_dir" \
           --output-dir "$DATA_ROOT/analytics/$channel_dir" \
           --channel-name "CHU ${freq_mhz} MHz" \

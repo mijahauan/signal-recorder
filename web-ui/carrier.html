@@ -450,6 +450,7 @@
     
     // Channel-specific gap data cache
     let channelGapData = null;
+    let rtpGapData = null;
     
     // Fetch gap data for the selected channel
     async function fetchChannelGaps() {
@@ -457,11 +458,18 @@
       
       try {
         const channelKey = currentChannel.replace(/ /g, '_');
-        const response = await fetch(`/api/v1/gaps?date=${currentDate}&channel=${channelKey}`);
-        if (response.ok) {
-          channelGapData = await response.json();
-          return channelGapData;
+        const [gapResponse, rtpResponse] = await Promise.all([
+          fetch(`/api/v1/gaps?date=${currentDate}&channel=${channelKey}`),
+          fetch(`/api/v1/rtp-gaps?date=${currentDate}&channel=${channelKey}`)
+        ]);
+        
+        if (gapResponse.ok) {
+          channelGapData = await gapResponse.json();
         }
+        if (rtpResponse.ok) {
+          rtpGapData = await rtpResponse.json();
+        }
+        return channelGapData;
       } catch (err) {
         console.warn('Error fetching gap data:', err);
       }
@@ -556,8 +564,103 @@
         html += `<div class="no-gaps">✅ All gaps are minor (<5 minutes)</div>`;
       }
       
+      // Add RTP-level gap analysis (network packet loss)
+      const rtpChannel = rtpGapData?.channels?.find(c => c.channel === currentChannel);
+      if (rtpChannel) {
+        const rtpCompleteness = rtpChannel.completeness_pct ?? 100;
+        const rtpGapEvents = rtpChannel.total_gap_events ?? 0;
+        const rtpDurationMs = rtpChannel.total_duration_ms ?? 0;
+        const rtpAvgGap = rtpChannel.avg_gap_samples ?? 0;
+        const rtpLargestGap = rtpChannel.largest_gap_samples ?? 0;
+        
+        // Determine RTP status
+        let rtpStatusClass = 'status-good';
+        let rtpIcon = '✅';
+        if (rtpCompleteness < 99) {
+          rtpStatusClass = 'status-critical';
+          rtpIcon = '❌';
+        } else if (rtpCompleteness < 99.9) {
+          rtpStatusClass = 'status-warning';
+          rtpIcon = '⚠️';
+        }
+        
+        html += `
+          <div class="rtp-gap-section" style="margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--border);">
+            <div style="font-size: 12px; color: var(--accent-light); margin-bottom: var(--spacing-sm); text-transform: uppercase;">
+              🔌 RTP Network Quality (packet loss → zero-filled samples)
+            </div>
+            <div class="summary-grid">
+              <div class="summary-item">
+                <div class="summary-label">RTP Completeness</div>
+                <div class="summary-value ${rtpStatusClass}">${rtpIcon} ${rtpCompleteness.toFixed(2)}%</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Gap Events</div>
+                <div class="summary-value">${rtpGapEvents.toLocaleString()}</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Total Lost</div>
+                <div class="summary-value">${formatRtpDuration(rtpDurationMs)}</div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">Avg Gap</div>
+                <div class="summary-value">${formatSamples(rtpAvgGap)}</div>
+              </div>
+            </div>
+        `;
+        
+        // Show recent RTP gaps if any
+        const recentGaps = rtpChannel.recent_gaps || [];
+        if (recentGaps.length > 0) {
+          html += `
+            <div class="gap-timeline" style="margin-top: var(--spacing-sm);">
+              <div style="font-size: 11px; color: var(--text-muted); margin-bottom: var(--spacing-xs);">
+                Recent packet loss events (samples zero-filled):
+              </div>
+          `;
+          recentGaps.slice(0, 5).forEach(gap => {
+            const time = gap.file_timestamp.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$4:$5:$6');
+            html += `
+              <div class="gap-item">
+                <span class="gap-time">${time} UTC</span>
+                <span class="gap-duration low">${gap.samples_filled.toLocaleString()} samples (${gap.duration_ms}ms)</span>
+              </div>
+            `;
+          });
+          if (recentGaps.length > 5) {
+            html += `<div class="gap-item" style="color: var(--text-muted);">... and ${recentGaps.length - 5} more in recent files</div>`;
+          }
+          html += '</div>';
+        } else if (rtpGapEvents === 0) {
+          html += `<div class="no-gaps" style="margin-top: var(--spacing-sm);">✅ No RTP packet loss detected</div>`;
+        }
+        
+        html += '</div>';
+      }
+      
       html += '</div>';
       document.getElementById('summary-banner').innerHTML = html;
+    }
+    
+    // Format RTP duration (milliseconds)
+    function formatRtpDuration(ms) {
+      if (ms < 1000) {
+        return `${ms.toFixed(0)}ms`;
+      } else if (ms < 60000) {
+        return `${(ms / 1000).toFixed(1)}s`;
+      } else {
+        const mins = Math.floor(ms / 60000);
+        const secs = Math.round((ms % 60000) / 1000);
+        return `${mins}m ${secs}s`;
+      }
+    }
+    
+    // Format sample count
+    function formatSamples(samples) {
+      if (samples === 0) return '0';
+      if (samples < 1000) return `${samples}`;
+      if (samples < 1000000) return `${(samples / 1000).toFixed(1)}k`;
+      return `${(samples / 1000000).toFixed(2)}M`;
     }
     
     // Format gap duration for display

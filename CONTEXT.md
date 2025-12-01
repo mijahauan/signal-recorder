@@ -1,67 +1,151 @@
-# Signal Recorder - AI Context Document
+# GRAPE Recorder - AI Context Document
 
-**Last Updated:** 2025-12-01  
+**Last Updated:** 2025-12-01 (afternoon)  
 **Version:** 2.0.0  
-**Status:** Package restructure COMPLETE. **NEXT:** Update web-ui and startup scripts for new module paths.
+**Status:** ✅ All systems operational. Startup scripts, analytics, and venv enforcement complete.
 
 ---
 
-## 🔴 NEXT SESSION: Web-UI Compliance with v2.0.0
+## 🔵 RTP Timestamp Pipeline (Critical for Understanding)
 
-### Problem Statement
+### Overview
 
-The v2.0.0 package restructure moved GRAPE modules into the `grape/` subpackage. The startup scripts and web-ui still reference old module paths, causing startup failures:
+The RTP timestamp from `radiod` is the **authoritative timing reference** for all recorded data. Understanding this pipeline is essential for accurate timing analysis.
 
-```bash
-$ ./scripts/grape-all.sh -start
-❌ Failed to start
-/home/wsprdaemon/grape-recorder/venv/bin/python3: No module named grape_recorder.core_recorder
+### RTP Packet Structure from radiod
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ RTP Header (12 bytes)                                           │
+├─────────────┬─────────────┬─────────────────────────────────────┤
+│ V=2, P, X   │ M, PT=97/120│ Sequence Number (16-bit)            │
+├─────────────┴─────────────┴─────────────────────────────────────┤
+│ RTP Timestamp (32-bit) - Increments at sample_rate (16 kHz)     │
+├─────────────────────────────────────────────────────────────────┤
+│ SSRC (32-bit) - Unique stream identifier                        │
+├─────────────────────────────────────────────────────────────────┤
+│ Payload (640 bytes for IQ mode)                                 │
+│   • PT=97: Real audio, 320 int16 samples                        │
+│   • PT=120: IQ complex, 160 complex samples (320 int16 I/Q)     │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Root Cause
+### Key Timing Properties
 
-| Old Path (broken) | New Path (v2.0.0) |
-|-------------------|-------------------|
-| `grape_recorder.core_recorder` | `grape_recorder.grape.core_recorder` |
-| `grape_recorder.analytics_service` | `grape_recorder.grape.analytics_service` |
+| Property | Value | Notes |
+|----------|-------|-------|
+| Sample Rate | 16,000 Hz | Fixed for GRAPE channels |
+| RTP Timestamp Increment | 320 per packet | Regardless of payload type |
+| Packets per Second | 50 | 16000 / 320 = 50 |
+| IQ Samples per Packet | 160 complex | Payload is 640 bytes |
+| Segment Duration | 60 seconds | 960,000 RTP timestamp units |
 
-### Files That Need Updates
+### ⚠️ Critical: IQ Mode Sample Count Mismatch
 
-#### 1. Startup Scripts (CRITICAL - services won't start)
+**Problem discovered Dec 1, 2025:** In IQ mode (PT=120), each RTP packet contains 160 complex samples, but the RTP timestamp increments by 320. This caused segments to take 120 seconds instead of 60.
 
-| File | Issue |
-|------|-------|
-| `scripts/grape-core.sh` | Uses `python3 -m grape_recorder.core_recorder` |
-| `scripts/grape-analytics.sh` | Uses `python3 -m grape_recorder.analytics_service` |
-| `scripts/grape-all.sh` | Uses `pgrep -f "grape_recorder.core_recorder"` for status |
+```python
+# WRONG: Counting payload samples
+segment_sample_count += len(samples)  # 160 per packet → 120s segments
 
-**Fix**: Change module paths from `grape_recorder.X` to `grape_recorder.grape.X`
-
-#### 2. Web-UI (may have stale references)
-
-| File | Check For |
-|------|-----------|
-| `web-ui/monitoring-server-v3.js` | Any Python module path references |
-| `web-ui/grape-paths.js` | Already correct (uses file paths, not module paths) |
-| `web-ui/utils/*.js` | Process name detection for status |
-
-### Testing After Fixes
-
-```bash
-# 1. Stop any running services
-./scripts/grape-all.sh -stop
-
-# 2. Start services with new paths
-./scripts/grape-all.sh -start
-
-# 3. Verify status detection works
-./scripts/grape-all.sh -status
-
-# Expected output:
-# ✅ Core Recorder:     RUNNING (PIDs: XXXX)
-# ✅ Analytics:         RUNNING (9/9 channels)
-# ✅ Web-UI:            RUNNING → http://localhost:3000/
+# CORRECT: Counting RTP timestamp progression  
+segment_rtp_count += samples_per_packet  # 320 per packet → 60s segments
 ```
+
+**Fix location:** `src/grape_recorder/core/recording_session.py`
+- Added `segment_rtp_count` to track RTP timestamp-based progression
+- Added `rtp_samples_per_segment` for segment completion check
+- Gap fills also add to RTP count since they represent time progression
+
+### RTP Timestamp Flow Through Pipeline
+
+```
+radiod (ka9q-radio)
+    │
+    │ UDP Multicast: RTP packets with precise timestamps
+    │ GPS-disciplined: Timestamps locked to GPS 1PPS
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ RTPReceiver (core/rtp_receiver.py)                              │
+│   • Receives multicast UDP                                       │
+│   • Parses RTP header, extracts timestamp                        │
+│   • Routes by SSRC to RecordingSession                           │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ PacketResequencer (core/packet_resequencer.py)                  │
+│   • Reorders out-of-order packets by RTP timestamp              │
+│   • Detects gaps via timestamp discontinuity                     │
+│   • Creates zero-filled samples for gaps (gap_samples count)     │
+│   • Returns GapInfo with gap position and size                   │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ RecordingSession (core/recording_session.py)                    │
+│   • Tracks segment_rtp_count for accurate 60s segments          │
+│   • Aligns segment start to minute boundaries                    │
+│   • Writes samples + gap metadata to SegmentWriter              │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ GrapeNPZWriter (grape/grape_npz_writer.py)                      │
+│   • Saves NPZ with: iq, rtp_timestamp, gaps_count, gaps_filled  │
+│   • First RTP timestamp stored for file alignment               │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ AnalyticsService (grape/analytics_service.py)                   │
+│   • Reads NPZ, uses RTP timestamp for timing analysis           │
+│   • Decimates to 10 Hz, preserves timestamp alignment           │
+│   • Runs discrimination methods keyed to minute boundaries      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### NPZ File Timestamp Metadata
+
+Each 16kHz NPZ archive contains:
+
+```python
+{
+    'iq': np.complex64[960000],      # 60 seconds of samples
+    'rtp_timestamp': uint32,          # First sample's RTP timestamp
+    'sample_rate': 16000,
+    'gaps_count': int,                # Number of gap events
+    'gaps_filled': int,               # Total samples zero-filled
+    'gap_sample_indices': uint32[],   # Position of each gap
+    'gap_samples_filled': uint32[],   # Size of each gap
+}
+```
+
+### Leveraging RTP Timestamps
+
+**For Timing Analysis:**
+- RTP timestamp difference between files should be exactly 960,000 (60s)
+- Gaps > 960,000 indicate missing files
+- Gaps within file indicate RTP packet loss
+
+**For GPS Accuracy:**
+- radiod locks RTP timestamps to GPS 1PPS via `chrony` or similar
+- First sample of each second aligns with GPS second boundary
+- Typical accuracy: < 1 µs jitter when GPS-locked
+
+**For Discrimination:**
+- WWV/WWVH timing events (ticks, tones) occur at precise second offsets
+- RTP timestamp provides sub-sample timing for ToA calculations
+- Cross-correlate with known patterns for µs-level timing
+
+---
+
+## ✅ RESOLVED: Startup Scripts (Dec 1, 2025)
+
+All startup scripts now:
+- Use correct `grape_recorder.grape.*` module paths
+- Enforce venv usage via `scripts/common.sh`
+- Work with both test and production modes
 
 ---
 
@@ -230,13 +314,37 @@ http://localhost:3000/discrimination.html # WWV/WWVH discrimination
 
 ## Session History
 
+### Dec 1, 2025 (Afternoon): RTP Timing Fix & Infrastructure
+
+**Critical Bug Fix:**
+- **IQ mode 2-minute cadence bug:** Segments took 120s instead of 60s
+  - Root cause: Counting payload samples (160) vs RTP timestamp increment (320)
+  - Fix: Added `segment_rtp_count` in `recording_session.py` to track RTP progression
+  - Files now correctly generated every 60 seconds
+
+**Infrastructure Improvements:**
+- **Created `scripts/common.sh`:** Centralized venv enforcement
+  - All shell scripts source this for `$PYTHON`, `$PROJECT_DIR`, `get_data_root()`
+  - Scripts fail with clear error if venv not found
+- **Created `venv_check.py`:** Python-side venv verification
+- **Updated startup scripts:** `grape-core.sh`, `grape-analytics.sh`, `grape-ui.sh`
+- **Restarted analytics services:** Now using `grape_recorder` (was `signal_recorder`)
+
+**Spectrogram Cleanup:**
+- **Consolidated scripts:** Kept `generate_spectrograms_from_10hz.py` (reads 10Hz decimated)
+- **Archived deprecated:** `generate_spectrograms.py`, `generate_spectrograms_v2.py`
+- **Fixed bug:** `archive_dir_name` → `archive_dir.name`
+
+**API Enhancements:**
+- **Added `/api/v1/rtp-gaps`:** Exposes RTP-level gap analysis
+- **Updated `carrier.html`:** Quality panel shows RTP gap metrics
+
 ### Dec 1, 2025 (Morning): v2.0.0 Release
 - **Merged** `feature/generic-rtp-recorder` to main
 - **Tagged** v2.0.0
 - **GitHub Release** created with release notes
 - **Fixed** `TimingMetricsWriter.get_ntp_offset()` removal bug
 - **Updated** README.md and TECHNICAL_REFERENCE.md
-- **Discovered** startup scripts use old module paths (need fixing)
 
 ### Dec 1, 2025 (Earlier): SSRC Abstraction Complete
 - **ka9q-python 3.1.0**: Added `allocate_ssrc()` and SSRC-free `create_channel()`

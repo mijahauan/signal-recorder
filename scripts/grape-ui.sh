@@ -2,8 +2,8 @@
 # GRAPE Web-UI Control
 # Usage: grape-ui.sh -start|-stop|-status [config-file]
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Source common settings (sets PYTHON, PROJECT_DIR, etc.)
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 ACTION=""
 CONFIG=""
@@ -17,27 +17,14 @@ for arg in "$@"; do
     esac
 done
 
-CONFIG="${CONFIG:-$PROJECT_DIR/config/grape-config.toml}"
+CONFIG="${CONFIG:-$DEFAULT_CONFIG}"
 
 if [ -z "$ACTION" ]; then
     echo "Usage: $0 -start|-stop|-status [config-file]"
     exit 1
 fi
 
-get_data_root() {
-    if [ -f "$CONFIG" ]; then
-        MODE=$(grep '^mode' "$CONFIG" | cut -d'"' -f2)
-        if [ "$MODE" = "production" ]; then
-            grep '^production_data_root' "$CONFIG" | cut -d'"' -f2
-        else
-            grep '^test_data_root' "$CONFIG" | cut -d'"' -f2
-        fi
-    else
-        echo "/tmp/grape-test"
-    fi
-}
-
-DATA_ROOT=$(get_data_root)
+DATA_ROOT=$(get_data_root "$CONFIG")
 
 case $ACTION in
 start)

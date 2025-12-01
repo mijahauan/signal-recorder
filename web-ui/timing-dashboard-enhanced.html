@@ -1106,6 +1106,11 @@
                     }
                 }
                 
+                // Calculate the time range for the X-axis to show full span
+                const now = new Date();
+                const rangeEnd = now;
+                const rangeStart = new Date(now.getTime() - hours * 60 * 60 * 1000);
+                
                 const layout = {
                     paper_bgcolor: '#0f172a',
                     plot_bgcolor: '#0f172a',
@@ -1113,7 +1118,8 @@
                     xaxis: { 
                         gridcolor: '#334155',
                         title: 'Time (UTC)',
-                        tickformat: '%H:%M'
+                        tickformat: '%H:%M',
+                        range: [rangeStart, rangeEnd]
                     },
                     yaxis: { 
                         gridcolor: '#334155',

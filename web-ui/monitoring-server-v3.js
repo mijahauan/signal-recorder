@@ -1003,6 +1003,149 @@ print(json.dumps(result))
 }
 
 /**
+ * Get RTP-level gap analysis from archive NPZ files
+ * These are network packet loss events stored inside NPZ files (zero-filled samples)
+ */
+async function getRtpGapAnalysis(paths, date, channelFilter = 'all') {
+  const archivesRoot = join(paths.dataRoot, 'archives');
+  
+  if (!fs.existsSync(archivesRoot)) {
+    return {
+      date, channel_filter: channelFilter, 
+      total_files: 0, files_with_gaps: 0, total_gap_events: 0,
+      total_samples_filled: 0, total_duration_ms: 0,
+      channels: [], error: 'Archives directory not found'
+    };
+  }
+  
+  // Use Python to read NPZ gap metadata - write script to temp file to avoid escaping issues
+  const tmpScript = `/tmp/rtp_gap_analysis_${Date.now()}.py`;
+  const pythonScript = `
+import os
+import json
+import sys
+import numpy as np
+from pathlib import Path
+
+archives_root = Path(sys.argv[1])
+date_prefix = sys.argv[2]
+channel_filter = sys.argv[3].replace('_', ' ')
+
+results = {
+    'date': date_prefix,
+    'channel_filter': channel_filter if channel_filter != 'all' else 'all',
+    'total_files': 0,
+    'files_with_gaps': 0,
+    'total_gap_events': 0,
+    'total_samples_filled': 0,
+    'total_duration_ms': 0,
+    'channels': []
+}
+
+for channel_dir in archives_root.iterdir():
+    if not channel_dir.is_dir():
+        continue
+    
+    channel_name = channel_dir.name.replace('_', ' ')
+    if channel_filter != 'all' and channel_filter != channel_name:
+        continue
+    
+    stats = {
+        'channel': channel_name,
+        'files_checked': 0,
+        'files_with_gaps': 0,
+        'total_gap_events': 0,
+        'total_samples_filled': 0,
+        'total_duration_ms': 0,
+        'avg_gap_samples': 0,
+        'largest_gap_samples': 0,
+        'completeness_pct': 100.0,
+        'recent_gaps': []
+    }
+    
+    sample_rate = 16000
+    total_samples_expected = 0
+    
+    for npz_file in sorted(channel_dir.glob(f'{date_prefix}*_iq.npz')):
+        try:
+            data = np.load(npz_file, allow_pickle=True)
+            stats['files_checked'] += 1
+            results['total_files'] += 1
+            
+            if 'sample_rate' in data:
+                sample_rate = int(data['sample_rate'])
+            if 'segment_sample_count' in data:
+                total_samples_expected += int(data['segment_sample_count'])
+            
+            gaps_count = int(data['gaps_count']) if 'gaps_count' in data else 0
+            gaps_filled = int(data['gaps_filled']) if 'gaps_filled' in data else 0
+            
+            if gaps_count > 0:
+                stats['files_with_gaps'] += 1
+                results['files_with_gaps'] += 1
+                stats['total_gap_events'] += gaps_count
+                results['total_gap_events'] += gaps_count
+                stats['total_samples_filled'] += gaps_filled
+                results['total_samples_filled'] += gaps_filled
+                
+                duration_ms = (gaps_filled / sample_rate) * 1000
+                stats['total_duration_ms'] += duration_ms
+                results['total_duration_ms'] += duration_ms
+                
+                if 'gap_samples_filled' in data:
+                    gap_samples = data['gap_samples_filled']
+                    if len(gap_samples) > 0:
+                        largest = max(int(g) for g in gap_samples)
+                        if largest > stats['largest_gap_samples']:
+                            stats['largest_gap_samples'] = largest
+                        
+                        ts_part = npz_file.name.split('_')[0]
+                        for i, g in enumerate(gap_samples):
+                            sample_idx = 0
+                            if 'gap_sample_indices' in data and i < len(data['gap_sample_indices']):
+                                sample_idx = int(data['gap_sample_indices'][i])
+                            stats['recent_gaps'].append({
+                                'file_timestamp': ts_part,
+                                'sample_index': sample_idx,
+                                'samples_filled': int(g),
+                                'duration_ms': round((int(g) / sample_rate) * 1000, 1)
+                            })
+            data.close()
+        except:
+            pass
+    
+    if stats['files_checked'] > 0:
+        if stats['total_gap_events'] > 0:
+            stats['avg_gap_samples'] = int(stats['total_samples_filled'] / stats['total_gap_events'])
+        if total_samples_expected > 0:
+            actual = total_samples_expected - stats['total_samples_filled']
+            stats['completeness_pct'] = round((actual / total_samples_expected) * 100, 2)
+        stats['total_duration_ms'] = round(stats['total_duration_ms'], 1)
+        stats['recent_gaps'] = sorted(stats['recent_gaps'], key=lambda x: x['file_timestamp'], reverse=True)[:10]
+        results['channels'].append(stats)
+
+results['total_duration_ms'] = round(results['total_duration_ms'], 1)
+results['channels'].sort(key=lambda x: x['channel'])
+print(json.dumps(results))
+`;
+
+  try {
+    fs.writeFileSync(tmpScript, pythonScript);
+    const { stdout } = await execAsync(`python3 ${tmpScript} "${archivesRoot}" "${date}" "${channelFilter}"`);
+    fs.unlinkSync(tmpScript);
+    return JSON.parse(stdout.trim());
+  } catch (err) {
+    console.error('RTP gap analysis error:', err.message);
+    return {
+      date, channel_filter: channelFilter,
+      total_files: 0, files_with_gaps: 0, total_gap_events: 0,
+      total_samples_filled: 0, total_duration_ms: 0,
+      channels: [], error: err.message
+    };
+  }
+}
+
+/**
  * Check NTP synchronization status
  */
 async function getNTPStatus() {
@@ -1415,6 +1558,24 @@ app.get('/api/v1/gaps', async (req, res) => {
     res.json(gaps);
   } catch (err) {
     console.error('Gap analysis error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/rtp-gaps?date=YYYYMMDD&channel=all
+ * RTP-level gap analysis - reads gap metadata from archive NPZ files
+ * These are network packet loss events (zero-filled samples), not missing files
+ */
+app.get('/api/v1/rtp-gaps', async (req, res) => {
+  try {
+    const date = req.query.date || new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const channelFilter = req.query.channel || 'all';
+    
+    const rtpGaps = await getRtpGapAnalysis(paths, date, channelFilter);
+    res.json(rtpGaps);
+  } catch (err) {
+    console.error('RTP gap analysis error:', err);
     res.status(500).json({ error: err.message });
   }
 });

@@ -356,7 +356,7 @@ def main():
             timestamps, iq_samples, sample_rate = result
             
             # Generate spectrogram (unified path format: decimated from 16 kHz)
-            output_filename = f"{archive_dir_name}_{date_str}_decimated_spectrogram.png"
+            output_filename = f"{archive_dir.name}_{date_str}_decimated_spectrogram.png"
             output_path = output_dir / date_str / output_filename
             
             generate_spectrogram(

@@ -187,10 +187,14 @@ class RecordingSession:
         # Segment timing
         self.segment_start_rtp: Optional[int] = None
         self.segment_sample_count = 0
-        self.samples_per_segment = (
+        # Use RTP timestamp increment for segment completion check
+        # RTP timestamp increments at sample_rate regardless of payload format
+        # (e.g., IQ mode has 160 samples per packet but RTP increments by 320)
+        self.rtp_samples_per_segment = (
             int(config.segment_duration_sec * config.sample_rate)
             if config.segment_duration_sec else None
         )
+        self.segment_rtp_count = 0  # Track RTP timestamp-based sample count
         
         # Thread safety
         self._lock = threading.Lock()
@@ -290,7 +294,7 @@ class RecordingSession:
                 
                 # Check if segment complete
                 if self._is_segment_complete():
-                    logger.debug(f"Segment complete: {self.segment_sample_count} >= {self.samples_per_segment}")
+                    logger.debug(f"Segment complete: RTP count {self.segment_rtp_count} >= {self.rtp_samples_per_segment}, samples={self.segment_sample_count}")
                     self._finish_segment()
                     
                     # Start next segment if not stopping
@@ -368,6 +372,7 @@ class RecordingSession:
         """Start a new recording segment"""
         self.segment_counter += 1
         self.segment_sample_count = 0
+        self.segment_rtp_count = 0  # Reset RTP-based count
         self.segment_start_rtp = rtp_timestamp
         
         # Determine start time
@@ -408,7 +413,14 @@ class RecordingSession:
         self.current_segment.sample_count += len(samples)
         self.segment_sample_count += len(samples)
         
+        # Track RTP timestamp-based sample count for accurate segment timing
+        # In IQ mode, payload has 160 samples but RTP increments by 320
+        # Use samples_per_packet config which matches RTP timestamp increment
+        self.segment_rtp_count += self.config.samples_per_packet
+        
         if gap_info and gap_info.gap_samples > 0:
+            # Gap samples are in RTP timestamp terms, add to RTP count
+            self.segment_rtp_count += gap_info.gap_samples
             self.current_segment.gap_count += 1
             self.current_segment.gap_samples += gap_info.gap_samples
             self.metrics.total_gaps += 1
@@ -472,10 +484,11 @@ class RecordingSession:
         return should_start
     
     def _is_segment_complete(self) -> bool:
-        """Check if current segment is complete"""
-        if self.samples_per_segment is None:
+        """Check if current segment is complete based on RTP timestamp progression"""
+        if self.rtp_samples_per_segment is None:
             return False  # Continuous mode
-        return self.segment_sample_count >= self.samples_per_segment
+        # Use RTP-based count for accurate timing regardless of payload format
+        return self.segment_rtp_count >= self.rtp_samples_per_segment
     
     def _finish_segment(self, final: bool = False):
         """Finish current segment
