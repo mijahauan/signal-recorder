@@ -34,6 +34,10 @@ from .recording_session import (
 from .grape_recorder import GrapeRecorder, GrapeConfig, GrapeState
 from .grape_npz_writer import GrapeNPZWriter
 
+# WSPR-specific components (added Nov 30, 2025)
+from .wspr_recorder import WsprRecorder, WsprConfig, WsprState, create_wspr_recorder
+from .wspr_wav_writer import WsprWAVWriter
+
 # Channel management
 from .channel_manager import ChannelManager
 from ka9q import discover_channels, ChannelInfo, RadiodControl
@@ -63,6 +67,12 @@ __all__ = [
     "GrapeConfig",
     "GrapeState",
     "GrapeNPZWriter",
+    # WSPR-specific
+    "WsprRecorder",
+    "WsprConfig",
+    "WsprState",
+    "WsprWAVWriter",
+    "create_wspr_recorder",
     # Channel management
     "ChannelManager",
     "discover_channels_via_control",

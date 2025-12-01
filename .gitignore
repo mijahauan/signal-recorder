@@ -79,3 +79,15 @@ nohup.out
 *.png
 !docs/**/*.png
 
+
+# WSPR decode artifacts
+ALL_WSPR.TXT
+wspr_spots.txt
+wspr_timer.out
+wspr_wisdom.dat
+hashtable.txt
+wsprd-x86-v27
+
+# WSPR output directories
+wspr_output/
+wspr_*/

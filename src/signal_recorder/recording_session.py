@@ -274,7 +274,16 @@ class RecordingSession:
                 
                 # Handle segment boundaries
                 if self.state == SessionState.WAITING:
-                    self._start_segment(header.timestamp, wallclock)
+                    if self._should_start_segment(wallclock):
+                        self._start_segment(header.timestamp, wallclock)
+                        logger.info(f"{self.config.description}: Started segment, state now {self.state}")
+                    else:
+                        # Resequencer is synced, just wait for boundary
+                        return
+                
+                # Log state periodically
+                if self.metrics.packets_received % 500 == 0:
+                    logger.debug(f"{self.config.description}: State={self.state}, samples={self.segment_sample_count}")
                 
                 # Write samples
                 self._write_samples(output_samples, header.timestamp, gap_info)
@@ -293,31 +302,63 @@ class RecordingSession:
             logger.error(f"Error processing RTP packet: {e}", exc_info=True)
     
     def _decode_payload(self, payload_type: int, payload: bytes) -> Optional[np.ndarray]:
-        """Decode RTP payload to complex IQ samples"""
+        """
+        Decode RTP payload to samples.
+        
+        Returns complex64 for IQ formats, or complex64 with zero imaginary for mono.
+        This allows the same downstream processing for both cases.
+        """
         try:
             if payload_type in (120, 97):
-                # int16 IQ format
+                # int16 IQ format (stereo)
                 if len(payload) % 4 != 0:
                     return None
                 samples_int16 = np.frombuffer(payload, dtype=np.int16)
                 samples = samples_int16.astype(np.float32) / 32768.0
+                # Convert interleaved I/Q to complex
+                i_samples = samples[0::2]
+                q_samples = samples[1::2]
+                return (i_samples + 1j * q_samples).astype(np.complex64)
                 
             elif payload_type == 11:
-                # float32 IQ format
-                if len(payload) % 8 != 0:
-                    return None
+                # float32 format - could be IQ or mono
                 samples = np.frombuffer(payload, dtype=np.float32)
                 
-            else:
-                # Unknown - try float32
+                # Heuristic: if sample count matches expected mono (divisible by 4 but not 8),
+                # or if this is configured for mono mode, treat as real samples
+                # For now, check if payload size suggests mono (not divisible by 8)
                 if len(payload) % 8 != 0:
-                    return None
+                    # Odd number of float32 values - must be mono
+                    return (samples + 0j).astype(np.complex64)
+                
+                # Check if we're configured for mono (audio) mode
+                # For WSPR/FT8, sample_rate is 12000 and packets are 240 samples @ 50 pps
+                # 960 bytes / 4 = 240 float32 samples = mono audio
+                # 960 bytes / 8 = 120 complex samples = IQ
+                # Since 960 % 8 == 0, we need another heuristic
+                
+                # Use samples_per_packet config as hint
+                expected_mono = len(payload) // 4
+                expected_iq = len(payload) // 8
+                
+                if hasattr(self, 'config') and self.config.samples_per_packet == expected_mono:
+                    # Configured for mono - treat as real samples
+                    return (samples + 0j).astype(np.complex64)
+                elif hasattr(self, 'config') and self.config.samples_per_packet == expected_iq:
+                    # Configured for IQ
+                    i_samples = samples[0::2]
+                    q_samples = samples[1::2]
+                    return (i_samples + 1j * q_samples).astype(np.complex64)
+                else:
+                    # Default: assume IQ for backward compatibility
+                    i_samples = samples[0::2]
+                    q_samples = samples[1::2]
+                    return (i_samples + 1j * q_samples).astype(np.complex64)
+                
+            else:
+                # Unknown payload type - try float32 mono
                 samples = np.frombuffer(payload, dtype=np.float32)
-            
-            # Convert interleaved I/Q to complex
-            i_samples = samples[0::2]
-            q_samples = samples[1::2]
-            return (i_samples + 1j * q_samples).astype(np.complex64)
+                return (samples + 0j).astype(np.complex64)
             
         except Exception as e:
             logger.warning(f"Payload decode error: {e}")
@@ -380,6 +421,55 @@ class RecordingSession:
             self.writer.write_samples(samples, rtp_timestamp, gap_info)
         except Exception as e:
             logger.error(f"Writer write_samples error: {e}", exc_info=True)
+    
+    def _should_start_segment(self, wallclock: Optional[float]) -> bool:
+        """
+        Check if we should start a new segment based on boundary alignment.
+        
+        For WSPR: align to even 2-minute boundaries (0, 120, 240, ... seconds)
+        For GRAPE: align to minute boundaries (0, 60, 120, ... seconds)
+        """
+        if not self.config.align_to_boundary:
+            return True  # No alignment needed
+        
+        if self.config.segment_duration_sec is None:
+            return True  # Continuous mode
+        
+        # Use wallclock if available, otherwise system time
+        now = wallclock if wallclock else time.time()
+        
+        # Calculate position within the segment cycle
+        # e.g., for 120-second segments: 0-119 is first cycle, 120-239 is second, etc.
+        segment_duration = self.config.segment_duration_sec
+        offset = self.config.boundary_offset_sec
+        
+        # Time since epoch, adjusted for offset
+        adjusted_time = now - offset
+        
+        # Position within current segment cycle (0 to segment_duration)
+        position_in_cycle = adjusted_time % segment_duration
+        
+        # Start if we're within the first 2 seconds of the boundary
+        # This gives some tolerance for timing jitter
+        should_start = position_in_cycle < 2.0
+        
+        # Log periodically when waiting (every ~5 seconds based on packet rate)
+        if not hasattr(self, '_boundary_log_counter'):
+            self._boundary_log_counter = 0
+        self._boundary_log_counter += 1
+        if self._boundary_log_counter % 250 == 1:  # ~5 sec at 50 pps
+            logger.info(
+                f"{self.config.description}: Waiting for boundary - "
+                f"position={position_in_cycle:.1f}s into {segment_duration:.0f}s cycle, "
+                f"wallclock={'GPS' if wallclock else 'system'}"
+            )
+        
+        if should_start:
+            logger.info(
+                f"{self.config.description}: Boundary aligned at position={position_in_cycle:.3f}s"
+            )
+        
+        return should_start
     
     def _is_segment_complete(self) -> bool:
         """Check if current segment is complete"""

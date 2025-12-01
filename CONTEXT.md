@@ -1,7 +1,139 @@
-# GRAPE Signal Recorder - AI Context Document
+# Signal Recorder - AI Context Document
 
-**Last Updated:** 2025-11-30 (end of session)  
-**Status:** Generic infrastructure complete, ready for WSPR demo
+**Last Updated:** 2025-12-01  
+**Status:** Two applications validated (GRAPE + WSPR), ready for API consolidation
+
+---
+
+## 🎯 Next Session: Robust Multi-Application API
+
+The pipeline from **radiod → ka9q-python → signal-recorder → application payload** has been validated with two different applications (GRAPE and WSPR). The next step is to consolidate learnings into a clean, robust API that any application can use.
+
+### Goal
+
+Create a simple, documented API that allows any application to:
+1. Subscribe to RTP streams from ka9q-radio (by SSRC or frequency)
+2. Receive properly decoded samples (IQ or mono audio)
+3. Handle time-aligned segmentation (optional)
+4. Write application-specific output files
+
+### Current Architecture (Working)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              Application Layer (GRAPE, WSPR, future apps)       │
+│  - Implements SegmentWriter protocol                           │
+│  - App-specific: WsprWAVWriter, GrapeNPZWriter                 │
+├─────────────────────────────────────────────────────────────────┤
+│              Application Recorder (optional convenience layer)  │
+│  - WsprRecorder, GrapeRecorder                                 │
+│  - Configures RecordingSession with app-specific settings      │
+├─────────────────────────────────────────────────────────────────┤
+│              RecordingSession (generic)                         │
+│  - Packet resequencing + gap detection                         │
+│  - Time-based segmentation with boundary alignment             │
+│  - Payload decoding (IQ vs mono auto-detection)                │
+│  - Callbacks to SegmentWriter                                  │
+├─────────────────────────────────────────────────────────────────┤
+│              RTPReceiver                                        │
+│  - Single socket, multi-SSRC demultiplexing                    │
+│  - Uses ka9q-python for parsing                                │
+├─────────────────────────────────────────────────────────────────┤
+│              ka9q-python 2.5.0                                  │
+│  - RTP header parsing, GPS timing                              │
+│  - Channel control and discovery                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Learnings from WSPR Demo
+
+1. **Payload Format Detection** - radiod sends different formats:
+   - IQ mode (GRAPE): float32 interleaved I/Q → 120 complex samples/packet
+   - USB/Audio mode (WSPR): float32 mono → 240 real samples/packet
+   - Fixed by using `samples_per_packet` config to disambiguate
+
+2. **Boundary Alignment** - WSPR requires exact 2-minute boundaries:
+   - `align_to_boundary=True` with `segment_duration_sec=120.0`
+   - Session waits until position-in-cycle < 2 seconds before starting
+
+3. **SSRC Convention** - radiod uses frequency-in-kHz as SSRC:
+   - 10.1387 MHz → SSRC 10139
+   - Applications must know or discover the SSRC mapping
+
+4. **Sample Rate Matching** - Session config must match radiod config:
+   - WSPR: `samprate = 12000` in radiod, `sample_rate=12000` in session
+   - GRAPE: `samprate = 16000` in radiod, `sample_rate=16000` in session
+
+### API Design Considerations
+
+| Aspect | Current | Proposed Improvement |
+|--------|---------|---------------------|
+| **SSRC discovery** | Manual | Auto-discover from multicast |
+| **Payload format** | Heuristic | Explicit config or metadata from radiod |
+| **Sample rate** | Manual config | Query from radiod status |
+| **Boundary alignment** | Generic (any duration) | Keep generic, well-documented |
+| **Error handling** | Basic logging | Structured errors, retry logic |
+
+### Files to Refactor/Create
+
+| File | Purpose |
+|------|--------|
+| `recording_session.py` | Clean up payload detection, add explicit format config |
+| `stream_config.py` (new) | Unified config: SSRC, sample_rate, format, segment_duration |
+| `radiod_discovery.py` (new) | Auto-discover streams from radiod status |
+| `examples/simple_recorder.py` | Minimal example for new apps |
+
+---
+
+## ✅ WSPR Demo Complete & Validated (Nov 30)
+
+The WSPR recorder demo was built to prove the pipeline works for applications beyond GRAPE.
+
+### Result: First WSPR Decode
+
+```
+_usb -25 -0.7  10.140283  0  <...> EL87PT 37
+```
+
+- **Full 2-minute segment**: 1,440,000 samples (exactly 120.00 seconds)
+- **Zero gaps**: Packet resequencing handled perfectly
+- **wsprd decode**: Success on first properly-aligned recording
+
+### Components Created
+
+| Component | File | Description |
+|-----------|------|-------------|
+| **WsprWAVWriter** | `wspr_wav_writer.py` | SegmentWriter for 16-bit mono WAV @ 12 kHz |
+| **WsprRecorder** | `wspr_recorder.py` | Simple recorder (no startup phase) |
+| **WsprConfig** | `wspr_recorder.py` | Configuration dataclass |
+| **wspr_demo.py** | `examples/wspr_demo.py` | Standalone demo script |
+
+### Test Command (Working)
+
+```bash
+cd /home/wsprdaemon/signal-recorder
+source venv/bin/activate
+
+# Record 30m WSPR (must specify SSRC = freq in kHz)
+python3 examples/wspr_demo.py \
+    --frequency 10138700 --ssrc 10139 \
+    --multicast 239.113.49.249 \
+    --duration 250 --output wspr_test
+
+# Decode with wsprd
+./wsprd-x86-v27 -f 10.1387 wspr_test/*.wav
+```
+
+### WSPR vs GRAPE Comparison
+
+| Aspect | GRAPE | WSPR |
+|--------|-------|------|
+| **Segment duration** | 60 seconds | 120 seconds |
+| **Output format** | NPZ (complex IQ) | WAV (real audio) |
+| **Sample rate** | 16,000 Hz | 12,000 Hz |
+| **Payload format** | float32 IQ | float32 mono |
+| **Startup phase** | Yes (tone detection) | No |
+| **Boundary alignment** | Minute | Even 2-minute |
 
 ---
 
@@ -93,72 +225,6 @@ The GRAPE recorder has been refactored to use the new generic recording infrastr
 - `rtp_to_wallclock()` provides transport timing (always available if radiod sends it)
 - GRAPE still needs payload timing (tone detection) for sub-ms accuracy
 - Other apps (WSPR, CODAR) may only need transport timing
-
----
-
-## 🎯 Next Session Focus: WSPR Recorder Demo
-
-Build a demonstration WSPR recorder using the generic recording infrastructure. This will validate the architecture and provide a working example for wsprdaemon integration.
-
-### Goals
-
-1. **Create `WsprWAVWriter`** - SegmentWriter that outputs 2-minute WAV files
-2. **Create `WsprRecorder`** - Simple recorder (no startup phase needed)
-3. **Test with live radiod** - Record WSPR band audio
-4. **Document the pattern** - Show how easy it is to add new applications
-
-### WSPR Recording Requirements
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| **Segment duration** | 120 seconds | WSPR transmission cycle |
-| **Sample rate** | 12000 Hz | Standard WSPR audio rate |
-| **Output format** | WAV (16-bit PCM) | Compatible with wsprd decoder |
-| **Timing** | Even 2-minute boundaries | WSPR protocol requirement |
-| **Frequencies** | 7.0386, 10.1387, 14.0956 MHz | WSPR dial frequencies |
-
-### Implementation Plan
-
-```python
-# 1. WsprWAVWriter - SegmentWriter for WAV output
-class WsprWAVWriter:
-    def start_segment(self, segment_info, metadata):
-        # Open WAV file for 2-minute segment
-    
-    def write_samples(self, samples, rtp_timestamp, gap_info):
-        # Append audio samples (real part of IQ or FM demod)
-    
-    def finish_segment(self, segment_info) -> Path:
-        # Close WAV, return path for wsprd processing
-
-# 2. WsprRecorder - Simple application recorder
-class WsprRecorder:
-    def __init__(self, config, rtp_receiver):
-        self.writer = WsprWAVWriter(...)
-        self.session = RecordingSession(
-            ssrc=config.ssrc,
-            sample_rate=12000,
-            segment_writer=self.writer,
-            segment_duration=120.0,  # 2-minute WSPR cycle
-        )
-```
-
-### Files to Create
-
-| File | Purpose |
-|------|---------|
-| `wspr_wav_writer.py` | SegmentWriter for WAV output |
-| `wspr_recorder.py` | WSPR-specific recorder |
-| `examples/wspr_demo.py` | Standalone demo script |
-
-### Reference: wsprdaemon Integration
-
-wsprdaemon currently uses:
-- `kiwirecorder.py` or `kiwiclient` for audio capture
-- `wsprd` for decoding
-- 2-minute audio files at 12 kHz
-
-This demo will show how ka9q-radio + signal-recorder can replace the audio capture portion
 
 ---
 
