@@ -148,7 +148,7 @@ class TimingMetricsWriter:
             jitter_ms = self._calculate_jitter()
             
             # Classify quality
-            quality = self._classify_quality(time_snap, drift_ms)
+            quality = self._classify_quality(time_snap, drift_ms, ntp_offset_ms)
             
             # Calculate health score using UTC timestamp age (when tone was detected)
             age_seconds = time.time() - time_snap.utc_timestamp
@@ -340,7 +340,8 @@ class TimingMetricsWriter:
         
         return 0.0
     
-    def _classify_quality(self, time_snap: 'TimeSnapReference', drift_ms: float) -> str:
+    def _classify_quality(self, time_snap: 'TimeSnapReference', drift_ms: float,
+                          ntp_offset_ms: Optional[float] = None) -> str:
         """
         Classify timing quality based on source and age
         
@@ -380,8 +381,7 @@ class TimingMetricsWriter:
         # Aged tone (>1 hour) - check if NTP available as fallback
         # This allows graceful degradation: TONE → NTP → WALL_CLOCK
         if is_tone_source and age_seconds >= 3600:
-            ntp_offset = self.get_ntp_offset()
-            if ntp_offset is not None:
+            if ntp_offset_ms is not None:
                 return 'NTP_SYNCED'  # Fallback to NTP for aged tone
         
         # No good anchor available - wall clock only
