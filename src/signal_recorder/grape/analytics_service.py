@@ -42,7 +42,7 @@ from .discrimination_csv_writers import (
     DiscriminationRecord
 )
 from .timing_metrics_writer import TimingMetricsWriter
-from .interfaces.data_models import (
+from ..interfaces.data_models import (
     TimeSnapReference, 
     QualityInfo, 
     Discontinuity, 

@@ -1,11 +1,92 @@
 # Signal Recorder - AI Context Document
 
 **Last Updated:** 2025-12-01  
-**Status:** Combined spectrogram complete. Gap analysis architecture needed.
+**Status:** Layer boundaries clarified. GRAPE/Core separation needed.
 
 ---
 
-## 🔴 NEXT SESSION: GRAPE/Core Separation & Gap Analysis
+## 🔴 CONFIRMED: Layer Boundaries & Timing Architecture
+
+### Core Principle: signal-recorder is a Pass-Through Layer
+
+**signal-recorder does NOT add timing** - it passes through radiod's GPS-quality transport timing unchanged.
+
+What each layer provides:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  APPLICATION (GRAPE, WSPR, CODAR, FM audio, spectrum display)           │
+│  - Consumes payload + metadata from signal-recorder                     │
+│  - May derive additional timing from payload (e.g., GRAPE tones)        │
+│  - Implements domain-specific processing                                │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ▲
+                                    │ Delivers:
+                                    │ - Payload (in requested format)
+                                    │ - Transport timing (from radiod, unchanged)
+                                    │ - Quality metadata (gaps, integrity stats)
+┌─────────────────────────────────────────────────────────────────────────┐
+│  SIGNAL-RECORDER (delivery layer)                                        │
+│  - Subscribes to streams (SSRC management hidden from apps)             │
+│  - Resequences packets (handles out-of-order, detects gaps)             │
+│  - Segments delivery (continuous, timed files, boundaries)              │
+│  - Converts format (IQ→real, sample rate, file format)                  │
+│  - PASSES THROUGH: transport timing, payload                            │
+│  - ADDS: quality/integrity metadata only (gap counts, completeness)     │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ▲
+                                    │ Provides:
+                                    │ - RTP packets with GPS-quality wallclock
+                                    │ - Channel metadata (freq, rate, mode)
+┌─────────────────────────────────────────────────────────────────────────┐
+│  ka9q-python + radiod                                                    │
+│  - SDR capture with GPS timing (GPS_TIME/RTP_TIMESNAP)                  │
+│  - RTP multicast delivery                                               │
+│  - Channel control (create/delete/tune)                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Delivery Modes
+
+signal-recorder delivers payload in these modes:
+- **Live streams**: PCM, FM, WFM for direct audio; spectrum for display
+- **Segmented files**: IQ in NPZ (GRAPE), USB mono WAV (WSPR), etc.
+
+### Metadata Contract
+
+What signal-recorder guarantees with each delivery:
+
+```python
+@dataclass
+class DeliveryMetadata:
+    # From radiod (passed through unchanged)
+    wallclock_start: float       # GPS-quality timestamp of first sample
+    wallclock_end: float         # GPS-quality timestamp of last sample
+    frequency_hz: float          # Center frequency
+    sample_rate: int             # Actual sample rate
+    
+    # From signal-recorder (added)
+    samples_delivered: int       # Actual sample count
+    samples_expected: int        # Expected based on duration
+    gap_count: int               # Number of discontinuities
+    gap_samples: int             # Samples filled with zeros
+    completeness: float          # samples_delivered / samples_expected
+    packets_resequenced: int     # Out-of-order packets handled
+```
+
+### Application Timing Requirements
+
+| Application | Timing Source | Notes |
+|-------------|---------------|-------|
+| FM audio | Real-time | No precision needed |
+| Spectrum display | Approximate | ~second resolution |
+| WSPR | Transport (radiod) | 2-min boundary alignment |
+| CODAR | Transport (radiod) | Wallclock for file naming |
+| GRAPE | Payload (tones) | Derives sub-ms time_snap from WWV/CHU tones |
+
+---
+
+## 🔴 NEXT: GRAPE/Core Separation & Gap Analysis
 
 ### Problem Statement
 

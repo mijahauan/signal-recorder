@@ -28,33 +28,28 @@ See ARCHITECTURE.md for design details.
 Copyright 2025
 """
 
-__version__ = "1.1.0"
+__version__ = "2.0.0"  # Major version bump: package restructuring
 __author__ = "GRAPE Signal Recorder Project"
 
-# Core components
-# NOTE: V2 recorder stack archived to archive/legacy-code/v2-recorder/ (Nov 18, 2025)
-# CURRENT stack: core_recorder.py + analytics_service.py
-# Generic RTP receiver extracted to rtp_receiver.py (Nov 30, 2025)
-# Generic recording session added (Nov 30, 2025)
-from .rtp_receiver import RTPReceiver, RTPHeader
-from .recording_session import (
-    RecordingSession, SessionConfig, SessionState, 
-    SegmentInfo, SessionMetrics, SegmentWriter
+# =============================================================================
+# CORE INFRASTRUCTURE (application-agnostic)
+# Moved to signal_recorder/core/ package (Dec 1, 2025)
+# =============================================================================
+from .core import (
+    RTPReceiver, RTPHeader,
+    RecordingSession, SessionConfig, SessionState,
+    SegmentInfo, SessionMetrics, SegmentWriter,
+    PacketResequencer, RTPPacket, GapInfo,
 )
 
-# GRAPE-specific components (refactored Nov 30, 2025)
-from .grape_recorder import GrapeRecorder, GrapeConfig, GrapeState
-from .grape_npz_writer import GrapeNPZWriter
-
-# WSPR-specific components (added Nov 30, 2025)
-from .wspr_recorder import WsprRecorder, WsprConfig, WsprState, create_wspr_recorder
-from .wspr_wav_writer import WsprWAVWriter
-
-# Stream API - SSRC-free interface (NEW Dec 2025)
-from .stream_spec import StreamSpec, StreamRequest
-from .stream_handle import StreamHandle, StreamInfo
-from .stream_manager import StreamManager
-from .stream_api import (
+# =============================================================================
+# STREAM API (SSRC-free interface)
+# Moved to signal_recorder/stream/ package (Dec 1, 2025)
+# =============================================================================
+from .stream import (
+    StreamSpec, StreamRequest,
+    StreamHandle, StreamInfo,
+    StreamManager,
     subscribe_stream,
     subscribe_iq,
     subscribe_usb,
@@ -64,6 +59,25 @@ from .stream_api import (
     find_stream,
     get_manager,
     close_all,
+)
+
+# =============================================================================
+# GRAPE APPLICATION (WWV/WWVH/CHU time signals)
+# Moved to signal_recorder/grape/ package (Dec 1, 2025)
+# =============================================================================
+from .grape import (
+    GrapeRecorder, GrapeConfig, GrapeState,
+    GrapeNPZWriter,
+)
+
+# =============================================================================
+# WSPR APPLICATION (Weak Signal Propagation Reporter)
+# Moved to signal_recorder/wspr/ package (Dec 1, 2025)
+# =============================================================================
+from .wspr import (
+    WsprRecorder, WsprConfig, WsprState,
+    WsprWAVWriter,
+    create_wspr_recorder,
 )
 
 # Channel management (lower-level)
@@ -96,7 +110,7 @@ __all__ = [
     "StreamHandle",
     "StreamInfo",
     "StreamManager",
-    # === Generic recording infrastructure ===
+    # === Core infrastructure ===
     "RTPReceiver",
     "RTPHeader",
     "RecordingSession",
@@ -105,13 +119,15 @@ __all__ = [
     "SegmentInfo",
     "SessionMetrics",
     "SegmentWriter",
-    # === Application-specific recorders ===
-    # GRAPE
+    "PacketResequencer",
+    "RTPPacket",
+    "GapInfo",
+    # === GRAPE application ===
     "GrapeRecorder",
     "GrapeConfig",
     "GrapeState",
     "GrapeNPZWriter",
-    # WSPR
+    # === WSPR application ===
     "WsprRecorder",
     "WsprConfig",
     "WsprState",
@@ -130,6 +146,12 @@ __all__ = [
     "SSHRsyncUpload",
 ]
 
-# Legacy components moved to src/signal_recorder/legacy/
-# (StreamDiscovery, StreamRecorder, StorageManager, SignalProcessor, etc.)
+# =============================================================================
+# Package structure (Dec 1, 2025):
+#   signal_recorder/
+#   ├── core/       - Application-agnostic: RTP, resequencing, sessions
+#   ├── stream/     - Stream API: subscribe, discover, manage
+#   ├── grape/      - GRAPE app: WWV/WWVH/CHU recording & analysis
+#   └── wspr/       - WSPR app: 2-minute WAV recording
+# =============================================================================
 

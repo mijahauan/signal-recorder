@@ -23,8 +23,8 @@ from typing import Optional, List, Dict, Tuple
 from scipy import signal as scipy_signal
 from scipy.signal import correlate
 
-from .interfaces.tone_detection import ToneDetector, MultiStationToneDetector as IMultiStationToneDetector
-from .interfaces.data_models import ToneDetectionResult, StationType
+from ..interfaces.tone_detection import ToneDetector, MultiStationToneDetector as IMultiStationToneDetector
+from ..interfaces.data_models import ToneDetectionResult, StationType
 
 logger = logging.getLogger(__name__)
 

@@ -36,10 +36,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 from signal_recorder import (
     RTPReceiver, RTPHeader,
     RecordingSession, SessionConfig, SessionState,
-    SegmentInfo, SegmentWriter,
+    SegmentInfo, SegmentWriter, GapInfo,
     ChannelInfo, discover_channels, rtp_to_wallclock
 )
-from signal_recorder.packet_resequencer import GapInfo
 
 
 @dataclass

@@ -25,8 +25,8 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
-from .recording_session import SegmentWriter, SegmentInfo
-from .packet_resequencer import GapInfo
+from ..core.recording_session import SegmentWriter, SegmentInfo
+from ..core.packet_resequencer import GapInfo
 
 logger = logging.getLogger(__name__)
 

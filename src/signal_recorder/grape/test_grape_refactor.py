@@ -17,7 +17,7 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime, timezone
 
-from .rtp_receiver import RTPReceiver
+from ..core.rtp_receiver import RTPReceiver
 from .grape_recorder import GrapeRecorder, GrapeConfig, GrapeState
 
 # Configure logging

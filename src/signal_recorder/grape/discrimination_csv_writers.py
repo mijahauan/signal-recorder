@@ -18,7 +18,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
-from .paths import GRAPEPaths
+from ..paths import GRAPEPaths
 
 logger = logging.getLogger(__name__)
 

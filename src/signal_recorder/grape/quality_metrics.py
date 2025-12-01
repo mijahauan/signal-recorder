@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Dict
 
-from .interfaces.data_models import Discontinuity, DiscontinuityType
+from ..interfaces.data_models import Discontinuity, DiscontinuityType
 
 logger = logging.getLogger(__name__)
 

@@ -22,7 +22,7 @@ from scipy import signal as scipy_signal
 from scipy.fft import rfft, rfftfreq
 from scipy.signal import iirnotch, filtfilt
 
-from .interfaces.data_models import ToneDetectionResult, StationType
+from ..interfaces.data_models import ToneDetectionResult, StationType
 from .tone_detector import MultiStationToneDetector
 from .wwv_bcd_encoder import WWVBCDEncoder
 from .wwv_geographic_predictor import WWVGeographicPredictor
