@@ -35,7 +35,7 @@ Core Recorder (core_recorder.py → GrapeRecorder)
 └─ NPZ archive writing (960,000 samples/minute @ 16 kHz)
 
 Analytics Service (analytics_service.py) - per channel
-├─ 6 discrimination methods (BCD, tones, ticks, 440Hz, test signals, voting)
+├─ 12 voting methods (BCD, tones, ticks, 440Hz, test signals, FSS, etc.)
 ├─ Doppler estimation
 ├─ Decimation (16 kHz → 10 Hz)
 └─ Timing metrics
@@ -406,25 +406,31 @@ DRF Batch Writer
 
 ## Key Modules
 
-### Generic Recording Infrastructure (`src/signal_recorder/`)
-- `recording_session.py` - Generic RTP→segments session manager (NEW)
+### Core Infrastructure (`src/signal_recorder/core/`)
+- `recording_session.py` - Generic RTP→segments session manager
 - `rtp_receiver.py` - Multi-SSRC RTP demultiplexer
 - `packet_resequencer.py` - RTP packet ordering & gap detection
 
-### GRAPE Application (`src/signal_recorder/`)
-- `grape_recorder.py` - Two-phase recorder (startup → recording) (NEW)
-- `grape_npz_writer.py` - SegmentWriter for NPZ output (NEW)
-- `core_recorder.py` - Top-level orchestration
-- `startup_tone_detector.py` - Initial time_snap establishment
-- `channel_manager.py` - Channel configuration
+### Stream API (`src/signal_recorder/stream/`)
+- `stream_api.py` - `subscribe_stream()` and convenience functions
+- `stream_manager.py` - SSRC allocation, lifecycle, stream sharing
+- `stream_spec.py` - Content-based stream identity
+- `stream_handle.py` - Opaque handle returned to applications
 
-### Legacy (deprecated)
-- `core_npz_writer.py` - Original NPZ writer (superseded by grape_npz_writer.py)
-- `analytics_service.py` - NPZ watcher, multi-method processor
-- `wwvh_discrimination.py` - BCD correlation, dual-peak detection
+### GRAPE Application (`src/signal_recorder/grape/`)
+- `grape_recorder.py` - Two-phase recorder (startup → recording)
+- `grape_npz_writer.py` - SegmentWriter for NPZ output
+- `core_recorder.py` - Top-level GRAPE orchestration
+- `analytics_service.py` - NPZ watcher, 12-method processor
+- `wwvh_discrimination.py` - 12 voting methods, cross-validation
 - `tone_detector.py` - 1000/1200 Hz timing tones
+- `startup_tone_detector.py` - Initial time_snap establishment
 - `decimation.py` - 16 kHz → 10 Hz (3-stage FIR)
 - `discrimination_csv_writers.py` - Per-method CSV output
+
+### WSPR Application (`src/signal_recorder/wspr/`)
+- `wspr_recorder.py` - Simple recorder for WSPR
+- `wspr_wav_writer.py` - SegmentWriter for 16-bit WAV output
 
 ### DRF & Upload
 - `drf_batch_writer.py` - 10 Hz NPZ → Digital RF HDF5
@@ -607,11 +613,17 @@ sudo sysctl -w net.core.rmem_max=26214400
 
 ---
 
-**Version**: 3.0  
-**Last Updated**: November 30, 2025  
+**Version**: 3.1  
+**Last Updated**: December 1, 2025  
 **Purpose**: Technical reference for GRAPE Signal Recorder developers
 
-**Recent Changes (Nov 30, 2025):**
+**v2.0.0 Release (Dec 1, 2025):**
+- **Package Restructure** - `core/`, `stream/`, `grape/`, `wspr/` packages
+- **Stream API** - SSRC-free `subscribe_stream()` interface
+- **ka9q-python 3.1.0** - Compatible SSRC allocation algorithm
+- **WSPR Demo** - Multi-application pipeline validation
+
+**Previous Changes (Nov 30, 2025):**
 - **Generic Recording Infrastructure** - Protocol-based design for multi-app support
   - `RecordingSession` - Generic RTP→segments manager
   - `SegmentWriter` protocol - App-specific storage abstraction

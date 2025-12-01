@@ -1,6 +1,6 @@
 # GRAPE Signal Recorder
 
-**Precision WWV/CHU time-standard recorder for ionospheric research** - Captures high-precision IQ data from ka9q-radio, performs 5-method WWV/WWVH discrimination, and uploads Digital RF to HamSCI PSWS.
+**Precision WWV/CHU time-standard recorder for ionospheric research** - Captures high-precision IQ data from ka9q-radio, performs 12-method WWV/WWVH discrimination, and uploads Digital RF to HamSCI PSWS.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -83,7 +83,7 @@ RTPReceiver + ka9q-python (multicast, parsing, timing)
 - **RecordingSession** - Generic packet flow, resequencing, segmentation
 - **RTPReceiver** - Multi-SSRC demultiplexing, transport timing
 
-### 1. Core Recorder (`src/signal_recorder/core_recorder.py`)
+### 1. Core Recorder (`src/signal_recorder/grape/core_recorder.py`)
 
 Rock-solid RTP capture with scientific-grade metadata preservation:
 - Uses `GrapeRecorder` with two-phase operation (startup → recording)
@@ -99,7 +99,7 @@ Rock-solid RTP capture with scientific-grade metadata preservation:
 - **Gap Provenance:** Detailed gap locations, sizes, and packet loss counts
 - **Quality Indicators:** Packets received vs expected, completeness
 
-### 2. Analytics Service (`src/signal_recorder/analytics_service.py`)
+### 2. Analytics Service (`src/signal_recorder/grape/analytics_service.py`)
 
 Processes 16 kHz archives to derived products:
 
@@ -118,7 +118,7 @@ Processes 16 kHz archives to derived products:
 
 **Output:** Separated CSVs per method + 10 Hz NPZ with embedded metadata
 
-### 3. DRF Writer (`src/signal_recorder/drf_batch_writer.py`)
+### 3. DRF Writer (`src/signal_recorder/grape/drf_batch_writer.py`)
 
 Wsprdaemon-compatible Digital RF output:
 - Reads 10 Hz NPZ → writes Digital RF HDF5 (float32 I/Q pairs)
@@ -264,7 +264,14 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 **Beta Release** - Core functionality complete and tested. Daily recording and PSWS upload operational at AC0G since November 2025.
 
-### Recent Updates (Nov 30, 2025)
+### v2.0.0 Release (Dec 1, 2025)
+- **Package Restructure** - Clean separation into `core/`, `stream/`, `grape/`, `wspr/` packages
+- **ka9q-python 3.1.0** - SSRC-free API integration with compatible allocation algorithm
+- **Stream API** - `subscribe_stream()` hides SSRC from applications
+- **WSPR Recorder** - Validates multi-application pipeline architecture
+- **Bug Fix** - Fixed `TimingMetricsWriter.get_ntp_offset()` removal issue
+
+### Previous Updates (Nov 30, 2025)
 - **Generic Recording Infrastructure** - Protocol-based design for multi-app support
   - `RecordingSession` - Generic RTP→segments session manager
   - `SegmentWriter` protocol - App-specific storage abstraction
@@ -272,7 +279,6 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 - **GRAPE Refactor** - Now uses generic infrastructure
   - `GrapeRecorder` - Two-phase startup/recording
   - `GrapeNPZWriter` - SegmentWriter for NPZ output
-  - Enables future apps (WSPR, CODAR) to reuse core infrastructure
 
 ### Previous Updates (Nov 29, 2025)
 - **Test Signal Channel Sounding:** Full exploitation of :08/:44 scientific test signal
