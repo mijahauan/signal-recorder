@@ -15,6 +15,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple, List
+from dataclasses import dataclass
 import numpy as np
 
 try:
@@ -63,16 +64,32 @@ def find_10hz_files_for_date(decimated_dir: Path, date_str: str) -> List[Path]:
     return npz_files
 
 
-def read_10hz_day(npz_files: List[Path], date_str: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+@dataclass
+class DayData:
+    """Container for a day's worth of 10 Hz data with power metrics."""
+    timestamps: np.ndarray          # Full 24-hour timestamp array
+    iq_samples: np.ndarray          # Complex IQ array (gaps = zeros)
+    coverage_pct: float             # Percentage of day with data
+    power_timestamps: np.ndarray    # Per-minute timestamps (Unix)
+    power_db: np.ndarray            # Per-minute mean power (dB)
+    power_valid: np.ndarray         # Boolean mask: True if minute has data
+
+
+def read_10hz_day(npz_files: List[Path], date_str: str) -> Optional[DayData]:
     """
-    Read and concatenate 10 Hz NPZ files for a full day
+    Read 10 Hz NPZ files into a TIME-ALIGNED 24-hour array with power metrics.
+    
+    Creates a full 24-hour array (864,000 samples at 10 Hz) and places each
+    file's data at the correct time position. Gaps in data remain as zeros.
+    Also computes per-minute power for the combined power/spectrogram chart.
     
     Args:
         npz_files: List of 10 Hz NPZ file paths (sorted chronologically)
         date_str: Date string in YYYYMMDD format
         
     Returns:
-        Tuple of (timestamps, iq_samples) or None if error
+        DayData object with timestamps, IQ samples, coverage, and power metrics.
+        Returns None if no valid data found.
     """
     if not npz_files:
         logger.warning("No 10 Hz NPZ files to read")
@@ -83,19 +100,32 @@ def read_10hz_day(npz_files: List[Path], date_str: str) -> Optional[Tuple[np.nda
     month = int(date_str[4:6])
     day = int(date_str[6:8])
     day_start = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
-    day_end = day_start + timedelta(days=1) - timedelta(microseconds=1)
     
     day_start_unix = day_start.timestamp()
-    day_end_unix = day_end.timestamp()
     
-    logger.info(f"Reading 10 Hz data: {day_start.isoformat()} to {day_end.isoformat()}")
+    logger.info(f"Reading 10 Hz data for: {day_start.strftime('%Y-%m-%d')} UTC")
     
-    # Read and concatenate data
-    all_timestamps = []
-    all_samples = []
+    # Create FULL 24-hour arrays
+    # 24 hours * 60 min * 60 sec * 10 Hz = 864,000 samples
     sample_rate = 10  # 10 Hz decimated
+    total_samples = 24 * 60 * 60 * sample_rate  # 864,000
+    total_minutes = 24 * 60  # 1440
     
-    logger.info(f"Reading {len(npz_files)} 10 Hz NPZ files...")
+    # Pre-allocate IQ array with zeros (gaps will appear as no signal)
+    iq_samples = np.zeros(total_samples, dtype=np.complex64)
+    
+    # Create full timestamp array (00:00:00.0 to 23:59:59.9)
+    timestamps = day_start_unix + np.arange(total_samples) * (1.0 / sample_rate)
+    
+    # Per-minute power arrays (for combined chart)
+    power_timestamps = day_start_unix + np.arange(total_minutes) * 60 + 30  # Center of each minute
+    power_db = np.full(total_minutes, np.nan, dtype=np.float32)  # NaN for missing
+    power_valid = np.zeros(total_minutes, dtype=bool)
+    
+    files_loaded = 0
+    samples_placed = 0
+    
+    logger.info(f"Reading {len(npz_files)} 10 Hz NPZ files into time-aligned array...")
     
     for i, npz_file in enumerate(npz_files):
         try:
@@ -106,7 +136,7 @@ def read_10hz_day(npz_files: List[Path], date_str: str) -> Optional[Tuple[np.nda
                 timing_metadata = data['timing_metadata'].item() if 'timing_metadata' in data else {}
                 file_unix_ts = timing_metadata.get('utc_timestamp', None)
                 
-                # If no timing metadata, try to parse from filename
+                # If no timing metadata, parse from filename
                 if file_unix_ts is None:
                     # Filename format: YYYYMMDDTHHMMSSZ_freq_iq_10hz.npz
                     filename = npz_file.name
@@ -115,14 +145,33 @@ def read_10hz_day(npz_files: List[Path], date_str: str) -> Optional[Tuple[np.nda
                     dt = dt.replace(tzinfo=timezone.utc)
                     file_unix_ts = dt.timestamp()
                 
-                # Generate timestamps for this file (10 Hz = 0.1s per sample)
-                num_samples = len(iq)
-                file_timestamps = file_unix_ts + np.arange(num_samples) * 0.1
+                # Calculate index position in the 24-hour array
+                offset_seconds = file_unix_ts - day_start_unix
                 
-                # Only include samples within the target day
-                mask = (file_timestamps >= day_start_unix) & (file_timestamps <= day_end_unix)
-                all_timestamps.append(file_timestamps[mask])
-                all_samples.append(iq[mask])
+                # Skip files outside the target day
+                if offset_seconds < 0 or offset_seconds >= 86400:
+                    continue
+                
+                # Calculate start index (10 samples per second)
+                start_idx = int(offset_seconds * sample_rate)
+                end_idx = start_idx + len(iq)
+                
+                # Bounds check (in case file extends past midnight)
+                if end_idx > total_samples:
+                    iq = iq[:total_samples - start_idx]
+                    end_idx = total_samples
+                
+                # Place data at correct time position
+                iq_samples[start_idx:end_idx] = iq
+                files_loaded += 1
+                samples_placed += len(iq)
+                
+                # Compute per-minute power (for combined chart)
+                minute_idx = int(offset_seconds / 60)
+                if 0 <= minute_idx < total_minutes and len(iq) > 0:
+                    mean_power = np.mean(np.abs(iq) ** 2)
+                    power_db[minute_idx] = 10 * np.log10(mean_power + 1e-12)
+                    power_valid[minute_idx] = True
                 
             if (i + 1) % 100 == 0:
                 logger.info(f"  Processed {i+1}/{len(npz_files)} files...")
@@ -131,28 +180,40 @@ def read_10hz_day(npz_files: List[Path], date_str: str) -> Optional[Tuple[np.nda
             logger.warning(f"Error reading {npz_file.name}: {e}")
             continue
     
-    if not all_timestamps:
+    if files_loaded == 0:
         logger.error("No valid data read from NPZ files")
         return None
     
-    # Concatenate all data
-    timestamps = np.concatenate(all_timestamps)
-    iq_samples = np.concatenate(all_samples)
+    # Report coverage statistics
+    coverage_pct = (samples_placed / total_samples) * 100
+    minutes_with_data = samples_placed / 600  # 600 samples per minute
+    gap_minutes = (total_samples - samples_placed) / 600
     
-    logger.info(f"Loaded {len(timestamps)} samples ({len(timestamps)/600:.1f} minutes)")
+    logger.info(f"Loaded {files_loaded} files, {samples_placed:,} samples")
+    logger.info(f"Coverage: {coverage_pct:.1f}% ({minutes_with_data:.0f} min data, {gap_minutes:.0f} min gaps)")
     
-    return timestamps, iq_samples
+    return DayData(
+        timestamps=timestamps,
+        iq_samples=iq_samples,
+        coverage_pct=coverage_pct,
+        power_timestamps=power_timestamps,
+        power_db=power_db,
+        power_valid=power_valid
+    )
 
 
-def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray, 
-                         output_path: Path, channel_name: str, date_str: str, 
-                         date_obj: datetime, grid_square: str = 'EM38ww'):
+def generate_combined_chart(day_data: DayData, output_path: Path, channel_name: str,
+                            date_str: str, date_obj: datetime, grid_square: str = 'EM38ww'):
     """
-    Generate spectrogram from 10 Hz IQ data and save to PNG with solar zenith overlay
+    Generate combined power + spectrogram chart with perfectly aligned x-axes.
+    
+    Creates a 2-panel figure:
+    - Top panel: Carrier power (dB) line chart with solar zenith overlay
+    - Bottom panel: Spectrogram (frequency vs time)
+    Both panels share the same x-axis for perfect alignment.
     
     Args:
-        timestamps: Unix timestamps (seconds)
-        iq_samples: Complex IQ samples at 10 Hz
+        day_data: DayData object with IQ samples and power metrics
         output_path: Output PNG file path
         channel_name: Channel name for title
         date_str: Date string for title (YYYY-MM-DD)
@@ -160,15 +221,17 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         grid_square: Maidenhead grid square for receiver location (for solar zenith)
     """
     try:
+        from matplotlib.dates import HourLocator
+        
         sample_rate = 10  # 10 Hz
         
-        # Compute spectrogram
+        # === Compute spectrogram ===
         logger.info("Computing spectrogram...")
         nperseg = 128  # ~12.8 seconds per segment at 10 Hz
         noverlap = 64  # 50% overlap
         
         f, t, Sxx = signal.spectrogram(
-            iq_samples,
+            day_data.iq_samples,
             fs=sample_rate,
             nperseg=nperseg,
             noverlap=noverlap,
@@ -186,23 +249,96 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
         Sxx_db_shifted = np.fft.fftshift(Sxx_db, axes=0)
         
         # Convert spectrogram time to absolute timestamps
-        # t is relative time in seconds from start
-        spectrogram_timestamps = timestamps[0] + t
+        spectrogram_timestamps = day_data.timestamps[0] + t
+        spec_dt_times = [datetime.fromtimestamp(ts, tz=timezone.utc) for ts in spectrogram_timestamps]
         
-        # Convert to datetime for plotting
-        dt_times = [datetime.fromtimestamp(ts, tz=timezone.utc) for ts in spectrogram_timestamps]
+        # Convert power timestamps to datetime
+        power_dt_times = [datetime.fromtimestamp(ts, tz=timezone.utc) for ts in day_data.power_timestamps]
         
-        # Create plot - wider format for better 24-hour spread
-        logger.info("Creating plot...")
-        fig, ax = plt.subplots(figsize=(30, 6), dpi=120)
+        # === Create 2-panel figure with shared x-axis ===
+        logger.info("Creating combined chart...")
+        fig, (ax_power, ax_spec) = plt.subplots(
+            2, 1, 
+            figsize=(30, 10),  # Taller to accommodate both panels
+            dpi=120,
+            sharex=True,
+            gridspec_kw={'height_ratios': [1, 2.5], 'hspace': 0.08},
+            layout='constrained'  # Better layout handling with twinx axes
+        )
         
-        # Plot spectrogram with FIXED dB range for consistent comparison
-        # Range based on observed power levels (typically -60 to 0 dB relative)
-        FIXED_DB_MIN = -60   # dB floor (noise floor)
-        FIXED_DB_MAX = 0     # dB ceiling (strong carriers)
+        # === TOP PANEL: Power Chart ===
+        # Only plot valid power points (where we have data)
+        valid_times = [power_dt_times[i] for i in range(len(power_dt_times)) if day_data.power_valid[i]]
+        valid_power = day_data.power_db[day_data.power_valid]
         
-        im = ax.pcolormesh(
-            dt_times,
+        if len(valid_times) > 0:
+            ax_power.plot(valid_times, valid_power, 
+                         color='#3b82f6', linewidth=1.0, alpha=0.9,
+                         label='Mean Power')
+            
+            # Calculate and display power range
+            power_min = np.nanmin(valid_power)
+            power_max = np.nanmax(valid_power)
+            power_mean = np.nanmean(valid_power)
+            
+            # Set y-axis limits with some padding
+            y_range = power_max - power_min
+            ax_power.set_ylim(power_min - 0.1 * y_range - 5, power_max + 0.1 * y_range + 5)
+        
+        ax_power.set_ylabel('Power (dB)', fontsize=11)
+        ax_power.grid(True, alpha=0.3, linestyle='--')
+        
+        # Title with coverage info
+        if day_data.coverage_pct < 99.5:
+            title = f'{channel_name} - {date_str} ({day_data.coverage_pct:.0f}% coverage)'
+        else:
+            title = f'{channel_name} - {date_str}'
+        ax_power.set_title(title, fontsize=14, fontweight='bold', pad=10)
+        
+        # === Add Solar Zenith Overlay to Power Panel ===
+        try:
+            from signal_recorder.solar_zenith_calculator import calculate_solar_zenith_for_day
+            
+            logger.info(f"Calculating solar zenith for grid {grid_square}...")
+            solar_data = calculate_solar_zenith_for_day(date_obj.strftime('%Y%m%d'), grid_square)
+            
+            if solar_data and 'timestamps' in solar_data:
+                ax_solar = ax_power.twinx()
+                
+                # Convert solar timestamps to datetime
+                solar_times = [datetime.fromisoformat(ts.replace('Z', '+00:00')) for ts in solar_data['timestamps']]
+                
+                # Determine channel type
+                is_chu = channel_name.upper().startswith('CHU')
+                
+                if is_chu and 'chu_solar_elevation' in solar_data:
+                    ax_solar.plot(solar_times, solar_data['chu_solar_elevation'], 
+                                 color='#f97316', linewidth=1.5, linestyle='--', alpha=0.7,
+                                 label='Solar Elev. (CHU path)')
+                else:
+                    ax_solar.plot(solar_times, solar_data['wwv_solar_elevation'], 
+                                 color='#ef4444', linewidth=1.5, linestyle='--', alpha=0.7,
+                                 label='Solar Elev. (WWV)')
+                    ax_solar.plot(solar_times, solar_data['wwvh_solar_elevation'], 
+                                 color='#a855f7', linewidth=1.5, linestyle=':', alpha=0.7,
+                                 label='Solar Elev. (WWVH)')
+                
+                ax_solar.set_ylabel('Solar Elevation (°)', fontsize=9, color='#666')
+                ax_solar.set_ylim(-90, 90)
+                ax_solar.axhline(y=0, color='gray', linewidth=0.5, linestyle=':')
+                ax_solar.tick_params(axis='y', labelcolor='#666', labelsize=8)
+                ax_solar.legend(loc='upper right', fontsize=8, framealpha=0.9)
+                logger.info("Added solar zenith overlay to power panel")
+                
+        except Exception as e:
+            logger.warning(f"Could not add solar zenith overlay: {e}")
+        
+        # === BOTTOM PANEL: Spectrogram ===
+        FIXED_DB_MIN = -60   # dB floor
+        FIXED_DB_MAX = 0     # dB ceiling
+        
+        im = ax_spec.pcolormesh(
+            spec_dt_times,
             f_shifted,
             Sxx_db_shifted,
             shading='auto',
@@ -211,80 +347,31 @@ def generate_spectrogram(timestamps: np.ndarray, iq_samples: np.ndarray,
             vmax=FIXED_DB_MAX
         )
         
-        # Labels and title
-        ax.set_xlabel('Time (UTC)', fontsize=12)
-        ax.set_ylabel('Frequency (Hz)', fontsize=12)
-        ax.set_title(f'{channel_name} - {date_str} - 10 Hz Decimated Spectrogram', fontsize=14, fontweight='bold')
+        ax_spec.set_ylabel('Frequency (Hz)', fontsize=11)
+        ax_spec.set_xlabel('Time (UTC)', fontsize=11)
+        ax_spec.grid(True, alpha=0.2, linestyle='--')
         
-        # Set x-axis to always show full 24-hour UTC day
+        # Add colorbar for spectrogram
+        cbar = fig.colorbar(im, ax=ax_spec, label='Spectral Power (dB)', shrink=0.8)
+        
+        # === Shared X-axis configuration ===
         day_start = date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = day_start + timedelta(days=1)
-        ax.set_xlim(day_start, day_end)
+        ax_spec.set_xlim(day_start, day_end)
         
-        # Format x-axis with explicit 3-hour ticks to match power chart
-        from matplotlib.dates import HourLocator
-        ax.xaxis.set_major_locator(HourLocator(byhour=[0, 3, 6, 9, 12, 15, 18, 21]))
-        ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
-        fig.autofmt_xdate()
+        # Format x-axis with 3-hour ticks
+        ax_spec.xaxis.set_major_locator(HourLocator(byhour=[0, 3, 6, 9, 12, 15, 18, 21]))
+        ax_spec.xaxis.set_major_formatter(DateFormatter('%H:%M'))
         
-        # Add colorbar
-        cbar = fig.colorbar(im, ax=ax, label='Power (dB)')
+        # Rotate x-axis labels for readability
+        plt.setp(ax_spec.xaxis.get_majorticklabels(), rotation=0, ha='center')
         
-        # Add grid
-        ax.grid(True, alpha=0.3, linestyle='--')
-        
-        # === Add Solar Zenith Overlay ===
-        try:
-            from signal_recorder.solar_zenith_calculator import calculate_solar_zenith_for_day
-            
-            logger.info(f"Calculating solar zenith for grid {grid_square}...")
-            solar_data = calculate_solar_zenith_for_day(date_obj.strftime('%Y%m%d'), grid_square)
-            
-            if solar_data and 'timestamps' in solar_data:
-                # Create secondary y-axis for solar elevation
-                ax2 = ax.twinx()
-                
-                # Convert solar timestamps to datetime
-                solar_times = [datetime.fromisoformat(ts.replace('Z', '+00:00')) for ts in solar_data['timestamps']]
-                
-                # Determine channel type to show appropriate solar paths
-                is_chu = channel_name.upper().startswith('CHU')
-                
-                if is_chu and 'chu_solar_elevation' in solar_data:
-                    # CHU channel: show CHU path solar elevation
-                    ax2.plot(solar_times, solar_data['chu_solar_elevation'], 
-                            color='#e67e22', linewidth=2, linestyle='-', alpha=0.8,
-                            label=f"Solar Elev. (CHU path)")
-                    logger.info(f"Added solar zenith overlay for CHU path")
-                else:
-                    # WWV channel: show WWV and WWVH path solar elevations
-                    ax2.plot(solar_times, solar_data['wwv_solar_elevation'], 
-                            color='#e74c3c', linewidth=2, linestyle='-', alpha=0.8,
-                            label=f"Solar Elev. (WWV path)")
-                    ax2.plot(solar_times, solar_data['wwvh_solar_elevation'], 
-                            color='#9b59b6', linewidth=2, linestyle='--', alpha=0.8,
-                            label=f"Solar Elev. (WWVH path)")
-                    logger.info(f"Added solar zenith overlay for WWV/WWVH paths")
-                
-                # Configure secondary y-axis
-                ax2.set_ylabel('Solar Elevation (°)', fontsize=10, color='#666')
-                ax2.set_ylim(-90, 90)
-                ax2.axhline(y=0, color='gray', linewidth=0.5, linestyle=':')  # Horizon line
-                ax2.legend(loc='upper right', fontsize=8)
-                ax2.tick_params(axis='y', labelcolor='#666')
-                
-        except Exception as e:
-            logger.warning(f"Could not add solar zenith overlay: {e}")
-        
-        # Tight layout
-        plt.tight_layout()
-        
-        # Save
+        # Save (layout already handled by constrained_layout)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=100, bbox_inches='tight')
+        plt.savefig(output_path, dpi=100, bbox_inches='tight', facecolor='white')
         plt.close()
         
-        logger.info(f"✅ Spectrogram saved: {output_path}")
+        logger.info(f"✅ Combined chart saved: {output_path}")
         logger.info(f"   Size: {output_path.stat().st_size / 1024:.1f} KB")
         
     except Exception as e:
@@ -376,25 +463,22 @@ def main():
                 logger.warning(f"Skipping {channel_name} - no 10 Hz NPZ files for {date_str}")
                 continue
             
-            # Read 10 Hz data
-            result = read_10hz_day(npz_files, date_str)
-            if result is None:
+            # Read 10 Hz data into time-aligned 24-hour array with power metrics
+            day_data = read_10hz_day(npz_files, date_str)
+            if day_data is None:
                 logger.warning(f"Skipping {channel_name} - read failed")
                 continue
             
-            timestamps, iq_samples = result
-            
-            # Create output directory (unified path structure, no subdirectories)
+            # Create output directory
             output_dir = Path(args.data_root) / 'spectrograms' / args.date
             output_dir.mkdir(parents=True, exist_ok=True)
             
-            # Generate spectrogram with unified naming: {channel}_{date}_decimated_spectrogram.png
+            # Generate combined power + spectrogram chart
             safe_channel_name = channel_name.replace(' ', '_')
             output_path = output_dir / f'{safe_channel_name}_{args.date}_decimated_spectrogram.png'
             
-            generate_spectrogram(
-                timestamps=timestamps,
-                iq_samples=iq_samples,
+            generate_combined_chart(
+                day_data=day_data,
                 output_path=output_path,
                 channel_name=channel_name,
                 date_str=date_display,

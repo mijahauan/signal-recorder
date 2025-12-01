@@ -5,8 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Carrier Analysis - GRAPE Signal Recorder</title>
   <link rel="stylesheet" href="/styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
   <script>
     window.GRAPE_CURRENT_PAGE = 'carrier';
   </script>
@@ -151,15 +149,6 @@
       background: rgba(15, 23, 42, 0.4);
     }
     
-    .power-chart-container {
-      width: 100%;
-      height: 220px;
-      margin-top: var(--spacing-md);
-      background: #ffffff;  /* White background like spectrogram empty area */
-      border-radius: var(--radius-md);
-      padding: var(--spacing-md);
-      border: 1px solid var(--surface-border);
-    }
     
     .chart-label {
       font-size: 12px;
@@ -272,9 +261,6 @@
     let autoRefreshInterval = null;
     let availableDates = [];
     let allChannels = [];
-    let powerChart = null;
-    let solarZenithData = null;
-    let stationGridSquare = 'EM38ww'; // Default, will be updated from station info
     
     // Fetch available dates and populate dropdown
     async function loadAvailableDates() {
@@ -518,279 +504,16 @@
           ` : ''}
           
           <div class="spectrogram-container">
-            <div class="chart-label">📊 Spectrogram (10 Hz Decimated)</div>
+            <div class="chart-label">📊 Carrier Power + Spectrogram (10 Hz Decimated)</div>
             <img src="${ch.spectrogram_url}?t=${Date.now()}" alt="${ch.name} spectrogram" class="spectrogram" 
                  onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22800%22 height=%22300%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22800%22 height=%22300%22/%3E%3Ctext x=%22400%22 y=%22150%22 text-anchor=%22middle%22 fill=%22%23999%22%3ESpectrogram not available%3C/text%3E%3C/svg%3E'">
-          </div>
-          
-          <div class="chart-label">📈 10 Hz Carrier Power (dB) Over Time</div>
-          <div class="power-chart-container">
-            <canvas id="power-chart"></canvas>
           </div>
         </div>
       `;
       
       document.getElementById('channel-detail').innerHTML = html;
-      
-      // Fetch and render power data
-      await fetchAndRenderPowerChart(ch.name);
     }
     
-    async function fetchAndRenderPowerChart(channelName) {
-      try {
-        // Fetch 10Hz carrier power data
-        const response = await fetch(`/api/v1/channels/${encodeURIComponent(channelName)}/carrier-power/${currentDate}`);
-        const data = await response.json();
-        
-        if (!data.records || data.records.length === 0) {
-          const ctx = document.getElementById('power-chart');
-          if (ctx) {
-            ctx.parentElement.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--text-muted);">No carrier power data available for this date</div>';
-          }
-          return;
-        }
-        
-        // Parse data for chart - convert timestamp strings to Date objects
-        const labels = [];
-        const powerData = [];
-        const peakData = [];
-        
-        data.records.forEach(record => {
-          // Parse timestamp: YYYYMMDDTHHMMSSZ
-          const ts = record.timestamp;
-          const year = parseInt(ts.slice(0, 4));
-          const month = parseInt(ts.slice(4, 6)) - 1;
-          const day = parseInt(ts.slice(6, 8));
-          const hour = parseInt(ts.slice(9, 11));
-          const min = parseInt(ts.slice(11, 13));
-          const sec = parseInt(ts.slice(13, 15));
-          const timestamp = new Date(Date.UTC(year, month, day, hour, min, sec));
-          
-          labels.push(timestamp);
-          powerData.push(record.power_db);
-          peakData.push(record.peak_db);
-        });
-        
-        // Destroy existing chart if present
-        if (powerChart) {
-          powerChart.destroy();
-        }
-        
-        const ctx = document.getElementById('power-chart');
-        if (!ctx) return;
-        
-        // Build datasets array - colors match spectrogram viridis colormap
-        // Yellow/orange for power (high values in spectrogram)
-        const datasets = [
-          {
-            label: 'Mean Power',
-            data: powerData,
-            borderColor: '#fbbf24',  // Yellow - matches spectrogram high power
-            backgroundColor: 'rgba(251, 191, 36, 0.15)',
-            borderWidth: 2,
-            pointRadius: 0,
-            tension: 0.1,
-            fill: true,
-            yAxisID: 'y'
-          },
-          {
-            label: 'Peak Power',
-            data: peakData,
-            borderColor: '#f97316',  // Orange - peak highlights
-            backgroundColor: 'rgba(249, 115, 22, 0.05)',
-            borderWidth: 1.5,
-            pointRadius: 0,
-            tension: 0.1,
-            fill: false,
-            yAxisID: 'y'
-          }
-        ];
-        
-        // Add solar zenith overlay if available
-        if (solarZenithData && solarZenithData.timestamps) {
-          console.log('Adding solar zenith overlay with', solarZenithData.timestamps.length, 'points');
-          // Convert solar timestamps to Date objects
-          const solarLabels = solarZenithData.timestamps.map(ts => new Date(ts));
-          
-          // Determine channel type to show appropriate solar paths
-          const isCHU = channelName.toUpperCase().startsWith('CHU');
-          
-          if (isCHU && solarZenithData.chu_solar_elevation) {
-            // CHU channel: show CHU path solar elevation
-            datasets.push({
-              label: 'Solar Elev. (CHU path)',
-              data: solarLabels.map((t, i) => ({ x: t, y: solarZenithData.chu_solar_elevation[i] })),
-              borderColor: '#e67e22',  // Orange for CHU (matches WWVH)
-              borderWidth: 3,
-              pointRadius: 0,
-              tension: 0.3,
-              fill: false,
-              yAxisID: 'y2'
-            });
-          } else {
-            // WWV channel: show WWV and WWVH path solar elevation
-            datasets.push({
-              label: 'Solar Elev. (WWV path)',
-              data: solarLabels.map((t, i) => ({ x: t, y: solarZenithData.wwv_solar_elevation[i] })),
-              borderColor: '#e74c3c',  // Red for WWV path
-              borderWidth: 3,
-              pointRadius: 0,
-              tension: 0.3,
-              fill: false,
-              yAxisID: 'y2'
-            });
-            
-            datasets.push({
-              label: 'Solar Elev. (WWVH path)',
-              data: solarLabels.map((t, i) => ({ x: t, y: solarZenithData.wwvh_solar_elevation[i] })),
-              borderColor: '#9b59b6',  // Purple for WWVH path
-              borderWidth: 3,
-              pointRadius: 0,
-              tension: 0.3,
-              fill: false,
-              yAxisID: 'y2'
-            });
-          }
-        } else {
-          console.log('No solar zenith data available for carrier chart');
-        }
-        
-        powerChart = new Chart(ctx, {
-          type: 'line',
-          data: {
-            labels: labels,
-            datasets: datasets
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: {
-              intersect: false,
-              mode: 'index'
-            },
-            plugins: {
-              legend: {
-                position: 'top',
-                labels: {
-                  boxWidth: 12,
-                  padding: 15,
-                  color: '#1e293b'  // Dark text for white background
-                }
-              },
-              tooltip: {
-                callbacks: {
-                  title: (items) => {
-                    if (items.length > 0) {
-                      const d = new Date(items[0].parsed.x);
-                      return d.getUTCHours().toString().padStart(2,'0') + ':' +
-                             d.getUTCMinutes().toString().padStart(2,'0') + ' UTC';
-                    }
-                    return '';
-                  },
-                  label: (context) => {
-                    return `${context.dataset.label}: ${context.parsed.y.toFixed(1)} dB`;
-                  }
-                }
-              }
-            },
-            scales: {
-              x: {
-                type: 'time',
-                // Match spectrogram: full 24-hour day
-                min: new Date(Date.UTC(
-                  parseInt(currentDate.slice(0,4)),
-                  parseInt(currentDate.slice(4,6)) - 1,
-                  parseInt(currentDate.slice(6,8)),
-                  0, 0, 0
-                )),
-                max: new Date(Date.UTC(
-                  parseInt(currentDate.slice(0,4)),
-                  parseInt(currentDate.slice(4,6)) - 1,
-                  parseInt(currentDate.slice(6,8)),
-                  23, 59, 59
-                )),
-                time: {
-                  unit: 'hour',
-                  stepSize: 3,  // Match spectrogram: 3-hour intervals
-                  displayFormats: {
-                    hour: 'HH:mm'
-                  },
-                  tooltipFormat: 'HH:mm',
-                },
-                adapters: {
-                  date: {
-                    zone: 'UTC'
-                  }
-                },
-                ticks: {
-                  color: '#475569',  // Dark gray for white background
-                  callback: function(value, index, ticks) {
-                    const d = new Date(value);
-                    const hour = d.getUTCHours();
-                    if (hour % 3 === 0) {
-                      return hour.toString().padStart(2, '0') + ':00';
-                    }
-                    return '';
-                  },
-                  maxTicksLimit: 9
-                },
-                title: {
-                  display: true,
-                  text: 'Time (UTC)',
-                  color: '#1e293b'
-                },
-                grid: {
-                  color: 'rgba(100, 116, 139, 0.25)'  // Gray grid for white bg
-                }
-              },
-              y: {
-                type: 'linear',
-                position: 'left',
-                title: {
-                  display: true,
-                  text: 'Power (dB)',
-                  color: '#1e293b'
-                },
-                ticks: {
-                  color: '#475569'
-                },
-                grid: {
-                  color: 'rgba(100, 116, 139, 0.25)'
-                }
-              },
-              y2: {
-                type: 'linear',
-                position: 'right',
-                min: -90,
-                max: 90,
-                title: {
-                  display: true,
-                  text: 'Solar Elev. (°)',
-                  color: '#1e293b'
-                },
-                ticks: {
-                  color: '#475569',
-                  callback: function(value) {
-                    if (value === 0) return '0° (horizon)';
-                    return value + '°';
-                  }
-                },
-                grid: {
-                  drawOnChartArea: false
-                }
-              }
-            }
-          }
-        });
-        
-      } catch (err) {
-        console.error('Error fetching power data:', err);
-        const ctx = document.getElementById('power-chart');
-        if (ctx) {
-          ctx.parentElement.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--error);">Error loading carrier power data</div>';
-        }
-      }
-    }
     
     function startAutoRefresh() {
       if (autoRefreshInterval) return;
@@ -804,43 +527,9 @@
       }
     }
     
-    // Fetch station info for grid square
-    async function loadStationInfo() {
-      try {
-        const response = await fetch('/api/v1/station/info');
-        if (response.ok) {
-          const info = await response.json();
-          if (info.grid_square) {
-            stationGridSquare = info.grid_square;
-            console.log('Station grid square:', stationGridSquare);
-          }
-        }
-      } catch (err) {
-        console.warn('Could not load station info:', err);
-      }
-    }
-    
-    // Fetch solar zenith data for current date
-    async function loadSolarZenith() {
-      try {
-        const response = await fetch(`/api/v1/solar-zenith?date=${currentDate}&grid=${stationGridSquare}`);
-        if (response.ok) {
-          solarZenithData = await response.json();
-          console.log('Solar zenith loaded - WWV midpoint:', solarZenithData.wwv_midpoint, 
-                      'WWVH midpoint:', solarZenithData.wwvh_midpoint,
-                      'CHU midpoint:', solarZenithData.chu_midpoint);
-        }
-      } catch (err) {
-        console.warn('Could not load solar zenith data:', err);
-        solarZenithData = null;
-      }
-    }
-    
     // Initial load
     async function init() {
-      await loadStationInfo();
       await loadAvailableDates();
-      await loadSolarZenith();
       fetchData();
       startAutoRefresh();
     }

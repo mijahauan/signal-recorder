@@ -1,97 +1,258 @@
 # Signal Recorder - AI Context Document
 
 **Last Updated:** 2025-12-01  
-**Status:** Stream API v1.1.0 complete. Next: Debug spectrogram 24-hour coverage.
+**Status:** Combined spectrogram complete. Gap analysis architecture needed.
 
 ---
 
-## 🎯 Next Session: Spectrogram 24-Hour Coverage Issue
+## 🔴 NEXT SESSION: GRAPE/Core Separation & Gap Analysis
 
-### Problem
+### Problem Statement
 
-Spectrograms are **not filling the whole 24-hour graph**. The user expects spectrograms to show a full 24-hour day (00:00-23:59 UTC), but they appear incomplete.
+The codebase has **GRAPE-specific functions embedded in core infrastructure**, making it difficult to:
+1. Support other applications (WSPR, CODAR, etc.) cleanly
+2. Assign gap categories to proper architectural layers
+3. Define a clean DTO for gap records across layers
 
-### Possible Causes to Investigate
+### Current Architecture Issues
 
-1. **Data gaps in 10 Hz decimated NPZ files**
-   - Check: `analytics/{channel}/decimated/` for missing minute files
-   - Files named: `YYYYMMDDTHHMMSSZ_freq_iq_10hz.npz`
-   - Each file = 1 minute of 10 Hz data (600 samples)
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    CURRENT: GRAPE-SPECIFIC IN CORE                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  core_recorder.py        → Uses GrapeRecorder directly                      │
+│  core_npz_writer.py      → GRAPE NPZ format hardcoded                       │
+│  analytics_service.py    → GRAPE decimation, GRAPE discrimination           │
+│  startup_tone_detector.py → WWV/CHU tone-specific time_snap                 │
+│  grape_npz_writer.py     → Good: already separated                          │
+│  grape_recorder.py       → Good: already separated                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-2. **Analytics service not processing all minutes**
-   - Check: `scripts/grape-analytics.sh` service status
-   - Look for errors in analytics processing logs
-   - Gap in 16 kHz NPZ files → gap in decimated files
+### Target Architecture
 
-3. **Spectrogram generation reading wrong time range**
-   - Script: `scripts/generate_spectrograms_from_10hz.py`
-   - X-axis may only show actual data range, not full 24 hours
-   - See: `docs/features/PARTIAL_DAY_SPECTROGRAM_FIX.md` for context
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 1: CORE INFRASTRUCTURE (application-agnostic)                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  rtp_receiver.py         → RTP multicast reception                          │
+│  packet_resequencer.py   → Sequence ordering, gap detection                 │
+│  recording_session.py    → Segmentation, SegmentWriter protocol             │
+│  stream_manager.py       → SSRC allocation, stream sharing                  │
+│  gap_event_log.py        → NEW: Gap event collection & storage              │
+│                                                                              │
+│  Gap types at this layer:                                                   │
+│  - RTP_PACKET_LOSS (sequence gaps)                                          │
+│  - RTP_TIMESTAMP_JUMP (timing discontinuity)                                │
+│  - BUFFER_OVERFLOW (processing lag)                                         │
+│  - PAYLOAD_DECODE_ERROR (malformed data)                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 2: RADIOD INTEGRATION (ka9q-python bridge)                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  radiod_health.py        → Health checking (existing)                       │
+│  channel_manager.py      → Channel creation/deletion                        │
+│                                                                              │
+│  Gap types at this layer:                                                   │
+│  - RADIOD_DOWN (no status packets)                                          │
+│  - CHANNEL_MISSING (SSRC not in discovery)                                  │
+│  - MULTICAST_UNREACHABLE (socket join failed)                               │
+│  - NO_RTP_TRAFFIC (no packets for N seconds)                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 3: APPLICATION-SPECIFIC (GRAPE, WSPR, CODAR, etc.)                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  GRAPE:                                                                      │
+│    grape_recorder.py      → Two-phase (startup → recording)                 │
+│    grape_npz_writer.py    → SegmentWriter for NPZ format                    │
+│    grape_analytics.py     → NEW: Move from analytics_service.py             │
+│    grape_decimation.py    → NEW: Move from analytics_service.py             │
+│    grape_discrimination.py → Rename from wwvh_discrimination.py             │
+│    startup_tone_detector.py → Move to grape/ or generalize                  │
+│                                                                              │
+│  WSPR:                                                                       │
+│    wspr_recorder.py       → Already exists                                  │
+│    wspr_wav_writer.py     → Already exists                                  │
+│                                                                              │
+│  Gap types at this layer:                                                   │
+│  - ARCHIVE_MISSING (expected NPZ not found)                                 │
+│  - DECIMATION_ERROR (decimation failed)                                     │
+│  - TIME_SNAP_FAILED (tone detection failed)                                 │
+│  - CLIENT_SPECIFIC (application-defined)                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-4. **Channel restart causing data loss**
-   - radiod restart or channel recreation causes gaps
-   - Check: core_recorder.py logs for channel recovery events
+### Gap Analysis DTO Design
 
-5. **DRF writer not keeping up**
-   - Digital RF writes from decimated NPZ
-   - Check: `drf_batch_writer.py` backlog
+```python
+@dataclass
+class GapEvent:
+    """Unified gap event record - crosses all layers"""
+    timestamp: float           # Unix timestamp when gap detected
+    channel: str               # Channel name (e.g., "WWV 10 MHz")
+    layer: str                 # CORE | RADIOD | APPLICATION
+    gap_type: str              # Category from layer-specific list
+    duration_samples: int      # Gap size in samples (0 if unknown)
+    duration_seconds: float    # Gap size in seconds
+    severity: str              # INFO | WARNING | ERROR | CRITICAL
+    details: Dict[str, Any]    # Layer-specific context
+    
+    # RTP-specific (if applicable)
+    rtp_timestamp_start: Optional[int] = None
+    rtp_timestamp_end: Optional[int] = None
+    packets_lost: Optional[int] = None
+
+
+class GapEventLog:
+    """Collects gap events from all layers"""
+    def emit(self, event: GapEvent) -> None: ...
+    def get_events(self, channel: str, date: str) -> List[GapEvent]: ...
+    def get_summary(self, date: str) -> Dict[str, Any]: ...
+```
+
+### Files to Refactor
+
+| Current File | Action | New Location |
+|--------------|--------|--------------|
+| `analytics_service.py` | Split | `grape/grape_analytics.py` + `core/` |
+| `wwvh_discrimination.py` | Move | `grape/grape_discrimination.py` |
+| `wwv_test_signal.py` | Move | `grape/wwv_test_signal.py` |
+| `startup_tone_detector.py` | Move | `grape/startup_tone_detector.py` |
+| `core_recorder.py` | Refactor | Remove GRAPE-specific orchestration |
+| `core_npz_writer.py` | Evaluate | May be redundant with grape_npz_writer |
+
+### API for Gap Consumption
+
+```python
+# Client apps can subscribe to gap events
+gap_log = GapEventLog()
+
+# Core layer emits gaps
+resequencer.on_gap = lambda gap_info: gap_log.emit(GapEvent(
+    layer="CORE",
+    gap_type="RTP_PACKET_LOSS",
+    duration_samples=gap_info.gap_samples,
+    ...
+))
+
+# Application layer adds its own gaps
+grape_analytics.on_archive_missing = lambda path: gap_log.emit(GapEvent(
+    layer="APPLICATION", 
+    gap_type="ARCHIVE_MISSING",
+    details={"expected_path": str(path)},
+    ...
+))
+
+# API endpoint for client consumption
+GET /api/v1/channels/{channel}/gaps/{date} → List[GapEvent]
+GET /api/v1/gaps/summary/{date} → aggregate statistics
+```
+
+### Implementation Steps
+
+1. **Create `src/signal_recorder/core/` package** for application-agnostic code
+2. **Create `src/signal_recorder/grape/` package** for GRAPE-specific code
+3. **Implement `GapEvent` and `GapEventLog`** as foundation
+4. **Instrument existing gap detection** to emit GapEvents
+5. **Move GRAPE-specific files** to `grape/` package
+6. **Add API endpoints** for gap consumption
+7. **Update spectrograms** to show gap annotations (optional)
+
+---
+
+## ✅ Combined Power + Spectrogram Chart (Dec 1, 2025)
+
+### Problem (RESOLVED)
+
+The spectrogram and power chart had **misaligned x-axis ticks** because:
+- Spectrogram: Python matplotlib, rendered as PNG
+- Power chart: JavaScript Chart.js, rendered client-side
+- Different tick calculation led to visual misalignment
+
+### Solution
+
+Combined both into a **single 2-panel matplotlib figure** with `sharex=True`:
+
+```python
+fig, (ax_power, ax_spec) = plt.subplots(
+    2, 1, 
+    figsize=(30, 10),
+    sharex=True,  # Perfect alignment
+    gridspec_kw={'height_ratios': [1, 2.5], 'hspace': 0.08}
+)
+```
+
+### Changes Made
+
+1. **`generate_spectrograms_from_10hz.py`**:
+   - Added `DayData` dataclass with IQ samples + power metrics
+   - Rewrote `read_10hz_day()` to compute per-minute power
+   - New `generate_combined_chart()` creates 2-panel figure
+   - Power panel includes solar zenith overlay
+
+2. **`web-ui/carrier.html`**:
+   - Removed Chart.js imports (no longer needed)
+   - Removed `fetchAndRenderPowerChart()` function
+   - Removed power chart canvas and CSS
+   - Updated label to "Carrier Power + Spectrogram"
+
+### Result
+
+- Single PNG with perfectly aligned power chart (top) and spectrogram (bottom)
+- Solar zenith overlay on power panel
+- Shared x-axis with 3-hour ticks (00:00, 03:00, ... 21:00)
+- Gaps visible as missing data in both panels
+
+---
+
+## ✅ Spectrogram 24-Hour Coverage Fix (Dec 1, 2025)
+
+### Problem (RESOLVED)
+
+Spectrograms were **not filling the whole 24-hour graph** - they ended around 21:50 UTC instead of 24:00.
+
+### Root Cause
+
+**Bug in `scripts/generate_spectrograms_from_10hz.py`**: The script concatenated NPZ files without preserving time alignment.
+
+- scipy.spectrogram `t` array is based on **sample count**, not wall-clock time
+- When gaps exist (130 missing minutes on Nov 30), data was compressed
+- 1310 files × 600 samples = 786,000 samples = 21.83 hours duration
+- Spectrogram ended at ~21:50 instead of 24:00
+
+### Fix Applied
+
+Rewrote `read_10hz_day()` to create a **time-aligned 24-hour array**:
+
+```python
+# Create FULL 24-hour array (864,000 samples at 10 Hz)
+iq_samples = np.zeros(total_samples, dtype=np.complex64)
+timestamps = day_start_unix + np.arange(total_samples) * (1.0 / sample_rate)
+
+# Place each file's data at correct time position
+offset_seconds = file_unix_ts - day_start_unix
+start_idx = int(offset_seconds * sample_rate)
+iq_samples[start_idx:end_idx] = iq
+```
+
+**Result:**
+- Spectrogram now spans full 00:00-24:00 UTC
+- Gaps appear as empty/low-power regions (zeros)
+- Title shows coverage: "(91% coverage)" for partial days
 
 ### Diagnostic Commands
 
 ```bash
-# Count decimated files per channel for a specific date
-ls -la analytics/WWV_10_MHz/decimated/20251201*_iq_10hz.npz | wc -l
-# Expected: 1440 files (one per minute)
+# Count decimated files for a date (expect 1440 for full day)
+find /tmp/grape-test/analytics/WWV_10_MHz/decimated/ -name "20251130*_iq_10hz.npz" | wc -l
 
-# Check for gaps in file timestamps
-ls analytics/WWV_10_MHz/decimated/20251201*_iq_10hz.npz | head -20
-ls analytics/WWV_10_MHz/decimated/20251201*_iq_10hz.npz | tail -20
-
-# Check analytics service
-./scripts/grape-analytics.sh -status
-
-# Check for errors in logs
-journalctl -u grape-analytics --since "00:00" | grep -i error
-
-# Generate spectrogram for today
-python3 scripts/generate_spectrograms_from_10hz.py --date 20251201 --channel "WWV 10 MHz"
+# Regenerate spectrogram
+python3 scripts/generate_spectrograms_from_10hz.py --date 20251130 --channel "WWV 10 MHz" --data-root /tmp/grape-test
 ```
-
-### Key Files for Investigation
-
-| File | Purpose |
-|------|---------|
-| `scripts/generate_spectrograms_from_10hz.py` | Main spectrogram generator |
-| `src/signal_recorder/analytics_service.py` | Creates decimated NPZ files |
-| `scripts/check_and_generate_spectrograms.py` | Checks/triggers generation |
-| `docs/features/PARTIAL_DAY_SPECTROGRAM_FIX.md` | Previous partial-day fix |
-| `docs/features/AUTOMATIC_SPECTROGRAM_GENERATION.md` | Generation system docs |
-
-### Data Flow for Spectrograms
-
-```
-radiod RTP → core_recorder.py → 16 kHz NPZ (1-minute files)
-                                     ↓
-                            analytics_service.py
-                                     ↓
-                            10 Hz decimated NPZ
-                                     ↓
-                     generate_spectrograms_from_10hz.py
-                                     ↓
-                            PNG spectrograms
-                                     ↓
-                            Web UI display
-```
-
-**Any gap in the pipeline = gap in spectrogram**
-
-### Questions to Answer
-
-1. How many decimated files exist for the problem date?
-2. What time range do the files cover?
-3. Are there gaps between files?
-4. Is the spectrogram script reading all files?
-5. Is the X-axis set to show full 24 hours or just data range?
 
 ---
 
@@ -546,7 +707,20 @@ ka9q-radio RTP → Core Recorder (16kHz NPZ) → Analytics Service
 
 ## 6. 📋 Session History
 
-### Dec 1: Stream API Implementation (Morning)
+### Dec 1: Combined Spectrogram + Gap Analysis Planning (Afternoon)
+- **Combined power + spectrogram chart** with shared x-axis (matplotlib subplots)
+- Removed Chart.js power chart from `carrier.html` (now in PNG)
+- Added `DayData` dataclass with IQ samples + per-minute power metrics
+- Documented **GRAPE/Core separation plan** for next session
+- Designed **GapEvent DTO** for cross-layer gap analysis
+- Key insight: GRAPE-specific code (analytics, decimation, discrimination) embedded in core
+
+### Dec 1: Spectrogram 24-Hour Fix (Morning)
+- Fixed spectrograms not filling 24 hours (time-aligned array approach)
+- 1310 files showed 21.83 hours → now shows full 24:00 with 91% coverage label
+- Added coverage percentage to spectrogram title
+
+### Dec 1: Stream API Implementation (Early Morning)
 - **`stream_spec.py`** - StreamSpec content-based identity (freq + preset + rate)
 - **`stream_handle.py`** - StreamHandle opaque handle for apps
 - **`stream_manager.py`** - SSRC allocation, stream sharing, lifecycle
