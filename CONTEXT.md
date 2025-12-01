@@ -2,13 +2,13 @@
 
 **Last Updated:** 2025-12-01  
 **Version:** 2.0.0  
-**Status:** Package restructuring COMPLETE. Next: SSRC abstraction with ka9q-python.
+**Status:** SSRC abstraction COMPLETE across both ka9q-python 3.1.0 and signal-recorder.
 
 ---
 
-## 🔴 PRIORITY: SSRC Abstraction Coordination
+## ✅ COMPLETE: SSRC Abstraction Coordination
 
-### Goal
+### Goal (Achieved)
 
 Remove SSRC from application/user concern. Users specify **what they want** (frequency, mode, sample rate), and the system handles SSRC internally across both ka9q-python and signal-recorder.
 
@@ -17,12 +17,23 @@ Remove SSRC from application/user concern. Users specify **what they want** (fre
 | Layer | SSRC Handling | Status |
 |-------|---------------|--------|
 | **signal-recorder** | Stream API hides SSRC | ✅ Complete |
-| **ka9q-python** | Still requires SSRC in some APIs | 🔴 Needs work |
+| **ka9q-python 3.1.0** | SSRC-free `create_channel()` | ✅ Complete |
 
-### What Works Now (signal-recorder side)
+### SSRC-Free API (Both Layers)
 
 ```python
-# SSRC-free API - apps specify content, not identifiers
+# ka9q-python 3.1.0 - SSRC auto-allocated
+from ka9q import RadiodControl, allocate_ssrc
+
+with RadiodControl("radiod.local") as control:
+    ssrc = control.create_channel(
+        frequency_hz=10.0e6,
+        preset="iq",
+        sample_rate=16000
+    )  # Returns auto-allocated SSRC
+    print(f"Created channel with SSRC: {ssrc}")
+
+# signal-recorder - SSRC hidden from apps
 from signal_recorder import subscribe_stream
 
 stream = subscribe_stream(
@@ -34,62 +45,28 @@ stream = subscribe_stream(
 # System allocates SSRC internally, shares streams, manages lifecycle
 ```
 
-### What Needs Work (ka9q-python side)
+### Cross-Library Compatibility
+
+Both libraries use identical SSRC allocation algorithm:
 
 ```python
-# Current ka9q-python API still exposes SSRC
-from ka9q import RadiodControl
-
-control = RadiodControl("radiod.local")
-control.create_channel(
-    ssrc=20100,              # ← User must provide SSRC
-    frequency_hz=10e6,
-    preset="iq",
-    samprate=16000
-)
+def allocate_ssrc(frequency_hz, preset, sample_rate, agc=False, gain=0.0):
+    key = (round(frequency_hz), preset.lower(), sample_rate, agc, round(gain, 1))
+    return hash(key) & 0x7FFFFFFF
 ```
 
-### Proposed ka9q-python Changes
+This ensures:
+- Same parameters → same SSRC in both libraries
+- Stream sharing works across applications
+- Deterministic allocation for coordination
 
-```python
-# Option A: SSRC-free create_channel (recommended)
-control.create_channel(
-    frequency_hz=10e6,
-    preset="iq", 
-    samprate=16000
-)  # Returns allocated SSRC
-
-# Option B: Auto-allocate with deterministic hash
-control.create_channel(
-    frequency_hz=10e6,
-    preset="iq",
-    samprate=16000,
-    ssrc="auto"  # System generates from content hash
-)
-```
-
-### Coordination Points
-
-1. **SSRC allocation strategy**: Should match between ka9q-python and signal-recorder
-   - Current signal-recorder approach: `hash(freq_khz, preset, rate) % 65000 + 256`
-   - ka9q-python needs compatible scheme
-
-2. **Discovery API**: ka9q-python's `discover_channels()` returns SSRC - should also return content spec
-   - Current: `{ssrc: 20100, frequency: 10000000, ...}`
-   - Proposed: `{ssrc: 20100, frequency: 10000000, preset: "iq", sample_rate: 16000, ...}`
-
-3. **Stream matching**: When app requests a stream, both layers need to find existing compatible streams
-   - signal-recorder: `StreamManager.find_compatible(spec)` ✅ implemented
-   - ka9q-python: needs equivalent in discovery/control
-
-### Files to Reference
+### Files Reference
 
 | File | Purpose |
 |------|---------|
-| `src/signal_recorder/stream/stream_manager.py` | SSRC allocation logic |
+| `ka9q-python/ka9q/control.py` | `allocate_ssrc()`, SSRC-free `create_channel()` |
+| `src/signal_recorder/stream/stream_manager.py` | SSRC allocation, stream sharing |
 | `src/signal_recorder/stream/stream_spec.py` | Content-based stream identity |
-| `ka9q-python/ka9q/control.py` | Channel creation (needs changes) |
-| `ka9q-python/ka9q/discovery.py` | Channel discovery |
 
 ---
 
@@ -487,6 +464,12 @@ class GapEvent:
 ---
 
 ## Session History
+
+### Dec 1, 2025 (PM): SSRC Abstraction Complete
+- **ka9q-python 3.1.0**: Added `allocate_ssrc()` function and SSRC-free `create_channel()`
+- **Cross-library compatibility**: Both libraries use identical SSRC hash algorithm
+- **Cloned ka9q-python** to `/home/wsprdaemon/ka9q-python` for development
+- Installed as editable package for signal-recorder integration
 
 ### Dec 1, 2025: Package Restructuring (v2.0.0)
 - **Reorganized into `core/`, `stream/`, `grape/`, `wspr/` packages**
