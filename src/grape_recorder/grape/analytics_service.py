@@ -137,7 +137,7 @@ class NPZArchive:
     @classmethod
     def load(cls, file_path: Path) -> 'NPZArchive':
         """Load NPZ archive from file"""
-        data = np.load(file_path)
+        data = np.load(file_path, allow_pickle=True)
         
         return cls(
             file_path=file_path,
@@ -378,9 +378,11 @@ class AnalyticsService:
         # Timing metrics writer for web-UI timing analysis
         timing_dir = output_dir / 'timing'
         timing_dir.mkdir(parents=True, exist_ok=True)
+        receiver_grid = self.station_config.get('grid_square')
         self.timing_writer = TimingMetricsWriter(
             output_dir=timing_dir,
-            channel_name=channel_name
+            channel_name=channel_name,
+            receiver_grid=receiver_grid
         )
         
         # Track last timing metrics write time
@@ -667,6 +669,7 @@ class AnalyticsService:
                 # This works across RTP session boundaries (core recorder restarts)
                 if archive.time_snap_rtp is not None and archive.time_snap_utc is not None:
                     # Create TimeSnapReference from archive's embedded metadata
+                    # Use current time for established_at since we're actively using this reference
                     archive_time_snap = TimeSnapReference(
                         rtp_timestamp=archive.time_snap_rtp,
                         utc_timestamp=archive.time_snap_utc,
@@ -674,7 +677,7 @@ class AnalyticsService:
                         source=archive.time_snap_source or 'unknown',
                         confidence=archive.time_snap_confidence or 0.0,
                         station=archive.time_snap_station or 'unknown',
-                        established_at=archive.created_timestamp
+                        established_at=current_time  # Use current time for freshness classification
                     )
                     
                     # Use archive's stored NTP offset (quality at recording time)
@@ -702,6 +705,9 @@ class AnalyticsService:
                         logger.debug(f"{self.channel_name}: Archive lacks ntp_wall_clock_time - "
                                    f"skipping drift measurement (use tone-to-tone instead)")
                         self.last_timing_metrics_write = current_time
+                    
+                    # Write propagation status for web-UI (uses receiver grid for mode calculation)
+                    self.timing_writer.write_propagation_status(snr_db=self.stats.get('last_snr_db'))
             
             # Step 3: Tone detection (if applicable) - uses timing product
             if self._is_tone_detection_channel(archive.channel_name):

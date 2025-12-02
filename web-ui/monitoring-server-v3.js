@@ -27,7 +27,7 @@ import { promisify } from 'util';
 import dgram from 'dgram';
 import { EventEmitter } from 'events';
 import { WebSocketServer } from 'ws';
-import { GRAPEPaths } from './grape-paths.js';
+import { GRAPEPaths, channelNameToKey } from './grape-paths.js';
 import {
   getPrimaryTimeReference,
   getTimingHealthSummary,
@@ -3061,6 +3061,43 @@ app.get('/api/v1/timing/timeline', async (req, res) => {
     res.json(timeline);
   } catch (err) {
     console.error('Error getting timeline:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/propagation
+ * Propagation mode data for all channels (from PropagationModeSolver)
+ */
+app.get('/api/v1/timing/propagation', async (req, res) => {
+  try {
+    const channels = config.recorder?.channels || [];
+    const enabledChannels = channels.filter(ch => ch.enabled);
+    
+    const propagationData = [];
+    
+    for (const channel of enabledChannels) {
+      const channelName = channel.description || `Channel ${channel.ssrc}`;
+      const key = channelNameToKey(channelName);
+      const propFile = join(paths.getAnalyticsDir(channelName), 'timing', 'propagation_status.json');
+      
+      if (fs.existsSync(propFile)) {
+        try {
+          const data = JSON.parse(fs.readFileSync(propFile, 'utf-8'));
+          propagationData.push(data);
+        } catch (err) {
+          console.warn(`Error reading propagation status for ${channelName}:`, err.message);
+        }
+      }
+    }
+    
+    res.json({
+      timestamp: new Date().toISOString(),
+      channels: propagationData,
+      count: propagationData.length
+    });
+  } catch (err) {
+    console.error('Error getting propagation data:', err);
     res.status(500).json({ error: err.message });
   }
 });

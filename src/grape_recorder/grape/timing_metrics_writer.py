@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Any
 import time
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -61,18 +62,21 @@ class TimingMetricsWriter:
     Creates two outputs:
     1. timing_metrics_YYYYMMDD.csv - Minute-by-minute metrics
     2. timing_transitions_YYYYMMDD.json - Transition events
+    3. propagation_status.json - Real-time propagation mode data (if grid provided)
     """
     
-    def __init__(self, output_dir: Path, channel_name: str):
+    def __init__(self, output_dir: Path, channel_name: str, receiver_grid: Optional[str] = None):
         """
         Initialize timing metrics writer
         
         Args:
             output_dir: Directory for timing metrics (e.g., /analytics/{CHANNEL}/timing/)
             channel_name: Channel identifier
+            receiver_grid: Maidenhead grid square for propagation mode analysis
         """
         self.output_dir = Path(output_dir)
         self.channel_name = channel_name
+        self.receiver_grid = receiver_grid
         
         # Ensure directory exists
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -99,7 +103,38 @@ class TimingMetricsWriter:
         self.drift_history = []
         self.max_drift_history = 60
         
+        # Propagation mode solver for time standard analysis
+        self.prop_solver = None
+        self.station = self._extract_station(channel_name)
+        self.frequency_mhz = self._extract_frequency(channel_name)
+        
+        if receiver_grid and self.station:
+            try:
+                from .propagation_mode_solver import PropagationModeSolver
+                self.prop_solver = PropagationModeSolver(receiver_grid=receiver_grid)
+                logger.info(f"{channel_name}: PropagationModeSolver enabled for {self.station} @ {self.frequency_mhz} MHz")
+            except Exception as e:
+                logger.warning(f"{channel_name}: Could not initialize PropagationModeSolver: {e}")
+        
         logger.info(f"{channel_name}: TimingMetricsWriter initialized at {output_dir}")
+    
+    def _extract_station(self, channel_name: str) -> Optional[str]:
+        """Extract station (WWV/WWVH/CHU) from channel name"""
+        upper = channel_name.upper()
+        if 'WWVH' in upper:
+            return 'WWVH'
+        elif 'WWV' in upper:
+            return 'WWV'
+        elif 'CHU' in upper:
+            return 'CHU'
+        return None
+    
+    def _extract_frequency(self, channel_name: str) -> float:
+        """Extract frequency in MHz from channel name"""
+        match = re.search(r'(\d+\.?\d*)\s*MHz', channel_name, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+        return 0.0
     
     def write_snapshot(self, time_snap: 'TimeSnapReference', 
                       current_rtp: int, current_utc: float,
@@ -357,8 +392,11 @@ class TimingMetricsWriter:
         
         Returns: 'TONE_LOCKED', 'INTERPOLATED', 'NTP_SYNCED', 'WALL_CLOCK'
         """
-        # Use UTC timestamp age (when tone was detected), not established_at (when stored)
-        age_seconds = time.time() - time_snap.utc_timestamp
+        # Use established_at (when time_snap was stored/confirmed) for freshness
+        # This matches the Node.js timing status logic
+        # Fall back to utc_timestamp if established_at not available
+        reference_time = getattr(time_snap, 'established_at', None) or time_snap.utc_timestamp
+        age_seconds = time.time() - reference_time
         
         # Check if source is tone-based (wwv, chu, wwvh in any form)
         source_lower = time_snap.source.lower() if time_snap.source else ''
@@ -593,6 +631,127 @@ class TimingMetricsWriter:
         # Write back
         with open(json_path, 'w') as f:
             json.dump({'transitions': transitions}, f, indent=2)
+    
+    def write_propagation_status(self, snr_db: Optional[float] = None):
+        """
+        Write propagation mode status for web-UI display.
+        
+        Creates propagation_status.json with:
+        - Expected propagation modes and delays for primary station
+        - WWVH alternate propagation for shared frequencies (2.5, 5, 10, 15 MHz)
+        - Distance to station
+        - Current mode identification (if SNR provided)
+        """
+        if not self.prop_solver or not self.station:
+            return
+        
+        try:
+            # Get station distance
+            distance_km = self.prop_solver.get_station_distance_km(self.station)
+            
+            # Get expected delay range
+            delay_range = self.prop_solver.get_expected_delay_range_ms(
+                self.station, self.frequency_mhz
+            )
+            
+            # Calculate all modes
+            modes = self.prop_solver.calculate_modes(self.station, self.frequency_mhz)
+            
+            # Build mode list for display
+            mode_list = []
+            for mode in modes[:5]:  # Top 5 modes
+                mode_list.append({
+                    'mode': mode.mode.value,
+                    'n_hops': mode.n_hops,
+                    'layer_height_km': round(mode.layer_height_km, 0),
+                    'delay_ms': round(mode.total_delay_ms, 2),
+                    'uncertainty_ms': round(mode.delay_uncertainty_ms, 2),
+                    'elevation_deg': round(mode.elevation_angle_deg, 1)
+                })
+            
+            # Status data
+            status = {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'channel': self.channel_name,
+                'station': self.station,
+                'frequency_mhz': self.frequency_mhz,
+                'receiver_grid': self.receiver_grid,
+                'distance_km': round(distance_km, 0),
+                'expected_delay_range_ms': [round(delay_range[0], 1), round(delay_range[1], 1)],
+                'propagation_modes': mode_list,
+                'current_snr_db': round(snr_db, 1) if snr_db else None,
+                'primary_mode': mode_list[0] if mode_list else None
+            }
+            
+            # Add WWVH alternate for shared frequencies (2.5, 5, 10, 15 MHz)
+            # WWV and WWVH share these frequencies; discrimination determines which is received
+            wwvh_shared_freqs = [2.5, 5.0, 10.0, 15.0]
+            if self.station == 'WWV' and self.frequency_mhz in wwvh_shared_freqs:
+                try:
+                    wwvh_distance = self.prop_solver.get_station_distance_km('WWVH')
+                    wwvh_delay_range = self.prop_solver.get_expected_delay_range_ms(
+                        'WWVH', self.frequency_mhz
+                    )
+                    wwvh_modes = self.prop_solver.calculate_modes('WWVH', self.frequency_mhz)
+                    
+                    wwvh_mode_list = []
+                    for mode in wwvh_modes[:5]:
+                        wwvh_mode_list.append({
+                            'mode': mode.mode.value,
+                            'n_hops': mode.n_hops,
+                            'layer_height_km': round(mode.layer_height_km, 0),
+                            'delay_ms': round(mode.total_delay_ms, 2),
+                            'uncertainty_ms': round(mode.delay_uncertainty_ms, 2),
+                            'elevation_deg': round(mode.elevation_angle_deg, 1)
+                        })
+                    
+                    status['wwvh_alternate'] = {
+                        'station': 'WWVH',
+                        'distance_km': round(wwvh_distance, 0),
+                        'expected_delay_range_ms': [round(wwvh_delay_range[0], 1), round(wwvh_delay_range[1], 1)],
+                        'propagation_modes': wwvh_mode_list,
+                        'primary_mode': wwvh_mode_list[0] if wwvh_mode_list else None
+                    }
+                except Exception as e:
+                    logger.debug(f"{self.channel_name}: Could not add WWVH alternate: {e}")
+            
+            # Write status file
+            status_path = self.output_dir / 'propagation_status.json'
+            with open(status_path, 'w') as f:
+                json.dump(status, f, indent=2)
+                
+        except Exception as e:
+            logger.warning(f"{self.channel_name}: Error writing propagation status: {e}")
+    
+    def get_propagation_info(self) -> Optional[Dict[str, Any]]:
+        """
+        Get current propagation info for API response.
+        
+        Returns dict with station distance and expected modes.
+        """
+        if not self.prop_solver or not self.station:
+            return None
+        
+        try:
+            distance_km = self.prop_solver.get_station_distance_km(self.station)
+            delay_range = self.prop_solver.get_expected_delay_range_ms(
+                self.station, self.frequency_mhz
+            )
+            modes = self.prop_solver.calculate_modes(self.station, self.frequency_mhz)
+            
+            primary_mode = modes[0] if modes else None
+            
+            return {
+                'station': self.station,
+                'frequency_mhz': self.frequency_mhz,
+                'distance_km': round(distance_km, 0),
+                'expected_delay_ms': round(primary_mode.total_delay_ms, 2) if primary_mode else None,
+                'expected_mode': primary_mode.mode.value if primary_mode else None,
+                'delay_range_ms': [round(delay_range[0], 1), round(delay_range[1], 1)]
+            }
+        except Exception as e:
+            logger.warning(f"{self.channel_name}: Error getting propagation info: {e}")
+            return None
     
     # NOTE: get_ntp_offset() has been removed.
     # NTP offset is now obtained from the centralized NTPStatusCache in CoreRecorder

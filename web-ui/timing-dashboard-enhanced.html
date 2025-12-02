@@ -488,6 +488,115 @@
             font-size: 13px;
             font-weight: 600;
         }
+        
+        /* Propagation Mode Section */
+        .propagation-section {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+        }
+        
+        .section-header {
+            margin-bottom: 20px;
+        }
+        
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+            display: block;
+        }
+        
+        .section-subtitle {
+            font-size: 13px;
+            color: #94a3b8;
+        }
+        
+        .prop-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+        }
+        
+        .prop-station {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            padding: 15px;
+        }
+        
+        .prop-station-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #334155;
+        }
+        
+        .prop-station-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+        }
+        
+        .prop-station-distance {
+            font-size: 12px;
+            color: #94a3b8;
+        }
+        
+        .prop-table {
+            width: 100%;
+            font-size: 13px;
+        }
+        
+        .prop-table th {
+            padding: 8px;
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            color: #64748b;
+            font-weight: 600;
+        }
+        
+        .prop-table td {
+            padding: 8px;
+            border-top: 1px solid #1e293b;
+        }
+        
+        .mode-badge {
+            display: inline-block;
+            background: #3b82f6;
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        
+        .mode-badge.primary {
+            background: #10b981;
+        }
+        
+        .alt-mode {
+            opacity: 0.7;
+            font-size: 0.9em;
+        }
+        
+        .alt-mode td {
+            padding-top: 2px !important;
+            padding-bottom: 2px !important;
+        }
+        
+        .freq-cell {
+            vertical-align: middle;
+            font-weight: 600;
+        }
+        
+        .primary-mode {
+            border-top: 1px solid #334155;
+        }
     </style>
 </head>
 <body>
@@ -549,13 +658,14 @@
         async function loadDashboard() {
             try {
                 // Load all data in parallel
-                const [primaryRef, healthSummary, transitions] = await Promise.all([
+                const [primaryRef, healthSummary, transitions, propagation] = await Promise.all([
                     fetch('/api/v1/timing/primary-reference').then(r => r.json()),
                     fetch('/api/v1/timing/health-summary').then(r => r.json()),
-                    fetch('/api/v1/timing/transitions?hours=24').then(r => r.json())
+                    fetch('/api/v1/timing/transitions?hours=24').then(r => r.json()),
+                    fetch('/api/v1/timing/propagation').then(r => r.json()).catch(() => ({ channels: [] }))
                 ]);
                 
-                renderDashboard(primaryRef, healthSummary, transitions);
+                renderDashboard(primaryRef, healthSummary, transitions, propagation);
                 checkAlerts(primaryRef, healthSummary);
                 startCountdown();
                 
@@ -571,7 +681,7 @@
             }
         }
         
-        function renderDashboard(primaryRef, healthSummary, transitions) {
+        function renderDashboard(primaryRef, healthSummary, transitions, propagation) {
             const container = document.getElementById('dashboard-content');
             
             // Extract channel names for chart dropdowns, sorted by frequency
@@ -583,6 +693,7 @@
             
             container.innerHTML = `
                 ${renderPrimaryReference(primaryRef)}
+                ${renderPropagationModes(propagation)}
                 ${renderHealthCards(healthSummary)}
                 ${renderChannelTable(healthSummary)}
                 ${renderChartPlaceholders()}
@@ -676,6 +787,101 @@
                             <span class="ref-detail-label">UTC Anchor:</span>
                             <span class="ref-detail-value">${data.utc_anchor_iso}</span>
                         </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderPropagationModes(data) {
+            if (!data.channels || data.channels.length === 0) {
+                return '';  // No propagation data available
+            }
+            
+            // Group by station
+            const wwvChannels = data.channels.filter(ch => ch.station === 'WWV');
+            const chuChannels = data.channels.filter(ch => ch.station === 'CHU');
+            
+            // Build WWVH data from wwvh_alternate in WWV channels (shared freqs: 2.5, 5, 10, 15 MHz)
+            const wwvhChannels = data.channels
+                .filter(ch => ch.wwvh_alternate)
+                .map(ch => ({
+                    ...ch.wwvh_alternate,
+                    frequency_mhz: ch.frequency_mhz,
+                    receiver_grid: ch.receiver_grid,
+                    current_snr_db: ch.current_snr_db  // Same SNR - discrimination determines source
+                }));
+            
+            function renderStationSection(station, channels, color, subtitle = '') {
+                if (channels.length === 0) return '';
+                
+                const firstChannel = channels[0];
+                const distance = firstChannel.distance_km;
+                const grid = firstChannel.receiver_grid || 'Unknown';
+                
+                // Show all propagation modes per frequency, grouped by frequency
+                const modeRows = channels.map(ch => {
+                    const modes = ch.propagation_modes || [ch.primary_mode].filter(Boolean);
+                    if (!modes || modes.length === 0) return '';
+                    
+                    // First row shows frequency and SNR, spans multiple modes
+                    const rowCount = modes.length;
+                    return modes.map((mode, idx) => {
+                        const isPrimary = idx === 0;
+                        const freqCell = idx === 0 
+                            ? `<td rowspan="${rowCount}" class="freq-cell">${ch.frequency_mhz} MHz</td>` 
+                            : '';
+                        const snrCell = idx === 0 
+                            ? `<td rowspan="${rowCount}">${ch.current_snr_db ? ch.current_snr_db + ' dB' : '—'}</td>` 
+                            : '';
+                        const rowClass = isPrimary ? 'primary-mode' : 'alt-mode';
+                        return `
+                            <tr class="${rowClass}">
+                                ${freqCell}
+                                <td><span class="mode-badge ${isPrimary ? 'primary' : ''}">${mode.mode}</span></td>
+                                <td>${mode.delay_ms.toFixed(2)} ms</td>
+                                <td>±${mode.uncertainty_ms.toFixed(2)} ms</td>
+                                <td>${mode.elevation_deg.toFixed(1)}°</td>
+                                ${snrCell}
+                            </tr>
+                        `;
+                    }).join('');
+                }).join('');
+                
+                return `
+                    <div class="prop-station" style="border-left: 4px solid ${color};">
+                        <div class="prop-station-header">
+                            <span class="prop-station-name">${station}</span>
+                            <span class="prop-station-distance">${distance} km from ${grid}${subtitle}</span>
+                        </div>
+                        <table class="prop-table">
+                            <thead>
+                                <tr>
+                                    <th>Frequency</th>
+                                    <th>Mode</th>
+                                    <th>Delay</th>
+                                    <th>Uncertainty</th>
+                                    <th>Elevation</th>
+                                    <th>SNR</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${modeRows}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            }
+            
+            return `
+                <div class="propagation-section">
+                    <div class="section-header">
+                        <span class="section-title">📡 Propagation Mode Analysis</span>
+                        <span class="section-subtitle">Expected ionospheric delays for HF time transfer</span>
+                    </div>
+                    <div class="prop-grid">
+                        ${renderStationSection('WWV', wwvChannels, '#10b981', ' (Colorado)')}
+                        ${renderStationSection('WWVH', wwvhChannels, '#3b82f6', ' (Hawaii)')}
+                        ${renderStationSection('CHU', chuChannels, '#f59e0b', ' (Canada)')}
                     </div>
                 </div>
             `;

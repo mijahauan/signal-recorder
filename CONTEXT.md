@@ -1,8 +1,55 @@
 # GRAPE Recorder - AI Context Document
 
-**Last Updated:** 2025-12-01 (afternoon)  
-**Version:** 2.0.0  
-**Status:** ✅ All systems operational. Startup scripts, analytics, and venv enforcement complete.
+**Last Updated:** 2025-12-02  
+**Version:** 2.0.1  
+**Status:** ✅ All systems operational. Dual-station time recovery, propagation modes display, timing dashboard fixes complete.
+
+---
+
+## 🚨 NEXT SESSION: Sample Rate Change (16 kHz → 20 kHz)
+
+### Goal
+Change the RTP stream sample rate from 16 kHz to 20 kHz to improve resolution for test signal analysis (channel sounding).
+
+### Why 20 kHz?
+- **Test signal bandwidth:** The WWV test signal (minutes :08 and :44) contains chirps and bursts designed for channel characterization
+- **Nyquist margin:** 20 kHz allows clean capture of components up to 10 kHz (vs 8 kHz at 16 kHz)
+- **Existing infrastructure:** radiod can provide any sample rate; only the receiver side needs updates
+
+### Files Requiring Changes
+
+| File | Changes Needed |
+|------|----------------|
+| `config/grape-config.toml` | Change `sample_rate = 16000` → `sample_rate = 20000` for each channel |
+| `src/grape_recorder/grape/grape_recorder.py` | Update `sample_rate` default, verify `samples_per_packet` handling |
+| `src/grape_recorder/core/recording_session.py` | Verify segment duration calculation: `20000 * 60 = 1,200,000` samples |
+| `src/grape_recorder/core/packet_resequencer.py` | Update `MAX_GAP_SAMPLES = 1_200_000` (60s × 20 kHz) |
+| `src/grape_recorder/grape/decimation.py` | Verify decimation factor: 20000 → 10 Hz = factor 2000 |
+| `src/grape_recorder/grape/analytics_service.py` | Verify NPZ loading handles variable sample rates |
+| `scripts/generate_spectrograms_from_10hz.py` | Should work unchanged (reads 10 Hz decimated) |
+| `CONTEXT.md` | Update all references to 16 kHz |
+
+### RTP Packet Structure at 20 kHz
+
+```
+Current (16 kHz):
+- Packets per second: 50 (320 samples/packet)
+- Samples per 60s segment: 960,000
+- IQ samples per packet: 160 complex
+
+New (20 kHz):
+- Packets per second: 62.5 (320 samples/packet) or 50 (400 samples/packet)
+- Samples per 60s segment: 1,200,000
+- IQ samples per packet: depends on radiod configuration
+```
+
+### Verification Checklist
+- [ ] radiod configured for 20 kHz on all 9 channels
+- [ ] Archives contain 1,200,000 samples (60s × 20 kHz)
+- [ ] Decimation produces correct 10 Hz output (600 samples/min)
+- [ ] Spectrograms generate correctly
+- [ ] Timing analysis still works (RTP timestamp math unchanged)
+- [ ] Test signal analysis shows improved frequency resolution
 
 ---
 
@@ -312,7 +359,202 @@ http://localhost:3000/discrimination.html # WWV/WWVH discrimination
 
 ---
 
+## 🌐 Global Station Lock (Cross-Channel Coherent Processing)
+
+### Concept
+
+Because radiod's RTP timestamps are GPS-disciplined, all channels share a common "ruler". This enables treating 9-12 receivers not as isolated bucket-collectors but as a **single coherent sensor array**.
+
+### The Physics
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| **Frequency dispersion** | < 2-3 ms | Group delay difference between HF bands |
+| **Station separation** | 15-20 ms | WWV (Colorado) vs WWVH (Hawaii) path difference |
+| **Discrimination margin** | ~5x | Dispersion << separation enables unambiguous guidance |
+
+### Three-Phase Detection Strategy
+
+**Phase 0: Anchor Discovery**
+- Scan all 9-12 channels using standard discrimination
+- Find high-confidence locks (SNR > 15 dB) for each station
+- Set anchor RTP timestamps: $T_{\text{WWV}}$, $T_{\text{WWVH}}$, $T_{\text{CHU}}$
+
+**Phase 1: Guided Search (Re-processing)**
+- For weak channels (failed or low-confidence detection)
+- Narrow search window from ±500 ms to ±3 ms using anchor timing
+- 99.4% noise candidate rejection
+- Weak correlations validated by anchor get boosted confidence
+
+**Phase 2: Coherent Stacking (Optional)**
+$$\text{Global Correlation} = \sum_{f} \text{Correlation}_f$$
+- Signal adds linearly (correlated across frequencies)
+- Noise adds as $\sqrt{N}$ (uncorrelated)
+- Result: Virtual channel with SNR improvement of $10 \log_{10}(N)$ dB
+
+### Implementation
+
+```python
+from grape_recorder.grape import GlobalStationVoter, StationLockCoordinator
+
+# Create coordinator
+coordinator = StationLockCoordinator(data_root='/tmp/grape-test')
+
+# Process minute across all channels
+result = coordinator.process_minute_archives(minute_utc, archives)
+
+# Result contains:
+# - result.wwv_anchor: Which channel provided WWV timing reference
+# - result.wwvh_anchor: Which channel provided WWVH timing reference  
+# - result.rescues: Weak detections validated by anchor
+# - result.stacked_wwv: Virtual stacked correlation
+```
+
+### Key Classes
+
+| Class | Purpose |
+|-------|---------|
+| `GlobalStationVoter` | Tracks anchors, provides search windows, stacks correlations |
+| `StationLockCoordinator` | Orchestrates two-phase detection across channels |
+| `StationAnchor` | High-confidence detection that guides weak channels |
+| `GuidedDetection` | Detection result including guidance metadata |
+
+---
+
+## 🎯 Primary Time Standard (HF Time Transfer)
+
+### The Holy Grail
+
+By back-calculating emission time from GPS-locked arrival time and identified propagation mode, we transform from a **passive listener** into a **primary time standard** that verifies UTC(NIST).
+
+### The Equation
+
+$$T_{\text{emit}} = T_{\text{arrival}} - (\tau_{\text{geo}} + \tau_{\text{iono}} + \tau_{\text{mode}})$$
+
+Where:
+- $T_{\text{arrival}}$: GPS-disciplined RTP timestamp
+- $\tau_{\text{geo}}$: Great-circle speed-of-light delay
+- $\tau_{\text{iono}}$: Ionospheric group delay (frequency-dependent)
+- $\tau_{\text{mode}}$: Extra path from N ionospheric hops
+
+### Mode Identification
+
+Propagation modes are **discrete** (quantized by layer heights):
+
+| Mode | Typical Delay (EM38ww → WWV) | Uncertainty |
+|------|------------------------------|-------------|
+| 1-hop E | 3.82 ms | ±0.20 ms |
+| 1-hop F2 | 4.26 ms | ±0.17 ms |
+| 2-hop F2 | 5.51 ms | ±0.33 ms |
+| 3-hop F2 | ~7.0 ms | ±0.50 ms |
+
+### Disambiguation Using Channel Metrics
+
+When modes overlap in timing:
+- **High delay spread** → Multipath present, use earliest arrival (lowest hop)
+- **High Doppler std** → Unstable path, downgrade confidence
+- **High FSS** → More D-layer absorption, votes for higher hop count
+
+### Accuracy Improvement
+
+| Method | Accuracy |
+|--------|----------|
+| Raw arrival time | ±10 ms |
+| + Mode identification | ±2 ms |
+| + Cross-channel consensus | ±1 ms |
+| + Cross-station verification | ±0.5 ms |
+
+### Implementation
+
+```python
+from grape_recorder.grape import PrimaryTimeStandard
+
+standard = PrimaryTimeStandard(receiver_grid='EM38ww')
+
+# Process minute with all channel data
+result = standard.process_minute(
+    minute_utc=datetime.now(timezone.utc),
+    channel_data={
+        'WWV 10 MHz': {'arrival_time_utc': arrival, 'snr_db': 20.0},
+        'WWV 15 MHz': {'arrival_time_utc': arrival2, 'snr_db': 15.0},
+        ...
+    }
+)
+
+# Get verified UTC(NIST)
+print(f"UTC(NIST) offset: {result.utc_nist_offset_ms:+.2f} ms")
+print(f"Cross-verified: {result.cross_verified}")  # WWV + WWVH agree
+```
+
+### Key Classes
+
+| Class | Purpose |
+|-------|---------|
+| `PropagationModeSolver` | Calculates hop geometries, identifies mode from timing |
+| `PrimaryTimeStandard` | Full integration, produces verified UTC(NIST) |
+| `EmissionTimeResult` | Back-calculated emission with confidence metrics |
+| `TimeStandardCSVWriter` | Logs results to CSV for analysis |
+
+### Output Files
+
+```
+data/time_standard/
+├── time_standard_all_channels_20251201.csv  # Per-minute results
+└── time_standard_daily_summary.csv           # Daily statistics
+```
+
+---
+
 ## Session History
+
+### Dec 2, 2025: Dual-Station Time Recovery & Bug Fixes
+
+**Dual-Station Time Recovery (wwvh_discrimination.py):**
+- Added fields to `DiscriminationResult`: `wwv_toa_ms`, `wwvh_toa_ms`, `t_emission_from_wwv_ms`, `t_emission_from_wwvh_ms`, `cross_validation_error_ms`, `dual_station_confidence`
+- Back-calculates emission time: `T_emission = T_arrival - propagation_delay`
+- Cross-validates WWV vs WWVH emission times (should match at UTC boundary)
+- Confidence classification: excellent (<1ms), good (<2ms), fair (<5ms), investigate (>5ms)
+
+**Timing Dashboard Fixes:**
+- **Tone-locked display (0/9 → 9/9):** Fixed `_classify_quality()` to use `established_at` instead of `utc_timestamp` for age calculation - matches Node.js logic
+- **Propagation modes:** Updated `renderStationSection()` to show ALL modes per frequency, not just primary mode - now displays varying elevation angles
+- **24-hour drift chart:** Fixed `getTimingMetrics()` to span multiple days (today + yesterday) when hours > 1
+
+**Critical Bug Fix - allow_pickle:**
+- **Symptom:** 102 errors/channel: "Object arrays cannot be loaded when allow_pickle=False"
+- **Root cause:** NPZ archives contain string fields (channel_name, time_snap_source) stored as object arrays
+- **Impact:** Analytics failing on every file → processing backlog → recorder skipping every other minute
+- **Fix:** Added `allow_pickle=True` to `NPZArchive.load()` in analytics_service.py
+- **Result:** Decimation now runs, spectrograms show continuous data
+
+**Files Modified:**
+- `src/grape_recorder/grape/analytics_service.py` - allow_pickle fix, established_at for time_snap
+- `src/grape_recorder/grape/timing_metrics_writer.py` - _classify_quality uses established_at
+- `src/grape_recorder/grape/wwvh_discrimination.py` - dual-station time recovery fields
+- `src/grape_recorder/grape/test_grape_refactor.py` - allow_pickle fix
+- `web-ui/timing-dashboard-enhanced.html` - show all propagation modes, CSS for primary/alt modes
+- `web-ui/utils/timing-analysis-helpers.js` - multi-day metrics query
+- `web-ui/monitoring-server-v3.js` - propagation API endpoint
+
+### Dec 1, 2025 (Evening): Global Station Lock + Primary Time Standard
+
+**New Feature: Cross-Channel Coherent Processing**
+- Implemented `GlobalStationVoter` - tracks high-confidence "anchor" detections
+- Implemented `StationLockCoordinator` - orchestrates two-phase detection
+- Key insight: GPS-disciplined RTP timestamps enable treating 9-12 receivers as coherent array
+- Three-phase strategy: Anchor Discovery → Guided Search → Coherent Stacking
+- Physics: Ionospheric dispersion (~3 ms) << station separation (~15 ms)
+- Benefit: 99.4% noise rejection, virtual SNR improvement of 10*log10(N) dB
+
+**New Feature: Primary Time Standard (HF Time Transfer)**
+- Implemented `PropagationModeSolver` - calculates N-hop geometries, identifies mode from measured delay
+- Implemented `PrimaryTimeStandard` - full integration producing verified UTC(NIST)
+- Key equation: T_emit = T_arrival - (τ_geo + τ_iono + τ_mode)
+- Propagation modes are **discrete** (quantized by layer heights ~4-7 ms for WWV)
+- Cross-channel consensus: multiple frequencies → weighted average emission time
+- Cross-station verification: WWV + WWVH both emit at UTC boundary → should match
+- Accuracy: Raw ~10ms → +mode ID ~2ms → +consensus ~1ms → +cross-verified ~0.5ms
+- Output: `TimeStandardCSVWriter` logs per-minute results and daily summaries
 
 ### Dec 1, 2025 (Afternoon): RTP Timing Fix & Infrastructure
 

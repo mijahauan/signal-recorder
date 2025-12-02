@@ -165,7 +165,7 @@ class RefactoredGrapeTest:
             logger.info(f"\nFile: {npz_path.name}")
             
             try:
-                with np.load(npz_path) as data:
+                with np.load(npz_path, allow_pickle=True) as data:
                     # Check required fields
                     required = ['iq', 'rtp_timestamp', 'sample_rate', 'time_snap_rtp', 'time_snap_utc']
                     missing = [f for f in required if f not in data.files]

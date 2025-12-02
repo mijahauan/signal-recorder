@@ -258,34 +258,65 @@ async function getTimingHealthSummary(paths, config) {
 
 /**
  * Get timing metrics for a specific channel
+ * Spans multiple days if hours > 24 or crosses midnight
  */
 async function getTimingMetrics(channel, date, hours, paths) {
-  if (!channel || !date) {
-    throw new Error('Channel and date are required');
+  if (!channel) {
+    throw new Error('Channel is required');
   }
   
   const cleanName = channel.replace(/\s+/g, '_');
-  const metricsFile = join(
-    paths.getTimingDir(channel),
-    `${cleanName}_timing_metrics_${date}.csv`
-  );
+  const cutoff = Date.now() - (hours * 3600 * 1000);
   
-  const data = parseTimingCSV(metricsFile);
+  // Calculate which dates we need to check (today and potentially yesterday)
+  const datesToCheck = [];
+  const today = new Date();
+  const todayStr = today.toISOString().split('T')[0].replace(/-/g, '');
+  datesToCheck.push(todayStr);
   
-  if (data.status !== 'OK') {
-    return { available: false, message: `No metrics for ${channel} on ${date}` };
+  // If hours span into yesterday, add yesterday's date
+  if (hours >= 1) {
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0].replace(/-/g, '');
+    datesToCheck.push(yesterdayStr);
   }
   
-  // Filter by time window if needed
-  const cutoff = Date.now() - (hours * 3600 * 1000);
-  const filtered = data.records.filter(r => {
+  // If a specific date was provided and it's not in our list, add it
+  if (date && !datesToCheck.includes(date)) {
+    datesToCheck.push(date);
+  }
+  
+  // Collect records from all relevant dates
+  let allRecords = [];
+  for (const dateStr of datesToCheck) {
+    const metricsFile = join(
+      paths.getTimingDir(channel),
+      `${cleanName}_timing_metrics_${dateStr}.csv`
+    );
+    
+    const data = parseTimingCSV(metricsFile);
+    if (data.status === 'OK' && data.records) {
+      allRecords.push(...data.records);
+    }
+  }
+  
+  if (allRecords.length === 0) {
+    return { available: false, message: `No metrics for ${channel}` };
+  }
+  
+  // Filter by time window
+  const filtered = allRecords.filter(r => {
     return new Date(r.timestamp_utc).getTime() > cutoff;
   });
+  
+  // Sort by timestamp
+  filtered.sort((a, b) => new Date(a.timestamp_utc) - new Date(b.timestamp_utc));
   
   return {
     available: true,
     channel,
-    date,
+    date: date || todayStr,
     hours,
     count: filtered.length,
     metrics: filtered.map(r => ({
@@ -416,10 +447,14 @@ async function getTimingTimeline(channel, hours, paths) {
 // Helper functions
 
 function classifyQuality(source, ageSeconds) {
-  if (source.includes('startup') && ageSeconds < 300) {
+  // Tone-based sources: wwv_startup, wwv_verified, chu_startup, wwvh_verified, etc.
+  const isToneBased = source.includes('startup') || source.includes('verified') ||
+                      source.includes('wwv') || source.includes('chu');
+  
+  if (isToneBased && ageSeconds < 300) {
     return 'TONE_LOCKED';
-  } else if (source.includes('startup') && ageSeconds < 3600) {
-    return 'TONE_AGED';  // Was 'INTERPOLATED' - clearer name
+  } else if (isToneBased && ageSeconds < 3600) {
+    return 'TONE_AGED';  // Tone reference older than 5 min but < 1 hour
   } else if (source === 'ntp') {
     return 'NTP_SYNCED';
   } else {
@@ -447,7 +482,11 @@ function getQualityDetails(source, ageSeconds, driftMs) {
   let estimatedPrecisionMs;
   let precisionDescription;
   
-  if (source.includes('startup')) {
+  // Tone-based sources: wwv_startup, wwv_verified, chu_startup, etc.
+  const isToneBased = source.includes('startup') || source.includes('verified') ||
+                      source.includes('wwv') || source.includes('chu');
+  
+  if (isToneBased) {
     // Tone-based: degrades with age
     const hoursSincelock = ageSeconds / 3600;
     estimatedPrecisionMs = 1.0 + (hoursSincelock * 1.0); // ~1ms/hour drift
@@ -479,13 +518,17 @@ function getQualityDetails(source, ageSeconds, driftMs) {
     baseReference,
     estimatedPrecisionMs,
     precisionDescription,
-    isToneBased: source.includes('startup') || source.includes('wwv') || source.includes('chu'),
+    isToneBased,
     ageSeconds
   };
 }
 
 function getPrecision(source, ageSeconds = 0) {
-  if (source.includes('startup')) {
+  // Tone-based sources: wwv_startup, wwv_verified, chu_startup, etc.
+  const isToneBased = source.includes('startup') || source.includes('verified') ||
+                      source.includes('wwv') || source.includes('chu');
+  
+  if (isToneBased) {
     // Tone precision degrades ~1ms per hour
     const hoursSinceLock = ageSeconds / 3600;
     return Math.min(1.0 + hoursSinceLock, 50.0);  // Cap at 50ms

@@ -196,6 +196,18 @@ class DiscriminationResult:
     bcd_minute_validated: bool = False  # True if BCD correlation confirms expected minute
     bcd_correlation_peak_quality: Optional[float] = None  # Peak sharpness indicates timing lock
     
+    # Dual-station time recovery (2025-12-01)
+    # Uses both WWV and WWVH as redundant time servers for cross-validation
+    # Back-calculates emission time: T_utc = T_arrival - propagation_delay
+    wwv_toa_ms: Optional[float] = None        # Absolute ToA of WWV BCD peak (ms from minute start)
+    wwvh_toa_ms: Optional[float] = None       # Absolute ToA of WWVH BCD peak (ms from minute start)
+    wwv_expected_delay_ms: Optional[float] = None   # Expected WWV propagation delay
+    wwvh_expected_delay_ms: Optional[float] = None  # Expected WWVH propagation delay
+    t_emission_from_wwv_ms: Optional[float] = None  # ToA - delay_wwv (should be ~0 at minute boundary)
+    t_emission_from_wwvh_ms: Optional[float] = None # ToA - delay_wwvh (should match WWV result)
+    cross_validation_error_ms: Optional[float] = None  # |T_wwv - T_wwvh| - agreement metric
+    dual_station_confidence: str = 'none'     # 'excellent'(<1ms)/'good'(<2ms)/'fair'(<5ms)/'investigate'
+    
     def to_dict(self) -> Dict:
         """Convert to dictionary for logging/storage"""
         return {
@@ -212,7 +224,16 @@ class DiscriminationResult:
             'tone_440hz_wwvh_detected': self.tone_440hz_wwvh_detected,
             'tone_440hz_wwv_power_db': self.tone_440hz_wwv_power_db,
             'tone_440hz_wwvh_power_db': self.tone_440hz_wwvh_power_db,
-            'tick_windows_10sec': self.tick_windows_10sec
+            'tick_windows_10sec': self.tick_windows_10sec,
+            # Dual-station time recovery
+            'wwv_toa_ms': self.wwv_toa_ms,
+            'wwvh_toa_ms': self.wwvh_toa_ms,
+            'wwv_expected_delay_ms': self.wwv_expected_delay_ms,
+            'wwvh_expected_delay_ms': self.wwvh_expected_delay_ms,
+            't_emission_from_wwv_ms': self.t_emission_from_wwv_ms,
+            't_emission_from_wwvh_ms': self.t_emission_from_wwvh_ms,
+            'cross_validation_error_ms': self.cross_validation_error_ms,
+            'dual_station_confidence': self.dual_station_confidence
         }
 
 
@@ -2195,6 +2216,8 @@ class WWVHDiscriminator:
                         else:
                             # Fallback: Assume WWV arrives first (common for US receivers)
                             # This is a heuristic that works for most continental US locations
+                            early_station = 'WWV'
+                            late_station = 'WWVH'
                             wwv_amp = early_amp
                             wwvh_amp = late_amp
                             logger.debug(f"{self.channel_name}: No geo predictor, assuming early=WWV")
@@ -2237,6 +2260,53 @@ class WWVHDiscriminator:
                         wwv_delay_spread_ms = measure_peak_width(correlation, peaks[peak1_idx], sample_rate)
                         wwvh_delay_spread_ms = measure_peak_width(correlation, peaks[peak2_idx], sample_rate)
                         
+                        # === DUAL-STATION TIME RECOVERY ===
+                        # Both stations transmit at the same UTC second boundary.
+                        # By subtracting expected propagation delay from measured ToA,
+                        # we back-calculate the emission time. Both should agree.
+                        time_recovery_data = {}
+                        if self.geo_predictor and frequency_mhz:
+                            expected = self.geo_predictor.calculate_expected_delays(frequency_mhz)
+                            
+                            # Determine which peak is WWV vs WWVH based on geographic assignment
+                            if early_station == 'WWV':
+                                wwv_toa_ms = peak_early_delay_ms
+                                wwvh_toa_ms = peak_late_delay_ms
+                            else:
+                                wwv_toa_ms = peak_late_delay_ms
+                                wwvh_toa_ms = peak_early_delay_ms
+                            
+                            wwv_expected_ms = expected['wwv_delay_ms']
+                            wwvh_expected_ms = expected['wwvh_delay_ms']
+                            
+                            # Back-calculate emission time offset from minute boundary
+                            # If everything is perfect, this should be ~0 for both
+                            t_emission_wwv = wwv_toa_ms - wwv_expected_ms
+                            t_emission_wwvh = wwvh_toa_ms - wwvh_expected_ms
+                            
+                            # Cross-validation: both should give the same result
+                            cross_error = abs(t_emission_wwv - t_emission_wwvh)
+                            
+                            if cross_error < 1.0:
+                                confidence = 'excellent'
+                            elif cross_error < 2.0:
+                                confidence = 'good'
+                            elif cross_error < 5.0:
+                                confidence = 'fair'
+                            else:
+                                confidence = 'investigate'
+                            
+                            time_recovery_data = {
+                                'wwv_toa_ms': float(wwv_toa_ms),
+                                'wwvh_toa_ms': float(wwvh_toa_ms),
+                                'wwv_expected_delay_ms': float(wwv_expected_ms),
+                                'wwvh_expected_delay_ms': float(wwvh_expected_ms),
+                                't_emission_from_wwv_ms': float(t_emission_wwv),
+                                't_emission_from_wwvh_ms': float(t_emission_wwvh),
+                                'cross_validation_error_ms': float(cross_error),
+                                'dual_station_confidence': confidence
+                            }
+                        
                         windows_data.append({
                             'window_start_sec': float(window_start_time),
                             'wwv_amplitude': wwv_amp,
@@ -2246,7 +2316,9 @@ class WWVHDiscriminator:
                             'detection_type': 'dual_peak',
                             # Channel characterization: delay spread from peak width
                             'wwv_delay_spread_ms': float(wwv_delay_spread_ms),
-                            'wwvh_delay_spread_ms': float(wwvh_delay_spread_ms)
+                            'wwvh_delay_spread_ms': float(wwvh_delay_spread_ms),
+                            # Dual-station time recovery
+                            **time_recovery_data
                         })
                         
                         # Update geographic predictor history if available
@@ -2793,6 +2865,39 @@ class WWVHDiscriminator:
             result.bcd_differential_delay_ms = bcd_delay
             result.bcd_correlation_quality = bcd_quality
             result.bcd_windows = bcd_windows  # Time-series data (~50 windows/minute with 1s steps)
+            
+            # === DUAL-STATION TIME RECOVERY - Aggregate from windows ===
+            # Extract time recovery data from dual-peak windows
+            if bcd_windows:
+                dual_peak_windows = [w for w in bcd_windows 
+                                    if w.get('detection_type') == 'dual_peak' 
+                                    and w.get('cross_validation_error_ms') is not None]
+                
+                if dual_peak_windows:
+                    # Use median for robustness against outliers
+                    result.wwv_toa_ms = float(np.median([w['wwv_toa_ms'] for w in dual_peak_windows]))
+                    result.wwvh_toa_ms = float(np.median([w['wwvh_toa_ms'] for w in dual_peak_windows]))
+                    result.wwv_expected_delay_ms = float(np.median([w['wwv_expected_delay_ms'] for w in dual_peak_windows]))
+                    result.wwvh_expected_delay_ms = float(np.median([w['wwvh_expected_delay_ms'] for w in dual_peak_windows]))
+                    result.t_emission_from_wwv_ms = float(np.median([w['t_emission_from_wwv_ms'] for w in dual_peak_windows]))
+                    result.t_emission_from_wwvh_ms = float(np.median([w['t_emission_from_wwvh_ms'] for w in dual_peak_windows]))
+                    result.cross_validation_error_ms = float(np.median([w['cross_validation_error_ms'] for w in dual_peak_windows]))
+                    
+                    # Classify confidence based on median cross-validation error
+                    if result.cross_validation_error_ms < 1.0:
+                        result.dual_station_confidence = 'excellent'
+                    elif result.cross_validation_error_ms < 2.0:
+                        result.dual_station_confidence = 'good'
+                    elif result.cross_validation_error_ms < 5.0:
+                        result.dual_station_confidence = 'fair'
+                    else:
+                        result.dual_station_confidence = 'investigate'
+                    
+                    logger.info(f"{self.channel_name}: DUAL-STATION TIME RECOVERY: "
+                               f"WWV ToA={result.wwv_toa_ms:.2f}ms (exp={result.wwv_expected_delay_ms:.2f}), "
+                               f"WWVH ToA={result.wwvh_toa_ms:.2f}ms (exp={result.wwvh_expected_delay_ms:.2f}), "
+                               f"T_emission: WWV={result.t_emission_from_wwv_ms:.2f}ms, WWVH={result.t_emission_from_wwvh_ms:.2f}ms, "
+                               f"cross-validation={result.cross_validation_error_ms:.2f}ms ({result.dual_station_confidence})")
                     
         except Exception as e:
             logger.warning(f"{self.channel_name}: BCD discrimination failed: {e}")
