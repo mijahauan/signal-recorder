@@ -3072,7 +3072,7 @@ app.get('/api/v1/timing/timeline', async (req, res) => {
 app.get('/api/v1/timing/propagation', async (req, res) => {
   try {
     const channels = config.recorder?.channels || [];
-    const enabledChannels = channels.filter(ch => ch.enabled);
+    const enabledChannels = channels.filter(ch => ch.enabled !== false);
     
     const propagationData = [];
     
@@ -3224,7 +3224,8 @@ print(json.dumps(records))
  */
 async function getTimingStatus(paths) {
   const channels = config.recorder?.channels || [];
-  const enabledChannels = channels.filter(ch => ch.enabled);
+  // New config format: channels without 'enabled' field are enabled by default
+  const enabledChannels = channels.filter(ch => ch.enabled !== false);
   
   let primaryReference = null;
   let channelBreakdown = {
@@ -3351,7 +3352,7 @@ async function getTimingStatus(paths) {
  */
 async function getCurrentTonePowers(paths) {
   const channels = config.recorder?.channels || [];
-  const enabledChannels = channels.filter(ch => ch.enabled);
+  const enabledChannels = channels.filter(ch => ch.enabled !== false);
   const result = [];
   const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   
@@ -3824,7 +3825,7 @@ app.get('/api/v1/solar-zenith', async (req, res) => {
     // Call Python calculator - use project root (parent of web-ui directory)
     const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
     const pythonPath = join(projectRoot, 'venv', 'bin', 'python3');
-    const scriptPath = join(projectRoot, 'src', 'signal_recorder', 'grape', 'solar_zenith_calculator.py');
+    const scriptPath = join(projectRoot, 'src', 'grape_recorder', 'grape', 'solar_zenith_calculator.py');
     
     const cmd = `${pythonPath} ${scriptPath} --date ${date} --grid ${grid} --interval 5`;
     
@@ -3840,6 +3841,235 @@ app.get('/api/v1/solar-zenith', async (req, res) => {
     
   } catch (err) {
     console.error('Error calculating solar zenith:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// LOGS API
+// ============================================================================
+
+/**
+ * GET /api/v1/logs/list
+ * List all available log files
+ */
+app.get('/api/v1/logs/list', async (req, res) => {
+  try {
+    const logsDir = join(paths.dataRoot, 'logs');
+    const logs = [];
+    
+    // Read log files from logs directory
+    if (fs.existsSync(logsDir)) {
+      const files = fs.readdirSync(logsDir);
+      
+      for (const file of files) {
+        const filePath = join(logsDir, file);
+        const stats = fs.statSync(filePath);
+        
+        if (stats.isFile() && file.endsWith('.log')) {
+          // Categorize logs
+          let category = 'other';
+          if (file.includes('core-recorder')) category = 'recorder';
+          else if (file.includes('analytics')) category = 'analytics';
+          else if (file.includes('webui')) category = 'webui';
+          else if (file.includes('drf')) category = 'digital-rf';
+          
+          logs.push({
+            name: file,
+            path: filePath,
+            size: stats.size,
+            modified: stats.mtime.toISOString(),
+            category
+          });
+        }
+      }
+    }
+    
+    // Sort by modified time (newest first)
+    logs.sort((a, b) => new Date(b.modified) - new Date(a.modified));
+    
+    res.json({ logs });
+    
+  } catch (err) {
+    console.error('Error listing logs:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/logs/content
+ * Get log file content
+ */
+app.get('/api/v1/logs/content', async (req, res) => {
+  try {
+    const { path: logPath, tail = 500, offset = 0 } = req.query;
+    
+    if (!logPath) {
+      return res.status(400).json({ error: 'path parameter required' });
+    }
+    
+    // Security: Ensure path is within logs directory
+    const logsDir = join(paths.dataRoot, 'logs');
+    const normalizedPath = logPath;
+    if (!normalizedPath.startsWith(logsDir)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    if (!fs.existsSync(normalizedPath)) {
+      return res.status(404).json({ error: 'Log file not found' });
+    }
+    
+    // Read file content
+    const content = fs.readFileSync(normalizedPath, 'utf8');
+    const allLines = content.split('\n').filter(line => line.trim());
+    
+    // Apply offset and tail
+    const startIndex = Math.max(0, allLines.length - parseInt(tail) - parseInt(offset));
+    const endIndex = allLines.length - parseInt(offset);
+    const lines = allLines.slice(startIndex, endIndex);
+    
+    res.json({
+      lines,
+      total: allLines.length,
+      offset: parseInt(offset),
+      tail: parseInt(tail)
+    });
+    
+  } catch (err) {
+    console.error('Error reading log:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// TRANSMISSION TIME (UTC(NIST) BACK-CALCULATION) API
+// ============================================================================
+
+/**
+ * GET /api/v1/timing/transmission
+ * Get UTC(NIST) back-calculation results (individual + combined)
+ */
+app.get('/api/v1/timing/transmission', async (req, res) => {
+  try {
+    const { date, hours = 24 } = req.query;
+    const targetDate = date || new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    
+    const results = [];
+    const channels = config.recorder?.channels || [];
+    const enabledChannels = channels.filter(ch => ch.enabled !== false);
+    
+    for (const channel of enabledChannels) {
+      const channelName = channel.description || `Channel ${channel.ssrc}`;
+      const channelKey = channelName.replace(/ /g, '_');
+      
+      // Look for transmission_time CSV
+      const csvPath = join(
+        paths.getAnalyticsDir(channelKey),
+        'transmission_time',
+        `${channelKey}_utc_nist_${targetDate}.csv`
+      );
+      
+      if (!fs.existsSync(csvPath)) continue;
+      
+      try {
+        const content = fs.readFileSync(csvPath, 'utf8');
+        const lines = content.trim().split('\n');
+        if (lines.length < 2) continue;
+        
+        const headers = lines[0].split(',');
+        const cutoffTime = Date.now() - (hours * 60 * 60 * 1000);
+        
+        for (let i = 1; i < lines.length; i++) {
+          const values = lines[i].split(',');
+          const row = {};
+          headers.forEach((h, idx) => row[h] = values[idx]);
+          
+          // Filter by time
+          const rowTime = new Date(row.timestamp_utc).getTime();
+          if (rowTime < cutoffTime) continue;
+          
+          results.push({
+            channel: channelName,
+            timestamp: row.timestamp_utc,
+            station: row.station,
+            frequency_mhz: parseFloat(row.frequency_mhz),
+            mode: row.mode,
+            n_hops: parseInt(row.n_hops),
+            layer_height_km: parseFloat(row.layer_height_km),
+            elevation_deg: parseFloat(row.elevation_deg),
+            propagation_delay_ms: parseFloat(row.propagation_delay_ms),
+            utc_nist_offset_ms: row.utc_nist_offset_ms ? parseFloat(row.utc_nist_offset_ms) : null,
+            utc_nist_verified: row.utc_nist_verified === 'True',
+            confidence: parseFloat(row.confidence),
+            mode_separation_ms: parseFloat(row.mode_separation_ms)
+          });
+        }
+      } catch (err) {
+        console.warn(`Error reading ${csvPath}: ${err.message}`);
+      }
+    }
+    
+    // Sort by timestamp descending
+    results.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    
+    // Calculate combined estimate from recent observations (last 5 minutes)
+    const recentCutoff = Date.now() - (5 * 60 * 1000);
+    const recentResults = results.filter(r => 
+      new Date(r.timestamp).getTime() > recentCutoff && 
+      r.utc_nist_offset_ms !== null &&
+      r.confidence > 0.3
+    );
+    
+    let combined = null;
+    if (recentResults.length > 0) {
+      // Compute weighted average with outlier rejection
+      const offsets = recentResults.map(r => r.utc_nist_offset_ms);
+      const weights = recentResults.map(r => r.confidence);
+      
+      // Simple weighted mean
+      const totalWeight = weights.reduce((a, b) => a + b, 0);
+      const weightedMean = offsets.reduce((sum, o, i) => sum + o * weights[i], 0) / totalWeight;
+      
+      // Calculate spread and consistency
+      const spread = Math.max(...offsets) - Math.min(...offsets);
+      const consistency = Math.max(0, 1 - spread / 3);
+      
+      // Estimate uncertainty
+      const variance = offsets.reduce((sum, o, i) => 
+        sum + weights[i] * Math.pow(o - weightedMean, 2), 0) / totalWeight;
+      const uncertainty = Math.sqrt(variance) / Math.sqrt(recentResults.length);
+      
+      // Count stations
+      const stations = new Set(recentResults.map(r => r.station));
+      
+      // Quality grade
+      let grade = 'D';
+      if (uncertainty < 0.5 && consistency > 0.8) grade = 'A';
+      else if (uncertainty < 1.5 && consistency > 0.6) grade = 'B';
+      else if (uncertainty < 3.0) grade = 'C';
+      
+      combined = {
+        utc_offset_ms: weightedMean,
+        uncertainty_ms: uncertainty,
+        confidence: Math.min(1, consistency * (1 + 0.1 * (stations.size - 1))),
+        consistency: consistency,
+        n_measurements: recentResults.length,
+        n_stations: stations.size,
+        stations: Array.from(stations),
+        quality_grade: grade,
+        verified: uncertainty < 2.0 && consistency > 0.5
+      };
+    }
+    
+    res.json({
+      date: targetDate,
+      count: results.length,
+      results: results.slice(0, 100),  // Individual results
+      combined: combined  // Multi-station combined estimate
+    });
+    
+  } catch (err) {
+    console.error('Error getting transmission time data:', err);
     res.status(500).json({ error: err.message });
   }
 });

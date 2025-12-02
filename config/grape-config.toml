@@ -11,8 +11,8 @@ description = "beelink rx888 SAS"
 
 [ka9q]
 status_address = "bee1-hf-status.local"
-# data_address will be auto-discovered from radiod via status_address
-data_address = "239.103.26.231"
+# data_destination is optional - if not specified, radiod uses its default
+# data_destination = "bee1-hf-data.local"
 auto_create_channels = true
 
 [recorder]
@@ -32,7 +32,7 @@ production_data_root = "/var/lib/signal-recorder"
 #   - Protocol:   WEB_UI_ANALYTICS_SYNC_PROTOCOL.md
 #
 # ${data_root}/
-#   archives/{CHANNEL}/                              - Raw 16 kHz NPZ files
+#   archives/{CHANNEL}/                              - Raw 20 kHz NPZ files
 #   analytics/{CHANNEL}/
 #     decimated/                                     - 10 Hz NPZ files (pre-DRF)
 #     digital_rf/{YYYYMMDD}/.../{CHANNEL}/*.h5       - 10 Hz Digital RF files
@@ -47,104 +47,60 @@ production_data_root = "/var/lib/signal-recorder"
 recording_interval = 60
 continuous = true
 
+# RTP packet timing (from radiod)
+# blocktime_ms controls samples per RTP packet: samples_per_packet = sample_rate * blocktime_ms / 1000
+# radiod default is 10ms for IQ mode, giving 200 samples/packet at 20 kHz
+blocktime_ms = 10
+
+# Maximum gap to fill with zeros (seconds)
+# Gaps larger than this indicate stream restart or corruption
+max_gap_seconds = 60
+
+# Default parameters for all channels (can be overridden per-channel)
+[recorder.channel_defaults]
+preset = "iq"
+sample_rate = 20000
+agc = 0
+gain = 0
+
+# Channel definitions - SSRC auto-allocated by ka9q-python
+# Only frequency_hz and description required; defaults applied automatically
+
 [[recorder.channels]]
-ssrc = 2500000
 frequency_hz = 2500000
-preset = "iq"
-sample_rate = 16000
-agc = 0
-gain = 0
 description = "WWV 2.5 MHz"
-enabled = true
-processor = "grape"
 
 [[recorder.channels]]
-ssrc = 5000000
 frequency_hz = 5000000
-preset = "iq"
-sample_rate = 16000
-agc = 0
-gain = 0
 description = "WWV 5 MHz"
-enabled = true
-processor = "grape"
 
 [[recorder.channels]]
-ssrc = 10000000
 frequency_hz = 10000000
-preset = "iq"
-sample_rate = 16000
-agc = 0
-gain = 0
 description = "WWV 10 MHz"
-enabled = true
-processor = "grape"
 
 [[recorder.channels]]
-ssrc = 15000000
 frequency_hz = 15000000
-preset = "iq"
-sample_rate = 16000
-agc = 0
-gain = 0
 description = "WWV 15 MHz"
-enabled = true
-processor = "grape"
 
 [[recorder.channels]]
-ssrc = 20000000
 frequency_hz = 20000000
-preset = "iq"
-sample_rate = 16000
-agc = 0
-gain = 0
 description = "WWV 20 MHz"
-enabled = true
-processor = "grape"
 
 [[recorder.channels]]
-ssrc = 25000000
 frequency_hz = 25000000
-preset = "iq"
-sample_rate = 16000
-agc = 0
-gain = 0
 description = "WWV 25 MHz"
-enabled = true
-processor = "grape"
 
 [[recorder.channels]]
-ssrc = 3330000
 frequency_hz = 3330000
-preset = "iq"
-sample_rate = 16000
-agc = 0
-gain = 0
 description = "CHU 3.33 MHz"
-enabled = true
-processor = "grape"
 
 [[recorder.channels]]
-ssrc = 7850000
 frequency_hz = 7850000
-preset = "iq"
-sample_rate = 16000
-agc = 0
-gain = 0
 description = "CHU 7.85 MHz"
-enabled = true
-processor = "grape"
 
 [[recorder.channels]]
-ssrc = 14670000
 frequency_hz = 14670000
-preset = "iq"
-sample_rate = 16000
-agc = 0
-gain = 0
 description = "CHU 14.67 MHz"
-enabled = true
-processor = "grape"
 
 [uploader]
 enabled = false  # Set to true when PSWS account is verified and SSH key installed

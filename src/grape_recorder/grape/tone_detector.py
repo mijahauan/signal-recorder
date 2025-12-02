@@ -159,7 +159,9 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         self,
         timestamp: float,
         samples: np.ndarray,
-        rtp_timestamp: Optional[int] = None
+        rtp_timestamp: Optional[int] = None,
+        original_sample_rate: Optional[int] = None,
+        buffer_rtp_start: Optional[int] = None
     ) -> Optional[List[ToneDetectionResult]]:
         """
         Process samples and detect tones (ToneDetector interface).
@@ -168,13 +170,17 @@ class MultiStationToneDetector(IMultiStationToneDetector):
             timestamp: UTC timestamp of samples (from time_snap if available)
             samples: Complex IQ samples at self.sample_rate
             rtp_timestamp: Optional RTP timestamp for provenance
+            original_sample_rate: Original sample rate before decimation (e.g., 20000)
+            buffer_rtp_start: RTP timestamp at start of original buffer
             
         Returns:
             List of ToneDetectionResult objects (may contain WWV + WWVH),
             or None if no tones detected
         """
         self.total_attempts += 1
-        detections = self._detect_tones_internal(samples, timestamp)
+        detections = self._detect_tones_internal(
+            samples, timestamp, original_sample_rate, buffer_rtp_start
+        )
         
         if detections:
             self.last_detection_time = timestamp
@@ -199,7 +205,9 @@ class MultiStationToneDetector(IMultiStationToneDetector):
     def _detect_tones_internal(
         self,
         iq_samples: np.ndarray,
-        current_unix_time: float
+        current_unix_time: float,
+        original_sample_rate: Optional[int] = None,
+        buffer_rtp_start: Optional[int] = None
     ) -> List[ToneDetectionResult]:
         """
         Internal tone detection implementation
@@ -237,7 +245,9 @@ class MultiStationToneDetector(IMultiStationToneDetector):
                 station_type,
                 template,
                 current_unix_time,
-                minute_boundary
+                minute_boundary,
+                original_sample_rate,
+                buffer_rtp_start
             )
             
             if detection:
@@ -264,7 +274,9 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         station_type: StationType,
         template: dict,
         current_unix_time: float,
-        minute_boundary: int
+        minute_boundary: int,
+        original_sample_rate: Optional[int] = None,
+        buffer_rtp_start: Optional[int] = None
     ) -> Optional[ToneDetectionResult]:
         """
         Correlate audio signal with station template
@@ -329,6 +341,22 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         peak_idx = search_start + local_peak_idx
         peak_val = correlation[peak_idx]
         
+        # Parabolic (quadratic) interpolation for sub-sample precision
+        # Uses the peak and its two neighbors to fit a parabola
+        sub_sample_offset = 0.0
+        if 0 < peak_idx < len(correlation) - 1:
+            y_m1 = correlation[peak_idx - 1]
+            y_0 = correlation[peak_idx]
+            y_p1 = correlation[peak_idx + 1]
+            
+            denominator = y_m1 - 2*y_0 + y_p1
+            if abs(denominator) > 1e-10:
+                sub_sample_offset = 0.5 * (y_m1 - y_p1) / denominator
+                sub_sample_offset = max(-0.5, min(0.5, sub_sample_offset))
+                peak_val = y_0 - 0.25 * (y_m1 - y_p1) * sub_sample_offset
+        
+        precise_peak_idx = peak_idx + sub_sample_offset
+        
         # Noise-adaptive threshold: Use noise from OUTSIDE the search window
         noise_samples = np.concatenate([
             correlation[:max(0, search_start - 100)],
@@ -350,8 +378,8 @@ class MultiStationToneDetector(IMultiStationToneDetector):
             noise_floor = noise_mean + 2.0 * noise_std
         
         # Calculate timing relative to minute boundary
-        # CRITICAL: onset_sample_idx is relative to buffer START, not middle
-        onset_sample_idx = peak_idx
+        # CRITICAL: Use precise sub-sample position for timing
+        onset_sample_idx = precise_peak_idx  # Now includes sub-sample precision
         onset_time = buffer_start_time + (onset_sample_idx / self.sample_rate)
         timing_error_sec = onset_time - minute_boundary
         
@@ -371,7 +399,8 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         
         # Calculate actual tone power using FFT on the detected tone segment
         # Extract the tone segment (0.8s for WWV/WWVH, 0.5s for CHU)
-        tone_start_idx = max(0, onset_sample_idx)
+        # Use integer index for slicing (onset_sample_idx may be float from sub-sample interpolation)
+        tone_start_idx = max(0, int(onset_sample_idx))
         tone_end_idx = min(len(audio_signal), tone_start_idx + int(duration * self.sample_rate))
         tone_segment = audio_signal[tone_start_idx:tone_end_idx]
         
@@ -437,6 +466,16 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         # CRITICAL: Only WWV and CHU, NEVER WWVH
         use_for_time_snap = station_type in [StationType.WWV, StationType.CHU]
         
+        # Calculate sample position in ORIGINAL sample rate (for precise RTP calculation)
+        # onset_sample_idx is in decimated buffer (3 kHz)
+        # Scale to original rate (e.g., 20 kHz)
+        sample_position_original = None
+        if original_sample_rate is not None:
+            scale_factor = original_sample_rate / self.sample_rate
+            sample_position_original = int(onset_sample_idx * scale_factor)
+            logger.debug(f"Sample position: decimated={onset_sample_idx}, "
+                        f"original={sample_position_original} (scale={scale_factor:.2f})")
+        
         # Create ToneDetectionResult
         result = ToneDetectionResult(
             station=station_type,
@@ -449,7 +488,10 @@ class MultiStationToneDetector(IMultiStationToneDetector):
             use_for_time_snap=use_for_time_snap,
             correlation_peak=float(peak_val),
             noise_floor=float(noise_floor),
-            tone_power_db=tone_power_db
+            tone_power_db=tone_power_db,
+            sample_position_original=sample_position_original,
+            original_sample_rate=original_sample_rate,
+            buffer_rtp_start=buffer_rtp_start
         )
         
         freq_str = f"{frequency}Hz" if frequency is not None else "??Hz"

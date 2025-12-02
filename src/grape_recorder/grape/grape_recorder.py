@@ -58,12 +58,26 @@ class GrapeConfig:
     output_dir: Path
     station_config: Dict[str, Any]
     
+    # RTP packet timing (from radiod)
+    blocktime_ms: float = 20.0              # radiod default blocktime
+    max_gap_seconds: float = 60.0           # Maximum gap to fill with zeros
+    
     # Startup
     startup_buffer_duration: float = 120.0  # Seconds to buffer for tone detection
     
     # Periodic tone validation
     tone_check_interval: float = 300.0      # Check every 5 minutes
     tone_check_buffer_duration: float = 60.0  # Buffer 60s for tone check
+    
+    @property
+    def samples_per_packet(self) -> int:
+        """Calculate samples per RTP packet from sample_rate and blocktime"""
+        return int(self.sample_rate * self.blocktime_ms / 1000)
+    
+    @property
+    def max_gap_samples(self) -> int:
+        """Calculate maximum gap samples from sample_rate and max_gap_seconds"""
+        return int(self.sample_rate * self.max_gap_seconds)
 
 
 class GrapeRecorder:
@@ -117,7 +131,8 @@ class GrapeRecorder:
         # Startup phase components
         self.startup_resequencer = PacketResequencer(
             buffer_size=64,
-            samples_per_packet=320
+            samples_per_packet=config.samples_per_packet,
+            max_gap_samples=config.max_gap_samples
         )
         self.startup_buffer: list = []  # List of (rtp_timestamp, samples, gap_info)
         self.startup_buffer_start_time: Optional[float] = None
@@ -159,7 +174,8 @@ class GrapeRecorder:
             self.startup_buffer_first_rtp = None
             self.startup_resequencer = PacketResequencer(
                 buffer_size=64,
-                samples_per_packet=320
+                samples_per_packet=self.config.samples_per_packet,
+                max_gap_samples=self.config.max_gap_samples
             )
             
             # Register callback for startup buffering
@@ -305,7 +321,8 @@ class GrapeRecorder:
             segment_duration_sec=60.0,  # 1-minute segments
             align_to_boundary=True,
             resequencer_buffer_size=64,
-            samples_per_packet=320
+            samples_per_packet=self.config.samples_per_packet,
+            max_gap_samples=self.config.max_gap_samples
         )
         
         self.session = RecordingSession(

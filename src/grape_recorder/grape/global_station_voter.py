@@ -171,7 +171,7 @@ class GlobalStationVoter:
     def __init__(
         self,
         channels: List[str],
-        sample_rate: int = 16000,
+        sample_rate: int = 20000,
         history_minutes: int = 60
     ):
         """
@@ -489,6 +489,135 @@ class GlobalStationVoter:
             'minutes_tracked': len(self.minute_states),
             'channels': list(self.channels)
         }
+    
+    def get_best_time_snap_anchor(
+        self,
+        minute_rtp: int,
+        prefer_wwv_chu: bool = True,
+        min_snr_db: float = 8.0
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the best anchor across ALL channels for time_snap establishment.
+        
+        Implements dynamic RTP anchor selection using ensemble voting:
+        - Selects the strongest SNR detection across all frequencies
+        - Prefers WWV/CHU over WWVH (for timing reference)
+        - Returns the anchor with lowest timing uncertainty
+        
+        Args:
+            minute_rtp: Minute RTP timestamp
+            prefer_wwv_chu: If True, prefer WWV/CHU over WWVH for timing
+            min_snr_db: Minimum SNR required for consideration
+            
+        Returns:
+            Dict with best anchor info for time_snap, or None if no good anchor
+        """
+        minute_key = self._minute_rtp_key(minute_rtp)
+        
+        if minute_key not in self.minute_states:
+            return None
+        
+        minute_state = self.minute_states[minute_key]
+        
+        # Collect all valid anchors
+        candidates = []
+        
+        # WWV anchor (preferred for timing)
+        if minute_state.wwv_anchor and minute_state.wwv_anchor.snr_db >= min_snr_db:
+            candidates.append({
+                'anchor': minute_state.wwv_anchor,
+                'station': 'WWV',
+                'timing_preference': 1.0 if prefer_wwv_chu else 0.5
+            })
+        
+        # CHU anchor (also preferred for timing)  
+        if minute_state.chu_anchor and minute_state.chu_anchor.snr_db >= min_snr_db:
+            candidates.append({
+                'anchor': minute_state.chu_anchor,
+                'station': 'CHU',
+                'timing_preference': 1.0 if prefer_wwv_chu else 0.5
+            })
+        
+        # WWVH anchor (lower timing preference - WWVH tones are at different offsets)
+        if minute_state.wwvh_anchor and minute_state.wwvh_anchor.snr_db >= min_snr_db:
+            candidates.append({
+                'anchor': minute_state.wwvh_anchor,
+                'station': 'WWVH',
+                'timing_preference': 0.3 if prefer_wwv_chu else 0.5
+            })
+        
+        if not candidates:
+            return None
+        
+        # Score each candidate: SNR + timing preference bonus
+        def score_candidate(c):
+            anchor = c['anchor']
+            snr_score = anchor.snr_db  # Higher SNR = better
+            preference_bonus = c['timing_preference'] * 5.0  # Up to 5 dB equivalent
+            
+            # Quality bonus
+            quality_bonus = {
+                AnchorQuality.HIGH: 3.0,
+                AnchorQuality.MEDIUM: 1.0,
+                AnchorQuality.LOW: 0.0,
+                AnchorQuality.NONE: -5.0
+            }.get(anchor.quality, 0.0)
+            
+            return snr_score + preference_bonus + quality_bonus
+        
+        # Select best candidate
+        best = max(candidates, key=score_candidate)
+        anchor = best['anchor']
+        
+        logger.info(
+            f"🏆 Best time_snap anchor: {anchor.station} @ {anchor.channel} "
+            f"({anchor.snr_db:.1f} dB, quality={anchor.quality.value})"
+        )
+        
+        return {
+            'station': anchor.station,
+            'channel': anchor.channel,
+            'frequency_mhz': anchor.frequency_mhz,
+            'rtp_timestamp': anchor.rtp_timestamp,
+            'toa_offset_samples': anchor.toa_offset_samples,
+            'snr_db': anchor.snr_db,
+            'confidence': anchor.confidence,
+            'quality': anchor.quality.value,
+            'use_for_time_snap': anchor.station in ('WWV', 'CHU'),
+            'all_candidates': len(candidates)
+        }
+    
+    def report_detection_result(
+        self,
+        channel: str,
+        detection_result: Any,  # ToneDetectionResult
+        minute_rtp: int,
+        correlation_array: Optional[np.ndarray] = None
+    ):
+        """
+        Convenience method to report a ToneDetectionResult.
+        
+        Args:
+            channel: Channel name
+            detection_result: ToneDetectionResult object
+            minute_rtp: Minute boundary RTP
+            correlation_array: Optional correlation array for stacking
+        """
+        # Extract station name handling both string and enum
+        station = detection_result.station
+        if hasattr(station, 'value'):
+            station = station.value
+        
+        self.report_detection(
+            channel=channel,
+            rtp_timestamp=minute_rtp,
+            station=station,
+            snr_db=detection_result.snr_db,
+            toa_offset_samples=int(detection_result.timing_error_ms * self.sample_rate / 1000),
+            confidence=detection_result.confidence,
+            correlation_array=correlation_array,
+            utc_timestamp=detection_result.timestamp_utc
+        )
 
 
 # Convenience function for testing

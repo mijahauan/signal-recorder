@@ -67,7 +67,7 @@ function parseJSON(filePath) {
  */
 async function getPrimaryTimeReference(paths, config) {
   const channels = config.recorder?.channels || [];
-  const enabledChannels = channels.filter(ch => ch.enabled);
+  const enabledChannels = channels.filter(ch => ch.enabled !== false);
   
   let bestReference = null;
   let bestScore = -1;
@@ -148,7 +148,7 @@ async function getPrimaryTimeReference(paths, config) {
  */
 async function getTimingHealthSummary(paths, config) {
   const channels = config.recorder?.channels || [];
-  const enabledChannels = channels.filter(ch => ch.enabled);
+  const enabledChannels = channels.filter(ch => ch.enabled !== false);
   
   let toneLocked = 0;
   let ntpSynced = 0;
@@ -339,7 +339,7 @@ async function getTimingMetrics(channel, date, hours, paths) {
  */
 async function getTimingTransitions(channel, hours, paths, config) {
   const channels = channel === 'all'
-    ? config.recorder?.channels.filter(ch => ch.enabled) || []
+    ? config.recorder?.channels.filter(ch => ch.enabled !== false) || []
     : [config.recorder?.channels.find(ch => (ch.description || `Channel ${ch.ssrc}`) === channel)];
   
   const allTransitions = [];

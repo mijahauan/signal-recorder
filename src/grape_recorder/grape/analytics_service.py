@@ -42,6 +42,10 @@ from .discrimination_csv_writers import (
     DiscriminationRecord
 )
 from .timing_metrics_writer import TimingMetricsWriter
+from .transmission_time_solver import (
+    TransmissionTimeSolver, create_solver_from_grid, SolverResult,
+    MultiStationSolver, CombinedUTCResult, create_multi_station_solver
+)
 from ..interfaces.data_models import (
     TimeSnapReference, 
     QualityInfo, 
@@ -338,6 +342,19 @@ class AnalyticsService:
                 logger.info(f"✅ WWVHDiscriminator initialized with geographic ToA prediction ({receiver_grid})")
             else:
                 logger.info("✅ WWVHDiscriminator initialized (geographic ToA disabled - no grid_square in config)")
+        
+        # Transmission Time Solver - back-calculate UTC(NIST) from observed arrival times
+        self.transmission_solver: Optional[TransmissionTimeSolver] = None
+        self.latest_transmission_result: Optional[SolverResult] = None
+        receiver_grid = self.station_config.get('grid_square')
+        if receiver_grid and self._is_wwv_wwvh_channel(channel_name):
+            try:
+                # Determine sample rate from frequency (20 kHz for GRAPE channels)
+                sample_rate = 20000
+                self.transmission_solver = create_solver_from_grid(receiver_grid, sample_rate)
+                logger.info(f"✅ TransmissionTimeSolver initialized - can back-calculate UTC(NIST)")
+            except Exception as e:
+                logger.warning(f"Could not initialize TransmissionTimeSolver: {e}")
         
         # Digital RF writing has been moved to standalone drf_writer_service.py
         # This service now only does tone detection, decimation, and outputs 10Hz NPZ files
@@ -691,13 +708,23 @@ class AnalyticsService:
                     # - Drift = NTP - RTP_predicted = ADC clock error
                     if archive.ntp_wall_clock_time is not None:
                         # Archive has independent NTP reference - PERFECT!
-                        self.timing_writer.write_snapshot(
+                        ppm_result = self.timing_writer.write_snapshot(
                             time_snap=archive_time_snap,
                             current_rtp=archive.rtp_timestamp,
                             current_utc=archive.ntp_wall_clock_time,  # INDEPENDENT NTP reference
                             ntp_offset_ms=ntp_offset,
                             ntp_synced=ntp_synced
                         )
+                        
+                        # Feed PPM measurement back to time_snap for correction
+                        if ppm_result is not None and self.state.time_snap is not None:
+                            ppm_offset, ppm_confidence = ppm_result
+                            updated_snap = self.state.time_snap.with_updated_ppm(ppm_offset, ppm_confidence)
+                            if updated_snap is not self.state.time_snap:
+                                self.state.time_snap = updated_snap
+                                logger.info(f"📊 PPM correction applied: {ppm_offset:+.2f} ppm "
+                                           f"(conf={ppm_confidence:.2f}, clock_ratio={updated_snap.clock_ratio:.8f})")
+                        
                         self.last_timing_metrics_write = current_time
                     else:
                         # Old archive format without NTP time - skip drift measurement
@@ -742,6 +769,23 @@ class AnalyticsService:
                     # Track best SNR from detections
                     best_snr = max(det.snr_db for det in detections)
                     self.stats['last_snr_db'] = best_snr
+                    
+                    # Write REAL tone detections to CSV (with timing_error_ms!)
+                    for det in detections:
+                        tone_record = ToneDetectionRecord(
+                            timestamp_utc=datetime.fromtimestamp(
+                                det.timestamp_utc, tz=timezone.utc
+                            ).isoformat(),
+                            station=det.station.value,
+                            frequency_hz=det.frequency_hz,
+                            duration_sec=det.duration_sec,
+                            timing_error_ms=det.timing_error_ms,  # ACTUAL timing!
+                            snr_db=det.snr_db,
+                            tone_power_db=det.tone_power_db if det.tone_power_db else det.snr_db,
+                            confidence=det.confidence,
+                            use_for_time_snap=det.use_for_time_snap
+                        )
+                        self.csv_writers.write_tone_detection(tone_record)
             
             # Step 4: Decimate and write 10Hz NPZ (for DRF writer + spectrogram generation)
             decimated_samples = self._write_decimated_npz(archive, timing, detections if self._is_tone_detection_channel(archive.channel_name) else [])
@@ -862,12 +906,22 @@ class AnalyticsService:
         self.previous_file_tail = archive.iq_samples[-tail_samples:]
         self.previous_file_rtp_end = archive.rtp_timestamp + len(archive.iq_samples)
         
-        # Resample 16 kHz → 3 kHz for tone detection
+        # Resample to 3 kHz for tone detection
+        # Original rate is archive.sample_rate (typically 20 kHz)
+        original_sample_rate = archive.sample_rate
+        target_rate = 3000
+        
+        # Calculate resampling ratio (need integer up/down)
+        from math import gcd
+        g = gcd(target_rate, original_sample_rate)
+        up = target_rate // g
+        down = original_sample_rate // g
+        
         try:
             resampled = scipy_signal.resample_poly(
                 combined_iq,
-                up=3,
-                down=16,
+                up=up,
+                down=down,
                 axis=0
             )
         except Exception as e:
@@ -902,7 +956,9 @@ class AnalyticsService:
         detections = self.tone_detector.process_samples(
             timestamp=buffer_middle_utc,  # MUST be buffer middle (tone detector calculates start)
             samples=detection_buffer,
-            rtp_timestamp=archive.rtp_timestamp
+            rtp_timestamp=archive.rtp_timestamp,
+            original_sample_rate=original_sample_rate,
+            buffer_rtp_start=buffer_rtp_start
         )
         
         if detections:
@@ -939,6 +995,14 @@ class AnalyticsService:
                 logger.info(f"Discrimination: Power ratio={power_str}, "
                            f"Delay={delay_str}, "
                            f"Dominant={discrimination.dominant_station}")
+            
+            # Back-calculate UTC(NIST) transmission time if solver available
+            if self.transmission_solver and discrimination.dominant_station:
+                self._solve_transmission_time(
+                    archive=archive,
+                    discrimination=discrimination,
+                    detections=detections
+                )
         
         return detections or []
 
@@ -994,19 +1058,33 @@ class AnalyticsService:
         # Use strongest SNR detection
         best = max(eligible, key=lambda d: d.snr_db)
         
-        # Calculate RTP timestamp at tone rising edge
-        # Timing error tells us how far off the minute boundary we are
-        timing_offset_sec = best.timing_error_ms / 1000.0
-        
         # Find minute boundary closest to detection
         minute_boundary = int(best.timestamp_utc / 60) * 60
-        actual_tone_time = minute_boundary + timing_offset_sec
         
-        # Calculate RTP timestamp at minute boundary
-        # archive.rtp_timestamp is at archive.unix_timestamp (start of archive)
-        # We need RTP at minute_boundary
-        samples_from_archive_to_minute = (minute_boundary - archive.unix_timestamp) * archive.sample_rate
-        rtp_at_minute = int(archive.rtp_timestamp + samples_from_archive_to_minute)
+        # Calculate RTP timestamp at minute boundary using ACTUAL detected sample position
+        # This is the key: derive RTP directly from where the tone was physically detected
+        if best.sample_position_original is not None and best.buffer_rtp_start is not None:
+            # PRECISE METHOD: Use actual detected sample position and buffer RTP start
+            # 
+            # The tone was found at sample_position_original in the detection buffer
+            # The detection buffer starts at buffer_rtp_start
+            # timing_error_ms tells us how far the tone arrival was from minute boundary
+            # 
+            # RTP at tone arrival = buffer_rtp_start + sample_position_original
+            # RTP at minute boundary = RTP at tone arrival - (timing_error_ms * sample_rate / 1000)
+            
+            rtp_at_tone = best.buffer_rtp_start + best.sample_position_original
+            timing_offset_samples = int(best.timing_error_ms * archive.sample_rate / 1000)
+            rtp_at_minute = rtp_at_tone - timing_offset_samples
+            
+            logger.info(f"Time snap: PRECISE - tone at RTP {rtp_at_tone}, "
+                       f"timing_error={best.timing_error_ms:+.1f}ms, "
+                       f"minute boundary at RTP {rtp_at_minute}")
+        else:
+            # FALLBACK: Use UTC-based calculation (less precise, depends on existing time_snap)
+            samples_from_archive_to_minute = (minute_boundary - archive.unix_timestamp) * archive.sample_rate
+            rtp_at_minute = int(archive.rtp_timestamp + samples_from_archive_to_minute)
+            logger.info(f"Time snap: UTC-based (no precise sample position available)")
         
         # Create new time_snap reference
         new_time_snap = TimeSnapReference(
@@ -1020,21 +1098,24 @@ class AnalyticsService:
         )
         
         # Check if this is a significant update (clock drift detection)
+        # NOTE: Large "drift" between time_snaps may just be correction, not actual drift
         if self.state.time_snap:
             # Calculate expected RTP advancement based on UTC time difference
             utc_elapsed = new_time_snap.utc_timestamp - self.state.time_snap.utc_timestamp
-            expected_rtp_delta = utc_elapsed * archive.sample_rate
             
-            # Actual RTP advancement
-            actual_rtp_delta = new_time_snap.rtp_timestamp - self.state.time_snap.rtp_timestamp
-            
-            # Clock drift = difference between expected and actual RTP advancement
-            rtp_drift_samples = abs(actual_rtp_delta - expected_rtp_delta)
-            drift_ms = (rtp_drift_samples / archive.sample_rate) * 1000
-            
-            # Only warn if drift > 5ms (actual clock problem, not just new minute)
-            if drift_ms > 5.0:
-                logger.warning(f"RTP clock drift detected: {drift_ms:.1f}ms over {utc_elapsed:.0f}s")
+            if utc_elapsed > 0:
+                expected_rtp_delta = utc_elapsed * archive.sample_rate
+                actual_rtp_delta = new_time_snap.rtp_timestamp - self.state.time_snap.rtp_timestamp
+                
+                rtp_drift_samples = abs(actual_rtp_delta - expected_rtp_delta)
+                drift_ms = (rtp_drift_samples / archive.sample_rate) * 1000
+                
+                # Only warn if drift > 50ms AND elapsed time is reasonable
+                # (Large diffs may be corrections when transitioning to precise method)
+                if drift_ms > 50.0 and utc_elapsed > 30:
+                    logger.warning(f"RTP clock drift detected: {drift_ms:.1f}ms over {utc_elapsed:.0f}s")
+                elif drift_ms > 5.0:
+                    logger.debug(f"Minor RTP adjustment: {drift_ms:.1f}ms over {utc_elapsed:.0f}s")
         
         # Update state
         old_time_snap = self.state.time_snap
@@ -1496,6 +1577,286 @@ class AnalyticsService:
                        
         except Exception as e:
             logger.warning(f"Failed to log discrimination: {e}")
+    
+    def _solve_transmission_time(
+        self,
+        archive: 'NPZArchive',
+        discrimination: 'DiscriminationResult',
+        detections: List[ToneDetectionResult]
+    ):
+        """
+        Back-calculate UTC(NIST) transmission time from observed arrival.
+        
+        This is the "Holy Grail" of HF time transfer - turning a passive
+        receiver into a primary frequency/time standard by identifying
+        the propagation mode and subtracting the correct delay.
+        
+        Args:
+            archive: NPZ archive with RTP timestamps
+            discrimination: Discrimination result with station identification
+            detections: Tone detection results with timing info
+        """
+        try:
+            # Determine station (WWV, WWVH, or CHU)
+            station = discrimination.dominant_station
+            if station not in ['WWV', 'WWVH']:
+                # CHU handling would need different logic
+                return
+            
+            # Get frequency in MHz
+            frequency_mhz = archive.frequency_hz / 1e6
+            
+            # Find the best detection for this minute
+            best_detection = None
+            for det in detections or []:
+                if det.station.value.upper() == station:
+                    if best_detection is None or det.snr_db > best_detection.snr_db:
+                        best_detection = det
+            
+            if not best_detection:
+                logger.debug(f"No {station} detection for transmission time solving")
+                return
+            
+            # timing_error_ms IS the observed delay from expected second boundary
+            # It includes both propagation delay and any clock error:
+            #   timing_error_ms = propagation_delay_ms + clock_error_ms
+            #
+            # The solver will:
+            # 1. Calculate expected propagation delay for each mode
+            # 2. Find best matching mode
+            # 3. Compute clock_error = timing_error_ms - propagation_delay_ms
+            #
+            # This clock_error is the UTC(NIST) offset we're looking for!
+            
+            # timing_error_ms is the observed delay from minute boundary
+            # This includes propagation delay + any clock error
+            observed_delay_ms = best_detection.timing_error_ms
+            
+            # Check if we have precise sample position data
+            has_precise_timing = (
+                best_detection.sample_position_original is not None and
+                best_detection.buffer_rtp_start is not None
+            )
+            
+            if has_precise_timing:
+                # PRECISE: Use actual detected sample position for RTP calculation
+                rtp_at_tone = best_detection.buffer_rtp_start + best_detection.sample_position_original
+                timing_offset_samples = int(observed_delay_ms * archive.sample_rate / 1000)
+                expected_second_rtp = rtp_at_tone - timing_offset_samples
+                arrival_rtp = rtp_at_tone
+                
+                logger.info(
+                    f"📡 Transmission solve (PRECISE): {station} {frequency_mhz:.1f}MHz | "
+                    f"timing_error={observed_delay_ms:.2f}ms, SNR={best_detection.snr_db:.1f}dB, "
+                    f"sample_pos={best_detection.sample_position_original}"
+                )
+            else:
+                # FALLBACK: Use archive RTP + timing error
+                expected_second_rtp = archive.rtp_timestamp  # Minute boundary approximation
+                arrival_rtp = archive.rtp_timestamp + int(observed_delay_ms * archive.sample_rate / 1000)
+                
+                logger.info(
+                    f"📡 Transmission solve (approx): {station} {frequency_mhz:.1f}MHz | "
+                    f"timing_error={observed_delay_ms:.2f}ms, SNR={best_detection.snr_db:.1f}dB"
+                )
+            
+            # Get quality metrics from discrimination for mode disambiguation
+            delay_spread_ms = 0.5  # Default moderate spread
+            doppler_std_hz = 0.1   # Default stable
+            fss_db = None
+            
+            # Use Doppler from discrimination if available
+            if discrimination.doppler_wwv_std_hz is not None and station == 'WWV':
+                doppler_std_hz = discrimination.doppler_wwv_std_hz
+            elif discrimination.doppler_wwvh_std_hz is not None and station == 'WWVH':
+                doppler_std_hz = discrimination.doppler_wwvh_std_hz
+            
+            # Solve for transmission time
+            result = self.transmission_solver.solve(
+                station=station,
+                frequency_mhz=frequency_mhz,
+                arrival_rtp=arrival_rtp,
+                delay_spread_ms=delay_spread_ms,
+                doppler_std_hz=doppler_std_hz,
+                fss_db=fss_db,
+                expected_second_rtp=expected_second_rtp
+            )
+            
+            # Store latest result
+            self.latest_transmission_result = result
+            
+            # Adjust confidence based on timing precision
+            effective_confidence = result.confidence
+            if not has_precise_timing:
+                # timing_error_ms was 0, which means tone detector didn't measure actual offset
+                # We can still show propagation mode but not UTC offset
+                effective_confidence = min(0.2, result.confidence)  # Low confidence
+                logger.debug(f"Transmission solve: timing_error=0, mode identification only")
+            else:
+                # We have actual timing measurement - can compute UTC offset
+                # The offset should be small if we identified the correct mode
+                if result.utc_nist_offset_ms is not None and abs(result.utc_nist_offset_ms) < 5.0:
+                    effective_confidence = min(0.8, result.confidence * 1.5)  # Boost confidence
+                    logger.info(f"✅ Good UTC offset: {result.utc_nist_offset_ms:+.2f}ms")
+            
+            # Log the result
+            if effective_confidence > 0.3 or result.propagation_delay_ms > 0:
+                mode_str = f"{result.mode_name} ({result.n_hops}-hop)"
+                prop_str = f"Prop: {result.propagation_delay_ms:.2f}ms"
+                if has_precise_timing and result.utc_nist_offset_ms is not None:
+                    utc_str = f"UTC offset: {result.utc_nist_offset_ms:+.2f}ms"
+                    verified_str = "✓" if result.utc_nist_verified else "✗"
+                    logger.info(
+                        f"🎯 UTC(NIST) back-calc: {station} {frequency_mhz:.1f}MHz | "
+                        f"Mode: {mode_str} | {prop_str} | {utc_str} {verified_str} | "
+                        f"Conf: {effective_confidence:.0%}"
+                    )
+                else:
+                    logger.info(
+                        f"📡 Propagation mode: {station} {frequency_mhz:.1f}MHz | "
+                        f"Mode: {mode_str} | {prop_str} | "
+                        f"(precise timing unavailable)"
+                    )
+            
+            # Write to transmission time CSV (with adjusted confidence)
+            result.confidence = effective_confidence
+            self._log_transmission_time(archive, result, station, frequency_mhz)
+            
+        except Exception as e:
+            logger.warning(f"Transmission time solving failed: {e}", exc_info=True)
+    
+    def _log_transmission_time(
+        self,
+        archive: 'NPZArchive',
+        result: 'SolverResult',
+        station: str,
+        frequency_mhz: float
+    ):
+        """Write transmission time result to CSV for analysis."""
+        try:
+            import csv
+            
+            # Create transmission_time directory
+            tx_time_dir = self.output_dir / 'transmission_time'
+            tx_time_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Daily CSV file
+            date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
+            csv_file = tx_time_dir / f'{self.channel_name.replace(" ", "_")}_utc_nist_{date_str}.csv'
+            
+            # Check if file exists (for header)
+            write_header = not csv_file.exists()
+            
+            with open(csv_file, 'a', newline='') as f:
+                writer = csv.writer(f)
+                
+                if write_header:
+                    writer.writerow([
+                        'timestamp_utc',
+                        'station',
+                        'frequency_mhz',
+                        'mode',
+                        'n_hops',
+                        'layer_height_km',
+                        'elevation_deg',
+                        'propagation_delay_ms',
+                        'utc_nist_offset_ms',
+                        'utc_nist_verified',
+                        'confidence',
+                        'mode_separation_ms',
+                        'arrival_rtp',
+                        'emission_rtp'
+                    ])
+                
+                # Write data row
+                writer.writerow([
+                    datetime.now(timezone.utc).isoformat(),
+                    station,
+                    f'{frequency_mhz:.2f}',
+                    result.mode.value,
+                    result.n_hops,
+                    f'{result.layer_height_km:.0f}',
+                    f'{result.elevation_angle_deg:.1f}',
+                    f'{result.propagation_delay_ms:.3f}',
+                    f'{result.utc_nist_offset_ms:.3f}' if result.utc_nist_offset_ms else '',
+                    result.utc_nist_verified,
+                    f'{result.confidence:.3f}',
+                    f'{result.mode_separation_ms:.3f}',
+                    result.arrival_rtp,
+                    result.emission_rtp
+                ])
+            
+            # Also write to shared observations file for multi-station correlation
+            self._write_shared_observation(archive, result, station, frequency_mhz)
+                
+        except Exception as e:
+            logger.warning(f"Failed to log transmission time: {e}")
+    
+    def _write_shared_observation(
+        self,
+        archive: 'NPZArchive',
+        result: 'SolverResult',
+        station: str,
+        frequency_mhz: float
+    ):
+        """Write observation to shared JSON for multi-station correlation."""
+        try:
+            import json
+            import fcntl
+            
+            # Shared observations file at data root level
+            shared_file = self.output_dir.parent.parent / 'status' / 'transmission_observations.json'
+            shared_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Create observation record
+            obs = {
+                'timestamp_utc': datetime.now(timezone.utc).isoformat(),
+                'minute_utc': archive.timestamp.isoformat() if archive.timestamp else None,
+                'channel': self.channel_name,
+                'station': station,
+                'frequency_mhz': frequency_mhz,
+                'mode': result.mode.value,
+                'mode_name': result.mode_name,
+                'n_hops': result.n_hops,
+                'propagation_delay_ms': result.propagation_delay_ms,
+                'utc_offset_ms': result.utc_nist_offset_ms,
+                'confidence': result.confidence,
+                'elevation_deg': result.elevation_angle_deg,
+                'verified': result.utc_nist_verified
+            }
+            
+            # Read existing, append, write (with file locking for concurrent access)
+            observations = []
+            if shared_file.exists():
+                try:
+                    with open(shared_file, 'r') as f:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                        data = json.load(f)
+                        observations = data.get('observations', [])
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except (json.JSONDecodeError, KeyError):
+                    observations = []
+            
+            # Keep only last 10 minutes of observations
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+            observations = [
+                o for o in observations 
+                if datetime.fromisoformat(o['timestamp_utc'].replace('Z', '+00:00')) > cutoff
+            ]
+            
+            observations.append(obs)
+            
+            # Write back with lock
+            with open(shared_file, 'w') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                json.dump({
+                    'updated_utc': datetime.now(timezone.utc).isoformat(),
+                    'observations': observations
+                }, f, indent=2)
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                
+        except Exception as e:
+            logger.debug(f"Failed to write shared observation: {e}")
     
     def _backfill_gaps_on_startup(self, max_backfill: int):
         """

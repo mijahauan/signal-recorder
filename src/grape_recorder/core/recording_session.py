@@ -113,7 +113,12 @@ class SessionConfig:
     
     # Resequencing
     resequencer_buffer_size: int = 64
-    samples_per_packet: int = 320
+    samples_per_packet: Optional[int] = None      # Calculated from sample_rate * blocktime_ms / 1000
+    max_gap_samples: Optional[int] = None         # Calculated from sample_rate * max_gap_seconds
+    
+    # RTP packet timing defaults (used if samples_per_packet/max_gap_samples not provided)
+    blocktime_ms: float = 20.0                    # radiod default blocktime
+    max_gap_seconds: float = 60.0                 # Maximum gap to fill
     
     # Payload format
     payload_type: int = 120  # Default: int16 IQ
@@ -121,6 +126,14 @@ class SessionConfig:
     def __post_init__(self):
         if self.segment_duration_sec is not None and self.segment_duration_sec <= 0:
             raise ValueError("segment_duration_sec must be positive or None")
+        
+        # Calculate samples_per_packet if not provided
+        if self.samples_per_packet is None:
+            self.samples_per_packet = int(self.sample_rate * self.blocktime_ms / 1000)
+        
+        # Calculate max_gap_samples if not provided
+        if self.max_gap_samples is None:
+            self.max_gap_samples = int(self.sample_rate * self.max_gap_seconds)
 
 
 class RecordingSession:
@@ -181,7 +194,8 @@ class RecordingSession:
         # Resequencer
         self.resequencer = PacketResequencer(
             buffer_size=config.resequencer_buffer_size,
-            samples_per_packet=config.samples_per_packet
+            samples_per_packet=config.samples_per_packet,
+            max_gap_samples=config.max_gap_samples
         )
         
         # Segment timing

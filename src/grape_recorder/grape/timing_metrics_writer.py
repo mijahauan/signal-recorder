@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 import time
 import re
 
@@ -139,9 +139,9 @@ class TimingMetricsWriter:
     def write_snapshot(self, time_snap: 'TimeSnapReference', 
                       current_rtp: int, current_utc: float,
                       ntp_offset_ms: Optional[float] = None,
-                      ntp_synced: bool = False):
+                      ntp_synced: bool = False) -> Optional[Tuple[float, float]]:
         """
-        Write current timing snapshot
+        Write current timing snapshot and return PPM measurement if available.
         
         Args:
             time_snap: Current time_snap reference (tone-locked precision)
@@ -149,6 +149,10 @@ class TimingMetricsWriter:
             current_utc: Current system time (NTP-synced if available)
             ntp_offset_ms: NTP offset for comparison
             ntp_synced: Whether system time is NTP-synchronized
+            
+        Returns:
+            Tuple of (ppm_offset, confidence) if tone-to-tone measurement was made,
+            None otherwise. Caller should use this to update TimeSnapReference PPM.
             
         Note:
             Drift measurement hierarchy:
@@ -161,11 +165,13 @@ class TimingMetricsWriter:
         """
         if time_snap is None:
             logger.debug(f"{self.channel_name}: No time_snap available for metrics")
-            return
+            return None
         
+        ppm_measurement = None
         try:
             # Check if we have a new tone detection (gold standard reference)
-            self._check_tone_to_tone_drift(time_snap)
+            # This returns (ppm_offset, confidence) if a new measurement was made
+            ppm_measurement = self._check_tone_to_tone_drift(time_snap)
             
             # Calculate drift: RTP clock vs real time (NTP-synced or wall clock)
             # Note: This measures combined (RTP + reference) drift, not pure RTP stability
@@ -217,8 +223,12 @@ class TimingMetricsWriter:
             # Check for transition
             self._check_transition(snapshot, snr_db, time_snap.confidence)
             
+            # Return PPM measurement for caller to update time_snap
+            return ppm_measurement
+            
         except Exception as e:
             logger.error(f"{self.channel_name}: Error writing timing snapshot: {e}")
+            return None
     
     def _calculate_drift_minute_to_minute(self, time_snap: 'TimeSnapReference',
                                           current_rtp: int, current_time_utc: float,
@@ -284,45 +294,51 @@ class TimingMetricsWriter:
         
         return offset_change_ms
     
-    def _check_tone_to_tone_drift(self, time_snap: 'TimeSnapReference'):
+    def _check_tone_to_tone_drift(self, time_snap: 'TimeSnapReference') -> Optional[Tuple[float, float]]:
         """
         Calculate A/D clock drift using tone-to-tone measurement (gold standard)
         
         This is the definitive measurement of RTP clock stability:
         - Uses consecutive tone detections as ground truth
-        - Measures: Is the A/D clock running at exactly 16000 Hz?
+        - Measures: Is the A/D clock running at exactly the nominal sample rate?
         - Result in PPM (parts per million) frequency error
         
         Example:
             Tone A: RTP=1000000, UTC=100.0 (WWV tone)
             Tone B: RTP=5760000, UTC=400.0 (WWV tone)
             
-            Expected samples = (400.0 - 100.0) * 16000 = 4,800,000
+            Expected samples = (400.0 - 100.0) * 20000 = 6,000,000
             Actual samples = 5760000 - 1000000 = 4,760,000
             
-            Drift = 4,760,000 / 4,800,000 = 0.9917
-            Error = (0.9917 - 1.0) * 1e6 = -8333 ppm (clock running slow)
+            Drift = 4,760,000 / 6,000,000 = 0.7933
+            Error = (0.7933 - 1.0) * 1e6 = -206667 ppm (clock running slow)
+            
+        Returns:
+            Tuple of (ppm_offset, confidence) or None if no measurement
         """
         # Only process tone-based time_snaps
         source_lower = time_snap.source.lower() if time_snap.source else ''
         is_tone = any(station in source_lower for station in ['wwv', 'chu'])
         
         if not is_tone:
-            return  # Not a tone detection
+            return None  # Not a tone detection
         
         # First tone detection - establish baseline
         if self.last_tone_snap is None:
             self.last_tone_snap = time_snap
             logger.info(f"{self.channel_name}: Baseline tone established for A/D clock measurement")
-            return
+            return None
         
         # Check if this is a NEW tone detection (not just re-using old time_snap)
         if time_snap.rtp_timestamp == self.last_tone_snap.rtp_timestamp:
-            return  # Same tone, no new measurement
+            return None  # Same tone, no new measurement
         
         # Calculate tone-to-tone drift
         # Time between tones (ground truth from WWV/CHU)
         tone_time_elapsed = time_snap.utc_timestamp - self.last_tone_snap.utc_timestamp
+        
+        if tone_time_elapsed <= 0:
+            return None  # Invalid measurement
         
         # RTP samples between tones (A/D clock measurement)
         rtp_samples_elapsed = time_snap.rtp_timestamp - self.last_tone_snap.rtp_timestamp
@@ -344,8 +360,14 @@ class TimingMetricsWriter:
         self.tone_to_tone_drift_ppm = drift_ppm
         self.last_tone_snap = time_snap
         
+        # Confidence based on measurement duration (longer = more confident)
+        # 60s gives 0.5, 300s gives 0.83, 600s gives 0.91
+        confidence = 1.0 - (60.0 / (60.0 + tone_time_elapsed))
+        
         logger.info(f"{self.channel_name}: Tone-to-tone A/D clock drift: {drift_ppm:+.2f} ppm "
-                   f"(over {tone_time_elapsed:.1f}s, {rtp_samples_elapsed} samples)")
+                   f"(over {tone_time_elapsed:.1f}s, conf={confidence:.2f})")
+        
+        return (drift_ppm, confidence)
     
     def _calculate_jitter(self) -> float:
         """

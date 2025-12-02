@@ -48,12 +48,12 @@ class WWVBCDEncoder:
     # Position markers (800ms pulses)
     POSITION_MARKERS = [0, 9, 19, 29, 39, 49, 59]
     
-    def __init__(self, sample_rate: int = 16000):
+    def __init__(self, sample_rate: int = 20000):
         """
         Initialize BCD encoder
         
         Args:
-            sample_rate: Sample rate in Hz (default 16000)
+            sample_rate: Sample rate in Hz (20000 default, 16000 for legacy)
         """
         self.sample_rate = sample_rate
         self.samples_per_second = sample_rate

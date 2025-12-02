@@ -6,10 +6,82 @@ This module creates and configures channels in radiod using the TLV control prot
 
 import logging
 import time
+import subprocess
 from typing import List, Dict, Optional
 from ka9q import discover_channels, ChannelInfo, RadiodControl
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_mdns_to_ip(name: str) -> Optional[str]:
+    """
+    Resolve an mDNS name to an IP address using avahi-resolve.
+    
+    Args:
+        name: mDNS name like "bee1-hf-data.local"
+        
+    Returns:
+        IP address string, or None if resolution fails
+    """
+    if not name:
+        return None
+    
+    # If it's already an IP, return it
+    if name.startswith('239.') or (name.count('.') == 3 and name.split('.')[0].isdigit()):
+        return name.split(':')[0]
+    
+    # Try avahi-resolve for .local names
+    if name.endswith('.local'):
+        try:
+            result = subprocess.run(
+                ['avahi-resolve', '-n', name],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Output format: "name\tIP"
+                parts = result.stdout.strip().split()
+                if len(parts) >= 2:
+                    ip = parts[-1]
+                    logger.info(f"Resolved {name} -> {ip}")
+                    return ip
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.warning(f"avahi-resolve failed for {name}: {e}")
+    
+    return None
+
+
+def generate_grape_multicast_ip(station_id: str, instrument_id: str) -> str:
+    """
+    Generate a deterministic multicast IP for GRAPE channels.
+    
+    Uses station_id and instrument_id to create a unique, persistent
+    multicast address in the 239.x.x.x administratively scoped range.
+    
+    Args:
+        station_id: Station identifier (e.g., "S000171")
+        instrument_id: Instrument identifier (e.g., "172")
+        
+    Returns:
+        Multicast IP string like "239.71.82.65"
+    """
+    import hashlib
+    
+    # Create deterministic hash from station + instrument
+    key = f"GRAPE:{station_id}:{instrument_id}"
+    hash_bytes = hashlib.sha256(key.encode()).digest()
+    
+    # Use first 3 bytes for octets 2-4
+    # Keep in 239.x.x.x range (administratively scoped)
+    # Avoid reserved ranges: 239.0.0.x, 239.255.x.x
+    octet2 = (hash_bytes[0] % 254) + 1   # 1-254
+    octet3 = hash_bytes[1]                # 0-255
+    octet4 = (hash_bytes[2] % 254) + 1   # 1-254
+    
+    ip = f"239.{octet2}.{octet3}.{octet4}"
+    logger.info(f"Generated GRAPE multicast IP: {ip} (from {station_id}/{instrument_id})")
+    return ip
 
 
 class ChannelManager:
@@ -41,65 +113,74 @@ class ChannelManager:
         logger.info(f"Found {len(channels)} existing channels")
         return channels
     
-    def create_channel(self, ssrc: int, frequency_hz: float, preset: str = "iq", 
+    def create_channel(self, frequency_hz: float, preset: str = "iq", 
                       sample_rate: Optional[int] = None, agc: int = 0, gain: float = 0.0,
-                      description: str = "") -> bool:
+                      destination: Optional[str] = None, ssrc: Optional[int] = None,
+                      description: str = "") -> Optional[int]:
         """
         Create a new channel in radiod
         
         Args:
-            ssrc: SSRC for the new channel
             frequency_hz: Frequency in Hz
             preset: Preset/mode (default: "iq")
-            sample_rate: Sample rate in Hz (optional, default: 16000)
-            agc: AGC enable (0=auto AGC, 1=manual) (default: 0)
+            sample_rate: Sample rate in Hz (optional)
+            agc: AGC enable (0=off, 1=on) (default: 0)
             gain: Manual gain in dB (default: 0.0)
-            description: Human-readable description
+            destination: RTP destination (mDNS or IP:port), e.g. "time-station-data.local"
+            ssrc: Optional SSRC. If None, auto-allocated by ka9q-python
+            description: Human-readable description (for logging)
         
         Returns:
-            True if successful
+            SSRC of created channel, or None if failed
         """
-        logger.info(f"🔧 create_channel() called for SSRC {ssrc}")
+        ssrc_str = f"SSRC {ssrc}" if ssrc else "auto-SSRC"
+        logger.info(f"🔧 create_channel() called for {frequency_hz/1e6:.3f} MHz ({ssrc_str})")
         try:
+            # Resolve mDNS destination to IP if needed
+            resolved_dest = None
+            if destination:
+                resolved_dest = resolve_mdns_to_ip(destination)
+                if not resolved_dest:
+                    logger.warning(f"Could not resolve destination '{destination}' - channel may use default")
+            
             logger.info(
-                f"Creating channel: SSRC={ssrc}, "
-                f"freq={frequency_hz/1e6:.3f} MHz, "
+                f"Creating channel: freq={frequency_hz/1e6:.3f} MHz, "
                 f"preset={preset}, rate={sample_rate}Hz, "
                 f"agc={agc}, gain={gain}dB, "
+                f"destination={destination} -> {resolved_dest}, "
                 f"description='{description}'"
             )
             
-            logger.info(f"About to call self.control.create_channel()...")
-            
-            # Use radiod_control to create and configure channel (new ka9q-python API)
-            # create_channel() now takes all parameters in one call
-            self.control.create_channel(
-                ssrc=ssrc,
+            # Use radiod_control to create and configure channel
+            # Returns the SSRC (auto-allocated if not provided)
+            allocated_ssrc = self.control.create_channel(
                 frequency_hz=frequency_hz,
                 preset=preset,
                 sample_rate=sample_rate,
                 agc_enable=agc,
-                gain=gain
+                gain=gain,
+                destination=resolved_dest,  # Use resolved IP
+                ssrc=ssrc
             )
             
-            logger.info(f"Channel creation complete, waiting 0.5s...")
+            logger.info(f"Channel creation complete (SSRC={allocated_ssrc}), waiting 0.5s...")
             
             # Wait for radiod to process
             time.sleep(0.5)
             
-            logger.info(f"Verifying channel {ssrc}...")
+            logger.info(f"Verifying channel {allocated_ssrc}...")
             
             # Verify the channel was created
-            if self.control.verify_channel(ssrc, frequency_hz):
-                logger.info(f"✓ Channel {ssrc} created successfully")
-                return True
+            if self.control.verify_channel(allocated_ssrc, frequency_hz):
+                logger.info(f"✓ Channel {allocated_ssrc} ({frequency_hz/1e6:.3f} MHz) created successfully")
+                return allocated_ssrc
             else:
-                logger.warning(f"✗ Channel {ssrc} verification failed")
-                return False
+                logger.warning(f"✗ Channel {allocated_ssrc} verification failed")
+                return None
                 
         except Exception as e:
-            logger.error(f"❌ EXCEPTION in create_channel({ssrc}): {e}", exc_info=True)
-            return False
+            logger.error(f"❌ EXCEPTION in create_channel({frequency_hz/1e6:.3f} MHz): {e}", exc_info=True)
+            return None
     
     def ensure_channels_exist(self, required_channels: List[Dict], update_existing: bool = False) -> bool:
         """
@@ -141,12 +222,21 @@ class ChannelManager:
                     req_freq = channel_spec['frequency_hz']
                     req_preset = channel_spec.get('preset', 'iq')
                     
-                    # Check if frequency or preset differs
+                    # Check if frequency, preset, or sample_rate differs
                     freq_diff = abs(existing_ch.frequency - req_freq) > 1.0  # 1 Hz tolerance
                     preset_diff = existing_ch.preset != req_preset
+                    req_sample_rate = channel_spec.get('sample_rate')
+                    sample_rate_diff = req_sample_rate and existing_ch.sample_rate != req_sample_rate
                     
-                    if freq_diff or preset_diff:
-                        logger.info(f"Channel {ssrc} needs update: freq={existing_ch.frequency/1e6:.3f}->{req_freq/1e6:.3f} MHz, preset={existing_ch.preset}->{req_preset}")
+                    if freq_diff or preset_diff or sample_rate_diff:
+                        reasons = []
+                        if freq_diff:
+                            reasons.append(f"freq={existing_ch.frequency/1e6:.3f}->{req_freq/1e6:.3f} MHz")
+                        if preset_diff:
+                            reasons.append(f"preset={existing_ch.preset}->{req_preset}")
+                        if sample_rate_diff:
+                            reasons.append(f"sample_rate={existing_ch.sample_rate}->{req_sample_rate} Hz")
+                        logger.info(f"Channel {ssrc} needs update: {', '.join(reasons)}")
                         channels_to_update.append(channel_spec)
         
         if not missing_ssrcs and not channels_to_update:
@@ -220,6 +310,122 @@ class ChannelManager:
                 f"⚠ Only {total_success}/{total_operations} channel operations successful"
             )
             return False
+    
+    def ensure_channels_from_config(
+        self, 
+        channels: List[Dict], 
+        defaults: Dict,
+        destination: Optional[str] = None
+    ) -> Dict[int, int]:
+        """
+        Ensure channels exist based on new config format with auto-SSRC.
+        
+        Matches channels by frequency rather than SSRC. Creates missing channels
+        and updates existing ones if parameters differ.
+        
+        Args:
+            channels: List of channel specs, each with at least:
+                - frequency_hz: float (required)
+                - description: str (optional)
+                - Can override any default parameter
+            defaults: Default parameters for all channels:
+                - preset: str (default "iq")
+                - sample_rate: int (default 20000)
+                - agc: int (default 0)
+                - gain: float (default 0.0)
+            destination: RTP destination for all channels (e.g. "time-station-data.local")
+        
+        Returns:
+            Dict mapping frequency_hz -> allocated SSRC
+        """
+        logger.info(f"📋 ensure_channels_from_config() with {len(channels)} channels")
+        logger.info(f"  Destination: {destination}")
+        logger.info(f"  Defaults: preset={defaults.get('preset', 'iq')}, "
+                   f"sample_rate={defaults.get('sample_rate', 20000)}")
+        
+        # Discover existing channels
+        existing = self.discover_existing_channels()
+        
+        # Build lookup by frequency (with tolerance)
+        existing_by_freq: Dict[int, tuple] = {}  # freq_hz -> (ssrc, channel_info)
+        for ssrc, ch in existing.items():
+            freq_hz = int(round(ch.frequency))
+            existing_by_freq[freq_hz] = (ssrc, ch)
+        
+        # Process each required channel
+        freq_to_ssrc: Dict[int, int] = {}
+        success_count = 0
+        
+        for ch_spec in channels:
+            freq_hz = int(ch_spec['frequency_hz'])
+            description = ch_spec.get('description', f'{freq_hz/1e6:.3f} MHz')
+            
+            # Merge with defaults
+            preset = ch_spec.get('preset', defaults.get('preset', 'iq'))
+            sample_rate = ch_spec.get('sample_rate', defaults.get('sample_rate', 20000))
+            agc = ch_spec.get('agc', defaults.get('agc', 0))
+            gain = ch_spec.get('gain', defaults.get('gain', 0.0))
+            
+            # Check if channel exists at this frequency
+            if freq_hz in existing_by_freq:
+                existing_ssrc, existing_ch = existing_by_freq[freq_hz]
+                
+                # Resolve our destination to IP for comparison
+                resolved_dest = resolve_mdns_to_ip(destination) if destination else None
+                existing_mcast = getattr(existing_ch, 'multicast_address', None)
+                
+                # Check if parameters match (including destination)
+                params_match = (
+                    existing_ch.preset == preset and
+                    existing_ch.sample_rate == sample_rate and
+                    (resolved_dest is None or existing_mcast == resolved_dest)
+                )
+                
+                if params_match:
+                    logger.info(f"✓ Channel {freq_hz/1e6:.3f} MHz exists (SSRC {existing_ssrc}, mcast={existing_mcast})")
+                    freq_to_ssrc[freq_hz] = existing_ssrc
+                    success_count += 1
+                else:
+                    logger.info(f"⚙️ Reconfiguring {freq_hz/1e6:.3f} MHz: "
+                               f"mcast={existing_mcast}->{resolved_dest}")
+                    # Update existing channel
+                    logger.info(f"⚙️ Updating {freq_hz/1e6:.3f} MHz: "
+                               f"preset={existing_ch.preset}->{preset}, "
+                               f"rate={existing_ch.sample_rate}->{sample_rate}")
+                    allocated = self.create_channel(
+                        frequency_hz=freq_hz,
+                        preset=preset,
+                        sample_rate=sample_rate,
+                        agc=agc,
+                        gain=gain,
+                        destination=destination,
+                        ssrc=existing_ssrc,  # Keep existing SSRC
+                        description=description
+                    )
+                    if allocated:
+                        freq_to_ssrc[freq_hz] = allocated
+                        success_count += 1
+            else:
+                # Create new channel (SSRC will be auto-allocated)
+                logger.info(f"➕ Creating {freq_hz/1e6:.3f} MHz ({description})")
+                allocated = self.create_channel(
+                    frequency_hz=freq_hz,
+                    preset=preset,
+                    sample_rate=sample_rate,
+                    agc=agc,
+                    gain=gain,
+                    destination=destination,
+                    ssrc=None,  # Auto-allocate
+                    description=description
+                )
+                if allocated:
+                    freq_to_ssrc[freq_hz] = allocated
+                    success_count += 1
+                else:
+                    logger.error(f"❌ Failed to create channel {freq_hz/1e6:.3f} MHz")
+        
+        logger.info(f"Channel setup complete: {success_count}/{len(channels)} successful")
+        return freq_to_ssrc
     
     def close(self):
         """Close the control connection"""

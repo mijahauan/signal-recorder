@@ -658,14 +658,15 @@
         async function loadDashboard() {
             try {
                 // Load all data in parallel
-                const [primaryRef, healthSummary, transitions, propagation] = await Promise.all([
+                const [primaryRef, healthSummary, transitions, propagation, transmission] = await Promise.all([
                     fetch('/api/v1/timing/primary-reference').then(r => r.json()),
                     fetch('/api/v1/timing/health-summary').then(r => r.json()),
                     fetch('/api/v1/timing/transitions?hours=24').then(r => r.json()),
-                    fetch('/api/v1/timing/propagation').then(r => r.json()).catch(() => ({ channels: [] }))
+                    fetch('/api/v1/timing/propagation').then(r => r.json()).catch(() => ({ channels: [] })),
+                    fetch('/api/v1/timing/transmission?hours=1').then(r => r.json()).catch(() => ({ results: [] }))
                 ]);
                 
-                renderDashboard(primaryRef, healthSummary, transitions, propagation);
+                renderDashboard(primaryRef, healthSummary, transitions, propagation, transmission);
                 checkAlerts(primaryRef, healthSummary);
                 startCountdown();
                 
@@ -681,7 +682,7 @@
             }
         }
         
-        function renderDashboard(primaryRef, healthSummary, transitions, propagation) {
+        function renderDashboard(primaryRef, healthSummary, transitions, propagation, transmission) {
             const container = document.getElementById('dashboard-content');
             
             // Extract channel names for chart dropdowns, sorted by frequency
@@ -693,6 +694,7 @@
             
             container.innerHTML = `
                 ${renderPrimaryReference(primaryRef)}
+                ${renderTransmissionTime(transmission)}
                 ${renderPropagationModes(propagation)}
                 ${renderHealthCards(healthSummary)}
                 ${renderChannelTable(healthSummary)}
@@ -788,6 +790,133 @@
                             <span class="ref-detail-value">${data.utc_anchor_iso}</span>
                         </div>
                     </div>
+                </div>
+            `;
+        }
+        
+        function renderTransmissionTime(data) {
+            if (!data.results || data.results.length === 0) {
+                return `
+                    <div class="propagation-section" style="margin-bottom: 20px;">
+                        <div class="section-header">
+                            <h2 class="section-title">🎯 UTC(NIST) Back-Calculation</h2>
+                            <div class="section-subtitle">Virtual Atomic Clock - Awaiting Data</div>
+                        </div>
+                        <div style="color: #94a3b8; padding: 20px; text-align: center;">
+                            No transmission time data yet. Requires good WWV/WWVH/CHU signal detection.
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Combined estimate banner
+            let combinedBanner = '';
+            if (data.combined) {
+                const c = data.combined;
+                const gradeColors = { 'A': '#22c55e', 'B': '#84cc16', 'C': '#eab308', 'D': '#ef4444' };
+                const gradeColor = gradeColors[c.quality_grade] || '#94a3b8';
+                const verifiedIcon = c.verified ? '✓' : '○';
+                const offsetStr = `${c.utc_offset_ms >= 0 ? '+' : ''}${c.utc_offset_ms.toFixed(3)} ms`;
+                const uncertStr = `±${c.uncertainty_ms.toFixed(3)} ms`;
+                
+                combinedBanner = `
+                    <div style="background: linear-gradient(135deg, rgba(34, 197, 94, 0.15) 0%, rgba(59, 130, 246, 0.15) 100%); 
+                                border: 1px solid ${gradeColor}; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+                            <div>
+                                <div style="font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">
+                                    Combined UTC(NIST) Estimate
+                                </div>
+                                <div style="font-size: 28px; font-weight: 700; color: ${gradeColor}; font-family: monospace;">
+                                    ${offsetStr} ${uncertStr}
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 24px; text-align: center;">
+                                <div>
+                                    <div style="font-size: 24px; font-weight: 600; color: ${gradeColor};">${c.quality_grade}</div>
+                                    <div style="font-size: 11px; color: #94a3b8;">Grade</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 24px; font-weight: 600;">${c.n_stations}</div>
+                                    <div style="font-size: 11px; color: #94a3b8;">Stations</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 24px; font-weight: 600;">${c.n_measurements}</div>
+                                    <div style="font-size: 11px; color: #94a3b8;">Measurements</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 24px; font-weight: 600;">${(c.consistency * 100).toFixed(0)}%</div>
+                                    <div style="font-size: 11px; color: #94a3b8;">Consistency</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 8px; font-size: 12px; color: #94a3b8;">
+                            Stations: ${c.stations.join(', ')} | 
+                            ${c.verified ? '✓ Verified' : '○ Unverified'} |
+                            Last 5 minutes
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Get latest result per channel
+            const latestByChannel = {};
+            for (const r of data.results) {
+                if (!latestByChannel[r.channel] || new Date(r.timestamp) > new Date(latestByChannel[r.channel].timestamp)) {
+                    latestByChannel[r.channel] = r;
+                }
+            }
+            
+            const rows = Object.values(latestByChannel).map(r => {
+                const hasOffset = r.utc_nist_offset_ms !== null && r.confidence > 0.3;
+                const verifiedIcon = hasOffset ? (r.utc_nist_verified ? '✓' : '○') : '';
+                const verifiedClass = r.utc_nist_verified ? 'color: #22c55e;' : 'color: #94a3b8;';
+                const confColor = r.confidence > 0.7 ? '#22c55e' : r.confidence > 0.5 ? '#eab308' : r.confidence > 0.3 ? '#f97316' : '#94a3b8';
+                const offsetDisplay = hasOffset 
+                    ? `${r.utc_nist_offset_ms >= 0 ? '+' : ''}${r.utc_nist_offset_ms.toFixed(2)} ms` 
+                    : '<span style="color: #64748b; font-style: italic;">mode only</span>';
+                
+                return `
+                    <tr>
+                        <td style="font-weight: 600;">${r.frequency_mhz} MHz</td>
+                        <td>${r.station}</td>
+                        <td>${r.mode}</td>
+                        <td>${r.n_hops}</td>
+                        <td>${r.propagation_delay_ms.toFixed(2)} ms</td>
+                        <td style="${verifiedClass} font-weight: 600;">${offsetDisplay} ${verifiedIcon}</td>
+                        <td><span style="color: ${confColor};">${(r.confidence * 100).toFixed(0)}%</span></td>
+                        <td style="color: #94a3b8; font-size: 11px;">${new Date(r.timestamp).toLocaleTimeString()}</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            return `
+                <div class="propagation-section" style="margin-bottom: 20px;">
+                    <div class="section-header">
+                        <h2 class="section-title">🎯 UTC(NIST) Back-Calculation</h2>
+                        <div class="section-subtitle">Virtual Atomic Clock - ${data.count} measurements from ${new Set(data.results.map(r => r.station)).size} stations</div>
+                    </div>
+                    
+                    ${combinedBanner}
+                    
+                    <div style="font-size: 13px; color: #94a3b8; margin-bottom: 8px;">Individual Channel Measurements:</div>
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <thead>
+                            <tr style="background: rgba(255,255,255,0.05); text-align: left;">
+                                <th style="padding: 10px;">Freq</th>
+                                <th style="padding: 10px;">Station</th>
+                                <th style="padding: 10px;">Mode</th>
+                                <th style="padding: 10px;">Hops</th>
+                                <th style="padding: 10px;">Prop Delay</th>
+                                <th style="padding: 10px;">UTC(NIST) Offset</th>
+                                <th style="padding: 10px;">Confidence</th>
+                                <th style="padding: 10px;">Last Update</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows}
+                        </tbody>
+                    </table>
                 </div>
             `;
         }

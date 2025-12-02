@@ -251,7 +251,8 @@ class WWVHDiscriminator:
         self,
         channel_name: str,
         receiver_grid: Optional[str] = None,
-        history_dir: Optional[str] = None
+        history_dir: Optional[str] = None,
+        sample_rate: int = 20000
     ):
         """
         Initialize discriminator
@@ -260,19 +261,21 @@ class WWVHDiscriminator:
             channel_name: Channel name for logging
             receiver_grid: Maidenhead grid square (e.g., "EM38ww") for geographic ToA prediction
             history_dir: Directory for persisting ToA history (optional)
+            sample_rate: Sample rate in Hz (20000 default, 16000 for legacy)
         """
         self.channel_name = channel_name
+        self.sample_rate = sample_rate
         self.measurements: List[DiscriminationResult] = []
         
         # Keep last 1000 measurements
         self.max_history = 1000
         
         # Initialize BCD encoder for template generation
-        self.bcd_encoder = WWVBCDEncoder(sample_rate=16000)
+        self.bcd_encoder = WWVBCDEncoder(sample_rate=sample_rate)
         
         # Initialize test signal detector for minute 8/44 discrimination
-        self.test_signal_detector = WWVTestSignalDetector(sample_rate=16000)
-        logger.info(f"{channel_name}: Test signal detector initialized for minutes 8/44")
+        self.test_signal_detector = WWVTestSignalDetector(sample_rate=sample_rate)
+        logger.info(f"{channel_name}: Test signal detector initialized for minutes 8/44 @ {sample_rate} Hz")
         
         # Initialize geographic predictor if grid square provided
         self.geo_predictor: Optional[WWVGeographicPredictor] = None
@@ -636,6 +639,10 @@ class WWVHDiscriminator:
         wwv_score = 0.0
         wwvh_score = 0.0
         total_weight = 0.0
+        
+        # Initialize inter-method agreement/disagreement tracking
+        agreements = []
+        disagreements = []
         
         # Weight factors - test signal gets highest weight when available
         # 500/600 Hz ground truth gets high weight when applicable (overlaps with some other categories)
@@ -1027,6 +1034,10 @@ class WWVHDiscriminator:
             # Update result
             result.dominant_station = dominant_station
             result.confidence = confidence
+        
+        # Store inter-method agreement/disagreement tracking
+        result.inter_method_agreements = agreements if agreements else None
+        result.inter_method_disagreements = disagreements if disagreements else None
         
         return result
     

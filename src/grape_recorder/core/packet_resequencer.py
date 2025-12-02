@@ -40,7 +40,7 @@ class PacketResequencer:
     Resequence out-of-order RTP packets and detect gaps
     
     Design:
-    - Circular buffer of 64 packets (handles ~2 second jitter @ 320 samples/packet)
+    - Circular buffer of 64 packets (handles ~1.3 second jitter @ 400 samples/packet @ 20 kHz)
     - Process packets in sequence order
     - Detect gaps via RTP timestamp jumps
     - Fill gaps with zeros to maintain sample count integrity
@@ -48,20 +48,27 @@ class PacketResequencer:
     Key principle: Sample count integrity > real-time delivery
     """
     
-    # Maximum gap to fill: 60 seconds at 16 kHz = 960,000 samples
-    # Gaps larger than this indicate stream restart or corruption
-    MAX_GAP_SAMPLES = 960_000
+    # Default maximum gap (can be overridden via constructor)
+    DEFAULT_MAX_GAP_SAMPLES = 1_200_000  # 60 seconds at 20 kHz
     
-    def __init__(self, buffer_size: int = 64, samples_per_packet: int = 320):
+    def __init__(
+        self, 
+        buffer_size: int = 64, 
+        samples_per_packet: int = 400,
+        max_gap_samples: Optional[int] = None
+    ):
         """
         Initialize resequencer
         
         Args:
             buffer_size: Circular buffer size (packets)
-            samples_per_packet: Expected samples per packet (320 @ 16 kHz)
+            samples_per_packet: Expected samples per packet (calculated from sample_rate * blocktime_ms / 1000)
+            max_gap_samples: Maximum gap to fill with zeros (calculated from sample_rate * max_gap_seconds)
+                            If None, uses DEFAULT_MAX_GAP_SAMPLES
         """
         self.buffer_size = buffer_size
         self.samples_per_packet = samples_per_packet
+        self.max_gap_samples = max_gap_samples if max_gap_samples is not None else self.DEFAULT_MAX_GAP_SAMPLES
         
         # Circular buffer: sequence_num -> packet
         self.buffer: deque = deque(maxlen=buffer_size)
@@ -216,11 +223,11 @@ class PacketResequencer:
             self.gaps_detected += 1
         
         # Sanity check: cap absurdly large gaps
-        if ts_gap > self.MAX_GAP_SAMPLES:
+        if ts_gap > self.max_gap_samples:
             logger.error(
-                f"Absurd forward gap: {ts_gap} samples. Capping at {self.MAX_GAP_SAMPLES}."
+                f"Absurd forward gap: {ts_gap} samples. Capping at {self.max_gap_samples}."
             )
-            ts_gap = self.MAX_GAP_SAMPLES
+            ts_gap = self.max_gap_samples
         
         # Estimate packets lost
         packets_lost = ts_gap // self.samples_per_packet
@@ -263,9 +270,9 @@ class PacketResequencer:
             ts_gap = 0
         
         # Sanity check: cap absurdly large gaps
-        if ts_gap > self.MAX_GAP_SAMPLES:
-            logger.error(f"Absurd gap in lost packet recovery: {ts_gap} samples. Capping at {self.MAX_GAP_SAMPLES}.")
-            ts_gap = self.MAX_GAP_SAMPLES
+        if ts_gap > self.max_gap_samples:
+            logger.error(f"Absurd gap in lost packet recovery: {ts_gap} samples. Capping at {self.max_gap_samples}.")
+            ts_gap = self.max_gap_samples
         
         # Create gap info
         gap_info = GapInfo(

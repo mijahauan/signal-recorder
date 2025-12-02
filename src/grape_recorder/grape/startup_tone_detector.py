@@ -60,12 +60,12 @@ class StartupToneDetector:
     Method: Simple FFT with tone presence threshold
     """
     
-    def __init__(self, sample_rate: int = 16000, frequency_hz: float = 10e6):
+    def __init__(self, sample_rate: int = 20000, frequency_hz: float = 10e6):
         """
         Initialize detector
         
         Args:
-            sample_rate: IQ sample rate (typically 16000)
+            sample_rate: IQ sample rate (20000 default, 16000 for legacy)
             frequency_hz: Center frequency for station identification
         """
         self.sample_rate = sample_rate
@@ -309,9 +309,29 @@ class StartupToneDetector:
         # Step 4: Phase-invariant combination
         correlation = np.sqrt(corr_sin**2 + corr_cos**2)
         
-        # Step 5: Find peak
+        # Step 5: Find peak with sub-sample precision using parabolic interpolation
         peak_idx = np.argmax(correlation)
         peak_value = correlation[peak_idx]
+        
+        # Parabolic (quadratic) interpolation for sub-sample precision
+        # Uses the peak and its two neighbors to fit a parabola
+        # Peak of parabola: x_peak = (y[-1] - y[1]) / (2 * (y[-1] - 2*y[0] + y[1]))
+        sub_sample_offset = 0.0
+        if 0 < peak_idx < len(correlation) - 1:
+            y_m1 = correlation[peak_idx - 1]  # y at x=-1
+            y_0 = correlation[peak_idx]        # y at x=0 (peak)
+            y_p1 = correlation[peak_idx + 1]  # y at x=+1
+            
+            denominator = y_m1 - 2*y_0 + y_p1
+            if abs(denominator) > 1e-10:  # Avoid division by zero
+                sub_sample_offset = 0.5 * (y_m1 - y_p1) / denominator
+                # Clamp to reasonable range
+                sub_sample_offset = max(-0.5, min(0.5, sub_sample_offset))
+                
+                # Interpolated peak value (parabola maximum)
+                peak_value = y_0 - 0.25 * (y_m1 - y_p1) * sub_sample_offset
+        
+        precise_peak_idx = peak_idx + sub_sample_offset
         
         # Calculate SNR
         # Noise estimate: median of correlation (robust to outliers)
@@ -324,15 +344,17 @@ class StartupToneDetector:
         else:
             snr_db = 0
         
-        logger.warning(f"      Peak: idx={peak_idx}, value={peak_value:.6f}, SNR={snr_db:.1f}dB")
+        logger.warning(f"      Peak: idx={peak_idx}{sub_sample_offset:+.3f}, value={peak_value:.6f}, SNR={snr_db:.1f}dB")
         
         # Threshold: SNR > 6dB for detection
         if snr_db < 6.0:
             logger.warning(f"      SNR too low ({snr_db:.1f}dB < 6.0dB)")
             return None
         
-        # Calculate RTP timestamp at peak
-        rtp_at_peak = first_rtp_timestamp + peak_idx
+        # Calculate RTP timestamp at peak (using precise sub-sample position)
+        # Use floor for integer RTP, but store fractional part for precision
+        rtp_at_peak = first_rtp_timestamp + int(precise_peak_idx)
+        sub_sample_fraction = precise_peak_idx - int(precise_peak_idx)
         
         # Calculate confidence based on SNR
         if snr_db > 15.0:
@@ -344,7 +366,10 @@ class StartupToneDetector:
         else:
             confidence = 0.70
         
-        logger.warning(f"      ✅ TONE DETECTED: SNR={snr_db:.1f}dB, conf={confidence:.2f}")
+        # Sub-sample precision in microseconds (at 20kHz: 1 sample = 50μs)
+        sub_sample_us = sub_sample_offset * (1e6 / self.sample_rate)
+        logger.warning(f"      ✅ TONE DETECTED: SNR={snr_db:.1f}dB, conf={confidence:.2f}, "
+                      f"sub-sample offset={sub_sample_us:+.1f}μs")
         
         return {
             'rtp_timestamp': int(rtp_at_peak),
@@ -352,7 +377,8 @@ class StartupToneDetector:
             'confidence': confidence,
             'snr_db': snr_db,
             'tone_frequency': tone_freq,
-            'precise_sample': float(peak_idx)
+            'precise_sample': float(precise_peak_idx),  # Now includes sub-sample precision
+            'sub_sample_offset': sub_sample_offset  # Fractional sample offset
         }
     
     # Old edge detection methods no longer used (matched filtering is more robust)

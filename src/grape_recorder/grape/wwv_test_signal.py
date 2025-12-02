@@ -101,12 +101,12 @@ class WWVTestSignalGenerator:
     for template matching and discrimination purposes.
     """
     
-    def __init__(self, sample_rate: int = 16000):
+    def __init__(self, sample_rate: int = 20000):
         """
         Initialize test signal generator
         
         Args:
-            sample_rate: Sample rate in Hz (typically 16000 for WWV/WWVH analysis)
+            sample_rate: Sample rate in Hz (20000 default, 16000 for legacy)
         """
         self.sample_rate = sample_rate
         self.dt = 1.0 / sample_rate
@@ -371,7 +371,7 @@ class WWVTestSignalDetector:
     # Tone frequencies for multi-tone segment
     TONE_FREQUENCIES = [2000, 3000, 4000, 5000]  # Hz
     
-    def __init__(self, sample_rate: int = 16000):
+    def __init__(self, sample_rate: int = 20000):
         """
         Initialize detector
         
@@ -429,7 +429,7 @@ class WWVTestSignalDetector:
         Detect test signal in received IQ samples with full signal exploitation
         
         Args:
-            iq_samples: Complex IQ samples (full minute, ~960000 samples @ 16kHz)
+            iq_samples: Complex IQ samples (full minute, ~1200000 samples @ 20kHz)
             minute_number: Minute of hour (0-59)
             sample_rate: Sample rate in Hz
             

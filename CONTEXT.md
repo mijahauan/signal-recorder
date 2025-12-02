@@ -1,55 +1,125 @@
 # GRAPE Recorder - AI Context Document
 
 **Last Updated:** 2025-12-02  
-**Version:** 2.0.1  
-**Status:** ✅ All systems operational. Dual-station time recovery, propagation modes display, timing dashboard fixes complete.
+**Version:** 2.2.0  
+**Status:** ✅ PPM-corrected timing with sub-sample precision. Ready for fresh installation support.
 
 ---
 
-## 🚨 NEXT SESSION: Sample Rate Change (16 kHz → 20 kHz)
+## 🚀 Next Session: Fresh Installation with TEST/PRODUCTION Mode
 
 ### Goal
-Change the RTP stream sample rate from 16 kHz to 20 kHz to improve resolution for test signal analysis (channel sounding).
+Enable grape-recorder to be installed fresh and run in either **TEST mode** (development, isolated paths) or **PRODUCTION mode** (system-wide, standard paths).
 
-### Why 20 kHz?
-- **Test signal bandwidth:** The WWV test signal (minutes :08 and :44) contains chirps and bursts designed for channel characterization
-- **Nyquist margin:** 20 kHz allows clean capture of components up to 10 kHz (vs 8 kHz at 16 kHz)
-- **Existing infrastructure:** radiod can provide any sample rate; only the receiver side needs updates
+### Key Requirements
 
-### Files Requiring Changes
+1. **Mode Selection**
+   - Command-line flag: `--mode test|production`
+   - Environment variable: `GRAPE_MODE=test|production`
+   - Config file: `mode = "test"` in `grape-config.toml`
 
-| File | Changes Needed |
-|------|----------------|
-| `config/grape-config.toml` | Change `sample_rate = 16000` → `sample_rate = 20000` for each channel |
-| `src/grape_recorder/grape/grape_recorder.py` | Update `sample_rate` default, verify `samples_per_packet` handling |
-| `src/grape_recorder/core/recording_session.py` | Verify segment duration calculation: `20000 * 60 = 1,200,000` samples |
-| `src/grape_recorder/core/packet_resequencer.py` | Update `MAX_GAP_SAMPLES = 1_200_000` (60s × 20 kHz) |
-| `src/grape_recorder/grape/decimation.py` | Verify decimation factor: 20000 → 10 Hz = factor 2000 |
-| `src/grape_recorder/grape/analytics_service.py` | Verify NPZ loading handles variable sample rates |
-| `scripts/generate_spectrograms_from_10hz.py` | Should work unchanged (reads 10 Hz decimated) |
-| `CONTEXT.md` | Update all references to 16 kHz |
+2. **Path Separation**
+   ```
+   TEST MODE:        /tmp/grape-test/{archives,analytics,logs,...}
+   PRODUCTION MODE:  /var/lib/grape/{archives,analytics,logs,...}
+   ```
 
-### RTP Packet Structure at 20 kHz
+3. **Installation Script**
+   - `scripts/install.sh` - Creates directories, installs dependencies
+   - Should detect if radiod/ka9q-radio is available
+   - Should configure systemd services for production
+
+4. **Key Files to Modify**
+   - `src/grape_recorder/paths.py` - `GRAPEPaths(mode='test'|'production')`
+   - `config/grape-config.toml` - Add `mode` setting
+   - `scripts/grape-all.sh` - Pass mode to all services
+   - `web-ui/grape-paths.js` - Mirror Python path logic
+
+5. **Systemd Integration (Production)**
+   - `systemd/grape-recorder.service`
+   - `systemd/grape-analytics@.service` (template for per-channel)
+   - `systemd/grape-webui.service`
+
+### Architecture Reference
 
 ```
-Current (16 kHz):
-- Packets per second: 50 (320 samples/packet)
-- Samples per 60s segment: 960,000
-- IQ samples per packet: 160 complex
+Fresh Install Flow:
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. Clone repo                                                    │
+│    git clone https://github.com/user/grape-recorder.git         │
+├─────────────────────────────────────────────────────────────────┤
+│ 2. Run installer                                                 │
+│    ./scripts/install.sh --mode production                        │
+│    - Creates venv, installs dependencies                         │
+│    - Creates /var/lib/grape directories                          │
+│    - Installs systemd services                                   │
+│    - Prompts for grape-config.toml settings                      │
+├─────────────────────────────────────────────────────────────────┤
+│ 3. Configure                                                     │
+│    Edit config/grape-config.toml:                                │
+│    - Set callsign, grid_square                                   │
+│    - Configure radiod connection                                 │
+│    - Define channels                                             │
+├─────────────────────────────────────────────────────────────────┤
+│ 4. Start                                                         │
+│    systemctl start grape-recorder  # Production                  │
+│    ./scripts/grape-all.sh -start   # Test mode                   │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-New (20 kHz):
-- Packets per second: 62.5 (320 samples/packet) or 50 (400 samples/packet)
+---
+
+## ✅ Config-Driven Sample Rate Architecture
+
+### Overview
+Sample rate and RTP packet timing are now **fully config-driven**. Change `grape-config.toml` and all derived values (samples_per_packet, max_gap_samples) are automatically calculated throughout the system.
+
+### Config Parameters (`[recorder]` section)
+```toml
+# Required per-channel:
+sample_rate = 20000           # Sample rate in Hz
+
+# Optional (global defaults):
+blocktime_ms = 20             # radiod blocktime (default 20ms)
+max_gap_seconds = 60          # Maximum gap to fill with zeros
+```
+
+### Automatic Calculations
+| Value | Formula | Example (20 kHz, 20ms) |
+|-------|---------|------------------------|
+| `samples_per_packet` | `sample_rate × blocktime_ms / 1000` | 400 |
+| `max_gap_samples` | `sample_rate × max_gap_seconds` | 1,200,000 |
+
+### Supported Sample Rates (Decimation)
+The decimation module requires explicit support for each input rate. Currently supported:
+
+| Rate | CIC Factor | Total Factor | Status |
+|------|------------|--------------|--------|
+| 20,000 Hz | 50 | 2000 | Default |
+| 16,000 Hz | 40 | 1600 | Legacy |
+
+To add a new rate (e.g., 24 kHz), update `SUPPORTED_INPUT_RATES` in `src/grape_recorder/grape/decimation.py`:
+```python
+24000: {
+    'cic_decimation': 60,    # 24000 / 60 = 400 Hz
+    'total_factor': 2400,    # 24000 / 10 = 2400
+    'description': '24 kHz',
+},
+```
+
+### RTP Packet Structure (20 kHz default)
+```
+- Packets per second: 50 (sample_rate / samples_per_packet)
+- Samples per packet: 400 (sample_rate × blocktime_ms / 1000)
 - Samples per 60s segment: 1,200,000
-- IQ samples per packet: depends on radiod configuration
+- IQ samples per packet: 200 complex (samples_per_packet / 2)
 ```
 
 ### Verification Checklist
-- [ ] radiod configured for 20 kHz on all 9 channels
-- [ ] Archives contain 1,200,000 samples (60s × 20 kHz)
-- [ ] Decimation produces correct 10 Hz output (600 samples/min)
+- [ ] radiod configured for correct sample rate
+- [ ] Archives contain expected sample count (sample_rate × 60)
+- [ ] Decimation produces 600 samples/min (10 Hz × 60s)
 - [ ] Spectrograms generate correctly
-- [ ] Timing analysis still works (RTP timestamp math unchanged)
-- [ ] Test signal analysis shows improved frequency resolution
 
 ---
 
@@ -67,13 +137,13 @@ The RTP timestamp from `radiod` is the **authoritative timing reference** for al
 ├─────────────┬─────────────┬─────────────────────────────────────┤
 │ V=2, P, X   │ M, PT=97/120│ Sequence Number (16-bit)            │
 ├─────────────┴─────────────┴─────────────────────────────────────┤
-│ RTP Timestamp (32-bit) - Increments at sample_rate (16 kHz)     │
+│ RTP Timestamp (32-bit) - Increments at sample_rate (20 kHz)     │
 ├─────────────────────────────────────────────────────────────────┤
 │ SSRC (32-bit) - Unique stream identifier                        │
 ├─────────────────────────────────────────────────────────────────┤
-│ Payload (640 bytes for IQ mode)                                 │
-│   • PT=97: Real audio, 320 int16 samples                        │
-│   • PT=120: IQ complex, 160 complex samples (320 int16 I/Q)     │
+│ Payload (800 bytes for IQ mode @ 20 kHz)                        │
+│   • PT=97: Real audio, 400 int16 samples                        │
+│   • PT=120: IQ complex, 200 complex samples (400 int16 I/Q)     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,22 +151,22 @@ The RTP timestamp from `radiod` is the **authoritative timing reference** for al
 
 | Property | Value | Notes |
 |----------|-------|-------|
-| Sample Rate | 16,000 Hz | Fixed for GRAPE channels |
-| RTP Timestamp Increment | 320 per packet | Regardless of payload type |
-| Packets per Second | 50 | 16000 / 320 = 50 |
-| IQ Samples per Packet | 160 complex | Payload is 640 bytes |
-| Segment Duration | 60 seconds | 960,000 RTP timestamp units |
+| Sample Rate | 20,000 Hz | Default for GRAPE channels |
+| RTP Timestamp Increment | 400 per packet | 20ms blocktime |
+| Packets per Second | 50 | 20000 / 400 = 50 |
+| IQ Samples per Packet | 200 complex | Payload is 800 bytes |
+| Segment Duration | 60 seconds | 1,200,000 RTP timestamp units |
 
 ### ⚠️ Critical: IQ Mode Sample Count Mismatch
 
-**Problem discovered Dec 1, 2025:** In IQ mode (PT=120), each RTP packet contains 160 complex samples, but the RTP timestamp increments by 320. This caused segments to take 120 seconds instead of 60.
+**Problem discovered Dec 1, 2025:** In IQ mode (PT=120), each RTP packet contains N/2 complex samples, but the RTP timestamp increments by N. This caused segments to take 120 seconds instead of 60.
 
 ```python
 # WRONG: Counting payload samples
-segment_sample_count += len(samples)  # 160 per packet → 120s segments
+segment_sample_count += len(samples)  # 200 per packet @ 20 kHz → 120s segments
 
 # CORRECT: Counting RTP timestamp progression  
-segment_rtp_count += samples_per_packet  # 320 per packet → 60s segments
+segment_rtp_count += samples_per_packet  # 400 per packet @ 20 kHz → 60s segments
 ```
 
 **Fix location:** `src/grape_recorder/core/recording_session.py`
@@ -154,13 +224,13 @@ radiod (ka9q-radio)
 
 ### NPZ File Timestamp Metadata
 
-Each 16kHz NPZ archive contains:
+Each 20kHz NPZ archive contains:
 
 ```python
 {
-    'iq': np.complex64[960000],      # 60 seconds of samples
+    'iq': np.complex64[1200000],      # 60 seconds of samples @ 20 kHz
     'rtp_timestamp': uint32,          # First sample's RTP timestamp
-    'sample_rate': 16000,
+    'sample_rate': 20000,
     'gaps_count': int,                # Number of gap events
     'gaps_filled': int,               # Total samples zero-filled
     'gap_sample_indices': uint32[],   # Position of each gap
@@ -171,8 +241,8 @@ Each 16kHz NPZ archive contains:
 ### Leveraging RTP Timestamps
 
 **For Timing Analysis:**
-- RTP timestamp difference between files should be exactly 960,000 (60s)
-- Gaps > 960,000 indicate missing files
+- RTP timestamp difference between files should be exactly 1,200,000 (60s @ 20 kHz)
+- Gaps > 1,200,000 indicate missing files
 - Gaps within file indicate RTP packet loss
 
 **For GPS Accuracy:**
@@ -322,7 +392,7 @@ CORE_COUNT=$(pgrep -f "grape_recorder.grape.core_recorder" 2>/dev/null | wc -l)
 
 ```
 /tmp/grape-test/                          # Test mode root
-├── archives/{CHANNEL}/                   # Raw 16 kHz NPZ files
+├── archives/{CHANNEL}/                   # Raw 20 kHz NPZ files
 │   └── YYYYMMDDTHHMMSSZ_{freq}_iq.npz
 ├── analytics/{CHANNEL}/
 │   ├── decimated/                        # 10 Hz NPZ files
@@ -507,7 +577,123 @@ data/time_standard/
 
 ## Session History
 
-### Dec 2, 2025: Dual-Station Time Recovery & Bug Fixes
+### Dec 2, 2025 (Evening): PPM-Corrected Timing & Sub-Sample Precision
+
+**Goal:** Eliminate "wild RTP drift" errors by implementing ADC clock drift correction and improving timing precision.
+
+**Problems Solved:**
+
+1. **Wild RTP Drift Errors**
+   - **Symptom:** Logs showed "RTP clock drift detected: 60004.0ms over 60s"
+   - **Root Cause:** `TimeSnapReference` didn't account for ADC PPM offset
+   - **Fix:** Added `ppm_offset`, `ppm_confidence`, `clock_ratio` to `TimeSnapReference`
+   - **Equation:** `elapsed_seconds = (rtp_elapsed / sample_rate) × clock_ratio`
+
+2. **timing_error_ms Always Zero in CSVs**
+   - **Symptom:** Tone detection CSVs showed `timing_error_ms=0.00` for all detections
+   - **Root Cause:** Only discrimination results (with hardcoded 0.0) were written to CSV
+   - **Fix:** Added code to write REAL tone detections from `_detect_tones()` with actual timing
+
+3. **UTC(NIST) Back-Calculation Showing "mode only"**
+   - **Symptom:** Web UI showed "mode only" instead of UTC offset values
+   - **Root Cause:** `confidence <= 0.3` due to missing precise timing data
+   - **Fix:** Now that timing_error_ms is populated, confidence rises above threshold
+
+4. **Float Slicing Error**
+   - **Symptom:** `TypeError: slice indices must be integers`
+   - **Root Cause:** Parabolic sub-sample interpolation made `onset_sample_idx` a float
+   - **Fix:** Cast to int where used as array slice index
+
+**New Features:**
+
+1. **PPM-Corrected TimeSnapReference** (`data_models.py`)
+   ```python
+   @property
+   def clock_ratio(self) -> float:
+       if self.ppm_confidence > 0.3:
+           return 1.0 + (self.ppm_offset / 1e6)
+       return 1.0
+   
+   def with_updated_ppm(self, measured_ppm, confidence) -> 'TimeSnapReference':
+       # Returns new frozen instance with exponentially smoothed PPM
+   ```
+
+2. **Sub-Sample Peak Interpolation** (`tone_detector.py`, `startup_tone_detector.py`)
+   - Parabolic fit using peak and two neighbors
+   - Precision improved from ±50 μs to ±10-25 μs at 20 kHz
+   ```python
+   sub_sample_offset = 0.5 * (y_m1 - y_p1) / (y_m1 - 2*y_0 + y_p1)
+   precise_peak_idx = peak_idx + sub_sample_offset
+   ```
+
+3. **PPM Feedback Loop** (`timing_metrics_writer.py`, `analytics_service.py`)
+   - `write_snapshot()` now returns `(ppm_offset, confidence)` from tone-to-tone measurement
+   - Analytics service feeds this back to update `time_snap`:
+   ```python
+   updated_snap = self.state.time_snap.with_updated_ppm(ppm_offset, ppm_confidence)
+   ```
+
+4. **Ensemble Time-Snap Selection** (`global_station_voter.py`)
+   - New method `get_best_time_snap_anchor()` for cross-channel voting
+   - Scores candidates by: SNR + timing_preference + quality_bonus
+   - Prefers WWV/CHU over WWVH for timing reference
+
+**Files Modified:**
+- `src/grape_recorder/interfaces/data_models.py` - PPM fields, clock_ratio, with_updated_ppm()
+- `src/grape_recorder/grape/tone_detector.py` - Sub-sample interpolation, int cast fix
+- `src/grape_recorder/grape/startup_tone_detector.py` - Sub-sample interpolation
+- `src/grape_recorder/grape/timing_metrics_writer.py` - Return PPM from write_snapshot()
+- `src/grape_recorder/grape/analytics_service.py` - PPM feedback, write real tone detections
+- `src/grape_recorder/grape/global_station_voter.py` - Ensemble anchor selection
+
+**Data Flow:**
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    PPM CORRECTION FEEDBACK LOOP                          │
+│                                                                          │
+│  Tone A (RTP₁, UTC₁) ──► Tone B (RTP₂, UTC₂)                            │
+│         │                         │                                      │
+│         └────────┬────────────────┘                                      │
+│                  ▼                                                       │
+│    Tone-to-tone PPM = ((RTP₂-RTP₁)/(UTC₂-UTC₁)/rate - 1) × 10⁶         │
+│                  │                                                       │
+│                  ▼                                                       │
+│    TimeSnapReference.with_updated_ppm(ppm, confidence)                   │
+│                  │                                                       │
+│                  ▼                                                       │
+│    calculate_sample_time() uses clock_ratio = 1 + ppm/10⁶              │
+│                  │                                                       │
+│                  ▼                                                       │
+│    Accurate UTC(NIST) back-calculation with drift compensation          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Dec 2, 2025 (Afternoon): Config-Driven Sample Rate Architecture
+
+**Goal:** Make sample rate fully config-driven so future changes only require editing `grape-config.toml`.
+
+**Architecture Changes:**
+1. **Config parameters:** Added `blocktime_ms` and `max_gap_seconds` to `[recorder]` section
+2. **Auto-calculation:** `samples_per_packet = sample_rate × blocktime_ms / 1000`
+3. **Auto-calculation:** `max_gap_samples = sample_rate × max_gap_seconds`
+4. **Decimation validation:** `SUPPORTED_INPUT_RATES` dict with clear instructions for adding new rates
+
+**Key Files:**
+- `config/grape-config.toml` - Added `blocktime_ms = 20`, `max_gap_seconds = 60`
+- `src/grape_recorder/grape/grape_recorder.py` - `GrapeConfig` with computed properties
+- `src/grape_recorder/core/recording_session.py` - `SessionConfig` auto-calculates if not provided
+- `src/grape_recorder/core/packet_resequencer.py` - Accepts `max_gap_samples` parameter
+- `src/grape_recorder/grape/core_recorder.py` - Passes `blocktime_ms`, `max_gap_seconds` from config
+- `src/grape_recorder/grape/decimation.py` - `SUPPORTED_INPUT_RATES` dict, helper functions
+
+**To change sample rate now:**
+1. Edit `sample_rate` in `grape-config.toml` channels
+2. If new rate, add entry to `SUPPORTED_INPUT_RATES` in `decimation.py`
+3. Configure `radiod` for matching sample rate
+
+**Backward Compatibility:** Legacy 16 kHz NPZ files still process correctly via `archive.sample_rate` metadata.
+
+### Dec 2, 2025 (Morning): Dual-Station Time Recovery & Bug Fixes
 
 **Dual-Station Time Recovery (wwvh_discrimination.py):**
 - Added fields to `DiscriminationResult`: `wwv_toa_ms`, `wwvh_toa_ms`, `t_emission_from_wwv_ms`, `t_emission_from_wwvh_ms`, `cross_validation_error_ms`, `dual_station_confidence`

@@ -102,20 +102,28 @@ class TimeSnapReference:
     """
     Time anchor point established from WWV/CHU tone detection.
     
-    Implements KA9Q-radio timing architecture:
-        utc_time = time_snap_utc + (rtp_timestamp - time_snap_rtp) / sample_rate
+    Implements KA9Q-radio timing architecture with PPM correction:
+        elapsed_time = (rtp_elapsed / sample_rate) * clock_ratio
+        utc_time = time_snap_utc + elapsed_time
     
-    This ensures RTP timestamps are the primary time reference, with
-    wall clock time DERIVED from them (not the other way around).
+    The clock_ratio compensates for ADC clock drift:
+        clock_ratio = 1 + (ppm_offset / 1e6)
+    
+    For example, if the ADC runs 5 PPM fast:
+        ppm_offset = +5.0
+        clock_ratio = 1.000005
+        Each second of RTP time = 1.000005 seconds of real time
     
     Attributes:
         rtp_timestamp: RTP timestamp value at anchor point
         utc_timestamp: UTC time (seconds since epoch) at anchor point
-        sample_rate: RTP clock rate (typically 16000 Hz)
+        sample_rate: RTP clock rate (typically 20000 Hz)
         source: How this reference was established
         confidence: Confidence in this reference (0.0-1.0)
         station: Which station provided the reference (WWV, CHU, or initial guess)
         established_at: When this reference was created (wall clock time)
+        ppm_offset: Measured clock drift in parts-per-million (+ = ADC fast)
+        ppm_confidence: Confidence in the PPM measurement (0.0-1.0)
     """
     rtp_timestamp: int
     utc_timestamp: float
@@ -124,12 +132,28 @@ class TimeSnapReference:
     confidence: float
     station: str  # 'WWV', 'CHU', 'initial'
     established_at: float  # Wall clock time when reference was created
+    ppm_offset: float = 0.0  # Measured ADC clock drift (PPM)
+    ppm_confidence: float = 0.0  # Confidence in PPM measurement
+    
+    @property
+    def clock_ratio(self) -> float:
+        """
+        Clock ratio for PPM-corrected time calculation.
+        
+        Returns:
+            1 + (ppm_offset / 1e6), or 1.0 if no PPM measurement
+        """
+        if self.ppm_confidence > 0.3:
+            return 1.0 + (self.ppm_offset / 1e6)
+        return 1.0  # No correction if low confidence
     
     def calculate_sample_time(self, rtp_timestamp: int) -> float:
         """
-        Calculate UTC timestamp for a given RTP timestamp.
+        Calculate UTC timestamp for a given RTP timestamp with PPM correction.
         
         This is the core time calculation: RTP offset → UTC time
+        Corrected formula:
+            elapsed = (rtp_elapsed / sample_rate) * clock_ratio
         
         Args:
             rtp_timestamp: RTP timestamp to convert
@@ -143,19 +167,65 @@ class TimeSnapReference:
         if rtp_elapsed > 0x80000000:
             rtp_elapsed -= 0x100000000
         
-        elapsed_seconds = rtp_elapsed / self.sample_rate
+        # Apply PPM correction: actual elapsed time = nominal elapsed * clock_ratio
+        elapsed_seconds = (rtp_elapsed / self.sample_rate) * self.clock_ratio
         return self.utc_timestamp + elapsed_seconds
+    
+    def with_updated_ppm(self, measured_ppm: float, measurement_confidence: float) -> 'TimeSnapReference':
+        """
+        Create new TimeSnapReference with updated PPM offset from tone-to-tone drift.
+        
+        Uses exponential smoothing to avoid jumps from noisy measurements.
+        Returns self unchanged if measurement confidence is too low.
+        
+        Args:
+            measured_ppm: New PPM measurement from tone-to-tone drift
+            measurement_confidence: Confidence in this measurement (0.0-1.0)
+            
+        Returns:
+            New TimeSnapReference with updated PPM values (or self if no update)
+        """
+        if measurement_confidence < 0.3:
+            return self  # Ignore low-confidence measurements
+        
+        if self.ppm_confidence < 0.3:
+            # First reliable measurement - use directly
+            new_ppm = measured_ppm
+            new_ppm_conf = measurement_confidence
+        else:
+            # Exponential smoothing: weight new measurement by its confidence
+            alpha = 0.3 * measurement_confidence  # Learning rate scaled by confidence
+            new_ppm = (1 - alpha) * self.ppm_offset + alpha * measured_ppm
+            # Increase confidence (asymptotic to 1.0)
+            new_ppm_conf = min(0.95, self.ppm_confidence + 0.05 * measurement_confidence)
+        
+        # Create new frozen instance with updated values
+        return TimeSnapReference(
+            rtp_timestamp=self.rtp_timestamp,
+            utc_timestamp=self.utc_timestamp,
+            sample_rate=self.sample_rate,
+            source=self.source,
+            confidence=self.confidence,
+            station=self.station,
+            established_at=self.established_at,
+            ppm_offset=new_ppm,
+            ppm_confidence=new_ppm_conf
+        )
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for metadata embedding"""
+        station_val = self.station.value if hasattr(self.station, 'value') else self.station
         return {
             'rtp_timestamp': self.rtp_timestamp,
             'utc_timestamp': self.utc_timestamp,
             'sample_rate': self.sample_rate,
             'source': self.source,
             'confidence': self.confidence,
-            'station': self.station.value,  # Convert enum to string for JSON
+            'station': station_val,
             'established_at': self.established_at,
+            'ppm_offset': self.ppm_offset,
+            'ppm_confidence': self.ppm_confidence,
+            'clock_ratio': self.clock_ratio,
         }
 
 
@@ -336,6 +406,8 @@ class ToneDetectionResult:
         correlation_peak: Peak correlation value from matched filter
         noise_floor: Estimated noise floor during detection
         tone_power_db: Power of detected tone relative to noise floor (dB) - for discrimination
+        sample_position_original: Sample position in ORIGINAL rate buffer (for RTP calculation)
+        original_sample_rate: Original sample rate (Hz) for sample_position_original
     """
     station: StationType
     frequency_hz: float
@@ -348,6 +420,9 @@ class ToneDetectionResult:
     correlation_peak: float
     noise_floor: float
     tone_power_db: Optional[float] = None
+    sample_position_original: Optional[int] = None  # Sample position in original rate
+    original_sample_rate: Optional[int] = None  # Original sample rate (e.g., 20000 Hz)
+    buffer_rtp_start: Optional[int] = None  # RTP timestamp at start of detection buffer
     
     def is_wwv_or_chu(self) -> bool:
         """Check if this is a timing reference station (not WWVH)"""
@@ -375,6 +450,9 @@ class ToneDetectionResult:
             'correlation_peak': self.correlation_peak,
             'noise_floor': self.noise_floor,
             'tone_power_db': self.tone_power_db,
+            'sample_position_original': self.sample_position_original,
+            'original_sample_rate': self.original_sample_rate,
+            'buffer_rtp_start': self.buffer_rtp_start,
         }
 
 

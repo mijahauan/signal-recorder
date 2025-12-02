@@ -68,7 +68,9 @@ class CoreRecorder:
                 - output_dir: Base directory for archives
                 - station: Station metadata (callsign, grid, instrument_id)
                 - channels: List of channel configs
+                - channel_defaults: Default parameters for channels
                 - status_address: Radiod status address for channel management
+                - data_destination: RTP destination for channels (mDNS or IP)
         """
         self.config = config
         self.output_dir = Path(config['output_dir'])
@@ -78,44 +80,42 @@ class CoreRecorder:
         self.status_address = config.get('status_address', '239.192.152.141')
         self.channel_manager = ChannelManager(self.status_address)
         self.health_checker = RadiodHealthChecker(self.status_address)
-        self.channel_configs = {}  # Store for recreation
         
-        # RTP receiver (shared across channels)
-        self.rtp_receiver = RTPReceiver(
-            multicast_address=config['multicast_address'],
-            port=config.get('port', 5004)
-        )
+        # Store station config for multicast IP generation
+        self.station_config = config.get('station', {})
+        self.recorder_config = config.get('recorder', {})
+        
+        # Generate dedicated multicast IP from station/instrument ID
+        # This ensures GRAPE channels have their own exclusive RTP stream
+        from ..channel_manager import generate_grape_multicast_ip
+        station_id = self.station_config.get('id', 'S000000')
+        instrument_id = self.station_config.get('instrument_id', '0')
+        self.data_destination = generate_grape_multicast_ip(station_id, instrument_id)
+        
+        # Store channel configs and defaults
+        self.channel_specs = config.get('channels', [])  # Raw channel specs
+        self.channel_defaults = config.get('channel_defaults', {
+            'preset': 'iq',
+            'sample_rate': 20000,
+            'agc': 0,
+            'gain': 0.0
+        })
+        self.channel_configs = {}  # Will be populated with SSRC -> config after channel creation
+        
+        # RTP receiver will be initialized after channels are created
+        self.rtp_receiver = None
         
         # Per-channel recorders (using new GrapeRecorder)
         self.channels: Dict[int, GrapeRecorder] = {}
         
-        # Initialize channels with GrapeRecorder
-        station_config = config.get('station', {})
-        for ch_cfg in config.get('channels', []):
-            # Store config for recovery
-            self.channel_configs[ch_cfg['ssrc']] = ch_cfg
-            
-            grape_config = GrapeConfig(
-                ssrc=ch_cfg['ssrc'],
-                frequency_hz=ch_cfg['frequency_hz'],
-                sample_rate=ch_cfg['sample_rate'],
-                description=ch_cfg['description'],
-                output_dir=self.output_dir,
-                station_config=station_config,
-                startup_buffer_duration=ch_cfg.get('startup_buffer_duration', 120.0),
-                tone_check_interval=ch_cfg.get('tone_check_interval', 300.0),
-            )
-            
-            recorder = GrapeRecorder(
-                config=grape_config,
-                rtp_receiver=self.rtp_receiver,
-                get_ntp_status=self.get_ntp_status,
-            )
-            self.channels[ch_cfg['ssrc']] = recorder
-            
-            # Note: GrapeRecorder registers its own callbacks when start() is called
+        # Timing parameters
+        self.blocktime_ms = self.recorder_config.get('blocktime_ms', 20.0)
+        self.max_gap_seconds = self.recorder_config.get('max_gap_seconds', 60.0)
         
-        logger.info(f"CoreRecorder initialized: {len(self.channels)} channels")
+        logger.info(f"CoreRecorder: {len(self.channel_specs)} channels configured")
+        logger.info(f"  GRAPE multicast: {self.data_destination} (exclusive stream)")
+        logger.info(f"  Defaults: preset={self.channel_defaults.get('preset')}, "
+                   f"sample_rate={self.channel_defaults.get('sample_rate')}")
         
         # Centralized NTP status cache (shared by all channels)
         # Updated periodically in main loop to avoid subprocess calls in critical path
@@ -137,9 +137,11 @@ class CoreRecorder:
         logger.info("Starting GRAPE Core Recorder")
         logger.info("Responsibility: RTP → NPZ archives (no analytics)")
         
-        # Ensure all channels exist in radiod before starting
+        # Ensure all channels exist in radiod and initialize recorders
         logger.info("Verifying radiod channels...")
-        self._ensure_channels_exist()
+        if not self._ensure_channels_exist():
+            logger.error("Failed to initialize channels - exiting")
+            return
         
         # Start RTP receiver
         self.rtp_receiver.start()
@@ -148,7 +150,7 @@ class CoreRecorder:
         # Start all channel recorders
         for ssrc, recorder in self.channels.items():
             recorder.start()
-            logger.info(f"Started recorder for SSRC {ssrc:x}")
+            logger.info(f"Started recorder for SSRC {ssrc:x} ({recorder.config.description})")
         
         logger.info("Core recorder running. Press Ctrl+C to stop.")
         
@@ -334,44 +336,103 @@ class CoreRecorder:
         
         return None
     
-    def _ensure_channels_exist(self):
+    def _ensure_channels_exist(self) -> bool:
         """
         Verify all configured channels exist in radiod, create if missing.
+        Also initializes RTP receiver and GrapeRecorder instances.
         Called at startup.
+        
+        Returns:
+            True if all channels initialized successfully
         """
         try:
-            # Build channel specifications
-            required_channels = []
-            for ssrc, ch_cfg in self.channel_configs.items():
-                required_channels.append({
-                    'ssrc': ssrc,
-                    'frequency_hz': ch_cfg['frequency_hz'],
-                    'preset': ch_cfg.get('preset', 'iq'),
-                    'sample_rate': ch_cfg.get('sample_rate', 16000),
-                    'agc': ch_cfg.get('agc', 0),
-                    'gain': ch_cfg.get('gain', 0),
-                    'description': ch_cfg['description']
-                })
-            
-            if not required_channels:
+            if not self.channel_specs:
                 logger.warning("No channels configured")
-                return
+                return False
             
-            # Ensure channels exist (create missing ones)
-            logger.info(f"Ensuring {len(required_channels)} channels exist in radiod...")
-            success = self.channel_manager.ensure_channels_exist(
-                required_channels, 
-                update_existing=False
+            # Use new config format: ensure channels exist with auto-SSRC allocation
+            logger.info(f"Ensuring {len(self.channel_specs)} channels exist in radiod...")
+            freq_to_ssrc = self.channel_manager.ensure_channels_from_config(
+                channels=self.channel_specs,
+                defaults=self.channel_defaults,
+                destination=self.data_destination
             )
             
-            if success:
-                logger.info("✓ All channels verified/created in radiod")
-            else:
-                logger.warning("⚠ Some channels may be missing - recording may fail")
+            if not freq_to_ssrc:
+                logger.error("No channels could be created in radiod")
+                return False
+            
+            # Get the multicast address for RTP receiver
+            # Uses deterministic IP generated from station/instrument ID
+            multicast_address = self._get_multicast_address()
+            logger.info(f"RTP receiver will listen on {multicast_address}")
+            
+            # Initialize RTP receiver
+            self.rtp_receiver = RTPReceiver(
+                multicast_address=multicast_address,
+                port=self.config.get('port', 5004)
+            )
+            
+            # Get sample_rate from defaults
+            sample_rate = self.channel_defaults.get('sample_rate', 20000)
+            
+            # Create GrapeRecorder instances for each allocated channel
+            for ch_spec in self.channel_specs:
+                freq_hz = int(ch_spec['frequency_hz'])
+                if freq_hz not in freq_to_ssrc:
+                    logger.warning(f"Channel {freq_hz/1e6:.3f} MHz was not created - skipping")
+                    continue
+                
+                ssrc = freq_to_ssrc[freq_hz]
+                description = ch_spec.get('description', f'{freq_hz/1e6:.3f} MHz')
+                
+                # Store config for health monitoring/recovery
+                self.channel_configs[ssrc] = {
+                    'frequency_hz': freq_hz,
+                    'description': description,
+                    'sample_rate': sample_rate,
+                    **self.channel_defaults
+                }
+                
+                grape_config = GrapeConfig(
+                    ssrc=ssrc,
+                    frequency_hz=freq_hz,
+                    sample_rate=sample_rate,
+                    description=description,
+                    output_dir=self.output_dir,
+                    station_config=self.station_config,
+                    blocktime_ms=self.blocktime_ms,
+                    max_gap_seconds=self.max_gap_seconds,
+                    startup_buffer_duration=ch_spec.get('startup_buffer_duration', 120.0),
+                    tone_check_interval=ch_spec.get('tone_check_interval', 300.0),
+                )
+                
+                recorder = GrapeRecorder(
+                    config=grape_config,
+                    rtp_receiver=self.rtp_receiver,
+                    get_ntp_status=self.get_ntp_status,
+                )
+                self.channels[ssrc] = recorder
+            
+            logger.info(f"✓ Initialized {len(self.channels)} channel recorders")
+            return len(self.channels) > 0
                 
         except Exception as e:
-            logger.error(f"Channel verification failed: {e}", exc_info=True)
-            logger.warning("Continuing anyway - some channels may work")
+            logger.error(f"Channel initialization failed: {e}", exc_info=True)
+            return False
+    
+    def _get_multicast_address(self) -> str:
+        """
+        Get the multicast address for RTP receiver.
+        
+        Returns the deterministic GRAPE multicast IP generated from
+        station_id and instrument_id in __init__.
+        
+        Returns:
+            Multicast address string (e.g., "239.71.82.65")
+        """
+        # data_destination is already set to our deterministic IP
+        return self.data_destination
     
     def _monitor_stream_health(self):
         """
@@ -442,29 +503,19 @@ class CoreRecorder:
         try:
             logger.info(f"Recreating channel {ch_cfg['description']} (SSRC {ssrc:x})...")
             
-            # Build channel spec
-            channel_spec = {
-                'ssrc': ssrc,
-                'frequency_hz': ch_cfg['frequency_hz'],
-                'preset': ch_cfg.get('preset', 'iq'),
-                'sample_rate': ch_cfg.get('sample_rate', 16000),
-                'agc': ch_cfg.get('agc', 0),
-                'gain': ch_cfg.get('gain', 0),
-                'description': ch_cfg['description']
-            }
-            
-            # Create the channel
-            success = self.channel_manager.create_channel(
-                ssrc=channel_spec['ssrc'],
-                frequency_hz=channel_spec['frequency_hz'],
-                preset=channel_spec['preset'],
-                sample_rate=channel_spec['sample_rate'],
-                agc=channel_spec['agc'],
-                gain=channel_spec['gain'],
-                description=channel_spec['description']
+            # Create the channel with original SSRC
+            allocated_ssrc = self.channel_manager.create_channel(
+                frequency_hz=ch_cfg['frequency_hz'],
+                preset=ch_cfg.get('preset', 'iq'),
+                sample_rate=ch_cfg.get('sample_rate', 20000),
+                agc=ch_cfg.get('agc', 0),
+                gain=ch_cfg.get('gain', 0.0),
+                destination=self.data_destination,
+                ssrc=ssrc,  # Keep original SSRC
+                description=ch_cfg['description']
             )
             
-            if success:
+            if allocated_ssrc:
                 logger.info(f"✓ Successfully recreated channel {ch_cfg['description']}")
                 # Reset processor packet timer to avoid immediate re-trigger
                 if ssrc in self.channels:
@@ -521,29 +572,37 @@ def main():
     else:
         output_dir = recorder_config.get('test_data_root', '/tmp/grape-test')
     
-    # Get KA9Q multicast info
+    # Get KA9Q config
     ka9q_config = toml_config.get('ka9q', {})
     status_address = ka9q_config.get('status_address', 'bee1-hf-status.local')
+    data_destination = ka9q_config.get('data_destination')  # e.g. "time-station-data.local"
     
-    # Resolve status address to multicast group
-    # For KA9Q, the default multicast group is 239.1.2.X where X depends on config
-    # Default to standard group
-    multicast_address = '239.1.2.55'  # Standard KA9Q multicast group
+    # Get channel defaults (new config format)
+    channel_defaults = recorder_config.get('channel_defaults', {
+        'preset': 'iq',
+        'sample_rate': 20000,
+        'agc': 0,
+        'gain': 0.0
+    })
     
     # Build config dict for CoreRecorder
     config = {
         'output_dir': output_dir,
-        'multicast_address': multicast_address,
         'port': 5004,
         'status_address': status_address,  # For channel management
+        'data_destination': data_destination,  # RTP destination (mDNS or IP)
         'station': toml_config.get('station', {}),
-        'channels': recorder_config.get('channels', [])
+        'recorder': recorder_config,  # Pass full recorder config
+        'channels': recorder_config.get('channels', []),
+        'channel_defaults': channel_defaults,
     }
     
     logger.info(f"Starting in {mode.upper()} mode")
     logger.info(f"Output directory: {output_dir}")
-    logger.info(f"Multicast: {multicast_address}:5004")
+    logger.info(f"Data destination: {data_destination}")
     logger.info(f"Channels configured: {len(config['channels'])}")
+    logger.info(f"Defaults: preset={channel_defaults.get('preset')}, "
+               f"sample_rate={channel_defaults.get('sample_rate')}")
     
     # Create and run recorder
     recorder = CoreRecorder(config)
