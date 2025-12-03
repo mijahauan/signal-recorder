@@ -45,15 +45,23 @@ import numpy as np
 import logging
 import time
 import uuid
+import hashlib
+import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from dataclasses import dataclass, field
 from collections import deque
 import json
 import threading
+import os
 
 logger = logging.getLogger(__name__)
+
+# Data quality constants
+MAX_SAMPLE_VALUE = 1e10  # Flag samples exceeding this as suspicious
+MAX_GAP_SAMPLES_WARNING = 20000  # Warn if gap exceeds 1 second at 20kHz
+NTP_SYNC_CHECK_INTERVAL = 60  # Check NTP status every 60 seconds
 
 # Try to import Digital RF
 try:
@@ -111,6 +119,71 @@ class RawArchiveConfig:
 
 
 @dataclass
+class NTPStatus:
+    """NTP synchronization status for provenance."""
+    synced: bool = False
+    offset_ms: Optional[float] = None
+    jitter_ms: Optional[float] = None
+    stratum: Optional[int] = None
+    reference: Optional[str] = None
+    check_time: Optional[float] = None
+    
+    def to_dict(self) -> Dict:
+        return {
+            'synced': self.synced,
+            'offset_ms': self.offset_ms,
+            'jitter_ms': self.jitter_ms,
+            'stratum': self.stratum,
+            'reference': self.reference,
+            'check_time': self.check_time
+        }
+
+
+def check_ntp_status() -> NTPStatus:
+    """Check system NTP synchronization status."""
+    status = NTPStatus(check_time=time.time())
+    try:
+        # Try chronyc first (common on modern systems)
+        result = subprocess.run(
+            ['chronyc', 'tracking'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                if 'Reference ID' in line:
+                    status.reference = line.split(':')[1].strip().split()[0]
+                elif 'Stratum' in line:
+                    status.stratum = int(line.split(':')[1].strip())
+                elif 'System time' in line:
+                    # Parse offset like "0.000001234 seconds fast"
+                    parts = line.split(':')[1].strip().split()
+                    if len(parts) >= 2:
+                        status.offset_ms = float(parts[0]) * 1000
+                        if 'slow' in line:
+                            status.offset_ms = -status.offset_ms
+                elif 'Root delay' in line:
+                    pass  # Could extract jitter from here
+            status.synced = status.stratum is not None and status.stratum > 0
+            return status
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    
+    try:
+        # Fall back to ntpq
+        result = subprocess.run(
+            ['ntpq', '-c', 'rv'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            status.synced = 'sync_ntp' in result.stdout or 'sync_pps' in result.stdout
+            return status
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    
+    return status
+
+
+@dataclass
 class SystemTimeReference:
     """
     System time reference for raw archive - NO UTC CORRECTIONS.
@@ -123,11 +196,13 @@ class SystemTimeReference:
         system_time: Local system wall clock time (seconds since epoch)
         ntp_offset_ms: NTP offset at time of recording (if known)
         sample_rate: Sample rate for RTP→time conversion
+        ntp_status: Full NTP status at time of recording
     """
     rtp_timestamp: int
     system_time: float
     ntp_offset_ms: Optional[float] = None
     sample_rate: int = 20000
+    ntp_status: Optional[NTPStatus] = None
     
     def calculate_time_at_sample(self, sample_rtp: int) -> float:
         """Calculate system time at a given RTP sample index."""
@@ -227,6 +302,30 @@ class RawArchiveWriter:
         self.total_gap_samples: int = 0
         self.session_start_time: float = time.time()
         
+        # Data quality tracking
+        self.data_quality = {
+            'samples_validated': 0,
+            'samples_with_nan': 0,
+            'samples_with_inf': 0,
+            'samples_clipped': 0,
+            'max_sample_seen': 0.0,
+            'min_sample_seen': 0.0,
+            'gaps_detected': 0,
+            'largest_gap_samples': 0,
+            'late_packets_dropped': 0,
+            'write_errors': 0,
+            'dtype_conversions': 0,
+        }
+        
+        # RTP sequence tracking for gap detection
+        self.last_rtp_timestamp: Optional[int] = None
+        self.expected_samples_per_packet: int = 31  # F32 at 20kHz
+        
+        # NTP status tracking
+        self.ntp_status: Optional[NTPStatus] = None
+        self.last_ntp_check: float = 0
+        self._check_ntp_on_init()
+        
         # Segment tracking
         self.current_segment: Optional[ArchiveSegmentInfo] = None
         self.segment_counter: int = 0
@@ -236,6 +335,113 @@ class RawArchiveWriter:
         logger.info(f"  Sample rate: {config.sample_rate} Hz")
         logger.info(f"  File duration: {config.file_duration_sec}s")
         logger.info(f"  Compression: {config.compression} (shuffle={config.use_shuffle})")
+    
+    def _check_ntp_on_init(self):
+        """Check NTP status at initialization and log warnings."""
+        self.ntp_status = check_ntp_status()
+        self.last_ntp_check = time.time()
+        
+        if self.ntp_status.synced:
+            logger.info(f"  NTP: SYNCED (stratum={self.ntp_status.stratum}, "
+                       f"offset={self.ntp_status.offset_ms:.3f}ms)")
+        else:
+            logger.warning("⚠️ NTP NOT SYNCED - system time may be inaccurate!")
+            logger.warning("   Phase 2 D_clock calculations depend on accurate time")
+    
+    def _validate_samples(self, samples: np.ndarray) -> Tuple[np.ndarray, Dict[str, int]]:
+        """
+        Validate and clean IQ samples before writing.
+        
+        Returns:
+            Tuple of (cleaned_samples, quality_metrics)
+        """
+        metrics = {
+            'nan_count': 0,
+            'inf_count': 0,
+            'clipped_count': 0,
+        }
+        
+        # Check for NaN values
+        nan_mask = np.isnan(samples)
+        if np.any(nan_mask):
+            metrics['nan_count'] = int(np.sum(nan_mask))
+            # Replace NaN with zero (preserves sample count)
+            samples = np.where(nan_mask, 0+0j, samples)
+            logger.warning(f"⚠️ {metrics['nan_count']} NaN samples replaced with zero")
+        
+        # Check for Inf values
+        inf_mask = np.isinf(samples)
+        if np.any(inf_mask):
+            metrics['inf_count'] = int(np.sum(inf_mask))
+            # Replace Inf with zero
+            samples = np.where(inf_mask, 0+0j, samples)
+            logger.warning(f"⚠️ {metrics['inf_count']} Inf samples replaced with zero")
+        
+        # Check for clipped/suspicious values
+        abs_samples = np.abs(samples)
+        max_val = np.max(abs_samples) if len(abs_samples) > 0 else 0
+        if max_val > MAX_SAMPLE_VALUE:
+            metrics['clipped_count'] = int(np.sum(abs_samples > MAX_SAMPLE_VALUE))
+            logger.warning(f"⚠️ {metrics['clipped_count']} samples exceed {MAX_SAMPLE_VALUE}")
+        
+        # Track min/max for provenance
+        if len(abs_samples) > 0:
+            self.data_quality['max_sample_seen'] = max(
+                self.data_quality['max_sample_seen'], float(max_val)
+            )
+            min_val = np.min(abs_samples)
+            if self.data_quality['min_sample_seen'] == 0:
+                self.data_quality['min_sample_seen'] = float(min_val)
+            else:
+                self.data_quality['min_sample_seen'] = min(
+                    self.data_quality['min_sample_seen'], float(min_val)
+                )
+        
+        return samples, metrics
+    
+    def _detect_gap(self, rtp_timestamp: int, num_samples: int) -> int:
+        """
+        Detect gaps in RTP stream based on timestamp discontinuity.
+        
+        Returns:
+            Number of gap samples (0 if no gap)
+        """
+        if self.last_rtp_timestamp is None:
+            self.last_rtp_timestamp = rtp_timestamp
+            return 0
+        
+        # Calculate expected vs actual RTP timestamp
+        expected_rtp = self.last_rtp_timestamp + num_samples
+        
+        # Handle 32-bit wraparound
+        rtp_diff = rtp_timestamp - expected_rtp
+        if rtp_diff > 0x80000000:
+            rtp_diff -= 0x100000000
+        elif rtp_diff < -0x80000000:
+            rtp_diff += 0x100000000
+        
+        # Update last timestamp
+        self.last_rtp_timestamp = rtp_timestamp + num_samples
+        
+        if rtp_diff > 0:
+            # Gap detected - missing samples
+            gap_samples = rtp_diff
+            self.data_quality['gaps_detected'] += 1
+            self.data_quality['largest_gap_samples'] = max(
+                self.data_quality['largest_gap_samples'], gap_samples
+            )
+            
+            if gap_samples > MAX_GAP_SAMPLES_WARNING:
+                gap_duration_ms = (gap_samples / self.config.sample_rate) * 1000
+                logger.warning(f"⚠️ Large gap detected: {gap_samples} samples ({gap_duration_ms:.1f}ms)")
+            
+            return gap_samples
+        elif rtp_diff < -num_samples:
+            # Significant backwards jump - late/duplicate packet
+            self.data_quality['late_packets_dropped'] += 1
+            return -1  # Signal to skip this packet
+        
+        return 0
     
     def _create_drf_writer(self, system_time: float, rtp_timestamp: int):
         """
@@ -401,6 +607,13 @@ class RawArchiveWriter:
             if system_time is None:
                 system_time = time.time()
             
+            # Periodic NTP status check
+            if time.time() - self.last_ntp_check > NTP_SYNC_CHECK_INTERVAL:
+                self.ntp_status = check_ntp_status()
+                self.last_ntp_check = time.time()
+                if not self.ntp_status.synced:
+                    logger.warning("⚠️ NTP sync lost during recording")
+            
             # Set time reference if not established
             if self.system_time_ref is None:
                 self.set_time_reference(rtp_timestamp, system_time)
@@ -410,11 +623,28 @@ class RawArchiveWriter:
             
             if self.drf_writer is None:
                 logger.error("Failed to create DRF writer")
+                self.data_quality['write_errors'] += 1
                 return 0
             
             # Ensure samples are complex64
             if samples.dtype != np.complex64:
                 samples = samples.astype(np.complex64)
+                self.data_quality['dtype_conversions'] += 1
+            
+            # VALIDATE SAMPLES - catch bad data before writing
+            samples, validation_metrics = self._validate_samples(samples)
+            self.data_quality['samples_validated'] += len(samples)
+            self.data_quality['samples_with_nan'] += validation_metrics['nan_count']
+            self.data_quality['samples_with_inf'] += validation_metrics['inf_count']
+            self.data_quality['samples_clipped'] += validation_metrics['clipped_count']
+            
+            # DETECT GAPS using RTP sequence
+            detected_gap = self._detect_gap(rtp_timestamp, len(samples))
+            if detected_gap < 0:
+                # Late packet - skip it
+                return 0
+            if detected_gap > 0:
+                gap_samples = max(gap_samples, detected_gap)
             
             # Use RTP timestamp for sample ordering (not wall-clock time)
             # This ensures monotonic writes even with timing jitter
@@ -432,7 +662,7 @@ class RawArchiveWriter:
                     expected_rtp_index = self.next_sample_index - int(self.system_time_ref.system_time * self.config.sample_rate)
                     if rtp_diff < expected_rtp_index - len(samples):
                         # Significant backwards jump - likely late packet, skip it
-                        # (Small overlaps are OK, DRF handles them)
+                        self.data_quality['late_packets_dropped'] += 1
                         return 0
             
             try:
@@ -469,6 +699,7 @@ class RawArchiveWriter:
                 
             except Exception as e:
                 logger.error(f"DRF write error: {e}", exc_info=True)
+                self.data_quality['write_errors'] += 1
                 return 0
     
     def write_gap_metadata(
@@ -542,10 +773,17 @@ class RawArchiveWriter:
         self.stream_health_metrics = metrics
     
     def _write_session_summary(self):
-        """Write session summary metadata file."""
+        """Write session summary metadata file with complete provenance."""
+        
+        # Calculate data integrity metrics
+        duration_sec = time.time() - self.session_start_time
+        expected_samples = int(duration_sec * self.config.sample_rate)
+        sample_integrity = self.samples_written / max(1, expected_samples)
+        
         summary = {
             'archive_type': 'raw_20khz_iq',
             'phase': 'phase1_immutable',
+            'version': '2.0',  # Hardened version
             'channel_name': self.config.channel_name,
             'frequency_hz': self.config.frequency_hz,
             'sample_rate': self.config.sample_rate,
@@ -557,6 +795,7 @@ class RawArchiveWriter:
                 self.session_start_time, tz=timezone.utc
             ).isoformat(),
             'session_end': datetime.now(tz=timezone.utc).isoformat(),
+            'duration_seconds': duration_sec,
             'system_time_ref': self.system_time_ref.to_dict() if self.system_time_ref else None,
             'station_config': self.config.station_config,
             'uuid': self.dataset_uuid,
@@ -565,7 +804,15 @@ class RawArchiveWriter:
             'time_reference': 'system_time_only',
             'reprocessable': True,
             # RTP stream health metrics
-            'stream_health': getattr(self, 'stream_health_metrics', None)
+            'stream_health': getattr(self, 'stream_health_metrics', None),
+            # NTP synchronization status
+            'ntp_status': self.ntp_status.to_dict() if self.ntp_status else None,
+            # Data quality metrics
+            'data_quality': {
+                **self.data_quality,
+                'sample_integrity_ratio': sample_integrity,
+                'expected_samples': expected_samples,
+            },
         }
         
         summary_file = self.metadata_dir / 'session_summary.json'
@@ -573,6 +820,20 @@ class RawArchiveWriter:
             with open(summary_file, 'w') as f:
                 json.dump(summary, f, indent=2)
             logger.info(f"Session summary written to {summary_file}")
+            
+            # Log data quality summary
+            dq = self.data_quality
+            logger.info(f"Data quality summary:")
+            logger.info(f"  Samples validated: {dq['samples_validated']:,}")
+            logger.info(f"  Sample integrity: {sample_integrity:.4f} ({sample_integrity*100:.2f}%)")
+            logger.info(f"  Gaps detected: {dq['gaps_detected']}, largest: {dq['largest_gap_samples']} samples")
+            if dq['samples_with_nan'] > 0 or dq['samples_with_inf'] > 0:
+                logger.warning(f"  ⚠️ Bad samples: {dq['samples_with_nan']} NaN, {dq['samples_with_inf']} Inf")
+            if dq['late_packets_dropped'] > 0:
+                logger.info(f"  Late packets dropped: {dq['late_packets_dropped']}")
+            if dq['write_errors'] > 0:
+                logger.warning(f"  ⚠️ Write errors: {dq['write_errors']}")
+                
         except Exception as e:
             logger.error(f"Failed to write session summary: {e}")
     
