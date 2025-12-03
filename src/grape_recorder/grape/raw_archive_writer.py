@@ -59,7 +59,10 @@ import os
 logger = logging.getLogger(__name__)
 
 # Data quality constants
-MAX_SAMPLE_VALUE = 1e10  # Flag samples exceeding this as suspicious
+# For 32-bit float IQ from radiod, typical values are -1.0 to +1.0
+# Values above 100 are suspicious, above 1e6 almost certainly bad
+MAX_SAMPLE_VALUE = 100.0  # Flag samples exceeding this as suspicious
+MAX_SAMPLE_VALUE_CRITICAL = 1e6  # Samples above this are likely decode errors
 MAX_GAP_SAMPLES_WARNING = 20000  # Warn if gap exceeds 1 second at 20kHz
 NTP_SYNC_CHECK_INTERVAL = 60  # Check NTP status every 60 seconds
 
