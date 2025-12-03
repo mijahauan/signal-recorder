@@ -416,16 +416,24 @@ class RawArchiveWriter:
             if samples.dtype != np.complex64:
                 samples = samples.astype(np.complex64)
             
-            # Calculate expected sample index from system time
-            calculated_index = int(system_time * self.config.sample_rate)
-            
-            # Check for backwards time (out-of-order data)
-            if self.next_sample_index is not None and calculated_index < self.next_sample_index:
-                logger.warning(
-                    f"Out-of-order samples detected: calculated_index={calculated_index} "
-                    f"< next_sample_index={self.next_sample_index}. Skipping."
-                )
-                return 0
+            # Use RTP timestamp for sample ordering (not wall-clock time)
+            # This ensures monotonic writes even with timing jitter
+            if self.system_time_ref is not None:
+                # Calculate sample index relative to RTP reference
+                rtp_diff = rtp_timestamp - self.system_time_ref.rtp_timestamp
+                # Handle 32-bit RTP wraparound
+                if rtp_diff > 0x80000000:
+                    rtp_diff -= 0x100000000
+                elif rtp_diff < -0x80000000:
+                    rtp_diff += 0x100000000
+                
+                # Check for backwards RTP (out-of-order packets should be handled upstream)
+                if self.next_sample_index is not None:
+                    expected_rtp_index = self.next_sample_index - int(self.system_time_ref.system_time * self.config.sample_rate)
+                    if rtp_diff < expected_rtp_index - len(samples):
+                        # Significant backwards jump - likely late packet, skip it
+                        # (Small overlaps are OK, DRF handles them)
+                        return 0
             
             try:
                 # Write samples to DRF
@@ -435,7 +443,11 @@ class RawArchiveWriter:
                 # Update state
                 self.samples_written += len(samples)
                 self.total_gap_samples += gap_samples
-                self.next_sample_index = calculated_index + len(samples)
+                # Track next expected sample based on what we just wrote
+                if self.next_sample_index is None:
+                    self.next_sample_index = int(system_time * self.config.sample_rate) + len(samples)
+                else:
+                    self.next_sample_index += len(samples)
                 
                 # Update segment tracking
                 if self.current_segment is None:

@@ -1,0 +1,450 @@
+#!/usr/bin/env python3
+"""
+Run Three-Phase Pipeline on All Channels
+
+Starts the new three-phase pipeline for all channels defined in grape-config.toml.
+Records raw 20 kHz IQ to Phase 1 immutable archive.
+
+Usage:
+    python scripts/run_all_channels_pipeline.py
+    python scripts/run_all_channels_pipeline.py --duration 3600  # 1 hour
+    python scripts/run_all_channels_pipeline.py --output /data/grape
+"""
+
+import argparse
+import logging
+import signal
+import sys
+import time
+import threading
+from pathlib import Path
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
+
+# Try tomllib (Python 3.11+), fall back to alternatives
+try:
+    import tomllib
+    def load_toml(path):
+        with open(path, 'rb') as f:
+            return tomllib.load(f)
+except ImportError:
+    try:
+        import tomli
+        def load_toml(path):
+            with open(path, 'rb') as f:
+                return tomli.load(f)
+    except ImportError:
+        import toml
+        def load_toml(path):
+            return toml.load(path)
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s: %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+class ChannelPipeline:
+    """Manages a single channel's three-phase pipeline."""
+    
+    def __init__(
+        self,
+        channel_desc: str,
+        frequency_hz: float,
+        sample_rate: int,
+        output_dir: Path,
+        station_config: Dict,
+        status_address: str
+    ):
+        self.channel_desc = channel_desc
+        self.frequency_hz = frequency_hz
+        self.sample_rate = sample_rate
+        self.output_dir = output_dir
+        self.station_config = station_config
+        self.status_address = status_address
+        
+        self.channel_name = channel_desc.replace(' ', '_')
+        self.orchestrator = None
+        self.stream = None
+        self.ka9q_channel = None
+        self.ssrc = None
+        self.control = None
+        
+        # Statistics
+        self.samples_received = 0
+        self.callbacks_received = 0
+        self.last_rtp_timestamp = None
+        self.running = False
+    
+    def start(self, control) -> bool:
+        """Start the channel pipeline."""
+        import numpy as np
+        from grape_recorder.grape import PipelineConfig, PipelineOrchestrator
+        from ka9q import RTPRecorder, discover_channels, PacketResequencer, rtp_to_wallclock
+        
+        self.control = control
+        
+        try:
+            # Create channel on radiod
+            logger.info(f"[{self.channel_desc}] Creating channel at {self.frequency_hz/1e6:.2f} MHz...")
+            
+            self.ssrc = control.create_channel(
+                frequency_hz=self.frequency_hz,
+                preset='iq',
+                sample_rate=self.sample_rate
+            )
+            logger.info(f"[{self.channel_desc}] SSRC: {self.ssrc}")
+            
+            # Wait for channel to appear
+            time.sleep(0.3)
+            
+            # Discover channel info
+            channels = discover_channels(self.status_address)
+            self.ka9q_channel = channels.get(self.ssrc)
+            
+            if self.ka9q_channel is None:
+                logger.error(f"[{self.channel_desc}] Channel not found in status")
+                return False
+            
+            # Create pipeline config
+            pipeline_config = PipelineConfig(
+                data_dir=self.output_dir,
+                channel_name=self.channel_name,
+                frequency_hz=self.frequency_hz,
+                sample_rate=self.sample_rate,
+                receiver_grid=self.station_config['grid_square'],
+                station_config=self.station_config,
+                raw_archive_compression='gzip',
+                raw_archive_file_duration_sec=3600,
+                analysis_latency_sec=120,
+                output_sample_rate=10,
+                streaming_latency_minutes=2
+            )
+            
+            # Create orchestrator
+            self.orchestrator = PipelineOrchestrator(pipeline_config)
+            
+            # Create resequencer for sample-level ordering
+            samples_per_packet = self.sample_rate // 100  # 10ms packets at sample_rate
+            self.resequencer = PacketResequencer(
+                buffer_size=64,
+                samples_per_packet=samples_per_packet,
+                sample_rate=self.sample_rate
+            )
+            
+            # Packet callback - uses RTPRecorder for proper sequencing
+            def on_packet(header, payload, wallclock):
+                if not self.running:
+                    return
+                
+                self.callbacks_received += 1
+                
+                # Decode payload to IQ samples
+                try:
+                    if header.payload_type in (120, 97):
+                        samples_int16 = np.frombuffer(payload, dtype=np.int16)
+                        samples = samples_int16.astype(np.float32) / 32768.0
+                    else:
+                        samples = np.frombuffer(payload, dtype=np.float32)
+                    
+                    # Convert to complex
+                    i_samples = samples[0::2]
+                    q_samples = samples[1::2]
+                    iq_samples = (i_samples + 1j * q_samples).astype(np.complex64)
+                    
+                    self.samples_received += len(iq_samples)
+                    
+                    # Use RTP timestamp for proper ordering
+                    rtp_timestamp = header.timestamp
+                    
+                    # Feed to pipeline with actual RTP timestamp
+                    self.orchestrator.process_samples(
+                        samples=iq_samples,
+                        rtp_timestamp=rtp_timestamp,
+                        system_time=wallclock if wallclock else time.time()
+                    )
+                    
+                except Exception as e:
+                    logger.warning(f"[{self.channel_desc}] Packet decode error: {e}")
+            
+            # Create RTPRecorder with resequencing
+            self.recorder = RTPRecorder(
+                channel=self.ka9q_channel,
+                on_packet=on_packet,
+                max_packet_gap=10,
+                resync_threshold=5,
+                pass_all_packets=False  # Let RTPRecorder handle sequencing
+            )
+            
+            # Start
+            self.orchestrator.start()
+            self.recorder.start()
+            self.recorder.start_recording()
+            self.running = True
+            
+            logger.info(f"[{self.channel_desc}] ✅ Pipeline started (using RTPRecorder)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[{self.channel_desc}] Failed to start: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def stop(self):
+        """Stop the channel pipeline."""
+        self.running = False
+        
+        if hasattr(self, 'recorder') and self.recorder:
+            try:
+                self.recorder.stop_recording()
+                self.recorder.stop()
+            except:
+                pass
+        
+        if self.orchestrator:
+            try:
+                self.orchestrator.stop()
+            except:
+                pass
+        
+        logger.info(f"[{self.channel_desc}] Stopped (samples: {self.samples_received:,})")
+    
+    def get_stats(self) -> Dict:
+        """Get channel statistics."""
+        pipeline_stats = {}
+        if self.orchestrator:
+            pipeline_stats = self.orchestrator.get_stats()
+        
+        return {
+            'channel': self.channel_desc,
+            'frequency_mhz': self.frequency_hz / 1e6,
+            'ssrc': self.ssrc,
+            'samples_received': self.samples_received,
+            'callbacks': self.callbacks_received,
+            'samples_archived': pipeline_stats.get('samples_archived', 0),
+            'minutes_analyzed': pipeline_stats.get('minutes_analyzed', 0),
+            'running': self.running
+        }
+
+
+def run_all_channels(config_path: Path, output_dir: Path, duration_sec: Optional[int] = None):
+    """
+    Run three-phase pipeline on all channels.
+    
+    Args:
+        config_path: Path to grape-config.toml
+        output_dir: Output directory for all channels
+        duration_sec: Recording duration (None = run until Ctrl+C)
+    """
+    from ka9q import RadiodControl
+    
+    # Load config
+    config = load_toml(config_path)
+    
+    # Station config
+    station_config = {
+        'callsign': config['station']['callsign'],
+        'grid_square': config['station']['grid_square'],
+        'psws_station_id': config['station']['id'],
+        'psws_instrument_id': config['station']['instrument_id'],
+        'receiver_name': 'GRAPE'
+    }
+    
+    # Channel defaults
+    sample_rate = config['recorder']['channel_defaults'].get('sample_rate', 20000)
+    status_address = config['ka9q']['status_address']
+    
+    # Get all channels
+    channels_config = config['recorder']['channels']
+    
+    logger.info("=" * 70)
+    logger.info("THREE-PHASE PIPELINE - ALL CHANNELS")
+    logger.info("=" * 70)
+    logger.info(f"Station: {station_config['callsign']} @ {station_config['grid_square']}")
+    logger.info(f"Radiod: {status_address}")
+    logger.info(f"Output: {output_dir}")
+    logger.info(f"Duration: {duration_sec} seconds" if duration_sec else "Duration: Until Ctrl+C")
+    logger.info(f"Channels: {len(channels_config)}")
+    logger.info("=" * 70)
+    
+    # Create output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Connect to radiod
+    logger.info("Connecting to radiod...")
+    try:
+        control = RadiodControl(status_address)
+        logger.info("✅ Connected to radiod")
+    except Exception as e:
+        logger.error(f"Failed to connect to radiod: {e}")
+        return False
+    
+    # Create pipelines for all channels
+    pipelines: List[ChannelPipeline] = []
+    
+    for ch_config in channels_config:
+        pipeline = ChannelPipeline(
+            channel_desc=ch_config['description'],
+            frequency_hz=ch_config['frequency_hz'],
+            sample_rate=sample_rate,
+            output_dir=output_dir,
+            station_config=station_config,
+            status_address=status_address
+        )
+        pipelines.append(pipeline)
+    
+    # Start all pipelines
+    logger.info("")
+    logger.info("Starting pipelines...")
+    started = 0
+    
+    for pipeline in pipelines:
+        if pipeline.start(control):
+            started += 1
+        time.sleep(0.2)  # Stagger starts
+    
+    logger.info("")
+    logger.info(f"✅ Started {started}/{len(pipelines)} channels")
+    
+    if started == 0:
+        logger.error("No channels started!")
+        return False
+    
+    # Setup signal handler
+    running = True
+    def signal_handler(sig, frame):
+        nonlocal running
+        logger.info("\nReceived shutdown signal...")
+        running = False
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Main loop
+    logger.info("")
+    if duration_sec:
+        logger.info(f"Recording for {duration_sec} seconds... (Ctrl+C to stop early)")
+    else:
+        logger.info("Recording... (Ctrl+C to stop)")
+    logger.info("")
+    
+    start_time = time.time()
+    last_status_time = start_time
+    
+    try:
+        while running:
+            if duration_sec and (time.time() - start_time) >= duration_sec:
+                break
+            
+            time.sleep(0.5)
+            
+            # Print status every 30 seconds
+            if time.time() - last_status_time >= 30:
+                elapsed = time.time() - start_time
+                logger.info(f"[{elapsed:.0f}s] Channel status:")
+                
+                total_samples = 0
+                total_archived = 0
+                
+                for pipeline in pipelines:
+                    stats = pipeline.get_stats()
+                    total_samples += stats['samples_received']
+                    total_archived += stats['samples_archived']
+                    
+                    freq = stats['frequency_mhz']
+                    samples = stats['samples_received']
+                    archived = stats['samples_archived']
+                    status = "✅" if stats['running'] else "❌"
+                    
+                    logger.info(f"  {status} {stats['channel']}: {samples:,} recv, {archived:,} archived")
+                
+                logger.info(f"  Total: {total_samples:,} samples received, {total_archived:,} archived")
+                logger.info("")
+                last_status_time = time.time()
+    
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+    
+    # Stop all pipelines
+    logger.info("")
+    logger.info("Stopping all pipelines...")
+    
+    for pipeline in pipelines:
+        pipeline.stop()
+    
+    # Final summary
+    elapsed = time.time() - start_time
+    
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("RECORDING COMPLETE")
+    logger.info("=" * 70)
+    logger.info(f"Duration: {elapsed:.1f} seconds")
+    logger.info("")
+    logger.info("Channel Summary:")
+    
+    total_samples = 0
+    total_archived = 0
+    
+    for pipeline in pipelines:
+        stats = pipeline.get_stats()
+        total_samples += stats['samples_received']
+        total_archived += stats['samples_archived']
+        
+        logger.info(f"  {stats['channel']}:")
+        logger.info(f"    Samples received: {stats['samples_received']:,}")
+        logger.info(f"    Samples archived: {stats['samples_archived']:,}")
+        logger.info(f"    Minutes analyzed: {stats['minutes_analyzed']}")
+    
+    logger.info("")
+    logger.info(f"Total samples: {total_samples:,}")
+    logger.info(f"Total archived: {total_archived:,}")
+    logger.info(f"Output directory: {output_dir}")
+    logger.info("=" * 70)
+    
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Run three-phase pipeline on all channels'
+    )
+    parser.add_argument(
+        '--config', '-f',
+        type=Path,
+        default=Path('config/grape-config.toml'),
+        help='Config file path'
+    )
+    parser.add_argument(
+        '--output', '-o',
+        type=Path,
+        default=Path('/tmp/grape-pipeline-all'),
+        help='Output directory'
+    )
+    parser.add_argument(
+        '--duration', '-d',
+        type=int,
+        default=None,
+        help='Recording duration in seconds (default: run until Ctrl+C)'
+    )
+    
+    args = parser.parse_args()
+    
+    if not args.config.exists():
+        logger.error(f"Config file not found: {args.config}")
+        return 1
+    
+    success = run_all_channels(
+        config_path=args.config,
+        output_dir=args.output,
+        duration_sec=args.duration
+    )
+    
+    return 0 if success else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
