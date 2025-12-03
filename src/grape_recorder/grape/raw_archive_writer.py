@@ -66,6 +66,11 @@ MAX_SAMPLE_VALUE_CRITICAL = 1e6  # Samples above this are likely decode errors
 MAX_GAP_SAMPLES_WARNING = 20000  # Warn if gap exceeds 1 second at 20kHz
 NTP_SYNC_CHECK_INTERVAL = 60  # Check NTP status every 60 seconds
 
+# Storage quota constants
+DEFAULT_QUOTA_GB = 100  # Default storage quota per channel
+QUOTA_CHECK_INTERVAL = 300  # Check quota every 5 minutes
+QUOTA_HEADROOM_RATIO = 0.05  # Remove extra 5% when cleaning to avoid thrashing
+
 # Try to import Digital RF
 try:
     import digital_rf as drf
@@ -116,6 +121,10 @@ class RawArchiveConfig:
     # DRF-specific
     subdir_cadence_secs: int = 86400  # Daily subdirectories
     file_cadence_millisecs: int = 3600000  # 1 hour file cadence
+    
+    # Storage quota settings
+    quota_gb: Optional[float] = None  # Max storage in GB (None = unlimited)
+    quota_check_interval: int = QUOTA_CHECK_INTERVAL  # Seconds between checks
     
     def __post_init__(self):
         self.output_dir = Path(self.output_dir)
@@ -249,6 +258,244 @@ class ArchiveSegmentInfo:
     file_path: Optional[Path] = None
 
 
+class StorageQuotaManager:
+    """
+    Manages storage quota for raw archive data.
+    
+    Automatically removes oldest data when quota is exceeded,
+    using a FIFO (first-in-first-out) policy based on date directories.
+    
+    Usage:
+        manager = StorageQuotaManager(archive_dir, quota_gb=100)
+        manager.enforce_quota()  # Called periodically
+    """
+    
+    def __init__(
+        self,
+        archive_dir: Path,
+        quota_gb: Optional[float] = None,
+        headroom_ratio: float = QUOTA_HEADROOM_RATIO
+    ):
+        """
+        Initialize storage quota manager.
+        
+        Args:
+            archive_dir: Path to the archive directory (channel-specific)
+            quota_gb: Maximum storage in GB (None = unlimited)
+            headroom_ratio: Extra space to free when cleaning (default 5%)
+        """
+        self.archive_dir = Path(archive_dir)
+        self.quota_bytes = int(quota_gb * 1024**3) if quota_gb else None
+        self.headroom_ratio = headroom_ratio
+        
+        # Statistics
+        self.bytes_removed: int = 0
+        self.days_removed: int = 0
+        self.last_check_time: float = 0
+        self.removal_log: List[Dict] = []
+        
+        if self.quota_bytes:
+            logger.info(f"StorageQuotaManager initialized: {quota_gb:.1f} GB quota")
+        else:
+            logger.info("StorageQuotaManager initialized: unlimited storage")
+    
+    def get_storage_usage(self) -> Tuple[int, List[Tuple[str, int]]]:
+        """
+        Calculate current storage usage.
+        
+        Returns:
+            Tuple of (total_bytes, list of (date_dir, size_bytes) sorted oldest first)
+        """
+        if not self.archive_dir.exists():
+            return 0, []
+        
+        date_dirs = []
+        total_bytes = 0
+        
+        # Find all date directories (YYYYMMDD format)
+        for item in self.archive_dir.iterdir():
+            if item.is_dir() and len(item.name) == 8 and item.name.isdigit():
+                # Calculate directory size
+                dir_size = self._get_dir_size(item)
+                date_dirs.append((item.name, dir_size))
+                total_bytes += dir_size
+        
+        # Also include metadata directory
+        metadata_dir = self.archive_dir / 'metadata'
+        if metadata_dir.exists():
+            meta_size = self._get_dir_size(metadata_dir)
+            total_bytes += meta_size
+        
+        # Sort by date (oldest first for FIFO removal)
+        date_dirs.sort(key=lambda x: x[0])
+        
+        return total_bytes, date_dirs
+    
+    def _get_dir_size(self, path: Path) -> int:
+        """Calculate total size of directory recursively."""
+        total = 0
+        try:
+            for item in path.rglob('*'):
+                if item.is_file():
+                    total += item.stat().st_size
+        except (PermissionError, OSError) as e:
+            logger.warning(f"Error calculating size of {path}: {e}")
+        return total
+    
+    def enforce_quota(self, force: bool = False) -> Dict[str, Any]:
+        """
+        Enforce storage quota by removing oldest data if needed.
+        
+        Args:
+            force: If True, check even if recently checked
+            
+        Returns:
+            Dict with enforcement results
+        """
+        if self.quota_bytes is None:
+            return {'action': 'none', 'reason': 'unlimited_quota'}
+        
+        current_time = time.time()
+        self.last_check_time = current_time
+        
+        total_bytes, date_dirs = self.get_storage_usage()
+        
+        result = {
+            'total_bytes': total_bytes,
+            'quota_bytes': self.quota_bytes,
+            'usage_ratio': total_bytes / self.quota_bytes if self.quota_bytes else 0,
+            'removed_dirs': [],
+            'bytes_freed': 0,
+        }
+        
+        if total_bytes <= self.quota_bytes:
+            result['action'] = 'none'
+            result['reason'] = 'within_quota'
+            return result
+        
+        # Calculate target size (with headroom)
+        target_bytes = int(self.quota_bytes * (1 - self.headroom_ratio))
+        bytes_to_free = total_bytes - target_bytes
+        
+        logger.warning(f"⚠️ Storage quota exceeded: {total_bytes / 1024**3:.2f} GB / "
+                      f"{self.quota_bytes / 1024**3:.2f} GB")
+        logger.info(f"   Freeing {bytes_to_free / 1024**3:.2f} GB to reach "
+                   f"{target_bytes / 1024**3:.2f} GB target")
+        
+        bytes_freed = 0
+        dirs_removed = []
+        
+        # Remove oldest directories first (FIFO)
+        for date_str, dir_size in date_dirs:
+            if bytes_freed >= bytes_to_free:
+                break
+            
+            dir_path = self.archive_dir / date_str
+            
+            # Safety check: never remove today's directory
+            today_str = datetime.now().strftime('%Y%m%d')
+            if date_str >= today_str:
+                logger.warning(f"   Skipping {date_str} (current/future date)")
+                continue
+            
+            # Remove the directory
+            try:
+                self._remove_directory(dir_path)
+                bytes_freed += dir_size
+                dirs_removed.append(date_str)
+                
+                # Log removal for audit trail
+                removal_record = {
+                    'date': date_str,
+                    'size_bytes': dir_size,
+                    'removed_at': datetime.now(tz=timezone.utc).isoformat(),
+                    'reason': 'quota_enforcement'
+                }
+                self.removal_log.append(removal_record)
+                
+                logger.info(f"   ✓ Removed {date_str} ({dir_size / 1024**2:.1f} MB)")
+                
+            except Exception as e:
+                logger.error(f"   ✗ Failed to remove {date_str}: {e}")
+        
+        # Update statistics
+        self.bytes_removed += bytes_freed
+        self.days_removed += len(dirs_removed)
+        
+        result['action'] = 'cleaned'
+        result['removed_dirs'] = dirs_removed
+        result['bytes_freed'] = bytes_freed
+        
+        # Log summary
+        new_total = total_bytes - bytes_freed
+        logger.info(f"   Freed {bytes_freed / 1024**3:.2f} GB, "
+                   f"new usage: {new_total / 1024**3:.2f} GB "
+                   f"({new_total / self.quota_bytes * 100:.1f}%)")
+        
+        return result
+    
+    def _remove_directory(self, path: Path):
+        """Safely remove a directory and all its contents."""
+        import shutil
+        
+        if not path.exists():
+            return
+        
+        # Safety checks
+        if not path.is_dir():
+            raise ValueError(f"Not a directory: {path}")
+        
+        # Ensure we're removing from within archive_dir
+        try:
+            path.relative_to(self.archive_dir)
+        except ValueError:
+            raise ValueError(f"Path {path} is not within archive directory")
+        
+        # Remove
+        shutil.rmtree(path)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get quota manager statistics."""
+        total_bytes, date_dirs = self.get_storage_usage()
+        
+        return {
+            'quota_gb': self.quota_bytes / 1024**3 if self.quota_bytes else None,
+            'used_gb': total_bytes / 1024**3,
+            'usage_ratio': total_bytes / self.quota_bytes if self.quota_bytes else 0,
+            'days_stored': len(date_dirs),
+            'oldest_date': date_dirs[0][0] if date_dirs else None,
+            'newest_date': date_dirs[-1][0] if date_dirs else None,
+            'bytes_removed_total': self.bytes_removed,
+            'days_removed_total': self.days_removed,
+        }
+    
+    def write_removal_log(self, log_file: Optional[Path] = None):
+        """Write removal log to file for audit purposes."""
+        if not self.removal_log:
+            return
+        
+        if log_file is None:
+            log_file = self.archive_dir / 'metadata' / 'quota_removal_log.json'
+        
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Append to existing log
+        existing_log = []
+        if log_file.exists():
+            try:
+                with open(log_file) as f:
+                    existing_log = json.load(f)
+            except:
+                pass
+        
+        existing_log.extend(self.removal_log)
+        
+        with open(log_file, 'w') as f:
+            json.dump(existing_log, f, indent=2)
+        
+        self.removal_log.clear()
+
+
 class RawArchiveWriter:
     """
     Phase 1: Immutable Raw Archive Writer
@@ -329,6 +576,15 @@ class RawArchiveWriter:
         self.last_ntp_check: float = 0
         self._check_ntp_on_init()
         
+        # Storage quota management
+        self.quota_manager: Optional[StorageQuotaManager] = None
+        self.last_quota_check: float = 0
+        if config.quota_gb is not None:
+            self.quota_manager = StorageQuotaManager(
+                archive_dir=self.archive_dir,
+                quota_gb=config.quota_gb
+            )
+        
         # Segment tracking
         self.current_segment: Optional[ArchiveSegmentInfo] = None
         self.segment_counter: int = 0
@@ -338,6 +594,8 @@ class RawArchiveWriter:
         logger.info(f"  Sample rate: {config.sample_rate} Hz")
         logger.info(f"  File duration: {config.file_duration_sec}s")
         logger.info(f"  Compression: {config.compression} (shuffle={config.use_shuffle})")
+        if config.quota_gb:
+            logger.info(f"  Storage quota: {config.quota_gb:.1f} GB")
     
     def _check_ntp_on_init(self):
         """Check NTP status at initialization and log warnings."""
@@ -617,6 +875,13 @@ class RawArchiveWriter:
                 if not self.ntp_status.synced:
                     logger.warning("⚠️ NTP sync lost during recording")
             
+            # Periodic storage quota check
+            if self.quota_manager is not None:
+                current_time = time.time()
+                if current_time - self.last_quota_check > self.config.quota_check_interval:
+                    self.last_quota_check = current_time
+                    self.quota_manager.enforce_quota()
+            
             # Set time reference if not established
             if self.system_time_ref is None:
                 self.set_time_reference(rtp_timestamp, system_time)
@@ -760,6 +1025,14 @@ class RawArchiveWriter:
             # Write final session metadata
             self._write_session_summary()
             
+            # Write quota removal log if any data was removed
+            if self.quota_manager:
+                self.quota_manager.write_removal_log()
+                quota_stats = self.quota_manager.get_stats()
+                if quota_stats['days_removed_total'] > 0:
+                    logger.info(f"  Quota cleanup: {quota_stats['days_removed_total']} days removed, "
+                               f"{quota_stats['bytes_removed_total'] / 1024**3:.2f} GB freed")
+            
             logger.info(f"RawArchiveWriter closed:")
             logger.info(f"  Total samples: {self.samples_written}")
             logger.info(f"  Total gaps: {self.total_gap_samples}")
@@ -816,6 +1089,8 @@ class RawArchiveWriter:
                 'sample_integrity_ratio': sample_integrity,
                 'expected_samples': expected_samples,
             },
+            # Storage quota status
+            'storage_quota': self.quota_manager.get_stats() if self.quota_manager else None,
         }
         
         summary_file = self.metadata_dir / 'session_summary.json'

@@ -56,7 +56,8 @@ class ChannelPipeline:
         sample_rate: int,
         output_dir: Path,
         station_config: Dict,
-        status_address: str
+        status_address: str,
+        quota_gb: Optional[float] = None
     ):
         self.channel_desc = channel_desc
         self.frequency_hz = frequency_hz
@@ -64,6 +65,7 @@ class ChannelPipeline:
         self.output_dir = output_dir
         self.station_config = station_config
         self.status_address = status_address
+        self.quota_gb = quota_gb
         
         self.channel_name = channel_desc.replace(' ', '_')
         self.orchestrator = None
@@ -123,6 +125,7 @@ class ChannelPipeline:
                 station_config=self.station_config,
                 raw_archive_compression='gzip',
                 raw_archive_file_duration_sec=3600,
+                raw_archive_quota_gb=self.quota_gb,
                 analysis_latency_sec=120,
                 output_sample_rate=10,
                 streaming_latency_minutes=2
@@ -266,7 +269,12 @@ class ChannelPipeline:
         }
 
 
-def run_all_channels(config_path: Path, output_dir: Path, duration_sec: Optional[int] = None):
+def run_all_channels(
+    config_path: Path,
+    output_dir: Path,
+    duration_sec: Optional[int] = None,
+    quota_gb: Optional[float] = None
+):
     """
     Run three-phase pipeline on all channels.
     
@@ -274,6 +282,7 @@ def run_all_channels(config_path: Path, output_dir: Path, duration_sec: Optional
         config_path: Path to grape-config.toml
         output_dir: Output directory for all channels
         duration_sec: Recording duration (None = run until Ctrl+C)
+        quota_gb: Storage quota per channel in GB (None = unlimited)
     """
     from ka9q import RadiodControl
     
@@ -303,6 +312,7 @@ def run_all_channels(config_path: Path, output_dir: Path, duration_sec: Optional
     logger.info(f"Radiod: {status_address}")
     logger.info(f"Output: {output_dir}")
     logger.info(f"Duration: {duration_sec} seconds" if duration_sec else "Duration: Until Ctrl+C")
+    logger.info(f"Storage quota: {quota_gb:.1f} GB/channel" if quota_gb else "Storage quota: Unlimited")
     logger.info(f"Channels: {len(channels_config)}")
     logger.info("=" * 70)
     
@@ -328,7 +338,8 @@ def run_all_channels(config_path: Path, output_dir: Path, duration_sec: Optional
             sample_rate=sample_rate,
             output_dir=output_dir,
             station_config=station_config,
-            status_address=status_address
+            status_address=status_address,
+            quota_gb=quota_gb
         )
         pipelines.append(pipeline)
     
@@ -507,6 +518,12 @@ def main():
         default=None,
         help='Recording duration in seconds (default: run until Ctrl+C)'
     )
+    parser.add_argument(
+        '--quota', '-q',
+        type=float,
+        default=None,
+        help='Storage quota per channel in GB (default: unlimited)'
+    )
     
     args = parser.parse_args()
     
@@ -517,7 +534,8 @@ def main():
     success = run_all_channels(
         config_path=args.config,
         output_dir=args.output,
-        duration_sec=args.duration
+        duration_sec=args.duration,
+        quota_gb=args.quota
     )
     
     return 0 if success else 1
