@@ -531,6 +531,16 @@ class RawArchiveWriter:
             logger.info(f"  Total gaps: {self.total_gap_samples}")
             logger.info(f"  Files written: {self.files_written}")
     
+    def set_stream_health(self, metrics: Dict[str, Any]):
+        """
+        Set RTP stream health metrics to be included in session summary.
+        
+        Args:
+            metrics: Dict with keys like packets_received, packets_dropped,
+                    packets_out_of_order, sequence_errors, timestamp_jumps
+        """
+        self.stream_health_metrics = metrics
+    
     def _write_session_summary(self):
         """Write session summary metadata file."""
         summary = {
@@ -553,7 +563,9 @@ class RawArchiveWriter:
             # CRITICAL: Mark this as uncorrected data
             'utc_correction_applied': False,
             'time_reference': 'system_time_only',
-            'reprocessable': True
+            'reprocessable': True,
+            # RTP stream health metrics
+            'stream_health': getattr(self, 'stream_health_metrics', None)
         }
         
         summary_file = self.metadata_dir / 'session_summary.json'

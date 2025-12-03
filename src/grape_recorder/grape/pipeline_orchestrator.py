@@ -250,6 +250,19 @@ class PipelineOrchestrator:
         
         logger.info(f"Pipeline started for {self.config.channel_name}")
     
+    def set_stream_health(self, metrics: Dict[str, Any]):
+        """
+        Set RTP stream health metrics for archival.
+        
+        Call this before stop() to include stream health in the session summary.
+        
+        Args:
+            metrics: Dict with keys like packets_received, packets_dropped,
+                    packets_out_of_order, sequence_errors, timestamp_jumps
+        """
+        self.stream_health_metrics = metrics
+        self.raw_archive_writer.set_stream_health(metrics)
+    
     def stop(self):
         """Stop the pipeline gracefully."""
         with self._lock:

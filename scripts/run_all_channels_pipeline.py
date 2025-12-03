@@ -205,8 +205,11 @@ class ChannelPipeline:
         """Stop the channel pipeline."""
         self.running = False
         
+        # Get final stream health metrics before stopping
+        rtp_metrics = {}
         if hasattr(self, 'recorder') and self.recorder:
             try:
+                rtp_metrics = self.recorder.get_metrics()
                 self.recorder.stop_recording()
                 self.recorder.stop()
             except:
@@ -214,6 +217,9 @@ class ChannelPipeline:
         
         if self.orchestrator:
             try:
+                # Pass stream health to archive before closing
+                if rtp_metrics:
+                    self.orchestrator.set_stream_health(rtp_metrics)
                 self.orchestrator.stop()
             except:
                 pass
