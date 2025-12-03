@@ -56,8 +56,7 @@ class ChannelPipeline:
         sample_rate: int,
         output_dir: Path,
         station_config: Dict,
-        status_address: str,
-        quota_gb: Optional[float] = None
+        status_address: str
     ):
         self.channel_desc = channel_desc
         self.frequency_hz = frequency_hz
@@ -65,7 +64,6 @@ class ChannelPipeline:
         self.output_dir = output_dir
         self.station_config = station_config
         self.status_address = status_address
-        self.quota_gb = quota_gb
         
         self.channel_name = channel_desc.replace(' ', '_')
         self.orchestrator = None
@@ -125,7 +123,6 @@ class ChannelPipeline:
                 station_config=self.station_config,
                 raw_archive_compression='gzip',
                 raw_archive_file_duration_sec=3600,
-                raw_archive_quota_gb=self.quota_gb,
                 analysis_latency_sec=120,
                 output_sample_rate=10,
                 streaming_latency_minutes=2
@@ -302,6 +299,13 @@ def run_all_channels(
     sample_rate = config['recorder']['channel_defaults'].get('sample_rate', 20000)
     status_address = config['ka9q']['status_address']
     
+    # Storage quota: CLI overrides config file
+    # Config format: "500GB", "1TB", "80%", or "unlimited"
+    storage_quota = config['recorder'].get('storage_quota', None)
+    if quota_gb is not None:
+        # CLI override - convert to string format
+        storage_quota = f"{quota_gb}GB"
+    
     # Get all channels
     channels_config = config['recorder']['channels']
     
@@ -312,12 +316,21 @@ def run_all_channels(
     logger.info(f"Radiod: {status_address}")
     logger.info(f"Output: {output_dir}")
     logger.info(f"Duration: {duration_sec} seconds" if duration_sec else "Duration: Until Ctrl+C")
-    logger.info(f"Storage quota: {quota_gb:.1f} GB/channel" if quota_gb else "Storage quota: Unlimited")
+    logger.info(f"Storage quota: {storage_quota}" if storage_quota else "Storage quota: Unlimited")
     logger.info(f"Channels: {len(channels_config)}")
     logger.info("=" * 70)
     
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create storage quota manager (manages ALL channels together)
+    quota_manager = None
+    if storage_quota:
+        from grape_recorder.grape.raw_archive_writer import StorageQuotaManager
+        quota_manager = StorageQuotaManager(
+            archive_root=output_dir,
+            quota=storage_quota
+        )
     
     # Connect to radiod
     logger.info("Connecting to radiod...")
@@ -338,8 +351,7 @@ def run_all_channels(
             sample_rate=sample_rate,
             output_dir=output_dir,
             station_config=station_config,
-            status_address=status_address,
-            quota_gb=quota_gb
+            status_address=status_address
         )
         pipelines.append(pipeline)
     
@@ -429,6 +441,16 @@ def run_all_channels(
                     logger.info(f"  Stream health: {total_packets:,} pkts, {total_dropped} dropped ({drop_rate:.2f}%), {total_ooo} out-of-order ({ooo_rate:.2f}%)")
                 
                 logger.info(f"  Total: {total_samples:,} samples received, {total_archived:,} archived")
+                
+                # Enforce storage quota periodically
+                if quota_manager:
+                    quota_result = quota_manager.enforce_quota()
+                    if quota_result.get('action') == 'cleaned':
+                        logger.info(f"  Storage: freed {quota_result['bytes_freed']/1024**3:.2f} GB")
+                    else:
+                        stats = quota_manager.get_stats()
+                        logger.info(f"  Storage: {stats['used_gb']:.2f}/{stats['quota_gb']:.2f} GB ({stats['usage_ratio']*100:.1f}%)")
+                
                 logger.info("")
                 last_status_time = time.time()
     
@@ -489,6 +511,19 @@ def run_all_channels(
     logger.info(f"  Out-of-order: {total_ooo} ({100.0*total_ooo/max(1,total_packets):.3f}%)")
     logger.info(f"  Sequence errors: {total_seq_errors}")
     logger.info(f"  Timestamp jumps: {total_ts_jumps}")
+    
+    # Storage quota summary
+    if quota_manager:
+        quota_manager.write_removal_log()
+        stats = quota_manager.get_stats()
+        logger.info("")
+        logger.info("Storage Quota Summary:")
+        logger.info(f"  Quota: {stats['quota_gb']:.1f} GB")
+        logger.info(f"  Used: {stats['used_gb']:.2f} GB ({stats['usage_ratio']*100:.1f}%)")
+        logger.info(f"  Dates stored: {stats['oldest_date']} to {stats['newest_date']}")
+        if stats['dirs_removed_total'] > 0:
+            logger.info(f"  Cleaned: {stats['dirs_removed_total']} dirs, {stats['bytes_removed_total']/1024**3:.2f} GB freed")
+    
     logger.info("")
     logger.info(f"Output directory: {output_dir}")
     logger.info("=" * 70)
@@ -522,7 +557,7 @@ def main():
         '--quota', '-q',
         type=float,
         default=None,
-        help='Storage quota per channel in GB (default: unlimited)'
+        help='Total storage quota in GB (overrides config file)'
     )
     
     args = parser.parse_args()

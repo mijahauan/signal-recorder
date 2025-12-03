@@ -56,6 +56,13 @@ blocktime_ms = 10
 # Gaps larger than this indicate stream restart or corruption
 max_gap_seconds = 60
 
+# Storage quota - total allocation for ALL channels (FIFO cleanup)
+# Specify as:
+#   - Fixed size: "500GB", "1TB", "200GB"
+#   - Percentage of disk: "80%", "50%"
+#   - "unlimited" or omit for no limit
+storage_quota = "80%"
+
 # Default parameters for all channels (can be overridden per-channel)
 [recorder.channel_defaults]
 preset = "iq"

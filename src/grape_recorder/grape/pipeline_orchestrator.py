@@ -110,7 +110,7 @@ class PipelineConfig:
     # Phase 1 settings
     raw_archive_compression: str = 'gzip'
     raw_archive_file_duration_sec: int = 3600  # 1 hour files
-    raw_archive_quota_gb: Optional[float] = None  # Storage quota per channel
+    # Note: Storage quota is managed at top-level, not per-channel
     
     # Phase 2 settings
     analysis_latency_sec: int = 120  # Wait for complete minute
@@ -166,8 +166,7 @@ class PipelineOrchestrator:
             sample_rate=config.sample_rate,
             station_config=config.station_config,
             compression=config.raw_archive_compression,
-            file_duration_sec=config.raw_archive_file_duration_sec,
-            quota_gb=config.raw_archive_quota_gb
+            file_duration_sec=config.raw_archive_file_duration_sec
         )
         self.raw_archive_writer = RawArchiveWriter(raw_config)
         

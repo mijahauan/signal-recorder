@@ -121,10 +121,7 @@ class RawArchiveConfig:
     # DRF-specific
     subdir_cadence_secs: int = 86400  # Daily subdirectories
     file_cadence_millisecs: int = 3600000  # 1 hour file cadence
-    
-    # Storage quota settings
-    quota_gb: Optional[float] = None  # Max storage in GB (None = unlimited)
-    quota_check_interval: int = QUOTA_CHECK_INTERVAL  # Seconds between checks
+    # Note: Storage quota is managed at top-level by StorageQuotaManager
     
     def __post_init__(self):
         self.output_dir = Path(self.output_dir)
@@ -258,76 +255,154 @@ class ArchiveSegmentInfo:
     file_path: Optional[Path] = None
 
 
+def parse_quota_string(quota_str: str, base_path: Path) -> Optional[int]:
+    """
+    Parse a quota string into bytes.
+    
+    Supported formats:
+        - "500GB", "500gb", "500 GB" - fixed size in gigabytes
+        - "1TB", "1.5TB" - fixed size in terabytes  
+        - "80%", "50%" - percentage of disk containing base_path
+        - "unlimited", "", None - no limit
+    
+    Args:
+        quota_str: Quota specification string
+        base_path: Path to determine disk for percentage calculation
+        
+    Returns:
+        Quota in bytes, or None for unlimited
+    """
+    if not quota_str or quota_str.lower() in ('unlimited', 'none', '0'):
+        return None
+    
+    quota_str = quota_str.strip().upper()
+    
+    # Percentage of disk
+    if quota_str.endswith('%'):
+        try:
+            percentage = float(quota_str[:-1])
+            if not 0 < percentage <= 100:
+                raise ValueError(f"Percentage must be 0-100, got {percentage}")
+            
+            # Get disk stats
+            import shutil
+            disk_usage = shutil.disk_usage(base_path)
+            quota_bytes = int(disk_usage.total * percentage / 100)
+            
+            logger.info(f"Quota {quota_str}: {quota_bytes / 1024**3:.1f} GB "
+                       f"of {disk_usage.total / 1024**3:.1f} GB disk")
+            return quota_bytes
+            
+        except ValueError as e:
+            logger.error(f"Invalid percentage quota '{quota_str}': {e}")
+            return None
+    
+    # Fixed size: extract number and unit
+    import re
+    match = re.match(r'^([\d.]+)\s*(TB|GB|MB)?$', quota_str)
+    if not match:
+        logger.error(f"Invalid quota format '{quota_str}'. "
+                    f"Use: '500GB', '1TB', '80%', or 'unlimited'")
+        return None
+    
+    value = float(match.group(1))
+    unit = match.group(2) or 'GB'
+    
+    multipliers = {
+        'MB': 1024**2,
+        'GB': 1024**3,
+        'TB': 1024**4,
+    }
+    
+    quota_bytes = int(value * multipliers[unit])
+    logger.info(f"Quota: {value} {unit} = {quota_bytes / 1024**3:.1f} GB")
+    return quota_bytes
+
+
 class StorageQuotaManager:
     """
-    Manages storage quota for raw archive data.
+    Manages storage quota for raw archive data across ALL channels.
     
     Automatically removes oldest data when quota is exceeded,
     using a FIFO (first-in-first-out) policy based on date directories.
     
+    The manager looks at ALL channel directories under the archive root
+    and removes the oldest date directories across all channels.
+    
     Usage:
-        manager = StorageQuotaManager(archive_dir, quota_gb=100)
+        manager = StorageQuotaManager(archive_root, quota="80%")
+        manager = StorageQuotaManager(archive_root, quota="500GB")
         manager.enforce_quota()  # Called periodically
     """
     
     def __init__(
         self,
-        archive_dir: Path,
-        quota_gb: Optional[float] = None,
+        archive_root: Path,
+        quota: Optional[str] = None,
         headroom_ratio: float = QUOTA_HEADROOM_RATIO
     ):
         """
         Initialize storage quota manager.
         
         Args:
-            archive_dir: Path to the archive directory (channel-specific)
-            quota_gb: Maximum storage in GB (None = unlimited)
+            archive_root: Root directory containing all channel archives
+            quota: Quota specification ("500GB", "80%", "unlimited")
             headroom_ratio: Extra space to free when cleaning (default 5%)
         """
-        self.archive_dir = Path(archive_dir)
-        self.quota_bytes = int(quota_gb * 1024**3) if quota_gb else None
+        self.archive_root = Path(archive_root)
+        self.archive_root.mkdir(parents=True, exist_ok=True)
+        
+        self.quota_bytes = parse_quota_string(quota, self.archive_root) if quota else None
         self.headroom_ratio = headroom_ratio
         
         # Statistics
         self.bytes_removed: int = 0
-        self.days_removed: int = 0
+        self.dirs_removed: int = 0
         self.last_check_time: float = 0
         self.removal_log: List[Dict] = []
         
         if self.quota_bytes:
-            logger.info(f"StorageQuotaManager initialized: {quota_gb:.1f} GB quota")
+            logger.info(f"StorageQuotaManager: {self.quota_bytes / 1024**3:.1f} GB quota for {archive_root}")
         else:
-            logger.info("StorageQuotaManager initialized: unlimited storage")
+            logger.info(f"StorageQuotaManager: unlimited storage for {archive_root}")
     
-    def get_storage_usage(self) -> Tuple[int, List[Tuple[str, int]]]:
+    def get_storage_usage(self) -> Tuple[int, List[Tuple[Path, str, int]]]:
         """
-        Calculate current storage usage.
+        Calculate current storage usage across ALL channels.
         
         Returns:
-            Tuple of (total_bytes, list of (date_dir, size_bytes) sorted oldest first)
+            Tuple of (total_bytes, list of (dir_path, date_str, size_bytes) sorted oldest first)
         """
-        if not self.archive_dir.exists():
+        if not self.archive_root.exists():
             return 0, []
         
-        date_dirs = []
+        date_dirs = []  # List of (full_path, date_str, size_bytes)
         total_bytes = 0
         
-        # Find all date directories (YYYYMMDD format)
-        for item in self.archive_dir.iterdir():
-            if item.is_dir() and len(item.name) == 8 and item.name.isdigit():
-                # Calculate directory size
-                dir_size = self._get_dir_size(item)
-                date_dirs.append((item.name, dir_size))
-                total_bytes += dir_size
+        # Scan all channel directories under archive_root
+        # Structure: archive_root/raw_archive/CHANNEL_NAME/YYYYMMDD/
+        raw_archive = self.archive_root / 'raw_archive'
+        if not raw_archive.exists():
+            return 0, []
         
-        # Also include metadata directory
-        metadata_dir = self.archive_dir / 'metadata'
-        if metadata_dir.exists():
-            meta_size = self._get_dir_size(metadata_dir)
-            total_bytes += meta_size
+        for channel_dir in raw_archive.iterdir():
+            if not channel_dir.is_dir():
+                continue
+            
+            # Find date directories in each channel
+            for item in channel_dir.iterdir():
+                if item.is_dir() and len(item.name) == 8 and item.name.isdigit():
+                    dir_size = self._get_dir_size(item)
+                    date_dirs.append((item, item.name, dir_size))
+                    total_bytes += dir_size
+            
+            # Include metadata directory in total
+            metadata_dir = channel_dir / 'metadata'
+            if metadata_dir.exists():
+                total_bytes += self._get_dir_size(metadata_dir)
         
         # Sort by date (oldest first for FIFO removal)
-        date_dirs.sort(key=lambda x: x[0])
+        date_dirs.sort(key=lambda x: x[1])
         
         return total_bytes, date_dirs
     
@@ -345,6 +420,9 @@ class StorageQuotaManager:
     def enforce_quota(self, force: bool = False) -> Dict[str, Any]:
         """
         Enforce storage quota by removing oldest data if needed.
+        
+        Removes oldest date directories across ALL channels until
+        storage is below quota (with headroom).
         
         Args:
             force: If True, check even if recently checked
@@ -385,42 +463,44 @@ class StorageQuotaManager:
         bytes_freed = 0
         dirs_removed = []
         
-        # Remove oldest directories first (FIFO)
-        for date_str, dir_size in date_dirs:
+        # Remove oldest directories first (FIFO) - across all channels
+        today_str = datetime.now().strftime('%Y%m%d')
+        
+        for dir_path, date_str, dir_size in date_dirs:
             if bytes_freed >= bytes_to_free:
                 break
             
-            dir_path = self.archive_dir / date_str
-            
             # Safety check: never remove today's directory
-            today_str = datetime.now().strftime('%Y%m%d')
             if date_str >= today_str:
-                logger.warning(f"   Skipping {date_str} (current/future date)")
+                logger.warning(f"   Skipping {dir_path.name} (current/future date)")
                 continue
             
             # Remove the directory
             try:
+                channel_name = dir_path.parent.name
                 self._remove_directory(dir_path)
                 bytes_freed += dir_size
-                dirs_removed.append(date_str)
+                dirs_removed.append(f"{channel_name}/{date_str}")
                 
                 # Log removal for audit trail
                 removal_record = {
+                    'channel': channel_name,
                     'date': date_str,
+                    'path': str(dir_path),
                     'size_bytes': dir_size,
                     'removed_at': datetime.now(tz=timezone.utc).isoformat(),
                     'reason': 'quota_enforcement'
                 }
                 self.removal_log.append(removal_record)
                 
-                logger.info(f"   ✓ Removed {date_str} ({dir_size / 1024**2:.1f} MB)")
+                logger.info(f"   ✓ Removed {channel_name}/{date_str} ({dir_size / 1024**2:.1f} MB)")
                 
             except Exception as e:
-                logger.error(f"   ✗ Failed to remove {date_str}: {e}")
+                logger.error(f"   ✗ Failed to remove {dir_path}: {e}")
         
         # Update statistics
         self.bytes_removed += bytes_freed
-        self.days_removed += len(dirs_removed)
+        self.dirs_removed += len(dirs_removed)
         
         result['action'] = 'cleaned'
         result['removed_dirs'] = dirs_removed
@@ -445,11 +525,11 @@ class StorageQuotaManager:
         if not path.is_dir():
             raise ValueError(f"Not a directory: {path}")
         
-        # Ensure we're removing from within archive_dir
+        # Ensure we're removing from within archive_root
         try:
-            path.relative_to(self.archive_dir)
+            path.relative_to(self.archive_root)
         except ValueError:
-            raise ValueError(f"Path {path} is not within archive directory")
+            raise ValueError(f"Path {path} is not within archive root")
         
         # Remove
         shutil.rmtree(path)
@@ -458,15 +538,19 @@ class StorageQuotaManager:
         """Get quota manager statistics."""
         total_bytes, date_dirs = self.get_storage_usage()
         
+        # Get unique dates across all channels
+        unique_dates = sorted(set(d[1] for d in date_dirs))
+        
         return {
             'quota_gb': self.quota_bytes / 1024**3 if self.quota_bytes else None,
             'used_gb': total_bytes / 1024**3,
             'usage_ratio': total_bytes / self.quota_bytes if self.quota_bytes else 0,
-            'days_stored': len(date_dirs),
-            'oldest_date': date_dirs[0][0] if date_dirs else None,
-            'newest_date': date_dirs[-1][0] if date_dirs else None,
+            'date_dirs_count': len(date_dirs),
+            'unique_dates': len(unique_dates),
+            'oldest_date': unique_dates[0] if unique_dates else None,
+            'newest_date': unique_dates[-1] if unique_dates else None,
             'bytes_removed_total': self.bytes_removed,
-            'days_removed_total': self.days_removed,
+            'dirs_removed_total': self.dirs_removed,
         }
     
     def write_removal_log(self, log_file: Optional[Path] = None):
@@ -475,7 +559,7 @@ class StorageQuotaManager:
             return
         
         if log_file is None:
-            log_file = self.archive_dir / 'metadata' / 'quota_removal_log.json'
+            log_file = self.archive_root / 'quota_removal_log.json'
         
         log_file.parent.mkdir(parents=True, exist_ok=True)
         
@@ -576,15 +660,6 @@ class RawArchiveWriter:
         self.last_ntp_check: float = 0
         self._check_ntp_on_init()
         
-        # Storage quota management
-        self.quota_manager: Optional[StorageQuotaManager] = None
-        self.last_quota_check: float = 0
-        if config.quota_gb is not None:
-            self.quota_manager = StorageQuotaManager(
-                archive_dir=self.archive_dir,
-                quota_gb=config.quota_gb
-            )
-        
         # Segment tracking
         self.current_segment: Optional[ArchiveSegmentInfo] = None
         self.segment_counter: int = 0
@@ -594,8 +669,6 @@ class RawArchiveWriter:
         logger.info(f"  Sample rate: {config.sample_rate} Hz")
         logger.info(f"  File duration: {config.file_duration_sec}s")
         logger.info(f"  Compression: {config.compression} (shuffle={config.use_shuffle})")
-        if config.quota_gb:
-            logger.info(f"  Storage quota: {config.quota_gb:.1f} GB")
     
     def _check_ntp_on_init(self):
         """Check NTP status at initialization and log warnings."""
@@ -875,12 +948,7 @@ class RawArchiveWriter:
                 if not self.ntp_status.synced:
                     logger.warning("⚠️ NTP sync lost during recording")
             
-            # Periodic storage quota check
-            if self.quota_manager is not None:
-                current_time = time.time()
-                if current_time - self.last_quota_check > self.config.quota_check_interval:
-                    self.last_quota_check = current_time
-                    self.quota_manager.enforce_quota()
+            # Note: Storage quota is managed at top-level, not per-channel
             
             # Set time reference if not established
             if self.system_time_ref is None:
@@ -1025,14 +1093,6 @@ class RawArchiveWriter:
             # Write final session metadata
             self._write_session_summary()
             
-            # Write quota removal log if any data was removed
-            if self.quota_manager:
-                self.quota_manager.write_removal_log()
-                quota_stats = self.quota_manager.get_stats()
-                if quota_stats['days_removed_total'] > 0:
-                    logger.info(f"  Quota cleanup: {quota_stats['days_removed_total']} days removed, "
-                               f"{quota_stats['bytes_removed_total'] / 1024**3:.2f} GB freed")
-            
             logger.info(f"RawArchiveWriter closed:")
             logger.info(f"  Total samples: {self.samples_written}")
             logger.info(f"  Total gaps: {self.total_gap_samples}")
@@ -1089,8 +1149,7 @@ class RawArchiveWriter:
                 'sample_integrity_ratio': sample_integrity,
                 'expected_samples': expected_samples,
             },
-            # Storage quota status
-            'storage_quota': self.quota_manager.get_stats() if self.quota_manager else None,
+            # Note: Storage quota is managed at top-level, see quota_removal_log.json
         }
         
         summary_file = self.metadata_dir / 'session_summary.json'
