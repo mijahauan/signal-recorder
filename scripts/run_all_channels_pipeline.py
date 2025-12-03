@@ -93,12 +93,14 @@ class ChannelPipeline:
             self.ssrc = control.create_channel(
                 frequency_hz=self.frequency_hz,
                 preset='iq',
-                sample_rate=self.sample_rate
+                sample_rate=self.sample_rate,
+                agc_enable=0  # AGC disabled - F32 has 144 dB dynamic range
             )
             
-            # Set 32-bit float encoding for consistency with wider project
+            # Set 32-bit float encoding - provides enough dynamic range
+            # that AGC is not needed (144 dB vs 96 dB for 16-bit)
             control.set_output_encoding(self.ssrc, Encoding.F32)
-            logger.info(f"[{self.channel_desc}] SSRC: {self.ssrc} (F32 encoding)")
+            logger.info(f"[{self.channel_desc}] SSRC: {self.ssrc} (F32, no AGC)")
             
             # Wait for channel to appear
             time.sleep(0.3)
