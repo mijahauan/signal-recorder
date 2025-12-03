@@ -218,6 +218,11 @@ class ChannelPipeline:
         if self.orchestrator:
             pipeline_stats = self.orchestrator.get_stats()
         
+        # Get RTP stream health metrics
+        rtp_metrics = {}
+        if hasattr(self, 'recorder') and self.recorder:
+            rtp_metrics = self.recorder.get_metrics()
+        
         return {
             'channel': self.channel_desc,
             'frequency_mhz': self.frequency_hz / 1e6,
@@ -226,7 +231,14 @@ class ChannelPipeline:
             'callbacks': self.callbacks_received,
             'samples_archived': pipeline_stats.get('samples_archived', 0),
             'minutes_analyzed': pipeline_stats.get('minutes_analyzed', 0),
-            'running': self.running
+            'running': self.running,
+            # RTP stream health metrics
+            'packets_received': rtp_metrics.get('packets_received', 0),
+            'packets_dropped': rtp_metrics.get('packets_dropped', 0),
+            'packets_out_of_order': rtp_metrics.get('packets_out_of_order', 0),
+            'sequence_errors': rtp_metrics.get('sequence_errors', 0),
+            'timestamp_jumps': rtp_metrics.get('timestamp_jumps', 0),
+            'state_changes': rtp_metrics.get('state_changes', 0),
         }
 
 
@@ -348,18 +360,38 @@ def run_all_channels(config_path: Path, output_dir: Path, duration_sec: Optional
                 
                 total_samples = 0
                 total_archived = 0
+                total_packets = 0
+                total_dropped = 0
+                total_ooo = 0
+                total_seq_errors = 0
                 
                 for pipeline in pipelines:
                     stats = pipeline.get_stats()
                     total_samples += stats['samples_received']
                     total_archived += stats['samples_archived']
+                    total_packets += stats['packets_received']
+                    total_dropped += stats['packets_dropped']
+                    total_ooo += stats['packets_out_of_order']
+                    total_seq_errors += stats['sequence_errors']
                     
-                    freq = stats['frequency_mhz']
                     samples = stats['samples_received']
                     archived = stats['samples_archived']
+                    dropped = stats['packets_dropped']
+                    ooo = stats['packets_out_of_order']
                     status = "✅" if stats['running'] else "❌"
                     
-                    logger.info(f"  {status} {stats['channel']}: {samples:,} recv, {archived:,} archived")
+                    # Show health warning if issues detected
+                    health = ""
+                    if dropped > 0 or ooo > 0:
+                        health = f" ⚠️ drop={dropped} ooo={ooo}"
+                    
+                    logger.info(f"  {status} {stats['channel']}: {samples:,} recv, {archived:,} arch{health}")
+                
+                # Stream health summary
+                if total_packets > 0:
+                    drop_rate = 100.0 * total_dropped / total_packets
+                    ooo_rate = 100.0 * total_ooo / total_packets
+                    logger.info(f"  Stream health: {total_packets:,} pkts, {total_dropped} dropped ({drop_rate:.2f}%), {total_ooo} out-of-order ({ooo_rate:.2f}%)")
                 
                 logger.info(f"  Total: {total_samples:,} samples received, {total_archived:,} archived")
                 logger.info("")
@@ -388,20 +420,41 @@ def run_all_channels(config_path: Path, output_dir: Path, duration_sec: Optional
     
     total_samples = 0
     total_archived = 0
+    total_packets = 0
+    total_dropped = 0
+    total_ooo = 0
+    total_seq_errors = 0
+    total_ts_jumps = 0
     
     for pipeline in pipelines:
         stats = pipeline.get_stats()
         total_samples += stats['samples_received']
         total_archived += stats['samples_archived']
+        total_packets += stats['packets_received']
+        total_dropped += stats['packets_dropped']
+        total_ooo += stats['packets_out_of_order']
+        total_seq_errors += stats['sequence_errors']
+        total_ts_jumps += stats['timestamp_jumps']
         
         logger.info(f"  {stats['channel']}:")
         logger.info(f"    Samples received: {stats['samples_received']:,}")
         logger.info(f"    Samples archived: {stats['samples_archived']:,}")
         logger.info(f"    Minutes analyzed: {stats['minutes_analyzed']}")
+        logger.info(f"    Stream health: {stats['packets_received']:,} pkts, "
+                   f"{stats['packets_dropped']} dropped, {stats['packets_out_of_order']} ooo, "
+                   f"{stats['sequence_errors']} seq_err")
     
     logger.info("")
     logger.info(f"Total samples: {total_samples:,}")
     logger.info(f"Total archived: {total_archived:,}")
+    logger.info("")
+    logger.info("Stream Health Summary:")
+    logger.info(f"  Total packets: {total_packets:,}")
+    logger.info(f"  Packets dropped: {total_dropped} ({100.0*total_dropped/max(1,total_packets):.3f}%)")
+    logger.info(f"  Out-of-order: {total_ooo} ({100.0*total_ooo/max(1,total_packets):.3f}%)")
+    logger.info(f"  Sequence errors: {total_seq_errors}")
+    logger.info(f"  Timestamp jumps: {total_ts_jumps}")
+    logger.info("")
     logger.info(f"Output directory: {output_dir}")
     logger.info("=" * 70)
     
