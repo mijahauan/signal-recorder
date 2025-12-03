@@ -46,6 +46,11 @@ from .transmission_time_solver import (
     TransmissionTimeSolver, create_solver_from_grid, SolverResult,
     MultiStationSolver, CombinedUTCResult, create_multi_station_solver
 )
+from .differential_time_solver import (
+    DifferentialTimeSolver, DifferentialResult, MultiFrequencyResult,
+    GlobalDifferentialSolver, GlobalSolveResult
+)
+from .global_timing_coordinator import GlobalTimingCoordinator, create_coordinator
 from ..interfaces.data_models import (
     TimeSnapReference, 
     QualityInfo, 
@@ -345,7 +350,9 @@ class AnalyticsService:
         
         # Transmission Time Solver - back-calculate UTC(NIST) from observed arrival times
         self.transmission_solver: Optional[TransmissionTimeSolver] = None
+        self.differential_solver: Optional[DifferentialTimeSolver] = None
         self.latest_transmission_result: Optional[SolverResult] = None
+        self.latest_differential_result: Optional[DifferentialResult] = None
         receiver_grid = self.station_config.get('grid_square')
         if receiver_grid and self._is_wwv_wwvh_channel(channel_name):
             try:
@@ -353,8 +360,25 @@ class AnalyticsService:
                 sample_rate = 20000
                 self.transmission_solver = create_solver_from_grid(receiver_grid, sample_rate)
                 logger.info(f"✅ TransmissionTimeSolver initialized - can back-calculate UTC(NIST)")
+                
+                # Differential solver uses WWV-WWVH difference (clock-error immune)
+                from .transmission_time_solver import grid_to_latlon
+                lat, lon = grid_to_latlon(receiver_grid)
+                self.differential_solver = DifferentialTimeSolver(lat, lon)
+                logger.info(f"✅ DifferentialTimeSolver initialized - uses clock-error-immune approach")
             except Exception as e:
                 logger.warning(f"Could not initialize TransmissionTimeSolver: {e}")
+        
+        # Global Timing Coordinator - writes detections to shared file for cross-channel solving
+        self.global_coordinator: Optional[GlobalTimingCoordinator] = None
+        try:
+            # Data root is typically output_dir's grandparent (e.g., /tmp/grape-test)
+            data_root = output_dir.parent.parent
+            if receiver_grid:
+                self.global_coordinator = create_coordinator(data_root, receiver_grid)
+                logger.info(f"✅ GlobalTimingCoordinator initialized - writes to shared/detections/")
+        except Exception as e:
+            logger.warning(f"Could not initialize GlobalTimingCoordinator: {e}")
         
         # Digital RF writing has been moved to standalone drf_writer_service.py
         # This service now only does tone detection, decimation, and outputs 10Hz NPZ files
@@ -969,6 +993,38 @@ class AnalyticsService:
         
         self._compare_recorder_tones(archive, detections)
         
+        # Write detections to shared file for global cross-channel solving
+        if self.global_coordinator and detections:
+            # Use archive.unix_timestamp (correct wall clock) to determine minute
+            minute_utc = datetime.fromtimestamp(
+                int(archive.unix_timestamp / 60) * 60, tz=timezone.utc
+            )
+            
+            for det in detections:
+                if det.use_for_time_snap:
+                    try:
+                        self.global_coordinator.write_detection(
+                            minute_utc=minute_utc,
+                            channel=self.channel_name,
+                            station=det.station.value,
+                            frequency_mhz=archive.frequency_hz / 1e6,
+                            timing_error_ms=det.timing_error_ms,
+                            snr_db=det.snr_db
+                        )
+                        logger.debug(f"Wrote detection to shared: {det.station.value} @ {det.timing_error_ms:+.2f}ms")
+                    except Exception as e:
+                        logger.warning(f"Failed to write detection to shared file: {e}")
+            
+            # Try to run global solve (if we're the last channel to report)
+            try:
+                result = self.global_coordinator.solve_and_save(minute_utc)
+                if result and result.verified:
+                    logger.info(f"🌐 GLOBAL: {result.n_channels} channels → "
+                               f"clock_error={result.clock_error_ms:+.3f}ms, "
+                               f"confidence={result.confidence:.0%}")
+            except Exception as e:
+                logger.debug(f"Global solve not ready: {e}")
+        
         # Run WWV/H discrimination if this is a dual-station channel
         if self.wwvh_discriminator:
             # Get minute timestamp from timing product
@@ -1059,7 +1115,9 @@ class AnalyticsService:
         best = max(eligible, key=lambda d: d.snr_db)
         
         # Find minute boundary closest to detection
-        minute_boundary = int(best.timestamp_utc / 60) * 60
+        # CRITICAL: Use archive.unix_timestamp (correct wall clock), NOT best.timestamp_utc
+        # (which may be corrupted from a stale time_snap)
+        minute_boundary = int(archive.unix_timestamp / 60) * 60
         
         # Calculate RTP timestamp at minute boundary using ACTUAL detected sample position
         # This is the key: derive RTP directly from where the tone was physically detected
@@ -1587,9 +1645,18 @@ class AnalyticsService:
         """
         Back-calculate UTC(NIST) transmission time from observed arrival.
         
-        This is the "Holy Grail" of HF time transfer - turning a passive
-        receiver into a primary frequency/time standard by identifying
-        the propagation mode and subtracting the correct delay.
+        CRITICAL INSIGHT: Using differential WWV-WWVH measurements eliminates
+        clock error contamination. The key equation:
+        
+            Δ_observed = timing_wwv - timing_wwvh
+                       = (T_prop_wwv + clock_error) - (T_prop_wwvh + clock_error)
+                       = T_prop_wwv - T_prop_wwvh  ← Clock error CANCELS!
+        
+        Strategy:
+        1. If BOTH WWV and WWVH detected with RTP positions → use differential solver
+        2. Use differential to identify mode pair (clock-error immune)
+        3. Derive clock error from identified propagation delays
+        4. Cross-validate: WWV and WWVH should give same clock error
         
         Args:
             archive: NPZ archive with RTP timestamps
@@ -1597,133 +1664,241 @@ class AnalyticsService:
             detections: Tone detection results with timing info
         """
         try:
-            # Determine station (WWV, WWVH, or CHU)
-            station = discrimination.dominant_station
-            if station not in ['WWV', 'WWVH']:
-                # CHU handling would need different logic
-                return
-            
-            # Get frequency in MHz
             frequency_mhz = archive.frequency_hz / 1e6
             
-            # Find the best detection for this minute
-            best_detection = None
+            # Extract WWV and WWVH detections separately
+            wwv_det = None
+            wwvh_det = None
             for det in detections or []:
-                if det.station.value.upper() == station:
-                    if best_detection is None or det.snr_db > best_detection.snr_db:
-                        best_detection = det
+                if det.station == StationType.WWV:
+                    if wwv_det is None or det.snr_db > wwv_det.snr_db:
+                        wwv_det = det
+                elif det.station == StationType.WWVH:
+                    if wwvh_det is None or det.snr_db > wwvh_det.snr_db:
+                        wwvh_det = det
             
-            if not best_detection:
-                logger.debug(f"No {station} detection for transmission time solving")
-                return
-            
-            # timing_error_ms IS the observed delay from expected second boundary
-            # It includes both propagation delay and any clock error:
-            #   timing_error_ms = propagation_delay_ms + clock_error_ms
-            #
-            # The solver will:
-            # 1. Calculate expected propagation delay for each mode
-            # 2. Find best matching mode
-            # 3. Compute clock_error = timing_error_ms - propagation_delay_ms
-            #
-            # This clock_error is the UTC(NIST) offset we're looking for!
-            
-            # timing_error_ms is the observed delay from minute boundary
-            # This includes propagation delay + any clock error
-            observed_delay_ms = best_detection.timing_error_ms
-            
-            # Check if we have precise sample position data
-            has_precise_timing = (
-                best_detection.sample_position_original is not None and
-                best_detection.buffer_rtp_start is not None
+            # Check if we can use differential approach (PREFERRED)
+            can_use_differential = (
+                self.differential_solver is not None and
+                wwv_det is not None and
+                wwvh_det is not None and
+                wwv_det.sample_position_original is not None and
+                wwvh_det.sample_position_original is not None and
+                wwv_det.buffer_rtp_start is not None and
+                wwvh_det.buffer_rtp_start is not None
             )
             
-            if has_precise_timing:
-                # PRECISE: Use actual detected sample position for RTP calculation
-                rtp_at_tone = best_detection.buffer_rtp_start + best_detection.sample_position_original
-                timing_offset_samples = int(observed_delay_ms * archive.sample_rate / 1000)
-                expected_second_rtp = rtp_at_tone - timing_offset_samples
-                arrival_rtp = rtp_at_tone
-                
-                logger.info(
-                    f"📡 Transmission solve (PRECISE): {station} {frequency_mhz:.1f}MHz | "
-                    f"timing_error={observed_delay_ms:.2f}ms, SNR={best_detection.snr_db:.1f}dB, "
-                    f"sample_pos={best_detection.sample_position_original}"
-                )
+            if can_use_differential:
+                self._solve_differential(archive, wwv_det, wwvh_det, discrimination, frequency_mhz)
             else:
-                # FALLBACK: Use archive RTP + timing error
-                expected_second_rtp = archive.rtp_timestamp  # Minute boundary approximation
-                arrival_rtp = archive.rtp_timestamp + int(observed_delay_ms * archive.sample_rate / 1000)
+                # Fallback to single-station approach (contaminated by clock error)
+                self._solve_single_station(archive, discrimination, detections, frequency_mhz)
                 
-                logger.info(
-                    f"📡 Transmission solve (approx): {station} {frequency_mhz:.1f}MHz | "
-                    f"timing_error={observed_delay_ms:.2f}ms, SNR={best_detection.snr_db:.1f}dB"
-                )
-            
-            # Get quality metrics from discrimination for mode disambiguation
-            delay_spread_ms = 0.5  # Default moderate spread
-            doppler_std_hz = 0.1   # Default stable
-            fss_db = None
-            
-            # Use Doppler from discrimination if available
-            if discrimination.doppler_wwv_std_hz is not None and station == 'WWV':
-                doppler_std_hz = discrimination.doppler_wwv_std_hz
-            elif discrimination.doppler_wwvh_std_hz is not None and station == 'WWVH':
-                doppler_std_hz = discrimination.doppler_wwvh_std_hz
-            
-            # Solve for transmission time
-            result = self.transmission_solver.solve(
-                station=station,
-                frequency_mhz=frequency_mhz,
-                arrival_rtp=arrival_rtp,
-                delay_spread_ms=delay_spread_ms,
-                doppler_std_hz=doppler_std_hz,
-                fss_db=fss_db,
-                expected_second_rtp=expected_second_rtp
-            )
-            
-            # Store latest result
-            self.latest_transmission_result = result
-            
-            # Adjust confidence based on timing precision
-            effective_confidence = result.confidence
-            if not has_precise_timing:
-                # timing_error_ms was 0, which means tone detector didn't measure actual offset
-                # We can still show propagation mode but not UTC offset
-                effective_confidence = min(0.2, result.confidence)  # Low confidence
-                logger.debug(f"Transmission solve: timing_error=0, mode identification only")
-            else:
-                # We have actual timing measurement - can compute UTC offset
-                # The offset should be small if we identified the correct mode
-                if result.utc_nist_offset_ms is not None and abs(result.utc_nist_offset_ms) < 5.0:
-                    effective_confidence = min(0.8, result.confidence * 1.5)  # Boost confidence
-                    logger.info(f"✅ Good UTC offset: {result.utc_nist_offset_ms:+.2f}ms")
-            
-            # Log the result
-            if effective_confidence > 0.3 or result.propagation_delay_ms > 0:
-                mode_str = f"{result.mode_name} ({result.n_hops}-hop)"
-                prop_str = f"Prop: {result.propagation_delay_ms:.2f}ms"
-                if has_precise_timing and result.utc_nist_offset_ms is not None:
-                    utc_str = f"UTC offset: {result.utc_nist_offset_ms:+.2f}ms"
-                    verified_str = "✓" if result.utc_nist_verified else "✗"
-                    logger.info(
-                        f"🎯 UTC(NIST) back-calc: {station} {frequency_mhz:.1f}MHz | "
-                        f"Mode: {mode_str} | {prop_str} | {utc_str} {verified_str} | "
-                        f"Conf: {effective_confidence:.0%}"
-                    )
-                else:
-                    logger.info(
-                        f"📡 Propagation mode: {station} {frequency_mhz:.1f}MHz | "
-                        f"Mode: {mode_str} | {prop_str} | "
-                        f"(precise timing unavailable)"
-                    )
-            
-            # Write to transmission time CSV (with adjusted confidence)
-            result.confidence = effective_confidence
-            self._log_transmission_time(archive, result, station, frequency_mhz)
-            
         except Exception as e:
             logger.warning(f"Transmission time solving failed: {e}", exc_info=True)
+    
+    def _solve_differential(
+        self,
+        archive: 'NPZArchive',
+        wwv_det: ToneDetectionResult,
+        wwvh_det: ToneDetectionResult,
+        discrimination: 'DiscriminationResult',
+        frequency_mhz: float
+    ):
+        """
+        Differential approach: Use WWV-WWVH difference for clock-error-immune solving.
+        
+        This is the CORRECT approach because the differential measurement
+        cancels out local clock error entirely.
+        """
+        # Calculate RTP arrival positions
+        wwv_arrival_rtp = wwv_det.buffer_rtp_start + wwv_det.sample_position_original
+        wwvh_arrival_rtp = wwvh_det.buffer_rtp_start + wwvh_det.sample_position_original
+        
+        # The differential in RTP samples
+        differential_samples = wwv_arrival_rtp - wwvh_arrival_rtp
+        differential_ms = (differential_samples / archive.sample_rate) * 1000
+        
+        logger.info(
+            f"🔬 DIFFERENTIAL solve: {frequency_mhz:.1f}MHz | "
+            f"WWV RTP={wwv_arrival_rtp}, WWVH RTP={wwvh_arrival_rtp}, "
+            f"Δ={differential_ms:+.3f}ms"
+        )
+        
+        # Calculate minute boundary RTP from archive
+        # This is derived from the archive's time_snap, but we use it only
+        # as a reference point - the differential is what matters
+        minute_boundary_rtp = archive.rtp_timestamp
+        
+        # Get quality metrics
+        delay_spread_ms = 0.5
+        doppler_std_hz = 0.1
+        if discrimination.doppler_wwv_std_hz is not None:
+            doppler_std_hz = max(doppler_std_hz, discrimination.doppler_wwv_std_hz)
+        if discrimination.doppler_wwvh_std_hz is not None:
+            doppler_std_hz = max(doppler_std_hz, discrimination.doppler_wwvh_std_hz)
+        
+        # Use differential solver
+        result = self.differential_solver.solve_with_anchor(
+            wwv_arrival_rtp=wwv_arrival_rtp,
+            wwvh_arrival_rtp=wwvh_arrival_rtp,
+            minute_boundary_rtp=minute_boundary_rtp,
+            sample_rate=archive.sample_rate,
+            frequency_mhz=frequency_mhz,
+            delay_spread_ms=delay_spread_ms,
+            doppler_std_hz=doppler_std_hz
+        )
+        
+        # Store result
+        self.latest_differential_result = result
+        
+        # Log result
+        if result.confidence > 0.1:
+            wwv_mode_str = f"{result.wwv_mode.value} ({result.wwv_n_hops}-hop)"
+            wwvh_mode_str = f"{result.wwvh_mode.value} ({result.wwvh_n_hops}-hop)"
+            verified_str = "✓" if result.clock_error_verified else "✗"
+            
+            logger.info(
+                f"🎯 DIFFERENTIAL UTC(NIST): {frequency_mhz:.1f}MHz | "
+                f"WWV: {wwv_mode_str} {result.wwv_delay_ms:.2f}ms, "
+                f"WWVH: {wwvh_mode_str} {result.wwvh_delay_ms:.2f}ms | "
+                f"Clock Error: {result.clock_error_ms:+.3f}ms {verified_str} | "
+                f"Conf: {result.confidence:.0%}"
+            )
+            
+            if result.clock_error_verified:
+                logger.info(
+                    f"✅ VERIFIED: WWV/WWVH agree within {result.wwv_wwvh_agreement_ms:.2f}ms"
+                )
+            elif result.wwv_wwvh_agreement_ms < 3.0:
+                logger.warning(
+                    f"⚠️ MARGINAL: WWV/WWVH disagree by {result.wwv_wwvh_agreement_ms:.2f}ms "
+                    f"(possible mode misidentification)"
+                )
+            else:
+                logger.warning(
+                    f"❌ CONFLICT: WWV/WWVH disagree by {result.wwv_wwvh_agreement_ms:.2f}ms "
+                    f"(mode identification likely wrong)"
+                )
+        
+        # Convert to SolverResult format for logging compatibility
+        # Use WWV as the "station" for logging purposes
+        from .transmission_time_solver import PropagationMode as OldMode
+        mode_map = {
+            'UNK': OldMode.UNKNOWN,
+            '1E': OldMode.ONE_HOP_E,
+            '1F': OldMode.ONE_HOP_F,
+            '2F': OldMode.TWO_HOP_F,
+            '3F': OldMode.THREE_HOP_F,
+        }
+        
+        compat_result = SolverResult(
+            arrival_rtp=wwv_arrival_rtp,
+            emission_rtp=wwv_arrival_rtp - int(result.wwv_delay_ms * archive.sample_rate / 1000),
+            emission_offset_ms=result.clock_error_ms,
+            propagation_delay_ms=result.wwv_delay_ms,
+            mode=mode_map.get(result.wwv_mode.value, OldMode.UNKNOWN),
+            mode_name=f"{result.wwv_mode.value} (differential)",
+            n_hops=result.wwv_n_hops,
+            layer_height_km=300.0,  # Assumed F2
+            elevation_angle_deg=0.0,  # Not calculated in differential
+            confidence=result.confidence,
+            mode_separation_ms=result.mode_separation_ms,
+            delay_spread_penalty=1.0,
+            doppler_penalty=1.0,
+            fss_consistency=1.0,
+            candidates=[],
+            utc_nist_offset_ms=result.clock_error_ms,
+            utc_nist_verified=result.clock_error_verified
+        )
+        
+        self.latest_transmission_result = compat_result
+        self._log_transmission_time(archive, compat_result, 'WWV', frequency_mhz)
+    
+    def _solve_single_station(
+        self,
+        archive: 'NPZArchive',
+        discrimination: 'DiscriminationResult',
+        detections: List[ToneDetectionResult],
+        frequency_mhz: float
+    ):
+        """
+        Fallback: Single-station solve when differential not available.
+        
+        WARNING: This approach is CONTAMINATED by local clock error!
+        The timing_error_ms includes both T_prop AND clock_error, so
+        subtracting T_prop leaves clock_error - but we can't verify it.
+        """
+        station = discrimination.dominant_station
+        if station not in ['WWV', 'WWVH']:
+            return
+        
+        # Find the best detection for this station
+        best_detection = None
+        for det in detections or []:
+            if det.station.value.upper() == station:
+                if best_detection is None or det.snr_db > best_detection.snr_db:
+                    best_detection = det
+        
+        if not best_detection:
+            logger.debug(f"No {station} detection for transmission time solving")
+            return
+        
+        observed_delay_ms = best_detection.timing_error_ms
+        
+        has_precise_timing = (
+            best_detection.sample_position_original is not None and
+            best_detection.buffer_rtp_start is not None
+        )
+        
+        if has_precise_timing:
+            rtp_at_tone = best_detection.buffer_rtp_start + best_detection.sample_position_original
+            timing_offset_samples = int(observed_delay_ms * archive.sample_rate / 1000)
+            expected_second_rtp = rtp_at_tone - timing_offset_samples
+            arrival_rtp = rtp_at_tone
+        else:
+            expected_second_rtp = archive.rtp_timestamp
+            arrival_rtp = archive.rtp_timestamp + int(observed_delay_ms * archive.sample_rate / 1000)
+        
+        logger.info(
+            f"📡 SINGLE-STATION solve (clock-error contaminated): "
+            f"{station} {frequency_mhz:.1f}MHz | timing_error={observed_delay_ms:.2f}ms"
+        )
+        
+        # Get quality metrics
+        delay_spread_ms = 0.5
+        doppler_std_hz = 0.1
+        if discrimination.doppler_wwv_std_hz is not None and station == 'WWV':
+            doppler_std_hz = discrimination.doppler_wwv_std_hz
+        elif discrimination.doppler_wwvh_std_hz is not None and station == 'WWVH':
+            doppler_std_hz = discrimination.doppler_wwvh_std_hz
+        
+        # Solve with old method (for compatibility)
+        result = self.transmission_solver.solve(
+            station=station,
+            frequency_mhz=frequency_mhz,
+            arrival_rtp=arrival_rtp,
+            delay_spread_ms=delay_spread_ms,
+            doppler_std_hz=doppler_std_hz,
+            fss_db=None,
+            expected_second_rtp=expected_second_rtp
+        )
+        
+        self.latest_transmission_result = result
+        
+        # CRITICAL: Cap confidence since we can't verify clock error
+        # The result is UNVERIFIABLE without differential reference
+        effective_confidence = min(0.3, result.confidence)
+        
+        logger.warning(
+            f"⚠️ Single-station result UNVERIFIABLE | "
+            f"Mode: {result.mode_name} | "
+            f"UTC offset: {result.utc_nist_offset_ms:+.2f}ms | "
+            f"Conf: {effective_confidence:.0%} (capped - no differential reference)"
+        )
+        
+        result.confidence = effective_confidence
+        self._log_transmission_time(archive, result, station, frequency_mhz)
     
     def _log_transmission_time(
         self,

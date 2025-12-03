@@ -4,13 +4,57 @@ GRAPE Application - Global Radio Amateur Propagation Experiment
 This package provides GRAPE-specific components for recording and analyzing
 WWV/WWVH/CHU time station signals for ionospheric propagation studies.
 
+Architecture:
+=============
+Three-Phase Robust Time-Aligned Data Pipeline:
+
+Phase 1: Immutable Raw Archive (20 kHz IQ DRF)
+- Stores raw data with system time only (no UTC corrections)
+- Fixed-duration file splitting (1 hour) - NOT event-based
+- Lossless compression (Shuffle + ZSTD/gzip)
+- NEVER modified based on subsequent analysis
+
+Phase 2: Analytical Engine (Clock Offset Series)
+- Reads from Phase 1 raw archive
+- Produces D_clock = t_system - t_UTC
+- Uses tone detection, discrimination, propagation modeling
+- Output: Separate versionable CSV/JSON files
+
+Phase 3: Corrected Telemetry Product (10 Hz DRF)
+- Reads Phase 1 + applies D_clock from Phase 2
+- Decimates 20 kHz → 10 Hz
+- UTC(NIST) aligned timestamps
+- Output: PROCESSED/ALIGNED DRF for upload
+
 Key Components:
+- RawArchiveWriter: Phase 1 immutable raw archive
+- ClockOffsetEngine: Phase 2 analytical engine
+- CorrectedProductGenerator: Phase 3 product generator
+- PipelineOrchestrator: Coordinates all three phases
+- TransmissionTimeSolver: UTC(NIST) back-calculation
+
+Legacy Components (still supported):
 - GrapeRecorder: Two-phase recorder (startup buffering → recording)
 - GrapeNPZWriter: SegmentWriter for NPZ format with time_snap
 - AnalyticsService: Discrimination, decimation, tone detection
 - StartupToneDetector: WWV/CHU tone-based time_snap establishment
 
-Example:
+Example (New Pipeline):
+    from grape_recorder.grape import create_pipeline
+    
+    orchestrator = create_pipeline(
+        data_dir=Path('/data/grape'),
+        channel_name='WWV_10MHz',
+        frequency_hz=10e6,
+        receiver_grid='EM38ww',
+        station_config={'callsign': 'W3PM', 'grid_square': 'EM38ww'}
+    )
+    orchestrator.start()
+    
+    # Feed RTP data
+    orchestrator.process_samples(iq_samples, rtp_timestamp)
+
+Example (Legacy):
     from grape_recorder.grape import GrapeRecorder, GrapeConfig
     
     config = GrapeConfig(
@@ -75,6 +119,55 @@ from .primary_time_standard import (
 )
 from .time_standard_csv_writer import TimeStandardCSVWriter, TimeStandardSummaryWriter
 
+# Three-Phase Pipeline (New Architecture)
+from .pipeline_recorder import (
+    PipelineRecorder,
+    PipelineRecorderConfig,
+    PipelineRecorderState,
+    create_pipeline_recorder
+)
+from .raw_archive_writer import (
+    RawArchiveWriter,
+    RawArchiveReader,
+    RawArchiveConfig,
+    SystemTimeReference,
+    create_raw_archive_writer
+)
+from .clock_offset_series import (
+    ClockOffsetEngine,
+    ClockOffsetSeries,
+    ClockOffsetMeasurement,
+    ClockOffsetQuality,
+    ClockOffsetSeriesWriter,
+    create_clock_offset_engine
+)
+from .corrected_product_generator import (
+    CorrectedProductGenerator,
+    StreamingProductGenerator,
+    ProductConfig,
+    create_product_generator
+)
+from .pipeline_orchestrator import (
+    PipelineOrchestrator,
+    PipelineConfig,
+    PipelineState,
+    BatchReprocessor,
+    create_pipeline
+)
+
+# Transmission Time Solver (UTC back-calculation)
+from .transmission_time_solver import (
+    TransmissionTimeSolver,
+    MultiStationSolver,
+    SolverResult,
+    CombinedUTCResult,
+    PropagationMode,
+    ModeCandidate as TransmissionModeCandidate,
+    create_solver_from_grid,
+    create_multi_station_solver,
+    grid_to_latlon
+)
+
 __all__ = [
     # Core recorder
     "GrapeRecorder",
@@ -127,4 +220,38 @@ __all__ = [
     "MinuteTimeStandardResult",
     "TimeStandardCSVWriter",
     "TimeStandardSummaryWriter",
+    # Three-Phase Pipeline (New Architecture)
+    "PipelineRecorder",
+    "PipelineRecorderConfig",
+    "PipelineRecorderState",
+    "create_pipeline_recorder",
+    "RawArchiveWriter",
+    "RawArchiveReader",
+    "RawArchiveConfig",
+    "SystemTimeReference",
+    "create_raw_archive_writer",
+    "ClockOffsetEngine",
+    "ClockOffsetSeries",
+    "ClockOffsetMeasurement",
+    "ClockOffsetQuality",
+    "ClockOffsetSeriesWriter",
+    "create_clock_offset_engine",
+    "CorrectedProductGenerator",
+    "StreamingProductGenerator",
+    "ProductConfig",
+    "create_product_generator",
+    "PipelineOrchestrator",
+    "PipelineConfig",
+    "PipelineState",
+    "BatchReprocessor",
+    "create_pipeline",
+    # Transmission Time Solver
+    "TransmissionTimeSolver",
+    "MultiStationSolver",
+    "SolverResult",
+    "CombinedUTCResult",
+    "TransmissionModeCandidate",
+    "create_solver_from_grid",
+    "create_multi_station_solver",
+    "grid_to_latlon",
 ]

@@ -4074,6 +4074,38 @@ app.get('/api/v1/timing/transmission', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/v1/timing/global
+ * Get global cross-channel timing results from GlobalDifferentialSolver
+ */
+app.get('/api/v1/timing/global', async (req, res) => {
+  try {
+    const globalTimingFile = join(paths.getDataRoot(), 'shared', 'global_timing.json');
+    
+    if (!fs.existsSync(globalTimingFile)) {
+      return res.json({
+        available: false,
+        message: 'Global timing not yet available - waiting for multi-channel detections',
+        results: [],
+        latest: null
+      });
+    }
+    
+    const data = JSON.parse(fs.readFileSync(globalTimingFile, 'utf-8'));
+    
+    res.json({
+      available: true,
+      results: data.results || [],
+      latest: data.latest || null,
+      count: (data.results || []).length
+    });
+    
+  } catch (err) {
+    console.error('Error getting global timing data:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================================================
 // START SERVER WITH WEBSOCKET SUPPORT
 // ============================================================================

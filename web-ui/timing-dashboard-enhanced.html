@@ -658,15 +658,16 @@
         async function loadDashboard() {
             try {
                 // Load all data in parallel
-                const [primaryRef, healthSummary, transitions, propagation, transmission] = await Promise.all([
+                const [primaryRef, healthSummary, transitions, propagation, transmission, globalTiming] = await Promise.all([
                     fetch('/api/v1/timing/primary-reference').then(r => r.json()),
                     fetch('/api/v1/timing/health-summary').then(r => r.json()),
                     fetch('/api/v1/timing/transitions?hours=24').then(r => r.json()),
                     fetch('/api/v1/timing/propagation').then(r => r.json()).catch(() => ({ channels: [] })),
-                    fetch('/api/v1/timing/transmission?hours=1').then(r => r.json()).catch(() => ({ results: [] }))
+                    fetch('/api/v1/timing/transmission?hours=1').then(r => r.json()).catch(() => ({ results: [] })),
+                    fetch('/api/v1/timing/global').then(r => r.json()).catch(() => ({ available: false }))
                 ]);
                 
-                renderDashboard(primaryRef, healthSummary, transitions, propagation, transmission);
+                renderDashboard(primaryRef, healthSummary, transitions, propagation, transmission, globalTiming);
                 checkAlerts(primaryRef, healthSummary);
                 startCountdown();
                 
@@ -682,7 +683,7 @@
             }
         }
         
-        function renderDashboard(primaryRef, healthSummary, transitions, propagation, transmission) {
+        function renderDashboard(primaryRef, healthSummary, transitions, propagation, transmission, globalTiming) {
             const container = document.getElementById('dashboard-content');
             
             // Extract channel names for chart dropdowns, sorted by frequency
@@ -694,6 +695,7 @@
             
             container.innerHTML = `
                 ${renderPrimaryReference(primaryRef)}
+                ${renderGlobalTiming(globalTiming)}
                 ${renderTransmissionTime(transmission)}
                 ${renderPropagationModes(propagation)}
                 ${renderHealthCards(healthSummary)}
@@ -789,6 +791,107 @@
                             <span class="ref-detail-label">UTC Anchor:</span>
                             <span class="ref-detail-value">${data.utc_anchor_iso}</span>
                         </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderGlobalTiming(data) {
+            if (!data || !data.available || !data.latest) {
+                return `
+                    <div class="propagation-section" style="margin-bottom: 20px; border: 2px dashed #334155;">
+                        <div class="section-header">
+                            <h2 class="section-title">🌐 Global Differential Timing</h2>
+                            <div class="section-subtitle">Cross-Channel Clock Error Estimation - Waiting for data</div>
+                        </div>
+                        <div style="color: #94a3b8; padding: 20px; text-align: center;">
+                            Global timing requires detections from multiple channels simultaneously.<br>
+                            Using differential measurements eliminates clock error contamination.
+                        </div>
+                    </div>
+                `;
+            }
+            
+            const g = data.latest;
+            const gradeColors = { 'A': '#22c55e', 'B': '#84cc16', 'C': '#eab308', 'D': '#ef4444' };
+            const gradeColor = gradeColors[g.quality_grade] || '#94a3b8';
+            const verifiedIcon = g.verified ? '✓ Verified' : '○ Unverified';
+            const clockStr = `${g.clock_error_ms >= 0 ? '+' : ''}${g.clock_error_ms.toFixed(3)} ms`;
+            const uncertStr = `±${g.uncertainty_ms.toFixed(3)} ms`;
+            
+            // Mode assignments table
+            const modeRows = (g.mode_assignments || []).map(m => `
+                <tr>
+                    <td style="font-weight: 600;">${m.station}</td>
+                    <td>${m.frequency_mhz} MHz</td>
+                    <td><span class="mode-badge">${m.mode}</span></td>
+                    <td>${m.n_hops}-hop</td>
+                    <td>${m.delay_ms.toFixed(2)} ms</td>
+                    <td style="color: #94a3b8;">${m.timing_ms.toFixed(2)} ms</td>
+                </tr>
+            `).join('');
+            
+            return `
+                <div class="propagation-section" style="margin-bottom: 20px; border: 2px solid ${gradeColor};">
+                    <div class="section-header">
+                        <h2 class="section-title">🌐 Global Differential Timing</h2>
+                        <div class="section-subtitle">Cross-Channel Clock Error Estimation - ${g.n_channels} channels, ${g.n_pairs} pairs</div>
+                    </div>
+                    
+                    <div style="background: linear-gradient(135deg, rgba(34, 197, 94, 0.2) 0%, rgba(59, 130, 246, 0.2) 100%); 
+                                border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+                            <div>
+                                <div style="font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">
+                                    Host Clock Error (vs UTC)
+                                </div>
+                                <div style="font-size: 32px; font-weight: 700; color: ${gradeColor}; font-family: monospace;">
+                                    ${clockStr} ${uncertStr}
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 24px; text-align: center;">
+                                <div>
+                                    <div style="font-size: 28px; font-weight: 600; color: ${gradeColor};">${g.quality_grade}</div>
+                                    <div style="font-size: 11px; color: #94a3b8;">Grade</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 28px; font-weight: 600;">${g.n_channels}</div>
+                                    <div style="font-size: 11px; color: #94a3b8;">Channels</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 28px; font-weight: 600;">${(g.confidence * 100).toFixed(0)}%</div>
+                                    <div style="font-size: 11px; color: #94a3b8;">Confidence</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 28px; font-weight: 600;">${g.pair_consistency_ms.toFixed(2)}</div>
+                                    <div style="font-size: 11px; color: #94a3b8;">Consistency (ms)</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 8px; font-size: 12px; color: #94a3b8;">
+                            ${verifiedIcon} | 
+                            Minute: ${new Date(g.minute_utc).toLocaleTimeString()} |
+                            Updated: ${new Date(g.last_updated).toLocaleTimeString()}
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 16px;">
+                        <div style="font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 8px;">Mode Assignments</div>
+                        <table class="prop-table">
+                            <thead>
+                                <tr>
+                                    <th>Station</th>
+                                    <th>Frequency</th>
+                                    <th>Mode</th>
+                                    <th>Hops</th>
+                                    <th>Delay</th>
+                                    <th>Observed</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${modeRows || '<tr><td colspan="6" style="color:#64748b">No mode data</td></tr>'}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             `;

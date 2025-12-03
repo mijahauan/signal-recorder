@@ -334,6 +334,11 @@ class TransmissionTimeSolver:
         Evaluate how well a mode candidate fits the observed data.
         
         Returns a score 0-1 where higher is better fit.
+        
+        CRITICAL MODE DISAMBIGUATION:
+        - High delay_spread_ms → favor higher hop count (multipath)
+        - Negative FSS → favor higher hop count (D-layer attenuation)
+        - When modes are close in delay, these factors break the tie
         """
         # Base score: how close is predicted delay to observed?
         delay_error_ms = abs(candidate.total_delay_ms - observed_delay_ms)
@@ -348,14 +353,30 @@ class TransmissionTimeSolver:
         else:
             delay_score = 1.0
         
-        # Delay spread penalty: high spread suggests multipath
-        # If we see high spread but predict single-hop, reduce confidence
-        if delay_spread_ms > 1.0 and candidate.n_hops == 1:
-            spread_penalty = 0.7
+        # === CRITICAL: Delay spread as multipath indicator ===
+        # High delay spread strongly suggests multi-hop propagation
+        # This is a TIE-BREAKER when two modes have similar delays
+        spread_penalty = 1.0
+        multipath_bonus = 0.0
+        
+        if delay_spread_ms > 1.5:
+            # Very high spread: almost certainly multi-hop
+            if candidate.n_hops >= 2:
+                multipath_bonus = 0.15  # Boost multi-hop modes
+            elif candidate.n_hops == 1:
+                spread_penalty = 0.6  # Heavily penalize single-hop
+        elif delay_spread_ms > 1.0:
+            # High spread: likely multi-hop
+            if candidate.n_hops >= 2:
+                multipath_bonus = 0.10
+            elif candidate.n_hops == 1:
+                spread_penalty = 0.7
         elif delay_spread_ms > 0.5:
-            spread_penalty = 0.9
-        else:
-            spread_penalty = 1.0
+            # Moderate spread: slight preference for multi-hop
+            if candidate.n_hops >= 2:
+                multipath_bonus = 0.05
+            else:
+                spread_penalty = 0.9
         
         # Doppler penalty: high Doppler std means unstable path
         if doppler_std_hz > 0.5:
@@ -365,25 +386,47 @@ class TransmissionTimeSolver:
         else:
             doppler_penalty = 1.0
         
-        # FSS consistency: more D-layer transits = more high-frequency attenuation
+        # === CRITICAL: FSS integration for D-layer detection ===
+        # Negative FSS (high frequencies attenuated) indicates D-layer traversal
+        # More hops = more D-layer transits = more negative FSS expected
         fss_score = 1.0
+        fss_bonus = 0.0
+        
         if fss_db is not None:
-            # Negative FSS (highs attenuated) suggests more hops/D-layer
-            expected_fss = -0.5 * candidate.n_hops  # Rough model
+            # Model: Each hop through D-layer attenuates highs by ~0.8 dB
+            expected_fss = -0.8 * candidate.n_hops
             fss_error = abs(fss_db - expected_fss)
+            
+            # If FSS is very negative (strong D-layer attenuation)
+            if fss_db < -2.0:
+                # Should be multi-hop; penalize single-hop
+                if candidate.n_hops >= 2:
+                    fss_bonus = 0.10
+                elif candidate.n_hops == 1:
+                    fss_score = 0.7
+            elif fss_db < -1.0:
+                # Moderate D-layer effect
+                if candidate.n_hops >= 2:
+                    fss_bonus = 0.05
+            
+            # Also penalize if FSS doesn't match expectation
             if fss_error > 3:
-                fss_score = 0.7
+                fss_score *= 0.8
             elif fss_error > 1.5:
-                fss_score = 0.9
+                fss_score *= 0.9
         
         # Combine scores
+        # Note: bonuses are additive, penalties are multiplicative
         total_score = (
             delay_score * 
             candidate.plausibility * 
             spread_penalty * 
             doppler_penalty * 
             fss_score
-        )
+        ) + multipath_bonus + fss_bonus
+        
+        # Clamp to [0, 1]
+        total_score = min(1.0, max(0.0, total_score))
         
         return total_score
     
