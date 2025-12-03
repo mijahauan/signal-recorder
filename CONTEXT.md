@@ -1,9 +1,362 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-02  
-**Version:** 2.2.0  
-**Status:** ✅ Production-ready with unified installer, systemd services, and daily PSWS uploads.
+**Last Updated:** 2025-12-03  
+**Version:** 3.0.0  
+**Status:** ✅ Phase 1 Complete - Three-Phase Pipeline Architecture
+
+---
+
+## 🎯 THREE-PHASE PIPELINE ARCHITECTURE
+
+### Overview
+
+The GRAPE recorder implements a **three-phase data pipeline** for HF time signal analysis:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    THREE-PHASE PIPELINE ARCHITECTURE                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  PHASE 1: IMMUTABLE RAW ARCHIVE (✅ COMPLETE)                               │
+│  ════════════════════════════════════════════                               │
+│  • Raw 32-bit float IQ from radiod via RTP                                  │
+│  • Digital RF format with gzip compression                                   │
+│  • System time reference (Unix epoch, NTP-synced)                           │
+│  • Data quality validation, gap detection, provenance                        │
+│  • Storage quota management (FIFO cleanup)                                   │
+│                                                                              │
+│  PHASE 2: ANALYTICAL ENGINE (📋 NEXT)                                       │
+│  ═══════════════════════════════════════                                    │
+│  • Clock offset series: D_clock(t) = T_receiver - T_transmitter             │
+│  • Carrier analysis: amplitude, phase, Doppler                               │
+│  • Multi-station solver for transmission time                                │
+│  • Reads from Phase 1, writes intermediate products                          │
+│                                                                              │
+│  PHASE 3: DERIVED PRODUCTS (🔮 FUTURE)                                      │
+│  ═════════════════════════════════════                                      │
+│  • Decimated time series (10 Hz)                                            │
+│  • Station discrimination (WWV/WWVH/CHU)                                    │
+│  • Spectrograms, timing metrics                                              │
+│  • PSWS upload format                                                        │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Design Principles
+
+1. **Immutability**: Phase 1 data is write-once, never modified
+2. **Replayability**: Phase 2/3 can be re-run on historical Phase 1 data
+3. **Separation of Concerns**: Each phase has single responsibility
+4. **Provenance**: Full audit trail from raw samples to derived products
+
+---
+
+## ✅ PHASE 1 COMPLETE: Immutable Raw Archive (Dec 3, 2025)
+
+### Implementation Summary
+
+Phase 1 captures raw IQ data from radiod and stores it in Digital RF format with comprehensive metadata and data quality tracking.
+
+### Data Flow
+
+```
+radiod (ka9q-radio)
+    │
+    │ UDP Multicast: RTP packets (PT=111 for F32 IQ)
+    │ GPS-disciplined timestamps
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ ka9q-python RTPRecorder                                          │
+│   • Packet resequencing (handles out-of-order, duplicates)       │
+│   • Gap detection via RTP sequence numbers                       │
+│   • Payload extraction (32-bit float IQ)                         │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ RawArchiveWriter (raw_archive_writer.py)                         │
+│   • Data validation: NaN/Inf detection, clipping warnings        │
+│   • Gap handling: zero-fill with metadata                        │
+│   • NTP status tracking for provenance                           │
+│   • Digital RF output: gzip compressed, hourly files             │
+│   • Session summary: full audit trail                            │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Digital RF Archive                                               │
+│   output_dir/raw_archive/CHANNEL_NAME/                          │
+│   ├── YYYYMMDD/                                                  │
+│   │   └── drf_*.h5  (HDF5 with complex64 samples)               │
+│   └── metadata/                                                  │
+│       └── session_summary.json                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/grape_recorder/grape/raw_archive_writer.py` | Phase 1 writer with Digital RF output |
+| `src/grape_recorder/grape/pipeline_orchestrator.py` | Three-phase pipeline orchestration |
+| `scripts/run_all_channels_pipeline.py` | Multi-channel pipeline runner |
+| `config/grape-config.toml` | Configuration including storage quota |
+
+### RawArchiveConfig Parameters
+
+```python
+@dataclass
+class RawArchiveConfig:
+    output_dir: Path              # Root output directory
+    channel_name: str             # e.g., "WWV_10_MHz"
+    frequency_hz: float           # Center frequency
+    sample_rate: int = 20000      # Samples per second
+    station_config: Dict          # Callsign, grid, IDs
+    compression: str = 'gzip'     # 'gzip', 'lz4', 'zstd', 'none'
+    use_shuffle: bool = True      # HDF5 shuffle filter
+    file_duration_sec: int = 3600 # 1-hour files
+    max_file_size_bytes: int = 1GB
+    subdir_cadence_secs: int = 86400  # Daily directories
+```
+
+### Data Quality Tracking
+
+The `session_summary.json` includes:
+
+```json
+{
+  "session_id": "uuid",
+  "channel_name": "WWV_10_MHz",
+  "start_time_utc": "2025-12-03T00:00:00Z",
+  "end_time_utc": "2025-12-03T01:00:00Z",
+  "samples_written": 72000000,
+  "total_gap_samples": 0,
+  "files_written": 1,
+  "stream_health": {
+    "packets_received": 180000,
+    "packets_dropped": 0,
+    "packets_out_of_order": 0,
+    "sequence_errors": 0
+  },
+  "ntp_status": {
+    "synced": true,
+    "offset_ms": 0.123,
+    "stratum": 2
+  },
+  "data_quality": {
+    "samples_validated": 72000000,
+    "samples_with_nan": 0,
+    "samples_with_inf": 0,
+    "samples_clipped": 0,
+    "gaps_detected": 0,
+    "sample_integrity_ratio": 1.0
+  }
+}
+```
+
+### Storage Quota Management
+
+Total storage allocation for ALL channels with FIFO cleanup:
+
+```toml
+# grape-config.toml
+[recorder]
+storage_quota = "80%"    # Percentage of disk
+# storage_quota = "500GB"  # Or fixed size
+# storage_quota = "1TB"
+# storage_quota = "unlimited"
+```
+
+**Behavior:**
+- Manages all channels together (not per-channel)
+- FIFO removal: oldest date directories across all channels removed first
+- Safety: never removes current day's data
+- Audit log: `quota_removal_log.json` in output root
+
+### Running Phase 1
+
+```bash
+# All channels from config
+python scripts/run_all_channels_pipeline.py \
+    --config config/grape-config.toml \
+    --output /data/grape-archive
+
+# With storage quota override
+python scripts/run_all_channels_pipeline.py \
+    --config config/grape-config.toml \
+    --output /data/grape-archive \
+    --quota 500  # 500 GB total
+```
+
+---
+
+## 📋 PHASE 2: Analytical Engine (NEXT IMPLEMENTATION)
+
+### Overview
+
+Phase 2 processes the raw IQ archive to extract timing and propagation information. The core output is the **clock offset series**: the difference between receiver time and transmitter time.
+
+### Key Concept: Clock Offset (D_clock)
+
+```
+D_clock(t) = T_receiver(t) - T_transmitter(t)
+           = τ_propagation(t) + ε_clock(t) + noise(t)
+
+Where:
+  τ_propagation = ionospheric delay (varies with solar conditions)
+  ε_clock       = receiver clock error (should be ~0 if NTP-synced)
+  noise         = measurement noise
+```
+
+### Phase 2 Components (To Implement)
+
+1. **Clock Offset Engine** (`clock_offset_series.py`)
+   - Input: Raw IQ from Phase 1
+   - Process: Correlate with known WWV/WWVH/CHU timing patterns
+   - Output: D_clock(t) time series at ~1 Hz
+
+2. **Carrier Analysis** (`carrier_analyzer.py`)
+   - Amplitude envelope extraction
+   - Phase tracking and unwrapping
+   - Doppler shift estimation
+   - Signal quality metrics (SNR, fading rate)
+
+3. **Transmission Time Solver** (`transmission_time_solver.py`)
+   - Multi-frequency consensus
+   - Propagation mode identification (1-hop, 2-hop, etc.)
+   - UTC(NIST) back-calculation
+
+### Phase 2 Data Flow
+
+```
+Phase 1 Archive (Digital RF)
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Clock Offset Engine                                              │
+│   • Load 1-minute chunks of raw IQ                               │
+│   • Correlate with WWV tick template (1 PPS)                     │
+│   • Extract arrival time relative to system clock                │
+│   • D_clock = arrival_time - expected_utc_second                │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Carrier Analyzer                                                 │
+│   • Hilbert transform for analytic signal                        │
+│   • Instantaneous amplitude, phase, frequency                    │
+│   • Doppler = d(phase)/dt / (2π)                                │
+│   • Fading statistics                                            │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Transmission Time Solver                                         │
+│   • Combine D_clock from multiple frequencies                    │
+│   • Identify propagation mode from delay spread                  │
+│   • Calculate: T_transmit = T_receive - τ_propagation           │
+│   • Cross-validate WWV vs WWVH                                   │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+Phase 2 Output:
+  clock_offset/CHANNEL/YYYYMMDD/clock_offset_*.csv
+  carrier/CHANNEL/YYYYMMDD/carrier_*.csv
+```
+
+### Phase 2 Output Formats
+
+**Clock Offset CSV:**
+```csv
+timestamp_utc,d_clock_ms,confidence,snr_db,propagation_mode
+2025-12-03T00:00:01Z,4.523,0.95,25.3,1F2
+2025-12-03T00:00:02Z,4.518,0.94,24.8,1F2
+```
+
+**Carrier Analysis CSV:**
+```csv
+timestamp_utc,amplitude,phase_rad,doppler_hz,snr_db
+2025-12-03T00:00:00.000Z,0.0234,1.234,-0.5,28.3
+2025-12-03T00:00:00.100Z,0.0231,1.298,-0.4,27.9
+```
+
+### Phase 2 Directory Structure
+
+```
+output_dir/
+├── raw_archive/          # Phase 1 (input)
+│   └── CHANNEL/
+│       └── YYYYMMDD/
+│           └── drf_*.h5
+├── clock_offset/         # Phase 2 output
+│   └── CHANNEL/
+│       └── YYYYMMDD/
+│           └── clock_offset_HHMM.csv
+├── carrier/              # Phase 2 output
+│   └── CHANNEL/
+│       └── YYYYMMDD/
+│           └── carrier_HHMM.csv
+└── transmission_time/    # Phase 2 output
+    └── YYYYMMDD/
+        └── transmission_time.csv
+```
+
+### Existing Code to Leverage
+
+Phase 2 can build on existing discrimination/analysis code:
+
+| Existing | Reuse For |
+|----------|-----------|
+| `tone_detector.py` | Tick correlation, ToA extraction |
+| `wwvh_discrimination.py` | Station identification patterns |
+| `timing_metrics_writer.py` | CSV output format |
+| `global_station_voter.py` | Multi-channel consensus |
+| `propagation_mode_solver.py` | Mode identification |
+
+### Key Algorithms for Phase 2
+
+1. **Tick Detection** (for D_clock):
+   ```python
+   # Correlate with 5ms tick template
+   template = generate_tick_template(sample_rate=20000, duration_ms=5)
+   correlation = np.correlate(iq_samples, template, mode='same')
+   tick_indices = find_peaks(np.abs(correlation), distance=sample_rate)
+   ```
+
+2. **Doppler Extraction**:
+   ```python
+   # Instantaneous frequency from phase
+   analytic = scipy.signal.hilbert(np.real(iq_samples))
+   phase = np.unwrap(np.angle(analytic))
+   doppler_hz = np.diff(phase) * sample_rate / (2 * np.pi)
+   ```
+
+3. **Propagation Mode ID**:
+   ```python
+   # Delay spread indicates multipath
+   delay_spread_ms = np.std(tick_arrival_times)
+   if delay_spread_ms < 0.5:
+       mode = "1-hop"
+   elif delay_spread_ms < 1.5:
+       mode = "2-hop"
+   else:
+       mode = "multi-hop"
+   ```
+
+---
+
+## 🔮 PHASE 3: Derived Products (Future)
+
+Phase 3 produces final user-facing outputs:
+
+- **Decimated time series** (10 Hz for spectrograms)
+- **Station discrimination** (WWV vs WWVH vs CHU)
+- **Spectrograms** (daily PNG images)
+- **PSWS upload format** (CSV for community database)
+- **Timing dashboard data** (JSON for web UI)
+
+Most of this exists in current codebase (`analytics_service.py`, `decimation.py`, etc.) and will be integrated into Phase 3.
 
 ---
 
@@ -569,6 +922,60 @@ data/time_standard/
 ---
 
 ## Session History
+
+### Dec 3, 2025: Phase 1 Complete - Three-Phase Pipeline
+
+**Goal:** Implement Phase 1 of the three-phase pipeline architecture for bulletproof raw data capture.
+
+**Implemented:**
+
+1. **RawArchiveWriter** (`raw_archive_writer.py`)
+   - Digital RF output format (HDF5 with complex64 samples)
+   - Gzip compression with shuffle filter
+   - Hourly file splitting, daily directories
+   - NTP synchronization status tracking
+   - Data quality validation (NaN/Inf/clipping detection)
+   - Gap detection via RTP sequence tracking
+   - Comprehensive session summary metadata
+
+2. **PipelineOrchestrator** (`pipeline_orchestrator.py`)
+   - Three-phase coordination (Phase 2/3 stubbed)
+   - Configuration propagation to each phase
+   - Directory structure management
+
+3. **StorageQuotaManager** (`raw_archive_writer.py`)
+   - Flexible quota format: "500GB", "1TB", "80%", "unlimited"
+   - Total allocation for ALL channels (not per-channel)
+   - FIFO removal of oldest date directories
+   - Safety: never removes current day's data
+   - Audit log for all removals
+
+4. **Multi-Channel Runner** (`run_all_channels_pipeline.py`)
+   - Reads all channels from grape-config.toml
+   - Creates ka9q-python channels dynamically
+   - RTP packet handling with resequencing
+   - Periodic status reporting with quota enforcement
+   - Graceful shutdown with session summaries
+
+**Configuration:**
+```toml
+[recorder]
+storage_quota = "80%"  # or "500GB", "1TB", "unlimited"
+```
+
+**Key Design Decisions:**
+- System time (Unix epoch) as time reference, not RTP timestamps
+- NTP status logged but not used to correct timestamps
+- 32-bit float IQ (PT=111) from radiod
+- Storage quota manages ALL channels together
+
+**Files Created/Modified:**
+- `src/grape_recorder/grape/raw_archive_writer.py` - Complete rewrite
+- `src/grape_recorder/grape/pipeline_orchestrator.py` - New orchestrator
+- `scripts/run_all_channels_pipeline.py` - Multi-channel runner
+- `config/grape-config.toml` - Added storage_quota
+
+---
 
 ### Dec 2, 2025 (Evening): PPM-Corrected Timing & Sub-Sample Precision
 
