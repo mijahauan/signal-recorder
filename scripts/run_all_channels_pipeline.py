@@ -150,14 +150,23 @@ class ChannelPipeline:
                 # Payload type 111 = 32-bit float (F32), 97/120 = 16-bit int
                 try:
                     if header.payload_type in (97, 120):
-                        # 16-bit signed integer encoding
-                        samples_int16 = np.frombuffer(payload, dtype=np.int16)
+                        # 16-bit signed integer encoding (4 bytes per IQ sample)
+                        n_bytes = len(payload) - (len(payload) % 4)  # Align to 4 bytes
+                        samples_int16 = np.frombuffer(payload[:n_bytes], dtype=np.int16)
                         samples = samples_int16.astype(np.float32) / 32768.0
                     else:
                         # 32-bit float encoding (F32, payload_type 111)
-                        samples = np.frombuffer(payload, dtype=np.float32)
+                        # 8 bytes per IQ sample (4 bytes I + 4 bytes Q)
+                        n_bytes = len(payload) - (len(payload) % 8)  # Align to 8 bytes
+                        if n_bytes == 0:
+                            return
+                        samples = np.frombuffer(payload[:n_bytes], dtype=np.float32)
                     
-                    # Convert to complex
+                    # Convert to complex (ensure even number of samples)
+                    n_pairs = len(samples) // 2
+                    if n_pairs == 0:
+                        return
+                    samples = samples[:n_pairs * 2]
                     i_samples = samples[0::2]
                     q_samples = samples[1::2]
                     iq_samples = (i_samples + 1j * q_samples).astype(np.complex64)
@@ -168,10 +177,11 @@ class ChannelPipeline:
                     rtp_timestamp = header.timestamp
                     
                     # Feed to pipeline with actual RTP timestamp
+                    # NOTE: wallclock from RTPRecorder is NOT Unix time - use time.time()
                     self.orchestrator.process_samples(
                         samples=iq_samples,
                         rtp_timestamp=rtp_timestamp,
-                        system_time=wallclock if wallclock else time.time()
+                        system_time=time.time()
                     )
                     
                 except Exception as e:
