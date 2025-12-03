@@ -82,7 +82,7 @@ class ChannelPipeline:
         """Start the channel pipeline."""
         import numpy as np
         from grape_recorder.grape import PipelineConfig, PipelineOrchestrator
-        from ka9q import RTPRecorder, discover_channels, PacketResequencer, rtp_to_wallclock
+        from ka9q import RTPRecorder, discover_channels, PacketResequencer, rtp_to_wallclock, Encoding
         
         self.control = control
         
@@ -95,7 +95,10 @@ class ChannelPipeline:
                 preset='iq',
                 sample_rate=self.sample_rate
             )
-            logger.info(f"[{self.channel_desc}] SSRC: {self.ssrc}")
+            
+            # Set 32-bit float encoding for consistency with wider project
+            control.set_output_encoding(self.ssrc, Encoding.F32)
+            logger.info(f"[{self.channel_desc}] SSRC: {self.ssrc} (F32 encoding)")
             
             # Wait for channel to appear
             time.sleep(0.3)
@@ -142,11 +145,14 @@ class ChannelPipeline:
                 self.callbacks_received += 1
                 
                 # Decode payload to IQ samples
+                # Payload type 111 = 32-bit float (F32), 97/120 = 16-bit int
                 try:
-                    if header.payload_type in (120, 97):
+                    if header.payload_type in (97, 120):
+                        # 16-bit signed integer encoding
                         samples_int16 = np.frombuffer(payload, dtype=np.int16)
                         samples = samples_int16.astype(np.float32) / 32768.0
                     else:
+                        # 32-bit float encoding (F32, payload_type 111)
                         samples = np.frombuffer(payload, dtype=np.float32)
                     
                     # Convert to complex
