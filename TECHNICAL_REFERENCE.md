@@ -2,23 +2,26 @@
 
 **Quick reference for developers working on the GRAPE Signal Recorder.**
 
+**Author:** Michael James Hauan (AC0G)  
+**Last Updated:** December 2, 2025
+
 ---
 
 ## Current Operational Configuration
 
-**9 channels** monitoring 9 frequencies at 16 kHz IQ:
+**9 channels** monitoring 9 frequencies at 20 kHz IQ (config-driven):
 - **Shared frequencies (4):** 2.5, 5, 10, 15 MHz - WWV and WWVH both transmit
 - **WWV-only (2):** 20, 25 MHz
 - **CHU (3):** 3.33, 7.85, 14.67 MHz
 
 **Data products generated**:
-1. **16 kHz NPZ archives** - Complete scientific record with embedded metadata
+1. **20 kHz NPZ archives** - Complete scientific record with embedded metadata
 2. **10 Hz decimated NPZ** - For Digital RF conversion
 3. **Discrimination CSVs** - Per-method analysis (BCD, tones, ticks, 440Hz, test signals)
 4. **Digital RF HDF5** - Wsprdaemon-compatible format for PSWS upload
 5. **Timing metrics** - Time_snap quality, NTP drift tracking
 
-**Goal**: Archive raw 16 kHz IQ, generate 10 Hz Digital RF with metadata for PSWS upload, provide WWV/WWVH discrimination on 4 shared frequencies.
+**Goal**: Archive raw 20 kHz IQ, generate 10 Hz Digital RF with metadata for PSWS upload, provide WWV/WWVH discrimination on 4 shared frequencies.
 
 ---
 
@@ -32,12 +35,12 @@ Core Recorder (core_recorder.py → GrapeRecorder)
 ├─ GRAPE-specific: GrapeRecorder (two-phase: startup → recording)
 ├─ Startup tone detection (time_snap establishment)
 ├─ Gap detection & zero-filling
-└─ NPZ archive writing (960,000 samples/minute @ 16 kHz)
+└─ NPZ archive writing (1,200,000 samples/minute @ 20 kHz)
 
 Analytics Service (analytics_service.py) - per channel
 ├─ 12 voting methods (BCD, tones, ticks, 440Hz, test signals, FSS, etc.)
 ├─ Doppler estimation
-├─ Decimation (16 kHz → 10 Hz)
+├─ Decimation (20 kHz → 10 Hz)
 └─ Timing metrics
 
 DRF Batch Writer (drf_batch_writer.py)
@@ -65,45 +68,68 @@ utc = time_snap_utc + (rtp_ts - time_snap_rtp) / sample_rate
 
 ### 2. Sample Count Integrity
 
-**Invariant**: 16 kHz × 60 sec = 960,000 samples (exactly)
+**Invariant**: 20 kHz × 60 sec = 1,200,000 samples (exactly)
 
 - Gaps filled with zeros
 - Sample count never adjusted
 - Discontinuities logged for provenance
 
-### 3. Each Channel Has Independent RTP Clock
+### 3. Channels Share GPS Clock, Not RTP Origin
 
-**Cannot share time_snap between channels.** Each ka9q-radio stream has different RTP origin.
+Each ka9q-radio stream has a **different RTP timestamp origin** (arbitrary starting value):
 
 ```
 WWV 5 MHz:   RTP 304,122,240
-WWV 10 MHz:  RTP 302,700,560  ← 1.4M sample offset!
+WWV 10 MHz:  RTP 302,700,560  ← Different origin, but same clock rate
 ```
+
+**However**, all channels are driven by **the same GPS-disciplined master clock**. This means:
+- ❌ Cannot copy raw RTP timestamp values between channels
+- ✅ CAN share UTC anchor time across channels (the "master RTP ruler")
+- ✅ CAN use arrival time on one channel to predict arrival on another (within ionospheric dispersion)
+
+This is the foundation of **cross-channel coherent processing** - see [Timing Architecture](#timing-architecture).
 
 ### 4. Timing Quality > Rejection
 
 **Always upload, annotate quality.** No binary accept/reject.
 
-- GPS_LOCKED (±1ms): time_snap from WWV/CHU
+- TONE_LOCKED (±1ms): time_snap from WWV/CHU with PPM correction
 - NTP_SYNCED (±10ms): NTP fallback
-- INTERPOLATED: Aged time_snap
+- INTERPOLATED: Aged time_snap with drift compensation
 - WALL_CLOCK (±sec): Unsynchronized
+
+### 5. PPM-Corrected Timing
+
+**ADC clock drift compensation** for sub-sample precision:
+
+```python
+# Measure actual vs nominal sample rate
+ppm = ((rtp_elapsed / utc_elapsed) / nominal_rate - 1) * 1e6
+clock_ratio = 1 + ppm / 1e6
+
+# Apply correction
+elapsed_seconds = (rtp_ts - time_snap_rtp) / sample_rate * clock_ratio
+utc = time_snap_utc + elapsed_seconds
+```
+
+**Precision**: ±10-25 μs at 20 kHz with parabolic peak interpolation
 
 ---
 
 ## NPZ Archive Format
 
-**16 kHz Archive Fields** (self-contained scientific record):
+**20 kHz Archive Fields** (self-contained scientific record):
 
 ```python
 {
     # PRIMARY DATA
-    "iq": complex64[960000],              # Gap-filled IQ samples (60 sec @ 16 kHz)
+    "iq": complex64[1200000],             # Gap-filled IQ samples (60 sec @ 20 kHz)
     
     # TIMING REFERENCE
     "rtp_timestamp": uint32,              # RTP timestamp of iq[0]
     "rtp_ssrc": uint32,                   # RTP stream identifier
-    "sample_rate": int,                   # 16000 Hz
+    "sample_rate": int,                   # 20000 Hz (config-driven)
     
     # TIME_SNAP ANCHOR (embedded for self-contained files)
     "time_snap_rtp": uint32,              # RTP at timing anchor
@@ -185,21 +211,134 @@ payload = data[payload_offset:]
 
 ## Timing Architecture
 
+### Time Reference Hierarchy
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ 1. RTP TIMESTAMP (Primary Reference)                        │
+│    • GPS-disciplined via radiod                            │
+│    • 20 kHz sample rate (config-driven)                     │
+│    • Common reference across ALL channels                   │
+└──────────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────────┐
+│ 2. TIME_SNAP (GPS-Quality Anchor)                           │
+│    • WWV/CHU 1000 Hz tone at :00.000                       │
+│    • Sub-sample peak detection via parabolic interpolation │
+│    • PPM correction for ADC clock drift                    │
+│    • Precision: ±10-25 μs at 20 kHz                         │
+└──────────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────────┐
+│ 3. CROSS-CHANNEL COHERENT PROCESSING                        │
+│    • Global Station Lock across 9-12 frequencies            │
+│    • Ensemble anchor selection (best SNR wins)              │
+│    • Guided search: ±500 ms → ±3 ms (99.4% noise rejection)  │
+└──────────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────────┐
+│ 4. PRIMARY TIME STANDARD (HF Time Transfer)                 │
+│    • Back-calculate UTC(NIST) emission time                │
+│    • T_emit = T_arrival - (τ_geo + τ_iono + τ_mode)         │
+│    • Mode identification via quantized layer heights        │
+│    • Accuracy: ±10 ms → ±0.5 ms with full processing         │
+└──────────────────────────────────────────────────────────────┘
+```
+
 ### time_snap Mechanism
 
-**Purpose**: Anchor RTP to UTC via WWV/CHU tone detection.
+**Purpose**: Anchor RTP to UTC via WWV/CHU tone detection with PPM correction.
+
+```python
+# Basic time reconstruction
+utc = time_snap_utc + (rtp_ts - time_snap_rtp) / sample_rate
+
+# With PPM correction for ADC clock drift
+clock_ratio = 1 + ppm / 1e6
+utc = time_snap_utc + (rtp_ts - time_snap_rtp) / sample_rate * clock_ratio
+```
+
+**Accuracy Progression**:
+| Stage | Accuracy |
+|-------|----------|
+| Raw arrival time | ±10 ms |
+| + Tone detection | ±1 ms |
+| + PPM correction | ±25 μs |
+| + Mode identification | ±2 ms (emission) |
+| + Cross-channel consensus | ±0.5 ms (emission) |
+
+### Global Station Lock
+
+Because radiod's RTP timestamps are GPS-disciplined, all channels share a common "ruler". This enables treating 9-12 receivers as a **single coherent sensor array**.
+
+**The Physics**:
+```
+Frequency dispersion:     < 2-3 ms   (group delay between HF bands)
+Station separation:       15-20 ms  (WWV Colorado vs WWVH Hawaii)
+Discrimination margin:    ~5×       (dispersion << separation)
+```
+
+**Three-Phase Detection**:
+1. **Anchor Discovery** - Find high-confidence locks (SNR > 15 dB) across all channels
+2. **Guided Search** - Narrow search window from ±500 ms to ±3 ms using anchor (99.4% noise rejection)
+3. **Coherent Stacking** - Virtual channel with SNR improvement of 10·log₁₀(N) dB
+
+### Primary Time Standard (HF Time Transfer)
+
+Back-calculate emission time from GPS-locked arrival time:
 
 ```
-WWV 1000 Hz tone at :00.000
-↓
-Record RTP timestamp at detection
-↓
-Establish: time_snap_rtp = UTC minute boundary
-↓
-All samples: utc = time_snap_utc + (rtp - time_snap_rtp) / 16000
+T_emit = T_arrival - (τ_geo + τ_iono + τ_mode)
 ```
 
-**Accuracy**: ±1ms when fresh, degrades ~1ms/hour
+| Component | Description |
+|-----------|-------------|
+| T_arrival | GPS-disciplined RTP timestamp |
+| τ_geo | Great-circle speed-of-light delay |
+| τ_iono | Ionospheric group delay (frequency-dependent) |
+| τ_mode | Extra path from N ionospheric hops |
+
+**Propagation Mode Identification** (quantized by layer heights):
+
+| Mode | Typical Delay | Uncertainty |
+|------|---------------|-------------|
+| 1-hop E | 3.82 ms | ±0.20 ms |
+| 1-hop F2 | 4.26 ms | ±0.17 ms |
+| 2-hop F2 | 5.51 ms | ±0.33 ms |
+| 3-hop F2 | ~7.0 ms | ±0.50 ms |
+
+### PPM Correction Implementation
+
+```python
+class TimeSnapReference:
+    """Immutable timing anchor with PPM correction."""
+    rtp_timestamp: int       # RTP at anchor point
+    utc_timestamp: float     # UTC at anchor point  
+    sample_rate: int         # Nominal sample rate
+    ppm: float               # ADC clock drift in parts per million
+    ppm_confidence: float    # 0-1 confidence in PPM estimate
+    
+    @property
+    def clock_ratio(self) -> float:
+        return 1.0 + self.ppm / 1e6
+    
+    def calculate_sample_time(self, sample_rtp: int) -> float:
+        elapsed_samples = sample_rtp - self.rtp_timestamp
+        elapsed_seconds = elapsed_samples / self.sample_rate * self.clock_ratio
+        return self.utc_timestamp + elapsed_seconds
+    
+    def with_updated_ppm(self, new_ppm: float, confidence: float) -> 'TimeSnapReference':
+        # Exponential smoothing for stability
+        blended_ppm = self.ppm * (1 - confidence) + new_ppm * confidence
+        return TimeSnapReference(..., ppm=blended_ppm, ...)
+```
+
+**Tone-to-Tone PPM Measurement**:
+```python
+# Measure actual ADC clock vs nominal
+ppm = ((rtp_elapsed / utc_elapsed) / nominal_rate - 1) * 1e6
+# Typical values: ±50-200 ppm for consumer SDRs
+```
 
 ---
 
@@ -334,12 +473,32 @@ class GRAPEPaths {
 
 ## Configuration
 
-**File**: `config/grape-config.toml` (copy from `config/grape-config.toml.template`)
+### Environment-Based Configuration
+
+**Environment File** (single source of truth for paths):
+
+| Mode | Environment File | Data Root |
+|------|-----------------|-----------|
+| Test | `config/environment` | `/tmp/grape-test/` |
+| Production | `/etc/grape-recorder/environment` | `/var/lib/grape-recorder/` |
+
+```bash
+# Production environment file
+GRAPE_MODE=production
+GRAPE_DATA_ROOT=/var/lib/grape-recorder
+GRAPE_LOG_DIR=/var/log/grape-recorder
+GRAPE_CONFIG=/etc/grape-recorder/grape-config.toml
+GRAPE_VENV=/opt/grape-recorder/venv
+```
+
+### Config File
+
+**File**: `config/grape-config.toml` (or `/etc/grape-recorder/grape-config.toml` in production)
 
 ```toml
 [station]
-callsign = "W1ABC"
-grid_square = "FN31pr"
+callsign = "AC0G"
+grid_square = "EM38ww"
 
 [ka9q]
 status_address = "myhost-hf-status.local"  # mDNS name from radiod config
@@ -347,13 +506,13 @@ status_address = "myhost-hf-status.local"  # mDNS name from radiod config
 [recorder]
 mode = "test"                              # "test" or "production"
 test_data_root = "/tmp/grape-test"
-production_data_root = "/var/spool/grape-recorder"
+production_data_root = "/var/lib/grape-recorder"
+sample_rate = 20000                        # Config-driven (default 20 kHz)
 
 [[recorder.channels]]
 ssrc = 10000000
 frequency_hz = 10000000
 preset = "iq"
-sample_rate = 16000
 description = "WWV 10 MHz"
 enabled = true
 processor = "grape"
@@ -361,21 +520,51 @@ processor = "grape"
 
 ---
 
-## Startup
+## Installation & Startup
 
-**Beta Testing** (manual execution):
+### Using install.sh (Recommended)
+
 ```bash
-# Terminal 1: Core recorder
-cd ~/grape-recorder
-source venv/bin/activate
-python -m grape_recorder.grape_recorder --config config/grape-config.toml
+# Test mode (development)
+./scripts/install.sh --mode test
+./scripts/grape-all.sh -start
 
-# Terminal 2: Web UI
-cd ~/grape-recorder/web-ui
-npm start
+# Production mode (24/7 operation)
+sudo ./scripts/install.sh --mode production --user $USER
+sudo systemctl start grape-recorder grape-analytics grape-webui
+sudo systemctl enable grape-recorder grape-analytics grape-webui
 ```
 
-**Production** (post-beta): Will use systemd services in `systemd/` directory.
+### Manual Startup (Development)
+
+```bash
+cd ~/grape-recorder
+source venv/bin/activate
+python -m grape_recorder.grape.core_recorder --config config/grape-config.toml
+```
+
+### Production (systemd)
+
+```bash
+# Service control
+sudo systemctl start|stop|status grape-recorder
+sudo systemctl start|stop|status grape-analytics
+sudo systemctl start|stop|status grape-webui
+
+# View logs
+journalctl -u grape-recorder -f
+journalctl -u grape-analytics -f
+
+# Enable daily uploads
+sudo systemctl enable --now grape-upload.timer
+```
+
+### Directory Structure
+
+| Mode | Data | Logs | Config |
+|------|------|------|--------|
+| Test | `/tmp/grape-test/` | `/tmp/grape-test/logs/` | `config/` |
+| Production | `/var/lib/grape-recorder/` | `/var/log/grape-recorder/` | `/etc/grape-recorder/` |
 
 ---
 
@@ -385,7 +574,7 @@ npm start
 ka9q-radio (radiod)
     ↓ RTP multicast (mDNS discovery via ka9q-python)
 Core Recorder (grape_recorder.py)
-    ↓ 16 kHz NPZ archives with embedded metadata
+    ↓ 20 kHz NPZ archives with embedded metadata
     ↓ {data_root}/archives/{channel}/
 Analytics Service (per channel)
     ├→ Discrimination CSVs: analytics/{channel}/bcd_discrimination/
@@ -418,15 +607,33 @@ DRF Batch Writer
 - `stream_handle.py` - Opaque handle returned to applications
 
 ### GRAPE Application (`src/grape_recorder/grape/`)
+
+**Core Recording:**
 - `grape_recorder.py` - Two-phase recorder (startup → recording)
 - `grape_npz_writer.py` - SegmentWriter for NPZ output
 - `core_recorder.py` - Top-level GRAPE orchestration
 - `analytics_service.py` - NPZ watcher, 12-method processor
-- `wwvh_discrimination.py` - 12 voting methods, cross-validation
-- `tone_detector.py` - 1000/1200 Hz timing tones
+
+**Timing (Advanced):**
+- `time_snap_reference.py` - Immutable timing anchor with PPM correction
+- `ppm_estimator.py` - ADC clock drift measurement, exponential smoothing
+- `tone_detector.py` - 1000/1200 Hz timing tones with sub-sample peak detection
 - `startup_tone_detector.py` - Initial time_snap establishment
-- `decimation.py` - 16 kHz → 10 Hz (3-stage FIR)
+- `global_station_voter.py` - Cross-channel anchor tracking
+- `station_lock_coordinator.py` - Three-phase coherent detection
+- `propagation_mode_solver.py` - N-hop geometry, mode identification
+- `primary_time_standard.py` - UTC(NIST) back-calculation
+
+**Discrimination:**
+- `wwvh_discrimination.py` - 12 voting methods, cross-validation
 - `discrimination_csv_writers.py` - Per-method CSV output
+- `bcd_discriminator.py` - 100 Hz time code dual-peak detection
+- `tick_analyzer.py` - 5ms tick coherent/incoherent analysis
+- `test_signal_analyzer.py` - Minutes :08/:44 channel sounding
+
+**Processing:**
+- `decimation.py` - 20 kHz → 10 Hz (multi-stage CIC+FIR)
+- `doppler_estimator.py` - Per-tick frequency shift measurement
 
 ### WSPR Application (`src/grape_recorder/wspr/`)
 - `wspr_recorder.py` - Simple recorder for WSPR
@@ -448,7 +655,7 @@ DRF Batch Writer
 
 ## Dependencies
 
-**Python** (installed via `pip install -e .`):
+**Python 3.10+** (installed via `install.sh` or `pip install -e .`):
 - `ka9q-python` - Interface to ka9q-radio (from github.com/mijahauan/ka9q-python)
 - `numpy>=1.24.0` - Array operations
 - `scipy>=1.10.0` - Signal processing, decimation
@@ -457,17 +664,19 @@ DRF Batch Writer
 - `toml` - Configuration parsing
 - `soundfile` - Audio file I/O (compatibility)
 
-**Node.js** (for web-ui):
+**Node.js 18+** (for web-ui):
 - `express` - API server
 - `ws` - WebSocket support
 - See `web-ui/package.json` for full list
 
-**Installation**:
+**System**:
+- `avahi-utils` - mDNS resolution
+- `libhdf5-dev` - Required for digital_rf
+
+**Installation** (automated):
 ```bash
-cd ~/grape-recorder
-python3 -m venv venv
-source venv/bin/activate
-pip install -e .
+./scripts/install.sh --mode test      # Development
+sudo ./scripts/install.sh --mode production --user $USER  # Production
 ```
 
 ---
@@ -476,14 +685,15 @@ pip install -e .
 
 ### Verify Installation
 ```bash
-source venv/bin/activate
+source venv/bin/activate  # or /opt/grape-recorder/venv/bin/activate
 python3 -c "import digital_rf; print('Digital RF OK')"
 python3 -c "from ka9q import discover_channels; print('ka9q-python OK')"
+python3 -c "from grape_recorder.grape.time_snap_reference import TimeSnapReference; print('TimeSnapReference OK')"
 ```
 
 ### Test Recorder
 ```bash
-python -m grape_recorder.grape_recorder --config config/grape-config.toml
+./scripts/grape-all.sh -start
 # Should see: channel connections, NPZ file writes
 ```
 
@@ -491,6 +701,19 @@ python -m grape_recorder.grape_recorder --config config/grape-config.toml
 ```bash
 ls /tmp/grape-test/archives/WWV_10_MHz/*.npz
 # Should show timestamped NPZ files
+```
+
+### Verify Timing
+```bash
+python3 -c "
+import numpy as np
+from pathlib import Path
+f = sorted(Path('/tmp/grape-test/archives/WWV_10_MHz/').glob('*.npz'))[-1]
+d = np.load(f, allow_pickle=True)
+print(f'Time_snap source: {d[\"time_snap_source\"]}')
+print(f'PPM: {d.get(\"ppm\", \"N/A\")}')
+print(f'Clock ratio: {d.get(\"clock_ratio\", \"N/A\")}')
+"
 ```
 
 ---
@@ -587,14 +810,28 @@ sudo sysctl -w net.core.rmem_max=26214400
 ## Quality Metrics
 
 ### Timing Quality Levels
-- **TONE_LOCKED** (±1ms): time_snap from WWV/CHU startup tone
-- **NTP_SYNCED** (±10ms): NTP fallback
-- **WALL_CLOCK** (±seconds): Unsynchronized
+
+| Level | Accuracy | Source | Description |
+|-------|----------|--------|-------------|
+| **TONE_LOCKED** | ±25 μs | WWV/CHU tone + PPM | Sub-sample peak detection with ADC drift correction |
+| **TONE_LOCKED** | ±1 ms | WWV/CHU tone | Standard tone detection without PPM |
+| **NTP_SYNCED** | ±10 ms | System NTP | NTP fallback when no tone detected |
+| **INTERPOLATED** | ±1 ms/hr | Aged time_snap | Drifts ~1 ms/hour without refresh |
+| **WALL_CLOCK** | ±seconds | System clock | Unsynchronized, mark for reprocessing |
+
+### Cross-Channel Timing Quality
+
+| Metric | Target | Description |
+|--------|--------|-------------|
+| **Station Lock** | >90% channels | High-confidence tone detection across array |
+| **Anchor Consensus** | <1 ms spread | All channels agree on station arrival time |
+| **PPM Consistency** | <10 ppm | ADC drift should be stable across session |
 
 ### Data Completeness
-- Target: >99% samples received
-- Gaps: Zero-filled, logged in NPZ metadata
-- Packet loss: <1% healthy
+- **Target:** >99% samples received
+- **Gaps:** Zero-filled, logged in NPZ metadata
+- **Packet loss:** <1% healthy
+- **Completeness colors:** 🟢 ≥99% | 🟡 95-99% | 🔴 <95%
 
 ---
 
@@ -605,6 +842,7 @@ sudo sysctl -w net.core.rmem_max=26214400
 - `DIRECTORY_STRUCTURE.md` - Path conventions
 - `CANONICAL_CONTRACTS.md` - API standards
 - `INSTALLATION.md` - Setup guide
+- `docs/PRODUCTION.md` - Production deployment with systemd
 
 ### External
 - ka9q-radio: https://github.com/ka9q/ka9q-radio
@@ -613,39 +851,33 @@ sudo sysctl -w net.core.rmem_max=26214400
 
 ---
 
-**Version**: 3.1  
-**Last Updated**: December 1, 2025  
+**Version**: 2.2.0  
+**Last Updated**: December 2, 2025  
 **Purpose**: Technical reference for GRAPE Signal Recorder developers
 
-**v2.0.0 Release (Dec 1, 2025):**
+**v2.2.0 Release (Dec 2, 2025):**
+- **Unified Install Script** - `install.sh` for test/production modes
+- **FHS-Compliant Paths** - `/var/lib/grape-recorder/`, `/var/log/grape-recorder/`
+- **systemd Services** - Production-ready 24/7 operation
+- **Cross-Channel Coherent Timing** - Global Station Lock, ensemble anchor selection
+- **Primary Time Standard** - UTC(NIST) back-calculation from arrival time
+- **PPM Correction** - ADC clock drift compensation (±25 μs precision)
+- **Documentation Overhaul** - All root-level docs updated for consistency
+
+**v2.1.0 (Dec 1, 2025):**
 - **Package Restructure** - `core/`, `stream/`, `grape/`, `wspr/` packages
 - **Stream API** - SSRC-free `subscribe_stream()` interface
 - **ka9q-python 3.1.0** - Compatible SSRC allocation algorithm
-- **WSPR Demo** - Multi-application pipeline validation
+- **Sample Rate** - 20 kHz (was 16 kHz)
 
-**Previous Changes (Nov 30, 2025):**
+**v2.0.0 (Nov 30, 2025):**
 - **Generic Recording Infrastructure** - Protocol-based design for multi-app support
-  - `RecordingSession` - Generic RTP→segments manager
-  - `SegmentWriter` protocol - App-specific storage abstraction
-  - Transport timing (radiod GPS_TIME) vs Payload timing (app-specific)
-- **GRAPE Refactor** - Uses new infrastructure
-  - `GrapeRecorder` - Two-phase startup/recording
-  - `GrapeNPZWriter` - SegmentWriter implementation for NPZ
-  - `ChannelProcessor` removed (deprecated)
+- **GRAPE Refactor** - `GrapeRecorder`, `GrapeNPZWriter`
+- **12 Voting Methods** - FSS, noise coherence, spreading factor added
+- **Test Signal Channel Sounding** - Full exploitation of :08/:44 minutes
 
-**Previous Changes (Nov 29, 2025):**
-- 12 voting methods (was 8) - added FSS, noise coherence, spreading factor
-- 12 cross-validation checks (was 9)
-- Test signal fully exploited as channel sounding instrument:
-  - Frequency Selectivity Score (FSS) for geographic path validation
-  - Dual noise segment comparison for transient detection
-  - Chirp delay spread for multipath characterization
-  - Spreading Factor L = τ_D × f_D for channel physics
-
-**Previous Changes (Nov 28, 2025):**
-- 8 voting methods (was 6)
-- 9 cross-validation checks added
+**Previous (Nov 28-29, 2025):**
+- 12 cross-validation checks
 - 500/600 Hz weight boosted to 15 for exclusive minutes
-- Doppler vote changed to std ratio (independent of power)
-- Coherence quality check downgrades/boosts confidence
-- Harmonic signature validation (500→1000, 600→1200 Hz)
+- Doppler vote changed to std ratio
+- Coherence quality check, harmonic signature validation

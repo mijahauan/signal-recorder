@@ -1,5 +1,8 @@
 # GRAPE Signal Recorder - Installation Guide
 
+**Author:** Michael James Hauan (AC0G)  
+**Last Updated:** December 2, 2025
+
 Complete setup guide for installing and configuring the GRAPE signal recorder.
 
 ---
@@ -425,44 +428,72 @@ Open `http://<hostname>:3000` in your browser to see:
 
 ## Production Deployment
 
-> **Note:** Systemd-based deployment is planned for after beta testing. For now, run services manually in screen/tmux sessions.
+Production mode provides 24/7 operation with systemd services, automatic restart, and daily uploads.
 
-### Running in Background (Beta)
+### Quick Production Install
 
 ```bash
-# Terminal 1: Core recorder
-cd ~/signal-recorder
-source venv/bin/activate
-python -m signal_recorder.grape_recorder --config config/grape-config.toml
+# Run installer in production mode
+sudo ./scripts/install.sh --mode production --user $USER
 
-# Terminal 2: Web UI
-cd ~/signal-recorder/web-ui
-npm start
+# Edit configuration
+sudo nano /etc/grape-recorder/grape-config.toml
+
+# Start services
+sudo systemctl start grape-recorder grape-analytics grape-webui
+
+# Enable auto-start on boot
+sudo systemctl enable grape-recorder grape-analytics grape-webui
+
+# Enable daily uploads (after SSH key setup)
+sudo systemctl enable --now grape-upload.timer
 ```
 
-Or use `screen` or `tmux` to keep processes running after logout.
+### Production Directory Structure (FHS-Compliant)
 
-### Transitioning to Production Mode
+| Path | Purpose |
+|------|---------|
+| `/var/lib/grape-recorder/` | Data (archives, analytics) |
+| `/var/log/grape-recorder/` | Application logs |
+| `/etc/grape-recorder/` | Configuration |
+| `/opt/grape-recorder/` | Venv and Web UI |
 
-When ready to switch from test to production:
+### Service Management
 
-1. Edit `config/grape-config.toml`:
-   ```toml
-   [recorder]
-   mode = "production"  # Change from "test"
-   ```
+```bash
+# Check status
+sudo systemctl status grape-recorder grape-analytics grape-webui
 
-2. Create production directories:
-   ```bash
-   sudo mkdir -p /var/lib/signal-recorder
-   sudo chown -R $USER:$USER /var/lib/signal-recorder
-   ```
+# View logs
+journalctl -u grape-recorder -f
+journalctl -u grape-analytics -f
 
-3. Restart the recorder
+# Restart after config change
+sudo systemctl restart grape-recorder grape-analytics
+```
 
-### Future: systemd Services
+### Transitioning from Test Mode
 
-Systemd service files are in `systemd/` but not yet tested for general deployment. This will be addressed post-beta.
+If already running in test mode:
+
+```bash
+# Stop test services
+./scripts/grape-all.sh -stop
+
+# Run production installer
+sudo ./scripts/install.sh --mode production --user $USER
+
+# Copy your existing config
+sudo cp config/grape-config.toml /etc/grape-recorder/
+
+# Update mode in config
+sudo sed -i 's/mode = "test"/mode = "production"/' /etc/grape-recorder/grape-config.toml
+
+# Start production services
+sudo systemctl start grape-recorder grape-analytics grape-webui
+```
+
+**Full production deployment guide:** See [docs/PRODUCTION.md](docs/PRODUCTION.md)
 
 ---
 

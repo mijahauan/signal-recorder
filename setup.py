@@ -11,8 +11,8 @@ long_description = readme_file.read_text() if readme_file.exists() else ""
 
 setup(
     name="grape-recorder",
-    version="3.0.0",
-    author="Michael J. Hauan",
+    version="2.2.0",
+    author="Michael James Hauan AC0G",
     author_email="ac0g@hauan.org",
     description="GRAPE recorder for WWV/WWVH/CHU time standard signals via ka9q-radio",
     long_description=long_description,

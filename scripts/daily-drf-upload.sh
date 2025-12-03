@@ -10,26 +10,37 @@
 
 set -euo pipefail
 
-# Configuration (can be overridden via environment)
-CONFIG_FILE="${CONFIG_FILE:-/home/wsprdaemon/signal-recorder/config/grape-config.toml}"
-DATA_ROOT="${DATA_ROOT:-/tmp/grape-test}"  # Change to /var/lib/signal-recorder for production
-VENV_PATH="${VENV_PATH:-/home/wsprdaemon/signal-recorder/venv}"
-LOG_FILE="${LOG_FILE:-/tmp/grape-test/logs/daily-upload.log}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# PSWS upload settings
-SFTP_HOST="pswsnetwork.eng.ua.edu"
-SFTP_USER="S000171"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"  # SSH key for PSWS authentication
-BANDWIDTH_LIMIT="${BANDWIDTH_LIMIT:-0}"  # 0 = unlimited; set non-zero for ISP bandwidth constraints
+# Source common settings (includes environment file loading)
+source "$SCRIPT_DIR/common.sh"
 
-# Station info (from config)
-CALLSIGN="AC0G"
-GRID_SQUARE="EM38ww"
+# Configuration (from environment or fallback to defaults)
+CONFIG_FILE="${GRAPE_CONFIG:-$PROJECT_ROOT/config/grape-config.toml}"
+DATA_ROOT="${GRAPE_DATA_ROOT:-$(get_data_root "$CONFIG_FILE")}"
+VENV_PATH="${GRAPE_VENV:-$PROJECT_ROOT/venv}"
+LOG_DIR="${GRAPE_LOG_DIR:-$DATA_ROOT/logs}"
+LOG_FILE="${LOG_DIR}/daily-upload.log"
+
+# PSWS upload settings (can be overridden via environment)
+SFTP_HOST="${GRAPE_PSWS_HOST:-pswsnetwork.eng.ua.edu}"
+SFTP_USER="${GRAPE_PSWS_USER:-S000171}"
+SSH_KEY="${GRAPE_SSH_KEY:-$HOME/.ssh/id_rsa}"
+BANDWIDTH_LIMIT="${GRAPE_BANDWIDTH_LIMIT:-0}"
+
+# Station info - read from config file
+read_config_value() {
+    local key="$1"
+    local default="$2"
+    grep "^$key" "$CONFIG_FILE" 2>/dev/null | cut -d'"' -f2 || echo "$default"
+}
+
+CALLSIGN="${GRAPE_CALLSIGN:-$(read_config_value 'callsign' 'AC0G')}"
+GRID_SQUARE="${GRAPE_GRID_SQUARE:-$(read_config_value 'grid_square' 'EM38ww')}"
 RECEIVER_NAME="GRAPE"
-PSWS_STATION_ID="S000171"
-PSWS_INSTRUMENT_ID="172"
+PSWS_STATION_ID="${GRAPE_STATION_ID:-$(read_config_value 'id' 'S000171')}"
+PSWS_INSTRUMENT_ID="${GRAPE_INSTRUMENT_ID:-$(read_config_value 'instrument_id' '172')}"
 
 # Extended metadata flag (from config)
 INCLUDE_EXTENDED_METADATA="${INCLUDE_EXTENDED_METADATA:-false}"

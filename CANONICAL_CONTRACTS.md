@@ -1,8 +1,9 @@
 # GRAPE Canonical Contracts - Project Standards
 
+**Author:** Michael James Hauan (AC0G)  
 **Status:** MANDATORY - All code must follow these contracts  
 **Created:** 2025-11-20  
-**Updated:** 2025-11-30  
+**Updated:** 2025-12-02  
 **Purpose:** Single source of truth for project standards and references
 
 ---

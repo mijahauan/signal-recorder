@@ -1,71 +1,64 @@
 # GRAPE Recorder - AI Context Document
 
+**Author:** Michael James Hauan (AC0G)  
 **Last Updated:** 2025-12-02  
 **Version:** 2.2.0  
-**Status:** ✅ PPM-corrected timing with sub-sample precision. Ready for fresh installation support.
+**Status:** ✅ Production-ready with unified installer, systemd services, and daily PSWS uploads.
 
 ---
 
-## 🚀 Next Session: Fresh Installation with TEST/PRODUCTION Mode
+## ✅ COMPLETED: Fresh Installation with TEST/PRODUCTION Mode
 
-### Goal
-Enable grape-recorder to be installed fresh and run in either **TEST mode** (development, isolated paths) or **PRODUCTION mode** (system-wide, standard paths).
+### Implementation (Dec 2, 2025)
 
-### Key Requirements
+Created unified installation system supporting both TEST and PRODUCTION modes:
 
-1. **Mode Selection**
-   - Command-line flag: `--mode test|production`
-   - Environment variable: `GRAPE_MODE=test|production`
-   - Config file: `mode = "test"` in `grape-config.toml`
+1. **Installation Script:** `scripts/install.sh --mode test|production`
+   - Creates directories based on mode
+   - Sets up Python venv with all dependencies
+   - Installs systemd services (production only)
+   - Creates environment file for consistent paths
 
-2. **Path Separation**
+2. **Environment File:** `config/environment` (test) or `/etc/grape-recorder/environment` (production)
+   - Single source of truth for paths
+   - All scripts and systemd services source this file
+   - Variables: `GRAPE_MODE`, `GRAPE_DATA_ROOT`, `GRAPE_CONFIG`, `GRAPE_VENV`, etc.
+
+3. **Path Separation**
    ```
    TEST MODE:        /tmp/grape-test/{archives,analytics,logs,...}
-   PRODUCTION MODE:  /var/lib/grape/{archives,analytics,logs,...}
+   PRODUCTION MODE:  /var/lib/grape-recorder/{archives,analytics,logs,...}
    ```
 
-3. **Installation Script**
-   - `scripts/install.sh` - Creates directories, installs dependencies
-   - Should detect if radiod/ka9q-radio is available
-   - Should configure systemd services for production
+4. **Systemd Services (Production)**
+   - `grape-recorder.service` - Core RTP→NPZ recorder
+   - `grape-analytics.service` - Decimation, discrimination
+   - `grape-analytics@.service` - Template for per-channel
+   - `grape-webui.service` - Express web server
+   - `grape-upload.timer` - Daily 00:30 UTC upload trigger
+   - `grape-upload.service` - SFTP upload to PSWS
 
-4. **Key Files to Modify**
-   - `src/grape_recorder/paths.py` - `GRAPEPaths(mode='test'|'production')`
-   - `config/grape-config.toml` - Add `mode` setting
-   - `scripts/grape-all.sh` - Pass mode to all services
-   - `web-ui/grape-paths.js` - Mirror Python path logic
+5. **Documentation:** `docs/PRODUCTION.md` - Full production deployment guide
 
-5. **Systemd Integration (Production)**
-   - `systemd/grape-recorder.service`
-   - `systemd/grape-analytics@.service` (template for per-channel)
-   - `systemd/grape-webui.service`
+### Quick Start
 
-### Architecture Reference
+```bash
+# Test mode (development)
+./scripts/install.sh --mode test
+./scripts/grape-all.sh -start
 
+# Production mode (24/7 operation)
+sudo ./scripts/install.sh --mode production --user $USER
+sudo systemctl start grape-recorder grape-analytics grape-webui
+sudo systemctl enable grape-upload.timer
 ```
-Fresh Install Flow:
-┌─────────────────────────────────────────────────────────────────┐
-│ 1. Clone repo                                                    │
-│    git clone https://github.com/user/grape-recorder.git         │
-├─────────────────────────────────────────────────────────────────┤
-│ 2. Run installer                                                 │
-│    ./scripts/install.sh --mode production                        │
-│    - Creates venv, installs dependencies                         │
-│    - Creates /var/lib/grape directories                          │
-│    - Installs systemd services                                   │
-│    - Prompts for grape-config.toml settings                      │
-├─────────────────────────────────────────────────────────────────┤
-│ 3. Configure                                                     │
-│    Edit config/grape-config.toml:                                │
-│    - Set callsign, grid_square                                   │
-│    - Configure radiod connection                                 │
-│    - Define channels                                             │
-├─────────────────────────────────────────────────────────────────┤
-│ 4. Start                                                         │
-│    systemctl start grape-recorder  # Production                  │
-│    ./scripts/grape-all.sh -start   # Test mode                   │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+### Files Created/Modified
+- `scripts/install.sh` - Unified installer
+- `config/environment.template` - Environment file template
+- `scripts/common.sh` - Updated to source environment file
+- `scripts/daily-drf-upload.sh` - Updated to use environment
+- `docs/PRODUCTION.md` - Production deployment guide
 
 ---
 

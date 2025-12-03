@@ -1,6 +1,7 @@
 # GRAPE Signal Recorder - System Architecture
 
-**Last Updated:** November 30, 2025  
+**Last Updated:** December 2, 2025  
+**Author:** Michael James Hauan (AC0G)  
 **Status:** CANONICAL - Single source of truth for system design  
 **Version:** V3 (Generic Recording Infrastructure + Three-Service Architecture)
 
@@ -21,6 +22,11 @@ This document explains **WHY** the GRAPE system is designed the way it is. For *
 5. [Key Design Decisions](#key-design-decisions)
 6. [Data Flow](#data-flow)
 7. [Timing Architecture](#timing-architecture)
+   - [Time Reference Hierarchy](#time-reference-hierarchy)
+   - [Cross-Channel Coherent Timing](#cross-channel-coherent-timing)
+   - [Global Station Lock](#global-station-lock)
+   - [Primary Time Standard](#primary-time-standard-hf-time-transfer)
+   - [PPM-Corrected Timing](#ppm-corrected-timing)
 8. [WWV/WWVH Discrimination](#wwvwwvh-discrimination)
 9. [Directory Structure](#directory-structure)
 10. [Service Management](#service-management)
@@ -88,7 +94,7 @@ Core Recorder (Stable)  →  Analytics (Evolving)  →  Consumers (Flexible)
 
 ### 3. NPZ Archives Enable Reprocessability
 
-**Decision:** Archive raw 16 kHz IQ in NPZ format before any analytics.
+**Decision:** Archive raw 20 kHz IQ in NPZ format before any analytics.
 
 **Why?**
 - **Algorithm Evolution:** Improve tone detection without re-recording
@@ -101,7 +107,7 @@ Core Recorder (Stable)  →  Analytics (Evolving)  →  Consumers (Flexible)
 **Decision:** Decimate once to 10 Hz, store in NPZ, consume by multiple services.
 
 **Why?**
-- **Efficient Size:** 1600x smaller than 16 kHz (60 samples/min vs 960,000)
+- **Efficient Size:** 2000x smaller than 20 kHz (600 samples/min vs 1,200,000)
 - **Scientific Goal:** ±5 Hz Doppler window requires 10 Hz sampling
 - **Single Decimation:** Avoid repeated processing
 - **Embedded Metadata:** Timing quality travels with IQ data
@@ -267,9 +273,9 @@ class WsprRecorder:
 │                    CORE RECORDER SERVICE                        │
 │                   (Rock-Solid Archiving)                        │
 │                                                                 │
-│  Input:  ka9q-radio RTP multicast (16 kHz IQ)                 │
+│  Input:  ka9q-radio RTP multicast (20 kHz IQ)                 │
 │  Process: Resequencing + Gap Detection + Gap Fill              │
-│  Output:  {timestamp}_iq.npz (16 kHz, complete scientific      │
+│  Output:  {timestamp}_iq.npz (20 kHz, complete scientific      │
 │           record with RTP timestamps)                           │
 │  Location: archives/{channel}/                                  │
 │                                                                 │
@@ -287,7 +293,7 @@ class WsprRecorder:
 │                   ANALYTICS SERVICE (Per Channel)               │
 │         (Tone Detection + Quality + Discrimination + Decimate)  │
 │                                                                 │
-│  Input:  16 kHz NPZ files from Core Recorder                   │
+│  Input:  20 kHz NPZ files from Core Recorder                   │
 │  Process:                                                       │
 │    1. Tone Detection (WWV/WWVH/CHU @ 1000/1200 Hz)            │
 │    2. Time_snap Management (GPS-quality timestamp anchors)     │
@@ -298,7 +304,7 @@ class WsprRecorder:
 │       • Station ID (440 Hz tones minute 1=WWVH, 2=WWV)         │
 │       • BCD discrimination (100 Hz subcarrier analysis)        │
 │       • Weighted voting (final determination)                   │
-│    5. Decimation (16 kHz → 10 Hz with embedded metadata)      │
+│    5. Decimation (20 kHz → 10 Hz with embedded metadata)      │
 │                                                                 │
 │  Outputs:                                                       │
 │  • 10 Hz NPZ: analytics/{channel}/decimated/*_iq_10hz.npz     │
@@ -352,8 +358,8 @@ class WsprRecorder:
 - Nyquist: 10 Hz minimum sampling rate
 
 **Benefits:**
-- **Size:** 1600x smaller than 16 kHz
-  - 16 kHz: 960,000 samples/min = ~1.8 MB NPZ
+- **Size:** 2000x smaller than 20 kHz
+  - 20 kHz: 1,200,000 samples/min = ~2.3 MB NPZ
   - 10 Hz: 600 samples/min = ~1.2 KB NPZ
 - **Speed:** FFT processing 1600x faster
 - **Storage:** Enables long-term Doppler analysis
@@ -442,7 +448,7 @@ class WsprRecorder:
 ka9q-radio RTP
      ↓
 Core Recorder
-     ↓ (16 kHz NPZ)
+     ↓ (20 kHz NPZ)
 archives/{channel}/{timestamp}_iq.npz
      ↓
 Analytics Service (polls every 10s)
@@ -501,7 +507,7 @@ JSON Response → Chart.js plots
 ┌──────────────────────────────────────────────────────────────┐
 │ 1. RTP TIMESTAMP (Primary Reference)                        │
 │    • From ka9q-radio packets                                │
-│    • 16 kHz sample rate                                     │
+│    • 20 kHz sample rate (config-driven)                     │
 │    • Gaps = dropped packets (fill with zeros)               │
 │    • Sample count integrity paramount                        │
 └──────────────────────────────────────────────────────────────┘
@@ -538,6 +544,106 @@ JSON Response → Chart.js plots
 - ❌ System clock only: ±seconds, NTP jitter
 - ❌ RTP correlation: Proven unstable (1.2B sample std dev)
 - ❌ Interpolation only: Drift accumulates
+
+### Cross-Channel Coherent Timing
+
+Because radiod's RTP timestamps are GPS-disciplined, all channels share a common "ruler". This enables treating 9-12 receivers not as isolated collectors but as a **single coherent sensor array**.
+
+#### Global Station Lock
+
+**The Physics:**
+```
+Frequency dispersion:     < 2-3 ms   (group delay between HF bands)
+Station separation:       15-20 ms  (WWV Colorado vs WWVH Hawaii)
+Discrimination margin:    ~5×       (dispersion << separation)
+```
+
+**Three-Phase Detection:**
+
+```
+Phase 0: ANCHOR DISCOVERY
+┌─────────────────────────────────────────────────────────────────┐
+│ Scan all 9-12 channels using standard discrimination           │
+│ Find high-confidence locks (SNR > 15 dB)                       │
+│ Set anchor RTP timestamps: T_WWV, T_WWVH, T_CHU                │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+Phase 1: GUIDED SEARCH (Re-processing)
+┌─────────────────────────────────────────────────────────────────┐
+│ For weak channels (failed or low-confidence detection)         │
+│ Narrow search window from ±500 ms to ±3 ms using anchor        │
+│ 99.4% noise candidate rejection                                 │
+│ Weak correlations validated by anchor get boosted confidence   │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+Phase 2: COHERENT STACKING (Optional)
+┌─────────────────────────────────────────────────────────────────┐
+│ Global Correlation = Σ Correlation_f                           │
+│ Signal adds linearly (correlated across frequencies)           │
+│ Noise adds as √N (uncorrelated)                                 │
+│ Result: Virtual channel with SNR improvement of 10·log₁₀(N) dB │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Primary Time Standard (HF Time Transfer)
+
+By back-calculating emission time from GPS-locked arrival time and identified propagation mode, we transform from a **passive listener** into a **primary time standard** that verifies UTC(NIST).
+
+**The Equation:**
+```
+T_emit = T_arrival - (τ_geo + τ_iono + τ_mode)
+```
+
+| Component | Description |
+|-----------|-------------|
+| T_arrival | GPS-disciplined RTP timestamp |
+| τ_geo | Great-circle speed-of-light delay |
+| τ_iono | Ionospheric group delay (frequency-dependent) |
+| τ_mode | Extra path from N ionospheric hops |
+
+**Mode Identification** (quantized by layer heights):
+
+| Mode | Typical Delay | Uncertainty |
+|------|---------------|-------------|
+| 1-hop E | 3.82 ms | ±0.20 ms |
+| 1-hop F2 | 4.26 ms | ±0.17 ms |
+| 2-hop F2 | 5.51 ms | ±0.33 ms |
+| 3-hop F2 | ~7.0 ms | ±0.50 ms |
+
+**Accuracy Improvement:**
+| Method | Accuracy |
+|--------|----------|
+| Raw arrival time | ±10 ms |
+| + Mode identification | ±2 ms |
+| + Cross-channel consensus | ±1 ms |
+| + Cross-station verification | ±0.5 ms |
+
+#### PPM-Corrected Timing
+
+ADC clock drift compensation for sub-sample precision:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    PPM CORRECTION FEEDBACK LOOP                  │
+│                                                                  │
+│  Tone A (RTP₁, UTC₁) ──► Tone B (RTP₂, UTC₂)                   │
+│         │                         │                              │
+│         └────────┬────────────────┘                              │
+│                  ↓                                               │
+│    Tone-to-tone PPM = ((RTP₂-RTP₁)/(UTC₂-UTC₁)/rate - 1) × 10⁶ │
+│                  ↓                                               │
+│    TimeSnapReference.with_updated_ppm(ppm, confidence)          │
+│                  ↓                                               │
+│    calculate_sample_time() uses clock_ratio = 1 + ppm/10⁶      │
+│                  ↓                                               │
+│    Accurate UTC(NIST) back-calculation with drift compensation  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Features:**
+- **Sub-sample peak interpolation** - Parabolic fit for ±10-25 μs precision at 20 kHz
+- **Exponential smoothing** - Filters PPM estimates for stability
+- **Ensemble anchor selection** - Cross-channel voting for best time_snap source
 
 ---
 
@@ -695,7 +801,7 @@ See `DIRECTORY_STRUCTURE.md` for complete specification.
 **Summary:**
 ```
 {data_root}/
-├── archives/{channel}/          # Core Recorder (16 kHz NPZ)
+├── archives/{channel}/          # Core Recorder (20 kHz NPZ)
 ├── analytics/{channel}/
 │   ├── decimated/               # 10 Hz NPZ (pivot point)
 │   ├── digital_rf/              # DRF Writer output
@@ -731,10 +837,10 @@ See `DIRECTORY_STRUCTURE.md` for complete specification.
 ```
 Core Recorder
   Requires: ka9q-radio RTP stream
-  Provides: 16 kHz NPZ archives
+  Provides: 20 kHz NPZ archives
   
 Analytics Service
-  Requires: 16 kHz NPZ archives
+  Requires: 20 kHz NPZ archives
   Provides: 10 Hz NPZ + CSVs
   
 DRF Writer
@@ -783,7 +889,7 @@ Web UI
 ### Disk Usage
 
 **Per Channel (24 hours):**
-- Archives (16 kHz): ~2.6 GB/day (compressed NPZ)
+- Archives (20 kHz): ~3.3 GB/day (compressed NPZ)
 - Decimated (10 Hz): ~1.7 MB/day (compressed NPZ)
 - CSVs: ~5 MB/day (all methods combined)
 - Spectrograms: ~10 MB/day (PNG)
@@ -816,7 +922,7 @@ Web UI
 
 ### Core Recorder Crash
 
-**Impact:** Missing minutes in 16 kHz archives.
+**Impact:** Missing minutes in 20 kHz archives.
 
 **Detection:**
 - Gap in archive file timestamps
@@ -835,7 +941,7 @@ Web UI
 
 ### Analytics Service Crash
 
-**Impact:** Backlog of unprocessed 16 kHz files.
+**Impact:** Backlog of unprocessed 20 kHz files.
 
 **Detection:**
 - `analytics_state.json` not updating

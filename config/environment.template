@@ -1,0 +1,42 @@
+# GRAPE Recorder Environment Configuration
+# =========================================
+# Copy to /etc/grape-recorder/environment (production) or source directly (test)
+# All services and scripts source this file for consistent path management.
+
+# Mode: "test" or "production"
+# - test: Uses temporary directory, safe for development
+# - production: Uses permanent directory, systemd-managed, auto-restart
+GRAPE_MODE=test
+
+# Data root (set by install script based on mode)
+# - test: /tmp/grape-test
+# - production: /var/lib/grape-recorder
+GRAPE_DATA_ROOT=/tmp/grape-test
+
+# Log directory (FHS standard: /var/log/<app>/ for production)
+# - test: /tmp/grape-test/logs
+# - production: /var/log/grape-recorder
+GRAPE_LOG_DIR=/tmp/grape-test/logs
+
+# Configuration file location
+GRAPE_CONFIG=/home/wsprdaemon/grape-recorder/config/grape-config.toml
+
+# Python virtual environment
+GRAPE_VENV=/home/wsprdaemon/grape-recorder/venv
+
+# Web UI directory
+GRAPE_WEBUI=/home/wsprdaemon/grape-recorder/web-ui
+
+# Logging level (DEBUG, INFO, WARNING, ERROR)
+GRAPE_LOG_LEVEL=INFO
+
+# Station identification (read from config, but can override here)
+# GRAPE_CALLSIGN=AC0G
+# GRAPE_GRID_SQUARE=EM38ww
+# GRAPE_STATION_ID=S000171
+
+# PSWS Upload settings
+GRAPE_PSWS_HOST=pswsnetwork.eng.ua.edu
+GRAPE_PSWS_USER=S000171
+GRAPE_SSH_KEY=/home/wsprdaemon/.ssh/id_rsa
+GRAPE_UPLOAD_TIME=00:30

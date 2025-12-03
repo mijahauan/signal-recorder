@@ -508,5 +508,5 @@ The 5-method discrimination system provides:
 
 **Document Version:** 1.0  
 **Last Updated:** November 23, 2025  
-**Authors:** Michael Hauan/AC0G  
+**Authors:** Michael James Hauan/AC0G  
 **Related Docs:** `WWV_WWVH_DISCRIMINATION_METHODS.md`, `BCD_DISCRIMINATION_IMPLEMENTATION.md`

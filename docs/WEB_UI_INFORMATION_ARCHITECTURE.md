@@ -516,6 +516,6 @@ XLarge: 32px
 3. [Scientific Data Quality](WEB_UI_SCIENTIFIC_QUALITY.md) - Quality & provenance
 4. [Navigation & UX](WEB_UI_NAVIGATION_UX.md) - User experience
 
-**Maintainer:** Michael Hauan (AC0G)  
+**Maintainer:** Michael James Hauan (AC0G)  
 **Last Updated:** 2024-11-10 Evening  
 **Status:** Specification Complete - Ready for Implementation

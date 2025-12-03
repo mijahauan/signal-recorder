@@ -77,15 +77,32 @@ No installation needed - loaded from CDN:
 
 ## Installation Summary
 
-### Initial Setup
+### Recommended: Use Install Script
+
+```bash
+# Test mode (development)
+./scripts/install.sh --mode test
+
+# Production mode (24/7 operation)
+sudo ./scripts/install.sh --mode production --user $USER
+```
+
+The installer automatically:
+- Creates Python venv and installs all dependencies
+- Installs Web UI Node.js dependencies
+- Creates required directories
+- Installs systemd services (production mode)
+
+### Manual Setup (Alternative)
+
 ```bash
 # 1. System packages
-sudo apt-get install avahi-utils
+sudo apt-get install avahi-utils libhdf5-dev
 
 # 2. Python environment
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 
 # 3. Optional visualization tools
 pip install pandas matplotlib
@@ -109,7 +126,7 @@ cd web-ui && npm list
 
 ### Core Recording (Production)
 Minimal requirements:
-- Python 3.9+
+- Python 3.10+
 - numpy, scipy, toml
 - digital_rf
 - avahi-utils
@@ -117,7 +134,7 @@ Minimal requirements:
 ### Full System (Development)
 All dependencies including:
 - Visualization tools (pandas, matplotlib)
-- Web UI server (Node.js, express)
+- Web UI server (Node.js 18+, express)
 - Monitoring dashboard (Chart.js)
 
 ## Troubleshooting

@@ -1,7 +1,8 @@
 # GRAPE Directory Structure - Canonical Reference
 
+**Author:** Michael James Hauan (AC0G)  
 **Status:** CANONICAL - This is the single source of truth for all file paths  
-**Last Updated:** 2025-11-28  
+**Last Updated:** 2025-12-02  
 **Enforcement:** ALL code MUST use `src/grape_recorder/paths.py` GRAPEPaths API
 
 ---
@@ -15,26 +16,84 @@
 
 ---
 
+## Installation
+
+Use the unified installer to set up directories automatically:
+
+```bash
+# Test mode
+./scripts/install.sh --mode test
+
+# Production mode (FHS-compliant)
+sudo ./scripts/install.sh --mode production --user $USER
+```
+
+---
+
+## Directory Layout by Mode
+
+### Test Mode
+
+```
+/tmp/grape-test/                    # GRAPE_DATA_ROOT
+├── archives/                       # Raw 20 kHz NPZ
+├── analytics/                      # Derived products
+├── spectrograms/                   # Web UI images
+├── upload/                         # PSWS staging
+├── state/                          # Service state
+├── status/                         # Health status
+└── logs/                           # Application logs
+
+config/grape-config.toml            # Configuration
+config/environment                  # Environment variables
+```
+
+### Production Mode (FHS-Compliant)
+
+```
+/var/lib/grape-recorder/            # GRAPE_DATA_ROOT - Application data
+├── archives/                       # Raw 20 kHz NPZ
+├── analytics/                      # Derived products
+├── spectrograms/                   # Web UI images
+├── upload/                         # PSWS staging
+├── state/                          # Service state
+└── status/                         # Health status
+
+/var/log/grape-recorder/            # GRAPE_LOG_DIR - Application logs
+├── recorder.log
+├── analytics.log
+└── daily-upload.log
+
+/etc/grape-recorder/                # Configuration
+├── grape-config.toml
+└── environment
+
+/opt/grape-recorder/                # Application binaries
+├── venv/                           # Python virtual environment
+└── web-ui/                         # Node.js web interface
+```
+
+---
+
 ## Configuration
 
-From `config/grape-config.toml`:
+The mode is determined by the environment file or `grape-config.toml`:
 
 ```toml
 [recorder]
 mode = "test"                              # or "production"
 test_data_root = "/tmp/grape-test"
-production_data_root = "/var/spool/grape-recorder"  # Proposed for post-beta
+production_data_root = "/var/lib/grape-recorder"
 ```
 
-Current mode determines `data_root` for all paths below.
+Environment file (`/etc/grape-recorder/environment` or `config/environment`):
 
-**Beta Testing:** Use `mode = "test"` with `/tmp/grape-test/`.
-
-**Production Mode (Post-Beta):** Will adopt Linux standard directory structure:
-- `/etc/grape-recorder/` - Configuration files
-- `/var/log/grape-recorder/` - Log files  
-- `/usr/local/bin/` - Executables
-- `/var/spool/grape-recorder/` - Generated data and analytics
+```bash
+GRAPE_MODE=production
+GRAPE_DATA_ROOT=/var/lib/grape-recorder
+GRAPE_LOG_DIR=/var/log/grape-recorder
+GRAPE_CONFIG=/etc/grape-recorder/grape-config.toml
+```
 
 ---
 
@@ -43,14 +102,14 @@ Current mode determines `data_root` for all paths below.
 ```
 ${data_root}/
 │
-├── archives/                              # Raw IQ archives (16 kHz NPZ)
+├── archives/                              # Raw IQ archives (20 kHz NPZ)
 │   └── {CHANNEL}/                         # e.g., WWV_5_MHz, CHU_3_33_MHz
 │       └── YYYYMMDDTHHMMSSZ_{FREQ}_iq.npz
 │           # Example: 20251119T120000Z_5000000_iq.npz
 │           # Fields:
 │           #   iq (complex64)           - Gap-filled IQ samples
 │           #   rtp_timestamp            - RTP timestamp of first sample
-│           #   sample_rate              - 16000 Hz
+│           #   sample_rate              - 20000 Hz (config-driven)
 │           #   time_snap_rtp/utc/source - Timing anchor reference
 │           #   tone_power_1000/1200_hz_db - Tone powers for discrimination
 │           #   ntp_wall_clock_time      - Wall clock at minute boundary
