@@ -201,3 +201,32 @@ MAX_DISPERSION_MS = 3.0
 
 # Minimum WWV-WWVH time separation (ms)
 STATION_SEPARATION_MS = 15.0
+
+# =============================================================================
+# PROPAGATION PLAUSIBILITY BOUNDS (ms)
+# =============================================================================
+# 
+# These define the plausible range of propagation delays for each station.
+# Used to reject false detections outside reasonable ionospheric paths.
+#
+# Conservative bounds that should work for continental US receivers:
+# - Ground wave: ~3-7 ms/1000km
+# - 1-hop F: adds ~2-5 ms over ground wave
+# - Multi-hop: each additional hop adds ~2-3 ms
+#
+# Station                Distance (typical US)    Plausible delay range
+# ------                 --------------------     ---------------------
+# WWV (Fort Collins)     500-3000 km             3-25 ms
+# CHU (Ottawa)           1000-4000 km            5-30 ms  
+# WWVH (Hawaii)          4000-6000 km            15-50 ms
+
+# Propagation delay bounds by station (ms)
+# Format: (min_delay_ms, max_delay_ms)
+PROPAGATION_BOUNDS_MS = {
+    'WWV': (2.0, 35.0),    # Continental US to Fort Collins
+    'WWVH': (12.0, 60.0),  # Continental US to Hawaii (longer path)
+    'CHU': (3.0, 40.0),    # Continental US to Ottawa
+}
+
+# Default bounds for unknown stations
+DEFAULT_PROPAGATION_BOUNDS_MS = (0.0, 100.0)

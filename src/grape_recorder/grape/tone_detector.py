@@ -28,7 +28,9 @@ from ..interfaces.tone_detection import ToneDetector, MultiStationToneDetector a
 from ..interfaces.data_models import ToneDetectionResult, StationType
 from .wwv_constants import (
     WWV_ONLY_TONE_MINUTES,
-    WWVH_ONLY_TONE_MINUTES
+    WWVH_ONLY_TONE_MINUTES,
+    PROPAGATION_BOUNDS_MS,
+    DEFAULT_PROPAGATION_BOUNDS_MS
 )
 
 logger = logging.getLogger(__name__)
@@ -508,6 +510,19 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         
         # Calculate confidence (normalized correlation)
         confidence = min(1.0, peak_val / (noise_floor * 2.0))
+        
+        # PROPAGATION PLAUSIBILITY CHECK
+        # Reject detections outside reasonable ionospheric path delays
+        # This filters out interference peaks that happen to be stronger than the actual tone
+        station_name = station_type.value  # 'WWV', 'WWVH', 'CHU'
+        min_delay_ms, max_delay_ms = PROPAGATION_BOUNDS_MS.get(
+            station_name, DEFAULT_PROPAGATION_BOUNDS_MS
+        )
+        
+        if timing_error_ms < min_delay_ms or timing_error_ms > max_delay_ms:
+            logger.debug(f"  -> REJECTED (timing {timing_error_ms:+.1f}ms outside "
+                        f"plausible range [{min_delay_ms:.0f}, {max_delay_ms:.0f}]ms for {station_name})")
+            return None
         
         # Determine if this station should be used for time_snap
         # 
