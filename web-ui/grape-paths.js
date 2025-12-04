@@ -4,19 +4,35 @@
  * Centralized path management for GRAPE data structures.
  * MUST stay synchronized with Python implementation in src/grape_recorder/paths.py
  * 
- * Architecture:
+ * SYNC VERSION: 2025-12-04-v2-three-phase
+ * 
+ * Three-Phase Architecture:
  *   data_root/
- *   ├── archives/{CHANNEL}/                  - Raw 16 kHz NPZ files
- *   ├── analytics/{CHANNEL}/
- *   │   ├── decimated/                       - 10 Hz NPZ files (pre-DRF)
- *   │   ├── digital_rf/                      - Digital RF HDF5 files
- *   │   ├── discrimination/                  - WWV/WWVH analysis CSVs
- *   │   ├── quality/                         - Quality metrics CSVs
- *   │   ├── logs/                            - Processing logs
- *   │   └── status/                          - Runtime status
- *   ├── spectrograms/{YYYYMMDD}/             - PNG spectrograms
- *   ├── state/                               - Service persistence
- *   └── status/                              - System-wide status
+ *   ├── raw_archive/{CHANNEL}/               # PHASE 1: Immutable Raw Archive (DRF)
+ *   │   └── {YYYYMMDD}/
+ *   │       ├── {YYYY-MM-DDTHH}/
+ *   │       │   └── rf@{ts}.h5               # 20 kHz complex64 IQ
+ *   │       └── metadata/
+ *   │
+ *   ├── phase2/{CHANNEL}/                    # PHASE 2: Analytical Engine
+ *   │   ├── clock_offset/                    # D_clock(t) time series
+ *   │   ├── carrier_analysis/                # Amplitude, phase, Doppler
+ *   │   ├── discrimination/                  # WWV/WWVH per-minute
+ *   │   ├── tone_detections/                 # 1000/1200 Hz markers
+ *   │   └── state/
+ *   │
+ *   ├── products/{CHANNEL}/                  # PHASE 3: Derived Products
+ *   │   ├── decimated/                       # 10 Hz DRF time series
+ *   │   ├── spectrograms/                    # PNG images
+ *   │   └── psws_upload/                     # PSWS format files
+ *   │
+ *   ├── state/                               # Global state
+ *   ├── status/                              # System status (gpsdo_status.json, etc.)
+ *   │   ├── gpsdo_status.json                # GPSDO monitor state
+ *   │   └── timing_status.json               # Primary time reference
+ *   └── logs/
+ *   
+ * Legacy paths (archives/, analytics/) have been removed - using new three-phase architecture only.
  * 
  * Usage:
  *   import { GRAPEPaths, loadPathsFromConfig } from './grape-paths.js';
@@ -93,228 +109,103 @@ class GRAPEPaths {
     }
     
     // ========================================================================
-    // Archive Paths (Raw NPZ files)
+    // Phase 2 Analytics Paths (Per-channel analytical results)
+    // These methods provide convenient aliases to Phase 2 paths
     // ========================================================================
     
     /**
-     * Get archive directory for a channel.
-     * 
-     * @param {string} channelName - Channel name (e.g., "WWV 10 MHz")
-     * @returns {string} Path: {data_root}/archives/{CHANNEL}/
-     */
-    getArchiveDir(channelName) {
-        const channelDir = channelNameToDir(channelName);
-        return join(this.dataRoot, 'archives', channelDir);
-    }
-    
-    /**
-     * Get path for a specific archive NPZ file.
+     * Get discrimination directory (WWV/WWVH per-minute analysis).
      * 
      * @param {string} channelName - Channel name
-     * @param {string} timestamp - ISO timestamp (YYYYMMDDTHHMMSZ)
-     * @param {number} frequencyHz - Frequency in Hz
-     * @returns {string} Path: {data_root}/archives/{CHANNEL}/{timestamp}_{freq}_iq.npz
-     */
-    getArchiveFile(channelName, timestamp, frequencyHz) {
-        const archiveDir = this.getArchiveDir(channelName);
-        return join(archiveDir, `${timestamp}_${frequencyHz}_iq.npz`);
-    }
-    
-    // ========================================================================
-    // Analytics Paths (Per-channel products)
-    // ========================================================================
-    
-    /**
-     * Get analytics directory for a channel.
-     * 
-     * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/
-     */
-    getAnalyticsDir(channelName) {
-        const channelDir = channelNameToDir(channelName);
-        return join(this.dataRoot, 'analytics', channelDir);
-    }
-    
-    /**
-     * Get Digital RF directory for a channel.
-     * 
-     * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/digital_rf/
-     */
-    getDigitalRFDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'digital_rf');
-    }
-    
-    /**
-     * Get discrimination directory (final weighted voting results).
-     * 
-     * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/discrimination/
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/discrimination/
      */
     getDiscriminationDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'discrimination');
+        return join(this.getPhase2Dir(channelName), 'discrimination');
     }
     
     /**
      * Get tone detections directory (1000/1200 Hz timing tones).
      * 
      * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/tone_detections/
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/tone_detections/
      */
     getToneDetectionsDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'tone_detections');
+        return join(this.getPhase2Dir(channelName), 'tone_detections');
     }
     
     /**
-     * Get tick windows directory (5ms tick analysis, 10-sec coherent integration).
+     * Get carrier analysis directory (amplitude, phase, Doppler).
      * 
      * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/tick_windows/
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/carrier_analysis/
      */
-    getTickWindowsDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'tick_windows');
-    }
-    
-    /**
-     * Get 440 Hz station ID directory.
-     * 
-     * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/station_id_440hz/
-     */
-    getStationId440HzDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'station_id_440hz');
-    }
-    
-    /**
-     * Get BCD discrimination directory (100 Hz subcarrier analysis).
-     * 
-     * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/bcd_discrimination/
-     */
-    getBcdDiscriminationDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'bcd_discrimination');
-    }
-    
-    /**
-     * Get test signal directory (minutes 8 and 44 scientific modulation test).
-     * 
-     * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/test_signal/
-     */
-    getTestSignalDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'test_signal');
-    }
-    
-    /**
-     * Get Doppler estimation directory (ionospheric channel characterization).
-     * 
-     * Contains per-minute Doppler shift estimates derived from tick phase tracking:
-     * - Instantaneous Doppler shift (Δf_D) for WWV and WWVH
-     * - Maximum coherent integration window (T_c)
-     * - Doppler quality metrics
-     * 
-     * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/doppler/
-     */
-    getDopplerDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'doppler');
+    getCarrierAnalysisDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'carrier_analysis');
     }
     
     /**
      * Get timing metrics directory (time_snap status, drift, transitions).
      * 
      * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/timing/
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/timing/
      */
     getTimingDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'timing');
+        return join(this.getPhase2Dir(channelName), 'timing');
     }
     
     /**
-     * Get quality metrics directory.
+     * Get Phase 2 state directory (per-channel state files).
      * 
      * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/quality/
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/state/
      */
-    getQualityDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'quality');
+    getPhase2StateDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'state');
     }
     
     /**
-     * Get decimated NPZ directory (10 Hz NPZ files before DRF conversion).
+     * Get decimated data directory (10 Hz DRF from Phase 3 products).
      * 
      * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/decimated/
+     * @returns {string} Path: {data_root}/products/{CHANNEL}/decimated/
      */
     getDecimatedDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'decimated');
+        return this.getProductsDecimatedDir(channelName);
     }
     
     /**
-     * Get analytics logs directory.
+     * Get channel status file (per-channel status in Phase 2).
      * 
      * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/logs/
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/state/channel-status.json
      */
-    getAnalyticsLogsDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'logs');
-    }
-    
-    /**
-     * Get analytics status directory.
-     * 
-     * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/status/
-     */
-    getAnalyticsStatusDir(channelName) {
-        return join(this.getAnalyticsDir(channelName), 'status');
-    }
-    
-    /**
-     * Get analytics status file for a channel.
-     * 
-     * @param {string} channelName - Channel name
-     * @returns {string} Path: {data_root}/analytics/{CHANNEL}/status/analytics-service-status.json
-     */
-    getAnalyticsStatusFile(channelName) {
-        return join(this.getAnalyticsStatusDir(channelName), 'analytics-service-status.json');
+    getChannelStatusFile(channelName) {
+        return join(this.getPhase2StateDir(channelName), 'channel-status.json');
     }
     
     // ========================================================================
-    // Spectrogram Paths (Web UI)
+    // Spectrogram Paths (from Phase 3 Products)
     // ========================================================================
     
     /**
-     * Get spectrograms root directory.
-     * 
-     * @returns {string} Path: {data_root}/spectrograms/
-     */
-    getSpectrogramsRoot() {
-        return join(this.dataRoot, 'spectrograms');
-    }
-    
-    /**
-     * Get spectrograms directory for a specific date.
-     * 
-     * @param {string} date - Date in YYYYMMDD format
-     * @returns {string} Path: {data_root}/spectrograms/{YYYYMMDD}/
-     */
-    getSpectrogramsDateDir(date) {
-        return join(this.getSpectrogramsRoot(), date);
-    }
-    
-    /**
-     * Get path for a specific spectrogram PNG.
+     * Get spectrogram path for a channel (from products directory).
      * 
      * @param {string} channelName - Channel name
      * @param {string} date - Date in YYYYMMDD format
-     * @param {string} specType - Type ('decimated', 'archive', etc.) - decimated = from 10 Hz NPZ
-     * @returns {string} Path: {data_root}/spectrograms/{YYYYMMDD}/{CHANNEL}_{YYYYMMDD}_{type}_spectrogram.png
+     * @returns {string} Path: {data_root}/products/{CHANNEL}/spectrograms/{YYYYMMDD}_spectrogram.png
      */
-    getSpectrogramPath(channelName, date, specType = 'decimated') {
-        const channelDir = channelNameToDir(channelName);
-        const filename = `${channelDir}_${date}_${specType}_spectrogram.png`;
-        return join(this.getSpectrogramsDateDir(date), filename);
+    getSpectrogramPath(channelName, date) {
+        return join(this.getProductsSpectrogramsDir(channelName), `${date}_spectrogram.png`);
+    }
+    
+    /**
+     * Get spectrograms directory for a channel.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/products/{CHANNEL}/spectrograms/
+     */
+    getSpectrogramsDir(channelName) {
+        return this.getProductsSpectrogramsDir(channelName);
     }
     
     // ========================================================================
@@ -374,24 +265,204 @@ class GRAPEPaths {
         return join(this.getStatusDir(), 'analytics-service-status.json');
     }
     
+    /**
+     * Get GPSDO monitor status file.
+     * Written by analytics service GPSDOMonitor, read by web-ui.
+     * 
+     * @returns {string} Path: {data_root}/status/gpsdo_status.json
+     */
+    getGpsdoStatusFile() {
+        return join(this.getStatusDir(), 'gpsdo_status.json');
+    }
+    
+    /**
+     * Get timing status file (primary time reference).
+     * Written by analytics service, read by web-ui.
+     * 
+     * @returns {string} Path: {data_root}/status/timing_status.json
+     */
+    getTimingStatusFile() {
+        return join(this.getStatusDir(), 'timing_status.json');
+    }
+    
+    // ========================================================================
+    // PHASE 1: RAW ARCHIVE (Immutable Digital RF)
+    // ========================================================================
+    
+    /**
+     * Get raw archive root directory.
+     * 
+     * @returns {string} Path: {data_root}/raw_archive/
+     */
+    getRawArchiveRoot() {
+        return join(this.dataRoot, 'raw_archive');
+    }
+    
+    /**
+     * Get raw archive directory for a channel.
+     * 
+     * @param {string} channelName - Channel name (e.g., "WWV 10 MHz")
+     * @returns {string} Path: {data_root}/raw_archive/{CHANNEL}/
+     */
+    getRawArchiveDir(channelName) {
+        const channelDir = channelNameToDir(channelName);
+        return join(this.getRawArchiveRoot(), channelDir);
+    }
+    
+    // ========================================================================
+    // PHASE 2: ANALYTICAL ENGINE
+    // ========================================================================
+    
+    /**
+     * Get Phase 2 root directory.
+     * 
+     * @returns {string} Path: {data_root}/phase2/
+     */
+    getPhase2Root() {
+        return join(this.dataRoot, 'phase2');
+    }
+    
+    /**
+     * Get Phase 2 directory for a channel.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/
+     */
+    getPhase2Dir(channelName) {
+        const channelDir = channelNameToDir(channelName);
+        return join(this.getPhase2Root(), channelDir);
+    }
+    
+    /**
+     * Get clock offset series directory (D_clock time series).
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/clock_offset/
+     */
+    getClockOffsetDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'clock_offset');
+    }
+    
+    /**
+     * Get Phase 2 discrimination directory.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/discrimination/
+     */
+    getPhase2DiscriminationDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'discrimination');
+    }
+    
+    // ========================================================================
+    // PHASE 3: DERIVED PRODUCTS
+    // ========================================================================
+    
+    /**
+     * Get products root directory.
+     * 
+     * @returns {string} Path: {data_root}/products/
+     */
+    getProductsRoot() {
+        return join(this.dataRoot, 'products');
+    }
+    
+    /**
+     * Get products directory for a channel.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/products/{CHANNEL}/
+     */
+    getProductsDir(channelName) {
+        const channelDir = channelNameToDir(channelName);
+        return join(this.getProductsRoot(), channelDir);
+    }
+    
+    /**
+     * Get Phase 3 decimated directory (10 Hz DRF).
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/products/{CHANNEL}/decimated/
+     */
+    getProductsDecimatedDir(channelName) {
+        return join(this.getProductsDir(channelName), 'decimated');
+    }
+    
+    /**
+     * Get Phase 3 spectrograms directory.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/products/{CHANNEL}/spectrograms/
+     */
+    getProductsSpectrogramsDir(channelName) {
+        return join(this.getProductsDir(channelName), 'spectrograms');
+    }
+    
     // ========================================================================
     // Discovery Methods
     // ========================================================================
     
     /**
-     * Discover all channels with archive data.
+     * Discover all channels with raw archive data (Phase 1).
      * 
      * @returns {string[]} List of channel names (human-readable format)
      */
     discoverChannels() {
-        const archivesDir = join(this.dataRoot, 'archives');
+        const rawArchiveDir = this.getRawArchiveRoot();
         
-        if (!existsSync(archivesDir)) {
+        if (!existsSync(rawArchiveDir)) {
             return [];
         }
         
         const channels = [];
-        const entries = readdirSync(archivesDir, { withFileTypes: true });
+        const entries = readdirSync(rawArchiveDir, { withFileTypes: true });
+        
+        for (const entry of entries) {
+            if (entry.isDirectory()) {
+                channels.push(dirToChannelName(entry.name));
+            }
+        }
+        
+        return channels.sort();
+    }
+    
+    /**
+     * Discover all channels with Phase 2 analytical data.
+     * 
+     * @returns {string[]} List of channel names (human-readable format)
+     */
+    discoverPhase2Channels() {
+        const phase2Dir = this.getPhase2Root();
+        
+        if (!existsSync(phase2Dir)) {
+            return [];
+        }
+        
+        const channels = [];
+        const entries = readdirSync(phase2Dir, { withFileTypes: true });
+        
+        for (const entry of entries) {
+            if (entry.isDirectory()) {
+                channels.push(dirToChannelName(entry.name));
+            }
+        }
+        
+        return channels.sort();
+    }
+    
+    /**
+     * Discover all channels with Phase 3 products.
+     * 
+     * @returns {string[]} List of channel names (human-readable format)
+     */
+    discoverProductChannels() {
+        const productsDir = this.getProductsRoot();
+        
+        if (!existsSync(productsDir)) {
+            return [];
+        }
+        
+        const channels = [];
+        const entries = readdirSync(productsDir, { withFileTypes: true });
         
         for (const entry of entries) {
             if (entry.isDirectory()) {

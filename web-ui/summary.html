@@ -76,6 +76,53 @@
       color: white;
     }
     
+    /* GPSDO Status Badge */
+    .gpsdo-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 16px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    
+    .gpsdo-badge.locked {
+      background: var(--success);
+      color: white;
+    }
+    
+    .gpsdo-badge.holdover {
+      background: var(--warning);
+      color: white;
+      animation: pulse-warn 2s infinite;
+    }
+    
+    .gpsdo-badge.startup,
+    .gpsdo-badge.unanchored {
+      background: var(--error);
+      color: white;
+    }
+    
+    @keyframes pulse-warn {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+    
+    .gpsdo-badge-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    
+    .gpsdo-info {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+    
     /* Process Status */
     .process-list {
       display: flex;
@@ -438,7 +485,44 @@
     }
     
     // Render station info
-    function renderStationInfo(station) {
+    function renderStationInfo(station, gpsdoStatus) {
+      // Build GPSDO status badge
+      let gpsdoBadgeHtml = '';
+      if (gpsdoStatus && gpsdoStatus.available) {
+        const badgeClass = gpsdoStatus.quality_flag.toLowerCase();
+        const stateIcon = gpsdoStatus.anchor_state === 'STEADY_STATE' ? '✓' :
+                         gpsdoStatus.anchor_state === 'HOLDOVER' ? '⚠' : '⟳';
+        const minutesText = gpsdoStatus.minutes_since_anchor > 0 
+          ? `${gpsdoStatus.minutes_since_anchor} min stable`
+          : 'Initializing...';
+        
+        gpsdoBadgeHtml = `
+          <div class="info-item">
+            <div class="info-label">GPSDO Anchor</div>
+            <div class="info-value">
+              <span class="gpsdo-badge ${badgeClass}">
+                <span class="gpsdo-badge-dot"></span>
+                ${stateIcon} ${gpsdoStatus.quality_flag}
+              </span>
+            </div>
+            <div class="gpsdo-info">${minutesText}</div>
+          </div>
+        `;
+      } else {
+        gpsdoBadgeHtml = `
+          <div class="info-item">
+            <div class="info-label">GPSDO Anchor</div>
+            <div class="info-value">
+              <span class="gpsdo-badge startup">
+                <span class="gpsdo-badge-dot"></span>
+                ⟳ STARTUP
+              </span>
+            </div>
+            <div class="gpsdo-info">Waiting for anchor...</div>
+          </div>
+        `;
+      }
+      
       return `
         <div class="section">
           <div class="section-title">Station Information</div>
@@ -455,6 +539,7 @@
               <div class="info-label">Grid Square</div>
               <div class="info-value">${station.grid_square}</div>
             </div>
+            ${gpsdoBadgeHtml}
             <div class="info-item">
               <div class="info-label">Receiver</div>
               <div class="info-value">${station.receiver}</div>
@@ -699,11 +784,17 @@
     // Fetch and render summary
     async function updateSummary() {
       try {
-        const response = await fetch('/api/v1/summary');
-        const data = await response.json();
+        // Fetch summary and GPSDO status in parallel
+        const [summaryResponse, gpsdoResponse] = await Promise.all([
+          fetch('/api/v1/summary'),
+          fetch('/api/v1/gpsdo-status').catch(() => null)
+        ]);
+        
+        const data = await summaryResponse.json();
+        const gpsdoStatus = gpsdoResponse ? await gpsdoResponse.json().catch(() => null) : null;
         
         // Render station info to its own panel (above timing status)
-        document.getElementById('stationInfo').innerHTML = renderStationInfo(data.station);
+        document.getElementById('stationInfo').innerHTML = renderStationInfo(data.station, gpsdoStatus);
         
         let html = '';
         html += '<div class="section">';

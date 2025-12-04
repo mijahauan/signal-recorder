@@ -4,6 +4,9 @@ GRAPE Path Specification - Three-Phase Pipeline Architecture
 This module provides the canonical path structure for all GRAPE data.
 ALL producers and consumers MUST use these functions to avoid path mismatches.
 
+SYNC VERSION: 2025-12-04-v2-three-phase
+Must stay synchronized with web-ui/grape-paths.js
+
 Three-Phase Architecture:
 
     data_root/
@@ -457,6 +460,24 @@ class GRAPEPaths:
         Returns: {data_root}/status/analytics-service-status.json
         """
         return self.get_status_dir() / 'analytics-service-status.json'
+    
+    def get_gpsdo_status_file(self) -> Path:
+        """Get GPSDO monitor status file.
+        
+        Written by analytics service GPSDOMonitor, read by web-ui.
+        
+        Returns: {data_root}/status/gpsdo_status.json
+        """
+        return self.get_status_dir() / 'gpsdo_status.json'
+    
+    def get_timing_status_file(self) -> Path:
+        """Get timing status file (primary time reference).
+        
+        Written by analytics service, read by web-ui.
+        
+        Returns: {data_root}/status/timing_status.json
+        """
+        return self.get_status_dir() / 'timing_status.json'
     
     # ========================================================================
     # Discovery Methods

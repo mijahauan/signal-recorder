@@ -827,14 +827,16 @@ async function getStorageInfo(paths) {
 }
 
 /**
- * Get gap analysis data from 10Hz decimated NPZ files
+ * Get gap analysis data from 10Hz decimated DRF files
  * Calculates coverage based on which minutes have files vs missing
  * This matches what the spectrogram shows (black bars = missing files)
+ * 
+ * Phase 3 products path: products/{CHANNEL}/decimated/
  */
 async function getGapAnalysis(paths, date, channelFilter = 'all') {
-  const analyticsRoot = join(paths.dataRoot, 'analytics');
+  const productsRoot = paths.getProductsRoot();
   
-  if (!fs.existsSync(analyticsRoot)) {
+  if (!fs.existsSync(productsRoot)) {
     return {
       date, channel_filter: channelFilter, total_gaps: 0,
       total_gap_minutes: 0, completeness_pct: 0, longest_gap_minutes: 0,
@@ -842,14 +844,14 @@ async function getGapAnalysis(paths, date, channelFilter = 'all') {
     };
   }
   
-  // Build Python script to analyze file coverage from decimated 10Hz files
+  // Build Python script to analyze file coverage from decimated 10Hz DRF files
   const pythonScript = `
 import os
 import json
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-analytics_root = '${analyticsRoot}'
+products_root = '${productsRoot}'
 date_prefix = '${date}'
 channel_filter = '${channelFilter}'.replace('_', ' ')
 
@@ -871,10 +873,10 @@ else:
 if total_expected_minutes == 0:
     total_expected_minutes = 1  # Avoid division by zero
 
-# Find all channel decimated directories
+# Find all channel decimated directories in Phase 3 products
 channels_to_check = []
-for channel_dir in os.listdir(analytics_root):
-    channel_path = os.path.join(analytics_root, channel_dir, 'decimated')
+for channel_dir in os.listdir(products_root):
+    channel_path = os.path.join(products_root, channel_dir, 'decimated')
     if not os.path.isdir(channel_path):
         continue
     
@@ -1274,27 +1276,27 @@ async function getChannelStatuses(paths) {
  * All channels are now 16 kHz wide channels with WWV/CHU tone detection
  */
 async function getCarrierQuality(paths, date) {
-  const channels = paths.discoverChannels();
+  // Use Phase 2 channels (where analytical results are stored)
+  const channels = paths.discoverPhase2Channels();
   const channelQuality = [];
   
   // Check NTP status once for all channels
   const ntpStatus = await getNTPStatus();
   
-  // Process each channel (all are 16 kHz wide channels)
+  // Process each channel (all are 20 kHz wide channels with Digital RF)
   for (const channelName of channels) {
     try {
-      const statusFile = paths.getAnalyticsStatusFile(channelName);
+      // Per-channel status is now in Phase 2 state directory
+      const statusFile = paths.getChannelStatusFile(channelName);
       
-      // Construct spectrogram URL using unified path structure
-      // Format: spectrograms/{date}/{channel}_{date}_decimated_spectrogram.png
-      const safe_channel_name = channelName.replace(/ /g, '_');
-      const spectrogramFilename = `${safe_channel_name}_${date}_decimated_spectrogram.png`;
+      // Spectrogram URL: products/{CHANNEL}/spectrograms/{date}_spectrogram.png
+      const channelDir = channelName.replace(/ /g, '_');
       
       let quality = {
         name: channelName,
         channel_type: 'wide',
-        sample_rate: '16 kHz',
-        source_type: '16 kHz → 10 Hz decimated',
+        sample_rate: '20 kHz',
+        source_type: '20 kHz DRF → 10 Hz decimated',
         completeness_pct: null,
         timing_quality: 'WALL_CLOCK',
         time_snap_age_minutes: null,
@@ -1303,7 +1305,7 @@ async function getCarrierQuality(paths, date) {
         upload_status: 'unknown',
         upload_lag_seconds: null,
         alerts: [],
-        spectrogram_url: `/spectrograms/${date}/${spectrogramFilename}`
+        spectrogram_url: `/spectrograms/${channelDir}/${date}_spectrogram.png`
       };
       
       if (fs.existsSync(statusFile)) {
@@ -1640,67 +1642,64 @@ app.get('/api/v1/carrier/quality', async (req, res) => {
 
 /**
  * GET /api/v1/carrier/available-dates
- * List dates with available 10 Hz NPZ data for spectrogram generation
- * Scans per-channel decimated directories for NPZ files
+ * List dates with available 10 Hz DRF data for spectrogram generation
+ * Scans Phase 3 products/{CHANNEL}/decimated/ directories for DRF data
+ * Checks products/{CHANNEL}/spectrograms/ for generated spectrograms
  */
 app.get('/api/v1/carrier/available-dates', async (req, res) => {
   try {
-    const dateMap = new Map();  // date -> {channels: Set, npzCount: number, spectrograms: count}
+    const dateMap = new Map();  // date -> {channels: Set, fileCount: number, spectrograms: count}
     
-    // 1. Scan per-channel decimated directories for 10 Hz NPZ files
-    const analyticsRoot = join(paths.dataRoot, 'analytics');
-    if (fs.existsSync(analyticsRoot)) {
-      const channelDirs = fs.readdirSync(analyticsRoot);
+    // 1. Scan Phase 3 products per-channel decimated directories
+    const productsRoot = paths.getProductsRoot();
+    if (fs.existsSync(productsRoot)) {
+      const channelDirs = fs.readdirSync(productsRoot);
       
       for (const channelDir of channelDirs) {
-        const decimatedPath = join(analyticsRoot, channelDir, 'decimated');
+        const decimatedPath = join(productsRoot, channelDir, 'decimated');
         
         if (fs.existsSync(decimatedPath)) {
           try {
-            const files = fs.readdirSync(decimatedPath);
-            for (const file of files) {
-              // Match NPZ files: YYYYMMDDTHHMMSSZ_*_iq_10hz.npz
-              if (file.endsWith('_iq_10hz.npz')) {
-                const dateMatch = file.match(/^(\d{8})T/);
-                if (dateMatch) {
-                  const date = dateMatch[1];
-                  if (!dateMap.has(date)) {
-                    dateMap.set(date, { channels: new Set(), npzCount: 0, spectrograms: 0 });
-                  }
-                  dateMap.get(date).channels.add(channelDir);
-                  dateMap.get(date).npzCount++;
+            // For Digital RF, check for date directories or metadata
+            const items = fs.readdirSync(decimatedPath);
+            for (const item of items) {
+              // Check for date directories (YYYYMMDD format)
+              const dateMatch = item.match(/^(\d{8})$/);
+              if (dateMatch) {
+                const date = dateMatch[1];
+                if (!dateMap.has(date)) {
+                  dateMap.set(date, { channels: new Set(), fileCount: 0, spectrograms: 0 });
                 }
+                dateMap.get(date).channels.add(channelDir);
+                dateMap.get(date).fileCount++;
               }
             }
           } catch (e) {
             // Skip directories we can't read
           }
         }
-      }
-    }
-    
-    // 2. Check spectrograms directory for each discovered date
-    const spectrogramsRoot = paths.getSpectrogramsRoot();
-    for (const [date, info] of dateMap) {
-      const spectrogramDir = join(spectrogramsRoot, date);
-      if (fs.existsSync(spectrogramDir)) {
-        const checkForPngs = (dir) => {
-          let count = 0;
+        
+        // 2. Check spectrograms for this channel (new structure)
+        const spectrogramPath = join(productsRoot, channelDir, 'spectrograms');
+        if (fs.existsSync(spectrogramPath)) {
           try {
-            const items = fs.readdirSync(dir);
-            for (const item of items) {
-              const itemPath = join(dir, item);
-              const itemStat = fs.statSync(itemPath);
-              if (itemStat.isDirectory()) {
-                count += checkForPngs(itemPath);
-              } else if (item.endsWith('.png')) {
-                count++;
+            const spectrograms = fs.readdirSync(spectrogramPath);
+            for (const file of spectrograms) {
+              // Match spectrogram files: YYYYMMDD_spectrogram.png
+              const specMatch = file.match(/^(\d{8})_spectrogram\.png$/);
+              if (specMatch) {
+                const date = specMatch[1];
+                if (!dateMap.has(date)) {
+                  dateMap.set(date, { channels: new Set(), fileCount: 0, spectrograms: 0 });
+                }
+                dateMap.get(date).channels.add(channelDir);
+                dateMap.get(date).spectrograms++;
               }
             }
-          } catch (e) {}
-          return count;
-        };
-        info.spectrograms = checkForPngs(spectrogramDir);
+          } catch (e) {
+            // Skip directories we can't read
+          }
+        }
       }
     }
     
@@ -1712,7 +1711,7 @@ app.get('/api/v1/carrier/available-dates', async (req, res) => {
         date: date,
         formatted: formatted,
         count: info.channels.size,
-        npzCount: info.npzCount,
+        fileCount: info.fileCount,
         hasSpectrograms: info.spectrograms > 0,
         spectrogramCount: info.spectrograms
       });
@@ -2626,35 +2625,27 @@ app.get('/api/monitoring/timing-quality', async (req, res) => {
 });
 
 /**
- * GET /spectrograms/{date}/{subdirectory}/{filename}
- * Serve spectrogram PNG files from subdirectories (wide-decimated, native-carrier)
+ * GET /spectrograms/{channel}/{filename}
+ * Serve spectrogram PNG files from Phase 3 products directory
+ * 
+ * New path structure: products/{CHANNEL}/spectrograms/{filename}
+ * Example: /spectrograms/WWV_10_MHz/20251204_spectrogram.png
+ *          -> products/WWV_10_MHz/spectrograms/20251204_spectrogram.png
  */
-app.get('/spectrograms/:date/:subdirectory/:filename', (req, res) => {
+app.get('/spectrograms/:channel/:filename', (req, res) => {
   try {
-    const { date, subdirectory, filename } = req.params;
-    const spectrogramPath = join(paths.getSpectrogramsDateDir(date), subdirectory, filename);
+    const { channel, filename } = req.params;
+    
+    // Convert URL channel format back to channel name for path lookup
+    const channelName = channel.replace(/_/g, ' ');
+    const spectrogramPath = join(paths.getProductsSpectrogramsDir(channelName), filename);
     
     if (!fs.existsSync(spectrogramPath)) {
-      return res.status(404).json({ error: 'Spectrogram not found' });
-    }
-    
-    res.sendFile(spectrogramPath);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
- * GET /spectrograms/{date}/{filename}
- * Serve spectrogram PNG files (legacy path for backward compatibility)
- */
-app.get('/spectrograms/:date/:filename', (req, res) => {
-  try {
-    const { date, filename } = req.params;
-    const spectrogramPath = join(paths.getSpectrogramsDateDir(date), filename);
-    
-    if (!fs.existsSync(spectrogramPath)) {
-      return res.status(404).json({ error: 'Spectrogram not found' });
+      return res.status(404).json({ 
+        error: 'Spectrogram not found',
+        path: spectrogramPath,
+        channel: channelName
+      });
     }
     
     res.sendFile(spectrogramPath);
@@ -2987,6 +2978,117 @@ app.get('/api/v1/timing/status', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+/**
+ * GET /api/v1/gpsdo-status
+ * GPSDO monitor state - anchor status, verification results, drift monitoring
+ * 
+ * Returns:
+ *   anchor_state: STARTUP | STEADY_STATE | HOLDOVER | REANCHOR_REQUIRED
+ *   state_color: green | amber | red (derived for UI)
+ *   minutes_since_anchor: minutes of stable operation
+ *   consecutive_verifications: count of successful tone verifications
+ *   last_verification_error_ms: timing error of most recent verification
+ *   verification_trend_ms: rolling average of verification errors
+ *   best_channel: channel providing best timing reference
+ *   best_station: station (WWV/WWVH/CHU) providing best reference
+ *   total_reanchors: count of anchor re-establishments
+ *   quality_flag: LOCKED | HOLDOVER | UNANCHORED
+ */
+app.get('/api/v1/gpsdo-status', async (req, res) => {
+  try {
+    const gpsdoStatusFile = paths.getGpsdoStatusFile();
+    
+    if (!fs.existsSync(gpsdoStatusFile)) {
+      // No GPSDO status file yet - return default startup state
+      return res.json({
+        available: false,
+        anchor_state: 'STARTUP',
+        state_color: 'red',
+        state_description: 'GPSDO monitor not yet initialized',
+        minutes_since_anchor: 0,
+        consecutive_verifications: 0,
+        last_verification_error_ms: null,
+        verification_trend_ms: null,
+        best_channel: null,
+        best_station: null,
+        total_reanchors: 0,
+        quality_flag: 'UNANCHORED',
+        verification_history: [],
+        updated_at: null
+      });
+    }
+    
+    const gpsdoData = JSON.parse(fs.readFileSync(gpsdoStatusFile, 'utf8'));
+    
+    // Derive state_color and description for UI
+    let stateColor = 'red';
+    let stateDescription = 'Unknown state';
+    
+    switch (gpsdoData.anchor_state) {
+      case 'STEADY_STATE':
+        stateColor = 'green';
+        stateDescription = 'Trusting GPSDO counter - verifying with tones';
+        break;
+      case 'HOLDOVER':
+        stateColor = 'amber';
+        stateDescription = 'GPSDO drift alarm - data flagged for review';
+        break;
+      case 'STARTUP':
+        stateColor = 'red';
+        stateDescription = 'Establishing initial anchor...';
+        break;
+      case 'REANCHOR_REQUIRED':
+        stateColor = 'red';
+        stateDescription = 'Discontinuity detected - re-anchoring required';
+        break;
+    }
+    
+    // Calculate minutes since anchor from last_verification_time or holdover_since
+    let minutesSinceAnchor = 0;
+    if (gpsdoData.anchor_state === 'STEADY_STATE' && gpsdoData.consecutive_verifications) {
+      // In steady state, minutes = consecutive verifications (1 per minute)
+      minutesSinceAnchor = gpsdoData.consecutive_verifications;
+    } else if (gpsdoData.holdover_since) {
+      // In holdover, calculate from holdover start
+      minutesSinceAnchor = Math.floor((Date.now() / 1000 - gpsdoData.holdover_since) / 60);
+    }
+    
+    res.json({
+      available: true,
+      anchor_state: gpsdoData.anchor_state || 'STARTUP',
+      state_color: stateColor,
+      state_description: stateDescription,
+      minutes_since_anchor: minutesSinceAnchor,
+      consecutive_verifications: gpsdoData.consecutive_verifications || 0,
+      last_verification_time: gpsdoData.last_verification_time,
+      last_verification_error_ms: gpsdoData.last_verification_error_ms,
+      verification_trend_ms: gpsdoData.verification_trend_ms,
+      best_channel: gpsdoData.best_channel,
+      best_station: gpsdoData.best_station,
+      holdover_since: gpsdoData.holdover_since,
+      total_reanchors: gpsdoData.total_reanchors || 0,
+      quality_flag: gpsdoData.quality_flag || deriveQualityFlag(gpsdoData.anchor_state),
+      verification_history: gpsdoData.verification_history || [],
+      updated_at: gpsdoData.updated_at
+    });
+    
+  } catch (err) {
+    console.error('Error getting GPSDO status:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Derive quality flag from anchor state
+ */
+function deriveQualityFlag(anchorState) {
+  switch (anchorState) {
+    case 'STEADY_STATE': return 'LOCKED';
+    case 'HOLDOVER': return 'HOLDOVER';
+    default: return 'UNANCHORED';
+  }
+}
 
 // ============================================================================
 // TIMING ANALYSIS API (New - for comprehensive timing dashboard)

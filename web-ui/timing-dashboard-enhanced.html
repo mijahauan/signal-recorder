@@ -99,6 +99,184 @@
             opacity: 0.9;
         }
         
+        /* GPSDO Anchor Status Panel */
+        .gpsdo-panel {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+            border: 2px solid #10b981;
+            position: relative;
+        }
+        
+        .gpsdo-panel.holdover {
+            border-color: #f59e0b;
+            background: linear-gradient(135deg, #1e293b 0%, #1c1917 100%);
+        }
+        
+        .gpsdo-panel.startup,
+        .gpsdo-panel.reanchor {
+            border-color: #ef4444;
+            background: linear-gradient(135deg, #1e293b 0%, #1c1917 100%);
+        }
+        
+        .gpsdo-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .gpsdo-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .gpsdo-state-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 13px;
+            text-transform: uppercase;
+        }
+        
+        .gpsdo-state-badge.green {
+            background: #10b981;
+            color: #fff;
+        }
+        
+        .gpsdo-state-badge.amber {
+            background: #f59e0b;
+            color: #fff;
+            animation: pulse-amber 2s infinite;
+        }
+        
+        .gpsdo-state-badge.red {
+            background: #ef4444;
+            color: #fff;
+            animation: pulse-red 1.5s infinite;
+        }
+        
+        @keyframes pulse-amber {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        @keyframes pulse-red {
+            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+            50% { opacity: 0.8; box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+        }
+        
+        .gpsdo-state-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+        
+        .gpsdo-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .gpsdo-metric {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .gpsdo-metric-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 4px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .gpsdo-metric-value.good {
+            color: #10b981;
+        }
+        
+        .gpsdo-metric-value.warning {
+            color: #f59e0b;
+        }
+        
+        .gpsdo-metric-value.error {
+            color: #ef4444;
+        }
+        
+        .gpsdo-metric-label {
+            font-size: 11px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+        
+        .gpsdo-metric-sub {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 4px;
+        }
+        
+        .gpsdo-description {
+            font-size: 13px;
+            color: #94a3b8;
+            padding: 10px 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .gpsdo-description-icon {
+            font-size: 16px;
+        }
+        
+        .verification-sparkline {
+            display: flex;
+            align-items: flex-end;
+            gap: 2px;
+            height: 30px;
+            padding: 10px 15px;
+            background: rgba(0, 0, 0, 0.15);
+            border-radius: 6px;
+            margin-top: 10px;
+        }
+        
+        .sparkline-bar {
+            width: 8px;
+            background: #10b981;
+            border-radius: 2px;
+            min-height: 2px;
+            transition: height 0.3s ease;
+        }
+        
+        .sparkline-bar.warning {
+            background: #f59e0b;
+        }
+        
+        .sparkline-bar.error {
+            background: #ef4444;
+        }
+        
+        .sparkline-label {
+            font-size: 10px;
+            color: #64748b;
+            margin-left: 10px;
+            align-self: center;
+        }
+        
         /* Primary Reference Hero Section */
         .primary-reference {
             background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
@@ -658,7 +836,8 @@
         async function loadDashboard() {
             try {
                 // Load all data in parallel
-                const [primaryRef, healthSummary, transitions, propagation, transmission, globalTiming] = await Promise.all([
+                const [gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming] = await Promise.all([
+                    fetch('/api/v1/gpsdo-status').then(r => r.json()).catch(() => ({ available: false })),
                     fetch('/api/v1/timing/primary-reference').then(r => r.json()),
                     fetch('/api/v1/timing/health-summary').then(r => r.json()),
                     fetch('/api/v1/timing/transitions?hours=24').then(r => r.json()),
@@ -667,8 +846,8 @@
                     fetch('/api/v1/timing/global').then(r => r.json()).catch(() => ({ available: false }))
                 ]);
                 
-                renderDashboard(primaryRef, healthSummary, transitions, propagation, transmission, globalTiming);
-                checkAlerts(primaryRef, healthSummary);
+                renderDashboard(gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming);
+                checkAlerts(primaryRef, healthSummary, gpsdoStatus);
                 startCountdown();
                 
             } catch (error) {
@@ -683,7 +862,7 @@
             }
         }
         
-        function renderDashboard(primaryRef, healthSummary, transitions, propagation, transmission, globalTiming) {
+        function renderDashboard(gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming) {
             const container = document.getElementById('dashboard-content');
             
             // Extract channel names for chart dropdowns, sorted by frequency
@@ -694,6 +873,7 @@
             }
             
             container.innerHTML = `
+                ${renderGpsdoStatus(gpsdoStatus)}
                 ${renderPrimaryReference(primaryRef)}
                 ${renderGlobalTiming(globalTiming)}
                 ${renderTransmissionTime(transmission)}
@@ -708,6 +888,123 @@
             setTimeout(() => {
                 loadCharts();
             }, 100);
+        }
+        
+        function renderGpsdoStatus(data) {
+            if (!data || !data.available) {
+                // Show startup/unavailable state
+                return `
+                    <div class="gpsdo-panel startup">
+                        <div class="gpsdo-header">
+                            <div class="gpsdo-title">⚓ GPSDO Anchor Status</div>
+                            <span class="gpsdo-state-badge red">
+                                <span class="gpsdo-state-dot"></span>
+                                STARTUP
+                            </span>
+                        </div>
+                        <div class="gpsdo-description">
+                            <span class="gpsdo-description-icon">🔍</span>
+                            <span>GPSDO monitor initializing - waiting for first tone detection to establish anchor...</span>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Determine panel class based on state
+            const panelClass = data.anchor_state === 'STEADY_STATE' ? '' :
+                              data.anchor_state === 'HOLDOVER' ? 'holdover' : 'reanchor';
+            
+            // Format verification error with appropriate color
+            let verifyErrorClass = 'good';
+            let verifyErrorValue = '—';
+            if (data.last_verification_error_ms !== null) {
+                const absError = Math.abs(data.last_verification_error_ms);
+                verifyErrorValue = `±${absError.toFixed(2)}`;
+                if (absError > 5.0) verifyErrorClass = 'error';
+                else if (absError > 1.0) verifyErrorClass = 'warning';
+            }
+            
+            // Format trend
+            let trendClass = 'good';
+            let trendValue = '—';
+            if (data.verification_trend_ms !== null) {
+                const absTrend = Math.abs(data.verification_trend_ms);
+                trendValue = `±${absTrend.toFixed(2)}`;
+                if (absTrend > 3.0) trendClass = 'error';
+                else if (absTrend > 0.5) trendClass = 'warning';
+            }
+            
+            // Build verification history sparkline
+            let sparklineHtml = '';
+            if (data.verification_history && data.verification_history.length > 0) {
+                const maxVal = 5.0; // 5ms scale
+                const bars = data.verification_history.slice(-20).map(err => {
+                    const absErr = Math.abs(err);
+                    const height = Math.min(100, (absErr / maxVal) * 100);
+                    const barClass = absErr > 3.0 ? 'error' : absErr > 1.0 ? 'warning' : '';
+                    return `<div class="sparkline-bar ${barClass}" style="height: ${Math.max(5, height)}%"></div>`;
+                }).join('');
+                
+                sparklineHtml = `
+                    <div class="verification-sparkline">
+                        ${bars}
+                        <span class="sparkline-label">Last ${data.verification_history.length} verifications (±5ms scale)</span>
+                    </div>
+                `;
+            }
+            
+            // State badge icon
+            const stateIcon = data.anchor_state === 'STEADY_STATE' ? '✓' :
+                             data.anchor_state === 'HOLDOVER' ? '⚠' : '⟳';
+            
+            // Format state display name
+            const stateDisplay = data.anchor_state.replace('_', ' ');
+            
+            return `
+                <div class="gpsdo-panel ${panelClass}">
+                    <div class="gpsdo-header">
+                        <div class="gpsdo-title">⚓ GPSDO Anchor Status</div>
+                        <span class="gpsdo-state-badge ${data.state_color}">
+                            <span class="gpsdo-state-dot"></span>
+                            ${stateIcon} ${stateDisplay}
+                        </span>
+                    </div>
+                    
+                    <div class="gpsdo-metrics">
+                        <div class="gpsdo-metric">
+                            <div class="gpsdo-metric-value good">${data.minutes_since_anchor}</div>
+                            <div class="gpsdo-metric-label">Minutes Stable</div>
+                            <div class="gpsdo-metric-sub">${data.consecutive_verifications} verifications</div>
+                        </div>
+                        
+                        <div class="gpsdo-metric">
+                            <div class="gpsdo-metric-value ${verifyErrorClass}">${verifyErrorValue}</div>
+                            <div class="gpsdo-metric-label">Last Verify (ms)</div>
+                            <div class="gpsdo-metric-sub">Best: ${data.best_station || '—'}</div>
+                        </div>
+                        
+                        <div class="gpsdo-metric">
+                            <div class="gpsdo-metric-value ${trendClass}">${trendValue}</div>
+                            <div class="gpsdo-metric-label">Trend (ms)</div>
+                            <div class="gpsdo-metric-sub">Rolling average</div>
+                        </div>
+                        
+                        <div class="gpsdo-metric">
+                            <div class="gpsdo-metric-value">${data.total_reanchors}</div>
+                            <div class="gpsdo-metric-label">Re-anchors</div>
+                            <div class="gpsdo-metric-sub">Total session</div>
+                        </div>
+                    </div>
+                    
+                    <div class="gpsdo-description">
+                        <span class="gpsdo-description-icon">${data.anchor_state === 'STEADY_STATE' ? '📡' : '⚠️'}</span>
+                        <span>${data.state_description}</span>
+                        ${data.best_channel ? `<span style="margin-left: auto; color: #64748b;">Channel: ${data.best_channel}</span>` : ''}
+                    </div>
+                    
+                    ${sparklineHtml}
+                </div>
+            `;
         }
         
         function renderPrimaryReference(data) {
@@ -1586,7 +1883,7 @@
             }
         }
         
-        function checkAlerts(primaryRef, healthSummary) {
+        function checkAlerts(primaryRef, healthSummary, gpsdoStatus) {
             const banner = document.getElementById('alert-banner');
             const title = document.getElementById('alert-title');
             const message = document.getElementById('alert-message');
@@ -1596,6 +1893,23 @@
                                primaryRef.source_type?.includes('startup') ||
                                primaryRef.source_type?.includes('wwv') ||
                                primaryRef.source_type?.includes('chu');
+            
+            // Check GPSDO status first - highest priority alerts
+            if (gpsdoStatus && gpsdoStatus.available) {
+                if (gpsdoStatus.anchor_state === 'REANCHOR_REQUIRED') {
+                    banner.className = 'alert-banner visible';
+                    title.textContent = 'Critical: GPSDO Re-anchor Required';
+                    message.textContent = 'Discontinuity detected in sample stream. Fresh anchor being established...';
+                    return;
+                }
+                
+                if (gpsdoStatus.anchor_state === 'HOLDOVER') {
+                    banner.className = 'alert-banner visible warning';
+                    title.textContent = 'Warning: GPSDO in Holdover';
+                    message.textContent = `Drift alarm triggered - data being flagged. GPSDO may have lost lock.`;
+                    return;
+                }
+            }
             
             // Check for critical issues
             if (!primaryRef.available) {

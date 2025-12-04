@@ -437,6 +437,12 @@ class AnalyticsService:
         self.gpsdo_monitor = GPSDOMonitor(sample_rate=20000)
         logger.info(f"✅ GPSDOMonitor initialized - GPSDO monitoring architecture active")
         
+        # Store data_root for global status files (GPSDO status is system-wide, not per-channel)
+        # output_dir is {data_root}/analytics/{CHANNEL}, so go up 2 levels
+        self.data_root = output_dir.parent.parent
+        self.gpsdo_status_file = self.data_root / 'status' / 'gpsdo_status.json'
+        self.gpsdo_status_file.parent.mkdir(parents=True, exist_ok=True)
+        
         # Per-channel statistics
         self.stats = {
             'last_processed_file': None,
@@ -637,6 +643,49 @@ class AnalyticsService:
         except Exception as e:
             logger.error(f"Failed to write status file: {e}")
     
+    def _write_gpsdo_status(self):
+        """Write GPSDO monitor status to JSON file for web-ui monitoring.
+        
+        This writes to a global status file (not per-channel) since the GPSDO
+        timing anchor is system-wide. The web-ui uses this to display:
+        - Anchor state (STARTUP/STEADY_STATE/HOLDOVER/REANCHOR_REQUIRED)
+        - Minutes since anchor established
+        - Verification error history
+        - Quality flag (LOCKED/HOLDOVER/UNANCHORED)
+        """
+        try:
+            # Get status from GPSDO monitor
+            gpsdo_status = self.gpsdo_monitor.get_status()
+            
+            # Add metadata and format for web-ui
+            status = {
+                'anchor_state': gpsdo_status['anchor_state'],
+                'consecutive_verifications': gpsdo_status['consecutive_verifications'],
+                'last_verification_time': gpsdo_status['last_verification_time'],
+                'last_verification_error_ms': gpsdo_status['last_verification_error_ms'],
+                'best_channel': gpsdo_status['best_channel'],
+                'best_station': gpsdo_status['best_station'],
+                'holdover_since': gpsdo_status['holdover_since'],
+                'total_reanchors': gpsdo_status['total_reanchors'],
+                'verification_trend_ms': gpsdo_status['verification_trend_ms'],
+                'verification_history': list(self.gpsdo_monitor.state.verification_history),
+                'quality_flag': self.gpsdo_monitor.get_quality_flag(),
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+                'channel_name': self.channel_name,  # Which channel wrote this status
+            }
+            
+            # Write atomically to avoid partial reads by web-ui
+            temp_file = self.gpsdo_status_file.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump(status, f, indent=2)
+            temp_file.replace(self.gpsdo_status_file)
+            
+            logger.debug(f"GPSDO status written: state={status['anchor_state']}, "
+                        f"verifications={status['consecutive_verifications']}")
+            
+        except Exception as e:
+            logger.error(f"Failed to write GPSDO status file: {e}")
+    
     def discover_new_files(self) -> List[Path]:
         """
         Discover new NPZ files to process
@@ -701,7 +750,7 @@ class AnalyticsService:
             # Step 1.5: GPSDO Sample Integrity Watchdog (Monitor A)
             # If we detect gaps/packet loss, the "steel ruler" is broken and we need to re-anchor
             sample_integrity_ok = self.gpsdo_monitor.check_sample_integrity(quality)
-            results['gpsdo_state'] = self.gpsdo_monitor.state.name
+            results['gpsdo_state'] = self.gpsdo_monitor.state.anchor_state.name
             if not sample_integrity_ok:
                 # Force re-anchor on next valid minute
                 results['gpsdo_reanchor_required'] = True
@@ -766,7 +815,7 @@ class AnalyticsService:
                             
                             # GPSDO Drift Watchdog (Monitor B)
                             # Check if drift indicates GPSDO unlock
-                            self.gpsdo_monitor.check_drift(ppm_offset, ppm_confidence)
+                            self.gpsdo_monitor.check_drift_health(ppm_offset, ppm_confidence)
                         
                         self.last_timing_metrics_write = current_time
                     else:
@@ -1157,22 +1206,19 @@ class AnalyticsService:
         # ========================================================================
         # GPSDO MONITORING: Check if we're in verification mode or anchor mode
         # ========================================================================
-        gpsdo_state = self.gpsdo_monitor.state
+        gpsdo_anchor_state = self.gpsdo_monitor.state.anchor_state
         
-        if gpsdo_state == AnchorState.STEADY_STATE and self.state.time_snap is not None:
+        if gpsdo_anchor_state == AnchorState.STEADY_STATE and self.state.time_snap is not None:
             # STEADY STATE: Verify projection, don't re-anchor unless physics requires it
-            verification = self.gpsdo_monitor.verify_tone_arrival(
-                self.state.time_snap, best, minute_boundary
+            verification = self.gpsdo_monitor.verify_projection(
+                best, self.state.time_snap, minute_boundary
             )
             
-            # Update minute counter
-            self.gpsdo_monitor.on_minute_processed()
-            
-            # Only update anchor if verification failed badly
-            if not self.gpsdo_monitor.should_update_anchor(verification):
+            # Check if verification requires re-anchor
+            if not verification.requires_reanchor:
                 # Trust the counter - don't update time_snap
                 logger.debug(f"🔒 GPSDO: Verification OK ({verification.error_ms:+.2f}ms), "
-                           f"trusting counter (minute {self.gpsdo_monitor.minutes_since_anchor})")
+                           f"trusting counter (verifications={self.gpsdo_monitor.state.consecutive_verifications})")
                 return False
             else:
                 logger.warning(f"⚠️ GPSDO: Verification failed ({verification.error_ms:+.1f}ms), "
@@ -1231,11 +1277,10 @@ class AnalyticsService:
         self._store_time_snap(new_time_snap)
         
         # Notify GPSDO monitor that anchor is established
-        station_str = best.station.value if hasattr(best.station, 'value') else str(best.station)
-        self.gpsdo_monitor.on_anchor_established(
+        self.gpsdo_monitor.establish_anchor(
             new_time_snap, 
-            self.channel_name,
-            station_str
+            best,
+            self.channel_name
         )
         
         logger.info(f"Time snap {'updated' if old_time_snap else 'established'}: "
@@ -2156,6 +2201,7 @@ class AnalyticsService:
         
         # Write initial status
         self._write_status()
+        self._write_gpsdo_status()
         
         # GAP BACKFILL: Check for missing discrimination data on startup
         if backfill_gaps:
@@ -2210,6 +2256,7 @@ class AnalyticsService:
                     now = time.time()
                     if now - last_status_time >= 10:
                         self._write_status()
+                        self._write_gpsdo_status()
                         last_status_time = now
                     
                     # Sleep until next poll

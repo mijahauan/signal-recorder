@@ -1,34 +1,32 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-04 (Morning)  
-**Version:** 3.2.0  
-**Status:** ✅ Phase 1 Complete, ✅ Phase 2 Core Complete, 🔄 GPSDO Monitoring Architecture Implemented
+**Last Updated:** 2025-12-04 (Afternoon)  
+**Version:** 3.3.0  
+**Status:** ✅ Phase 1 Complete, ✅ Phase 2 Core Complete, ✅ Web-UI Refactored, 🔄 Phase 3 Ready
 
 ---
 
-## 🎯 CURRENT STATE: GPSDO MONITORING ARCHITECTURE
+## 🎯 CURRENT STATE: READY FOR PHASE 3 IMPLEMENTATION
 
-### Major Architecture Shift: "Set, Monitor, Intervention"
+### Session Summary (Dec 4, 2025 Afternoon)
 
-The timing system has transitioned from **corrective** (re-anchor every minute) to **monitoring** (project and verify). With a GPS-Disciplined Oscillator (GPSDO), the hardware clock is a secondary standard - we now trust it rather than constantly replacing it with noisier propagation-jittered measurements.
+Completed Web-UI refactoring to new three-phase architecture:
 
-### What Changed (Dec 4, 2025)
+| Component | Status | Description |
+|-----------|--------|-------------|
+| GPSDO Status Writing | ✅ Complete | Analytics service writes `gpsdo_status.json` every 10 seconds |
+| Path Conventions | ✅ Complete | Documented in `docs/PATH_CONVENTIONS.md` |
+| Web-UI Paths | ✅ Complete | `grape-paths.js` updated for three-phase structure |
+| API Endpoints | ✅ Complete | Spectrogram, carrier, gap analysis updated |
+| Legacy Paths | ❌ Removed | No backward compatibility - clean three-phase only |
 
-| Before | After |
-|--------|-------|
-| Re-anchor TimeSnapReference every minute | Establish once, project forward by counting samples |
-| Tone detection = UPDATE anchor | Tone detection = VERIFY projection |
-| Propagation jitter corrupts timing | GPSDO precision preserved |
-| No discontinuity handling | Automatic re-anchor on RTP gaps |
+### Next Session: Phase 3 Decimation Engine
 
-### Next Session: Web-UI Alignment
+The next session will implement Phase 3: decimating 20 kHz Digital RF to 10 Hz with timing annotations from Phase 2.
 
-The web-UI needs updates to reflect the new GPSDO monitoring architecture:
-- Display GPSDO state (STARTUP, STEADY_STATE, HOLDOVER, REANCHOR)
-- Show verification results instead of anchor updates
-- Display minutes since anchor established
-- Visualize propagation plausibility filtering
+**Input:** Phase 1 raw archive (20 kHz Digital RF) + Phase 2 timing/discrimination results
+**Output:** Phase 3 products (10 Hz DRF with metadata, spectrograms, PSWS upload format)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -50,11 +48,12 @@ The web-UI needs updates to reflect the new GPSDO monitoring architecture:
 │  • TransmissionTimeSolver: Hop-count back-calculation                       │
 │  • 500/600 Hz discrimination: Single-station minutes only                   │
 │                                                                              │
-│  PHASE 3: DERIVED PRODUCTS (🔮 FUTURE)                                      │
-│  ═════════════════════════════════════                                      │
-│  • Decimated time series (10 Hz) - CorrectedProductGenerator exists         │
-│  • Station discrimination CSV output                                         │
-│  • Spectrograms, PSWS upload format                                          │
+│  PHASE 3: DERIVED PRODUCTS (🔄 NEXT SESSION)                                │
+│  ════════════════════════════════════════════                               │
+│  • Decimated 10 Hz DRF with Phase 2 timing annotations                      │
+│  • Gap metadata preserved from raw archive                                   │
+│  • Spectrograms generated from 10 Hz data                                    │
+│  • PSWS upload format for community database                                 │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -1211,50 +1210,218 @@ data/time_standard/
 
 ---
 
-### 🎯 NEXT SESSION: Web-UI Alignment with GPSDO Architecture
+---
 
-The web-UI needs updates to display new GPSDO monitoring information:
+## 🚀 NEXT SESSION: PHASE 3 DECIMATION ENGINE
 
-**Required Updates:**
+### Goal
 
-1. **Timing Dashboard** (`timing-dashboard-enhanced.html`)
-   - Display GPSDO state (STARTUP/STEADY_STATE/HOLDOVER/REANCHOR)
-   - Show "Minutes since anchor" counter
-   - Show verification error (should be ~0.1ms in steady state)
-   - Visual indicator when in HOLDOVER (amber) or REANCHOR (red)
+Implement the Phase 3 decimation pipeline that:
+1. Reads 20 kHz Digital RF from Phase 1 (`raw_archive/{CHANNEL}/`)
+2. Incorporates timing precision from Phase 2 (`phase2/{CHANNEL}/`)
+3. Outputs 10 Hz decimated DRF to Phase 3 (`products/{CHANNEL}/decimated/`)
+4. Generates spectrograms to (`products/{CHANNEL}/spectrograms/`)
 
-2. **API Endpoints** (`monitoring-server-v3.js`)
-   - Add `/api/v1/gpsdo-status` endpoint returning GPSDOStatus
-   - Include in `/api/v1/channels/:channel` response
-   - Return: state, minutes_since_anchor, last_verification_error_ms, drift_ppm
+### Data Flow
 
-3. **Status Display**
-   - Replace "Time snap updated" with "Time snap verified" in steady state
-   - Show verification history (last N verification errors)
-   - Add propagation bounds visualization (min/max delay per station)
-
-**Data Sources:**
-
-The GPSDOMonitor provides:
-```python
-status = gpsdo_monitor.get_status()
-# Returns GPSDOStatus:
-#   state: AnchorState
-#   minutes_since_anchor: int
-#   last_verification_error_ms: float
-#   drift_ppm: float
-#   drift_confidence: float
-#   holdover_reason: Optional[str]
-#   best_channel: Optional[str]
+```
+PHASE 1: raw_archive/{CHANNEL}/
+├── {YYYYMMDD}/
+│   └── rf@{timestamp}.h5          # 20 kHz complex64 Digital RF
+│
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    PHASE 3 DECIMATION ENGINE                     │
+│                                                                  │
+│  Input:  20 kHz IQ samples (1,200,000 samples/minute)           │
+│          Phase 2 timing: time_snap, D_clock, quality             │
+│          Gap metadata from raw archive                           │
+│                                                                  │
+│  Process:                                                        │
+│    1. Read 1-minute chunk from Phase 1 DRF                      │
+│    2. Apply CIC decimation (factor 50) → 400 Hz                 │
+│    3. Apply FIR decimation (factor 40) → 10 Hz                  │
+│    4. Annotate with Phase 2 timing precision                     │
+│    5. Preserve gap metadata                                      │
+│    6. Write 10 Hz DRF with timing annotations                   │
+│                                                                  │
+│  Output: 600 samples/minute (10 Hz × 60 seconds)                │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+PHASE 3: products/{CHANNEL}/
+├── decimated/
+│   └── {YYYYMMDD}/
+│       └── rf@{timestamp}.h5      # 10 Hz complex64 Digital RF
+└── spectrograms/
+    └── {YYYYMMDD}_spectrogram.png
 ```
 
-**Key Files for Web-UI Work:**
+### Key Files to Create/Modify
+
 | File | Purpose |
 |------|---------|
-| `web-ui/monitoring-server-v3.js` | Express API server |
-| `web-ui/grape-paths.js` | Path management |
-| `web-ui/timing-dashboard-enhanced.html` | Timing display |
-| `web-ui/utils/timing-analysis-helpers.js` | Timing data parsing |
+| `src/grape_recorder/grape/phase3_decimation_engine.py` | NEW: Main decimation engine |
+| `src/grape_recorder/grape/decimation.py` | EXISTING: CIC/FIR filters (refactor) |
+| `src/grape_recorder/grape/spectrogram_generator.py` | EXISTING: PNG generation (update paths) |
+
+### Timing Annotation Format
+
+Each decimated DRF file should include metadata:
+
+```python
+{
+    'sample_rate': 10,
+    'original_sample_rate': 20000,
+    'decimation_factor': 2000,
+    
+    # Phase 2 timing precision
+    'time_snap_source': 'wwv_verified',
+    'time_snap_confidence': 0.95,
+    'd_clock_ms': -0.2,
+    'gpsdo_state': 'STEADY_STATE',
+    
+    # Gap metadata (preserved from Phase 1)
+    'gap_count': 0,
+    'gap_samples_filled': 0,
+    'completeness_pct': 100.0,
+    
+    # Provenance
+    'phase1_file': 'raw_archive/WWV_10_MHz/20251204/rf@1733315400.h5',
+    'phase2_status': 'phase2/WWV_10_MHz/state/channel-status.json',
+    'processing_timestamp': '2025-12-04T15:30:00Z',
+}
+```
+
+### Path Conventions (Critical!)
+
+**Read before implementing:**
+- `docs/PATH_CONVENTIONS.md` - Complete path documentation
+- SYNC VERSION: `2025-12-04-v2-three-phase`
+
+**Python paths (`paths.py`):**
+```python
+paths = GRAPEPaths('/tmp/grape-test')
+paths.get_raw_archive_dir('WWV 10 MHz')        # raw_archive/WWV_10_MHz/
+paths.get_phase2_dir('WWV 10 MHz')             # phase2/WWV_10_MHz/
+paths.get_products_decimated_dir('WWV 10 MHz') # products/WWV_10_MHz/decimated/
+paths.get_products_spectrograms_dir('WWV 10 MHz') # products/WWV_10_MHz/spectrograms/
+```
+
+**Web-UI reads from:**
+- `products/{CHANNEL}/decimated/` - Gap analysis, available dates
+- `products/{CHANNEL}/spectrograms/{YYYYMMDD}_spectrogram.png` - Spectrogram images
+- `phase2/{CHANNEL}/state/channel-status.json` - Channel status
+
+### Existing Decimation Code
+
+The `decimation.py` file has working CIC/FIR filters but needs refactoring:
+
+```python
+# Current structure (analytics_service.py integration)
+from .decimation import decimate_for_upload
+
+# This function works but:
+# 1. Reads from NPZ files (legacy format)
+# 2. Writes NPZ output (should write DRF)
+# 3. Doesn't include Phase 2 annotations
+```
+
+### Implementation Steps
+
+1. **Create `Phase3DecimationEngine` class**
+   - Constructor: `Phase3DecimationEngine(paths: GRAPEPaths)`
+   - Method: `process_minute(channel_name, minute_utc) -> Phase3Result`
+
+2. **Refactor decimation filters**
+   - Extract CIC/FIR into reusable functions
+   - Support 20 kHz → 10 Hz (factor 2000)
+
+3. **Integrate Phase 2 timing**
+   - Read `channel-status.json` for current time_snap
+   - Include D_clock and GPSDO state in output metadata
+
+4. **Digital RF output**
+   - Write 10 Hz DRF with proper timestamps
+   - Use same format as Phase 1 (HDF5 with gzip)
+
+5. **Spectrogram generation**
+   - Update paths to use `products/{CHANNEL}/spectrograms/`
+   - Generate daily PNG from 10 Hz data
+
+### Testing
+
+```bash
+# Test decimation on a single minute
+python -c "
+from grape_recorder.paths import GRAPEPaths
+from grape_recorder.grape.phase3_decimation_engine import Phase3DecimationEngine
+from datetime import datetime, timezone
+
+paths = GRAPEPaths('/tmp/grape-test')
+engine = Phase3DecimationEngine(paths)
+result = engine.process_minute('WWV 10 MHz', datetime.now(timezone.utc))
+print(result)
+"
+
+# Verify output
+ls -la /tmp/grape-test/products/WWV_10_MHz/decimated/
+ls -la /tmp/grape-test/products/WWV_10_MHz/spectrograms/
+```
+
+---
+
+### Dec 4, 2025 (Afternoon): Web-UI Refactored for Three-Phase Architecture
+
+**Goal:** Complete web-UI alignment with three-phase path structure and GPSDO status display.
+
+**Accomplishments:**
+
+1. **GPSDO Status Writing** (`analytics_service.py`)
+   - Added `_write_gpsdo_status()` method
+   - Writes `status/gpsdo_status.json` every 10 seconds
+   - Includes: anchor_state, verifications, quality_flag, history
+
+2. **Fixed GPSDOMonitor Integration**
+   - `check_drift()` → `check_drift_health()`
+   - `verify_tone_arrival()` → `verify_projection()`
+   - `on_anchor_established()` → `establish_anchor()`
+   - `state.name` → `state.anchor_state.name`
+
+3. **Path Conventions Documentation** (`docs/PATH_CONVENTIONS.md`)
+   - Complete writer/reader contracts
+   - Channel name conversion rules
+   - Status file formats
+
+4. **Web-UI Path Refactor** (`grape-paths.js`)
+   - Removed legacy `archives/`, `analytics/` paths
+   - Added `raw_archive/`, `phase2/`, `products/` paths
+   - New discovery methods: `discoverPhase2Channels()`, `discoverProductChannels()`
+
+5. **Monitoring Server Updates** (`monitoring-server-v3.js`)
+   - `getCarrierQuality()`: Uses Phase 2 channels, 20 kHz sample rate
+   - Spectrogram endpoint: `/spectrograms/{channel}/{filename}`
+   - Gap analysis: Scans `products/{CHANNEL}/decimated/`
+   - Available dates: Scans Phase 3 products
+
+**Files Created:**
+- `docs/PATH_CONVENTIONS.md` - Complete path documentation
+
+**Files Modified:**
+- `src/grape_recorder/grape/analytics_service.py` - GPSDO status writing, method fixes
+- `src/grape_recorder/paths.py` - SYNC VERSION update
+- `web-ui/grape-paths.js` - Three-phase paths, removed legacy
+- `web-ui/monitoring-server-v3.js` - Updated all endpoints for new paths
+
+**SYNC VERSION:** `2025-12-04-v2-three-phase`
+
+---
+
+### Dec 4, 2025 (Morning): GPSDO Monitoring Architecture + Web-UI Prep
+
+(Previous session accomplishments preserved below...)
 
 ---
 
