@@ -168,6 +168,16 @@ from .transmission_time_solver import (
     grid_to_latlon
 )
 
+# Phase 2: Temporal Analysis Engine (Refined temporal analysis order)
+from .phase2_temporal_engine import (
+    Phase2TemporalEngine,
+    Phase2Result,
+    TimeSnapResult,
+    ChannelCharacterization,
+    TransmissionTimeSolution,
+    create_phase2_engine
+)
+
 __all__ = [
     # Core recorder
     "GrapeRecorder",
@@ -254,4 +264,11 @@ __all__ = [
     "create_solver_from_grid",
     "create_multi_station_solver",
     "grid_to_latlon",
+    # Phase 2: Temporal Analysis Engine
+    "Phase2TemporalEngine",
+    "Phase2Result",
+    "TimeSnapResult",
+    "ChannelCharacterization",
+    "TransmissionTimeSolution",
+    "create_phase2_engine",
 ]

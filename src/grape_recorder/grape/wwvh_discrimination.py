@@ -2084,15 +2084,29 @@ class WWVHDiscriminator:
             window_samples = int(window_seconds * sample_rate)
             step_samples = int(step_seconds * sample_rate)
             
-            # Calculate number of windows
+            # Calculate number of windows - CRITICAL: limit by BOTH signal AND template length
+            # Template is exactly 60 seconds; signal may be longer
             total_samples = len(bcd_signal)
-            num_windows = (total_samples - window_samples) // step_samples + 1
+            template_samples = len(bcd_template_full)
+            max_start_sample = min(total_samples, template_samples) - window_samples
+            
+            if max_start_sample <= 0:
+                logger.warning(f"{self.channel_name}: BCD signal ({total_samples}) or template ({template_samples}) "
+                              f"too short for {window_seconds}s window ({window_samples} samples)")
+                return None, None, None, None, None
+            
+            num_windows = max_start_sample // step_samples + 1
             
             windows_data = []
             
             for i in range(num_windows):
                 start_sample = int(i * step_samples)
                 end_sample = int(start_sample + window_samples)
+                
+                # Safety check - skip if we'd exceed template bounds
+                if end_sample > template_samples:
+                    break
+                    
                 window_start_time = start_sample / sample_rate  # Seconds into the minute
                 
                 # Extract BCD signal window and template

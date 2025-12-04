@@ -1,37 +1,42 @@
 """
-GRAPE Path Specification - Single Source of Truth for Data Locations
+GRAPE Path Specification - Three-Phase Pipeline Architecture
 
 This module provides the canonical path structure for all GRAPE data.
 ALL producers and consumers MUST use these functions to avoid path mismatches.
 
-Architecture:
-    data_root/
-    ├── archives/              # Raw NPZ archives (16 kHz IQ)
-    │   └── {CHANNEL}/         # e.g., WWV_10_MHz
-    │       └── {YYYYMMDDTHHMMSZ}_{FREQ}_iq.npz
-    │
-    ├── analytics/             # Per-channel analytics products
-    │   └── {CHANNEL}/
-    │       ├── decimated/     # 10 Hz NPZ files (pre-DRF conversion)
-    │       ├── digital_rf/    # Digital RF files (10 Hz decimated)
-    │       │   └── {YYYYMMDD}/{CALL_GRID}/{RECEIVER}/{OBS}/{CHANNEL}/*.h5
-    │       ├── discrimination/ # WWV/WWVH discrimination data
-    │       ├── quality/       # Quality metrics
-    │       ├── logs/          # Processing logs
-    │       └── status/        # Runtime status
-    │
-    ├── spectrograms/          # Generated spectrograms (web UI)
-    │   └── {YYYYMMDD}/
-    │       └── {CHANNEL}_{YYYYMMDD}_{type}_spectrogram.png
-    │
-    ├── state/                 # Service state files
-    │   ├── analytics-{channel_key}.json
-    │   └── core-recorder-status.json
-    │
-    └── status/                # System-wide status
-        └── analytics-service-status.json
+Three-Phase Architecture:
 
-CRITICAL: Use channel_name_to_key() for consistent channel naming conversions.
+    data_root/
+    ├── raw_archive/               # PHASE 1: Immutable Raw Archive (DRF)
+    │   └── {CHANNEL}/              
+    │       └── {YYYYMMDD}/         
+    │           ├── {YYYY-MM-DDTHH}/ 
+    │           │   └── rf@{ts}.h5  # 20 kHz complex64 IQ
+    │           ├── drf_properties.h5
+    │           └── metadata/       # NTP status, gaps, provenance
+    │
+    ├── phase2/                    # PHASE 2: Analytical Engine
+    │   └── {CHANNEL}/
+    │       ├── clock_offset/       # D_clock(t) time series
+    │       ├── carrier_analysis/   # Amplitude, phase, Doppler
+    │       ├── channel_quality/    # Delay spread, coherence
+    │       ├── discrimination/     # WWV/WWVH per-minute
+    │       ├── bcd_correlation/    # 100 Hz BCD analysis
+    │       ├── tone_detections/    # 1000/1200 Hz markers
+    │       ├── ground_truth/       # 440/500/600 Hz station ID
+    │       └── state/              # Processing state
+    │
+    ├── products/                  # PHASE 3: Derived Products
+    │   └── {CHANNEL}/
+    │       ├── decimated/          # 10 Hz DRF time series
+    │       ├── spectrograms/       # PNG images
+    │       └── psws_upload/        # PSWS format files
+    │
+    ├── state/                     # Global state
+    ├── status/                    # System status
+    └── logs/                      # Global logs
+
+CRITICAL: Use channel_name_to_key() for consistent channel naming.
 """
 
 from pathlib import Path
@@ -96,21 +101,21 @@ def dir_to_channel_name(dir_name: str) -> str:
 
 
 class GRAPEPaths:
-    """Central path manager for GRAPE data structures.
+    """Central path manager for GRAPE three-phase pipeline.
     
     Usage:
         from grape_recorder.paths import GRAPEPaths
         
         paths = GRAPEPaths('/tmp/grape-test')
         
-        # Get archive path for a channel
-        npz_dir = paths.get_archive_dir('WWV 10 MHz')
+        # Phase 1: Raw archive (immutable DRF)
+        raw_dir = paths.get_raw_archive_dir('WWV 10 MHz')
         
-        # Get digital RF directory
-        drf_dir = paths.get_digital_rf_dir('WWV 10 MHz')
+        # Phase 2: Analytical engine outputs
+        clock_dir = paths.get_clock_offset_dir('WWV 10 MHz')
         
-        # Get spectrogram output path
-        spec_path = paths.get_spectrogram_path('WWV 10 MHz', '20251115', 'decimated')
+        # Phase 3: Derived products
+        spec_dir = paths.get_spectrograms_dir('WWV 10 MHz')
     """
     
     def __init__(self, data_root: str | Path):
@@ -122,11 +127,192 @@ class GRAPEPaths:
         self.data_root = Path(data_root)
     
     # ========================================================================
-    # Archive Paths (Raw NPZ files)
+    # PHASE 1: RAW ARCHIVE (Immutable Digital RF)
+    # ========================================================================
+    
+    def get_raw_archive_root(self) -> Path:
+        """Get raw archive root directory.
+        
+        Returns: {data_root}/raw_archive/
+        """
+        return self.data_root / 'raw_archive'
+    
+    def get_raw_archive_dir(self, channel_name: str) -> Path:
+        """Get raw archive directory for a channel.
+        
+        Returns: {data_root}/raw_archive/{CHANNEL}/
+        """
+        channel_dir = channel_name_to_dir(channel_name)
+        return self.get_raw_archive_root() / channel_dir
+    
+    def get_raw_archive_date_dir(self, channel_name: str, date: str) -> Path:
+        """Get raw archive date directory.
+        
+        Args:
+            channel_name: Channel name
+            date: Date in YYYYMMDD format
+        
+        Returns: {data_root}/raw_archive/{CHANNEL}/{YYYYMMDD}/
+        """
+        return self.get_raw_archive_dir(channel_name) / date
+    
+    def get_raw_archive_metadata_dir(self, channel_name: str, date: str) -> Path:
+        """Get raw archive metadata directory.
+        
+        Returns: {data_root}/raw_archive/{CHANNEL}/{YYYYMMDD}/metadata/
+        """
+        return self.get_raw_archive_date_dir(channel_name, date) / 'metadata'
+    
+    # ========================================================================
+    # PHASE 2: ANALYTICAL ENGINE
+    # ========================================================================
+    
+    def get_phase2_root(self) -> Path:
+        """Get Phase 2 root directory.
+        
+        Returns: {data_root}/phase2/
+        """
+        return self.data_root / 'phase2'
+    
+    def get_phase2_dir(self, channel_name: str) -> Path:
+        """Get Phase 2 directory for a channel.
+        
+        Returns: {data_root}/phase2/{CHANNEL}/
+        """
+        channel_dir = channel_name_to_dir(channel_name)
+        return self.get_phase2_root() / channel_dir
+    
+    def get_clock_offset_dir(self, channel_name: str) -> Path:
+        """Get clock offset series directory.
+        
+        Contains D_clock(t) time series - the primary Phase 2 output.
+        
+        Returns: {data_root}/phase2/{CHANNEL}/clock_offset/
+        """
+        return self.get_phase2_dir(channel_name) / 'clock_offset'
+    
+    def get_carrier_analysis_dir(self, channel_name: str) -> Path:
+        """Get carrier analysis directory.
+        
+        Contains amplitude, phase, and Doppler measurements.
+        
+        Returns: {data_root}/phase2/{CHANNEL}/carrier_analysis/
+        """
+        return self.get_phase2_dir(channel_name) / 'carrier_analysis'
+    
+    def get_channel_quality_dir(self, channel_name: str) -> Path:
+        """Get channel quality metrics directory.
+        
+        Contains delay spread, coherence time, spreading factor.
+        
+        Returns: {data_root}/phase2/{CHANNEL}/channel_quality/
+        """
+        return self.get_phase2_dir(channel_name) / 'channel_quality'
+    
+    def get_discrimination_dir(self, channel_name: str) -> Path:
+        """Get WWV/WWVH discrimination directory.
+        
+        Contains per-minute station identification results.
+        
+        Returns: {data_root}/phase2/{CHANNEL}/discrimination/
+        """
+        return self.get_phase2_dir(channel_name) / 'discrimination'
+    
+    def get_bcd_correlation_dir(self, channel_name: str) -> Path:
+        """Get BCD correlation directory.
+        
+        Contains 100 Hz subcarrier cross-correlation results.
+        
+        Returns: {data_root}/phase2/{CHANNEL}/bcd_correlation/
+        """
+        return self.get_phase2_dir(channel_name) / 'bcd_correlation'
+    
+    def get_tone_detections_dir(self, channel_name: str) -> Path:
+        """Get tone detections directory.
+        
+        Contains 1000/1200 Hz minute marker detection results.
+        
+        Returns: {data_root}/phase2/{CHANNEL}/tone_detections/
+        """
+        return self.get_phase2_dir(channel_name) / 'tone_detections'
+    
+    def get_ground_truth_dir(self, channel_name: str) -> Path:
+        """Get ground truth directory.
+        
+        Contains 440/500/600 Hz exclusive tone detections.
+        
+        Returns: {data_root}/phase2/{CHANNEL}/ground_truth/
+        """
+        return self.get_phase2_dir(channel_name) / 'ground_truth'
+    
+    def get_doppler_dir(self, channel_name: str) -> Path:
+        """Get Doppler estimation directory.
+        
+        Contains per-tick phase tracking and coherence estimates.
+        
+        Returns: {data_root}/phase2/{CHANNEL}/doppler/
+        """
+        return self.get_phase2_dir(channel_name) / 'doppler'
+    
+    def get_phase2_state_dir(self, channel_name: str) -> Path:
+        """Get Phase 2 processing state directory.
+        
+        Returns: {data_root}/phase2/{CHANNEL}/state/
+        """
+        return self.get_phase2_dir(channel_name) / 'state'
+    
+    # ========================================================================
+    # PHASE 3: DERIVED PRODUCTS
+    # ========================================================================
+    
+    def get_products_root(self) -> Path:
+        """Get products root directory.
+        
+        Returns: {data_root}/products/
+        """
+        return self.data_root / 'products'
+    
+    def get_products_dir(self, channel_name: str) -> Path:
+        """Get products directory for a channel.
+        
+        Returns: {data_root}/products/{CHANNEL}/
+        """
+        channel_dir = channel_name_to_dir(channel_name)
+        return self.get_products_root() / channel_dir
+    
+    def get_decimated_dir(self, channel_name: str) -> Path:
+        """Get decimated time series directory.
+        
+        Contains 10 Hz DRF files for telemetry.
+        
+        Returns: {data_root}/products/{CHANNEL}/decimated/
+        """
+        return self.get_products_dir(channel_name) / 'decimated'
+    
+    def get_spectrograms_dir(self, channel_name: str) -> Path:
+        """Get spectrograms directory for a channel.
+        
+        Returns: {data_root}/products/{CHANNEL}/spectrograms/
+        """
+        return self.get_products_dir(channel_name) / 'spectrograms'
+    
+    def get_psws_upload_dir(self, channel_name: str) -> Path:
+        """Get PSWS upload directory.
+        
+        Contains files formatted for PSWS upload.
+        
+        Returns: {data_root}/products/{CHANNEL}/psws_upload/
+        """
+        return self.get_products_dir(channel_name) / 'psws_upload'
+    
+    # ========================================================================
+    # LEGACY COMPATIBILITY (deprecated - use phase-specific methods)
     # ========================================================================
     
     def get_archive_dir(self, channel_name: str) -> Path:
-        """Get archive directory for a channel.
+        """DEPRECATED: Get legacy NPZ archive directory.
+        
+        Use get_raw_archive_dir() for new code.
         
         Returns: {data_root}/archives/{CHANNEL}/
         """
@@ -134,24 +320,17 @@ class GRAPEPaths:
         return self.data_root / 'archives' / channel_dir
     
     def get_archive_file(self, channel_name: str, timestamp: str, frequency_hz: int) -> Path:
-        """Get path for a specific archive NPZ file.
-        
-        Args:
-            channel_name: Channel name
-            timestamp: ISO timestamp (YYYYMMDDTHHMMSZ)
-            frequency_hz: Frequency in Hz
+        """DEPRECATED: Get path for legacy NPZ archive file.
         
         Returns: {data_root}/archives/{CHANNEL}/{timestamp}_{freq}_iq.npz
         """
         archive_dir = self.get_archive_dir(channel_name)
         return archive_dir / f"{timestamp}_{frequency_hz}_iq.npz"
     
-    # ========================================================================
-    # Analytics Paths (Per-channel products)
-    # ========================================================================
-    
     def get_analytics_dir(self, channel_name: str) -> Path:
-        """Get analytics directory for a channel.
+        """DEPRECATED: Get legacy analytics directory.
+        
+        Use get_phase2_dir() for new code.
         
         Returns: {data_root}/analytics/{CHANNEL}/
         """
@@ -159,135 +338,75 @@ class GRAPEPaths:
         return self.data_root / 'analytics' / channel_dir
     
     def get_digital_rf_dir(self, channel_name: str) -> Path:
-        """Get Digital RF directory for a channel.
+        """DEPRECATED: Get legacy Digital RF directory.
+        
+        Use get_decimated_dir() for Phase 3 decimated DRF.
         
         Returns: {data_root}/analytics/{CHANNEL}/digital_rf/
         """
         return self.get_analytics_dir(channel_name) / 'digital_rf'
     
-    def get_discrimination_dir(self, channel_name: str) -> Path:
-        """Get WWV/WWVH discrimination directory (final weighted voting).
-        
-        Returns: {data_root}/analytics/{CHANNEL}/discrimination/
-        """
-        return self.get_analytics_dir(channel_name) / 'discrimination'
-    
-    def get_tone_detections_dir(self, channel_name: str) -> Path:
-        """Get tone detections directory (1000/1200 Hz timing tones).
-        
-        Returns: {data_root}/analytics/{CHANNEL}/tone_detections/
-        """
-        return self.get_analytics_dir(channel_name) / 'tone_detections'
+    # Legacy analytics subdirectories (for backward compatibility)
     
     def get_tick_windows_dir(self, channel_name: str) -> Path:
-        """Get tick windows directory (5ms tick analysis).
-        
-        Returns: {data_root}/analytics/{CHANNEL}/tick_windows/
-        """
+        """DEPRECATED: Use get_doppler_dir() instead."""
         return self.get_analytics_dir(channel_name) / 'tick_windows'
     
     def get_station_id_440hz_dir(self, channel_name: str) -> Path:
-        """Get 440 Hz station ID directory.
-        
-        Returns: {data_root}/analytics/{CHANNEL}/station_id_440hz/
-        """
+        """DEPRECATED: Use get_ground_truth_dir() instead."""
         return self.get_analytics_dir(channel_name) / 'station_id_440hz'
     
     def get_bcd_discrimination_dir(self, channel_name: str) -> Path:
-        """Get BCD discrimination directory (100 Hz subcarrier analysis).
-        
-        Returns: {data_root}/analytics/{CHANNEL}/bcd_discrimination/
-        """
+        """DEPRECATED: Use get_bcd_correlation_dir() instead."""
         return self.get_analytics_dir(channel_name) / 'bcd_discrimination'
     
     def get_test_signal_dir(self, channel_name: str) -> Path:
-        """Get test signal directory (minutes 8 and 44 scientific modulation test).
-        
-        Returns: {data_root}/analytics/{CHANNEL}/test_signal/
-        """
+        """DEPRECATED: Use get_ground_truth_dir() instead."""
         return self.get_analytics_dir(channel_name) / 'test_signal'
     
-    def get_doppler_dir(self, channel_name: str) -> Path:
-        """Get Doppler estimation directory (ionospheric channel characterization).
-        
-        Contains per-minute Doppler shift estimates derived from tick phase tracking:
-        - Instantaneous Doppler shift (Δf_D) for WWV and WWVH
-        - Maximum coherent integration window (T_c)
-        - Doppler quality metrics
-        
-        Returns: {data_root}/analytics/{CHANNEL}/doppler/
-        """
-        return self.get_analytics_dir(channel_name) / 'doppler'
-    
     def get_timing_dir(self, channel_name: str) -> Path:
-        """Get timing metrics directory (time_snap status, drift, transitions).
-        
-        Returns: {data_root}/analytics/{CHANNEL}/timing/
-        """
+        """DEPRECATED: Use get_clock_offset_dir() instead."""
         return self.get_analytics_dir(channel_name) / 'timing'
     
     def get_quality_dir(self, channel_name: str) -> Path:
-        """Get quality metrics directory.
-        
-        Returns: {data_root}/analytics/{CHANNEL}/quality/
-        """
+        """DEPRECATED: Use get_channel_quality_dir() instead."""
         return self.get_analytics_dir(channel_name) / 'quality'
     
-    def get_decimated_dir(self, channel_name: str) -> Path:
-        """Get decimated NPZ directory (10 Hz NPZ files before DRF conversion).
-        
-        Returns: {data_root}/analytics/{CHANNEL}/decimated/
-        """
-        return self.get_analytics_dir(channel_name) / 'decimated'
-    
     def get_analytics_logs_dir(self, channel_name: str) -> Path:
-        """Get analytics logs directory.
-        
-        Returns: {data_root}/analytics/{CHANNEL}/logs/
-        """
+        """DEPRECATED: Get analytics logs directory."""
         return self.get_analytics_dir(channel_name) / 'logs'
     
     def get_analytics_status_dir(self, channel_name: str) -> Path:
-        """Get analytics status directory.
-        
-        Returns: {data_root}/analytics/{CHANNEL}/status/
-        """
+        """DEPRECATED: Use get_phase2_state_dir() instead."""
         return self.get_analytics_dir(channel_name) / 'status'
     
     # ========================================================================
-    # Spectrogram Paths (Web UI)
+    # Spectrogram Paths (Legacy - now in products)
     # ========================================================================
     
     def get_spectrograms_root(self) -> Path:
-        """Get spectrograms root directory.
+        """DEPRECATED: Get legacy spectrograms root.
         
         Returns: {data_root}/spectrograms/
         """
         return self.data_root / 'spectrograms'
     
     def get_spectrograms_date_dir(self, date: str) -> Path:
-        """Get spectrograms directory for a specific date.
-        
-        Args:
-            date: Date in YYYYMMDD format
+        """DEPRECATED: Get spectrograms directory for a date.
         
         Returns: {data_root}/spectrograms/{YYYYMMDD}/
         """
         return self.get_spectrograms_root() / date
     
     def get_spectrogram_path(self, channel_name: str, date: str, spec_type: str = 'decimated') -> Path:
-        """Get path for a specific spectrogram PNG.
+        """Get path for a spectrogram PNG.
         
-        Args:
-            channel_name: Channel name
-            date: Date in YYYYMMDD format
-            spec_type: Type ('decimated', 'archive', etc.) - decimated = from 10 Hz NPZ
+        Now routes to Phase 3 products directory.
         
-        Returns: {data_root}/spectrograms/{YYYYMMDD}/{CHANNEL}_{YYYYMMDD}_{type}_spectrogram.png
+        Returns: {data_root}/products/{CHANNEL}/spectrograms/{date}_{type}.png
         """
-        channel_dir = channel_name_to_dir(channel_name)
-        filename = f"{channel_dir}_{date}_{spec_type}_spectrogram.png"
-        return self.get_spectrograms_date_dir(date) / filename
+        filename = f"{date}_{spec_type}.png"
+        return self.get_spectrograms_dir(channel_name) / filename
     
     # ========================================================================
     # State Paths (Service persistence)
@@ -344,17 +463,45 @@ class GRAPEPaths:
     # ========================================================================
     
     def discover_channels(self) -> list[str]:
-        """Discover all channels with archive data.
+        """Discover all channels with raw archive data.
         
         Returns:
             List of channel names (human-readable format)
         """
+        # Check new Phase 1 location first
+        raw_dir = self.get_raw_archive_root()
+        if raw_dir.exists():
+            channels = []
+            for channel_dir in raw_dir.iterdir():
+                if channel_dir.is_dir():
+                    channels.append(dir_to_channel_name(channel_dir.name))
+            if channels:
+                return sorted(channels)
+        
+        # Fall back to legacy archives directory
         archives_dir = self.data_root / 'archives'
         if not archives_dir.exists():
             return []
         
         channels = []
         for channel_dir in archives_dir.iterdir():
+            if channel_dir.is_dir():
+                channels.append(dir_to_channel_name(channel_dir.name))
+        
+        return sorted(channels)
+    
+    def discover_phase2_channels(self) -> list[str]:
+        """Discover channels with Phase 2 analytical results.
+        
+        Returns:
+            List of channel names with Phase 2 data
+        """
+        phase2_dir = self.get_phase2_root()
+        if not phase2_dir.exists():
+            return []
+        
+        channels = []
+        for channel_dir in phase2_dir.iterdir():
             if channel_dir.is_dir():
                 channels.append(dir_to_channel_name(channel_dir.name))
         

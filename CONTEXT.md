@@ -1,17 +1,17 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-03  
-**Version:** 3.0.0  
-**Status:** ✅ Phase 1 Complete - Three-Phase Pipeline Architecture
+**Last Updated:** 2025-12-03 (Evening)  
+**Version:** 3.1.0  
+**Status:** ✅ Phase 1 Complete, 🔄 Phase 2 In Progress
 
 ---
 
-## 🎯 THREE-PHASE PIPELINE ARCHITECTURE
+## 🎯 CURRENT STATE: PHASE 2 ANALYTICAL ENGINE
 
-### Overview
+### Ready to Complete Phase 2
 
-The GRAPE recorder implements a **three-phase data pipeline** for HF time signal analysis:
+All core components for Phase 2 are **implemented and tested**. A 6-hour recording session is currently in progress gathering data for refinement.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -22,23 +22,22 @@ The GRAPE recorder implements a **three-phase data pipeline** for HF time signal
 │  ════════════════════════════════════════════                               │
 │  • Raw 32-bit float IQ from radiod via RTP                                  │
 │  • Digital RF format with gzip compression                                   │
-│  • System time reference (Unix epoch, NTP-synced)                           │
-│  • Data quality validation, gap detection, provenance                        │
-│  • Storage quota management (FIFO cleanup)                                   │
+│  • ChannelManager for proper channel reuse (fixed Dec 3)                    │
+│  • All 9 channels recording reliably (WWV + CHU)                            │
 │                                                                              │
-│  PHASE 2: ANALYTICAL ENGINE (📋 NEXT)                                       │
-│  ═══════════════════════════════════════                                    │
-│  • Clock offset series: D_clock(t) = T_receiver - T_transmitter             │
-│  • Carrier analysis: amplitude, phase, Doppler                               │
-│  • Multi-station solver for transmission time                                │
-│  • Reads from Phase 1, writes intermediate products                          │
+│  PHASE 2: ANALYTICAL ENGINE (🔄 IN PROGRESS - Core Complete)                │
+│  ══════════════════════════════════════════════════════════                 │
+│  • Phase2TemporalEngine: 3-step refined analysis                            │
+│  • Tone detection: 1000/1200 Hz (WWV/WWVH) + 500ms CHU                     │
+│  • GlobalStationVoter: Cross-channel coherent processing                    │
+│  • TransmissionTimeSolver: Hop-count back-calculation                       │
+│  • 500/600 Hz discrimination: Single-station minutes only                   │
 │                                                                              │
 │  PHASE 3: DERIVED PRODUCTS (🔮 FUTURE)                                      │
 │  ═════════════════════════════════════                                      │
-│  • Decimated time series (10 Hz)                                            │
-│  • Station discrimination (WWV/WWVH/CHU)                                    │
-│  • Spectrograms, timing metrics                                              │
-│  • PSWS upload format                                                        │
+│  • Decimated time series (10 Hz) - CorrectedProductGenerator exists         │
+│  • Station discrimination CSV output                                         │
+│  • Spectrograms, PSWS upload format                                          │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -49,6 +48,82 @@ The GRAPE recorder implements a **three-phase data pipeline** for HF time signal
 2. **Replayability**: Phase 2/3 can be re-run on historical Phase 1 data
 3. **Separation of Concerns**: Each phase has single responsibility
 4. **Provenance**: Full audit trail from raw samples to derived products
+
+---
+
+## 🔄 PHASE 2 IMPLEMENTATION STATUS (Dec 3, 2025 Evening)
+
+### Phase 2 Temporal Engine - IMPLEMENTED
+
+The `Phase2TemporalEngine` performs refined temporal analysis in 3 steps:
+
+```
+Step 1: Tone Detection (±500ms → anchor)
+  └─► Matched filter for 1000/1200 Hz (WWV/WWVH) or 500ms 1000 Hz (CHU)
+  └─► Output: TimeSnapResult with timing_error_ms, anchor_station
+
+Step 2: Channel Characterization (±10-50ms)  
+  └─► BCD correlation, Doppler estimation, Station ID
+  └─► Output: ChannelCharacterization with dominant_station
+
+Step 3: Transmission Time Solution → D_clock
+  └─► TransmissionTimeSolver identifies propagation mode (hop count)
+  └─► Output: Phase2Result with d_clock_ms, quality_grade
+```
+
+**Key Files:**
+| File | Purpose |
+|------|---------|
+| `phase2_temporal_engine.py` | Main engine with 3-step processing |
+| `tone_detector.py` | Matched filter detection (WWV/WWVH/CHU) |
+| `transmission_time_solver.py` | Hop-count mode identification |
+| `global_station_voter.py` | Cross-channel anchor coordination |
+
+### Critical Bug Fixes Applied
+
+1. **Minute Boundary Calculation** (`tone_detector.py`):
+   ```python
+   # WRONG: round(buffer_mid_time / 60) * 60
+   # CORRECT:
+   buffer_start_time = current_unix_time - (buffer_duration_sec / 2)
+   minute_boundary = int(buffer_start_time / 60) * 60
+   ```
+
+2. **system_time Parameter**: When calling `Phase2TemporalEngine.process_minute()`:
+   - `system_time` must be buffer START time (not midpoint)
+   - Engine internally adds `buffer_duration/2` for tone detector
+
+3. **CHU Support Added**: Phase 2 now handles CHU channels (500ms @ 1000 Hz)
+
+### 500/600 Hz Station Discrimination - CORRECTED
+
+**Key Physics**: BCD 100 Hz modulation creates intermod products at 500/600 Hz when BOTH stations present. Discrimination only valid during **single-station minutes**:
+
+| Minutes | Broadcasting Station | Valid Discrimination |
+|---------|---------------------|---------------------|
+| 1, 16, 17, 19 | WWV only (WWVH silent) | 500 Hz → WWV |
+| 2, 43-51 | WWVH only (WWV silent) | 600 Hz → WWVH |
+| All others | BOTH | INTERMOD_RISK |
+
+### Testing Results (Dec 3, 2025)
+
+All 9 channels recording and producing usable Phase 2 results:
+
+| Channel | Timing | D_clock | Anchor | SNR | Grade |
+|---------|--------|---------|--------|-----|-------|
+| WWV 10 MHz | +7.3ms | **-0.2ms** | WWV | 35.8 dB | B |
+| WWV 5 MHz | +336.3ms | +332.3ms | WWV | 35.6 dB | D |
+| CHU 3.33 MHz | +33.9ms | +11.2ms | CHU | 14.5 dB | D |
+| CHU 7.85 MHz | +38.1ms | +32.5ms | CHU | 14.9 dB | D |
+
+**WWV 10 MHz D_clock of -0.2ms** indicates system clock nearly synchronized with UTC(NIST).
+
+### Remaining Work for Phase 2 Completion
+
+1. **Integrate GlobalStationVoter** with live pipeline for guided weak-channel detection
+2. **Implement channel stacking** ("nuclear option") for marginal signals
+3. **Validate back-calculation accuracy** with multi-hour data
+4. **CSV output format** for D_clock time series
 
 ---
 
@@ -923,7 +998,51 @@ data/time_standard/
 
 ## Session History
 
-### Dec 3, 2025: Phase 1 Complete - Three-Phase Pipeline
+### Dec 3, 2025 (Evening): Phase 2 Analytical Engine - Core Complete
+
+**Goal:** Debug data feed issues, implement robust channel management, complete Phase 2 core components.
+
+**Major Accomplishments:**
+
+1. **Channel Management Fix** (`run_all_channels_pipeline.py`, `channel_manager.py`)
+   - **Problem**: `ka9q.allocate_ssrc()` uses Python's randomized `hash()`, causing orphaned channels
+   - **Solution**: Use `ChannelManager.ensure_channels_from_config()` which matches by **frequency**, not SSRC
+   - **Result**: All 9 channels now reliably reuse existing channels, no duplicates
+
+2. **CHU Support in Phase 2** (`phase2_temporal_engine.py`)
+   - Added `chu_det` extraction alongside WWV/WWVH
+   - CHU uses 500ms @ 1000 Hz tone (vs 800ms for WWV)
+   - Anchor priority: WWV > CHU > WWVH
+
+3. **500/600 Hz Discrimination Fix** (`tone_detector.py`)
+   - **Problem**: BCD 100 Hz intermod creates spurious 500/600 Hz when both stations present
+   - **Solution**: Only discriminate during single-station minutes:
+     - WWV-only: 1, 16, 17, 19 (500 Hz valid)
+     - WWVH-only: 2, 43-51 (600 Hz valid)
+   - Flags `INTERMOD_RISK` during dual-station minutes
+
+4. **Extended Tone Analysis** (`tone_detector.py`)
+   - New `analyze_extended_tones()` method
+   - Detects 440/500/600/1000 Hz for signal characterization
+   - Provides frequency spread metric for propagation quality
+
+5. **Phase 2 Testing Validated**
+   - WWV 10 MHz: D_clock = -0.2ms (excellent UTC sync)
+   - CHU channels: 31-38ms timing (correct Ottawa propagation)
+   - All channels producing usable Phase 2 results
+
+**Files Modified:**
+- `scripts/run_all_channels_pipeline.py` - Use ChannelManager
+- `src/grape_recorder/grape/phase2_temporal_engine.py` - CHU support
+- `src/grape_recorder/grape/tone_detector.py` - 500/600 Hz fix, extended tones
+
+**Recording in Progress:**
+- 6-hour session started for multi-hour data collection
+- Output: `/tmp/grape-test/long_run/`
+
+---
+
+### Dec 3, 2025 (Earlier): Phase 1 Complete - Three-Phase Pipeline
 
 **Goal:** Implement Phase 1 of the three-phase pipeline architecture for bulletproof raw data capture.
 

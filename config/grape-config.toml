@@ -25,24 +25,30 @@ mode = "test"
 test_data_root = "/tmp/grape-test"
 production_data_root = "/var/lib/signal-recorder"
 
-# Directory structure (auto-created based on mode):
+# Directory structure - THREE-PHASE PIPELINE:
 # CRITICAL: All code MUST use centralized GRAPEPaths API:
-#   - Python:     src/signal_recorder/paths.py
-#   - JavaScript: web-ui/grape-paths.js
-#   - Protocol:   WEB_UI_ANALYTICS_SYNC_PROTOCOL.md
+#   - Python: src/grape_recorder/paths.py
 #
 # ${data_root}/
-#   archives/{CHANNEL}/                              - Raw 20 kHz NPZ files
-#   analytics/{CHANNEL}/
-#     decimated/                                     - 10 Hz NPZ files (pre-DRF)
-#     digital_rf/{YYYYMMDD}/.../{CHANNEL}/*.h5       - 10 Hz Digital RF files
-#     discrimination/                                - WWV/WWVH analysis CSVs
-#     quality/                                       - Quality metrics CSVs
-#     logs/                                          - Processing logs
-#     status/                                        - Runtime status
-#   spectrograms/{YYYYMMDD}/*.png                    - Web UI spectrograms
-#   state/analytics-{channel_key}.json               - Service state
-#   status/analytics-service-status.json             - System status
+#   raw_archive/{CHANNEL}/{YYYYMMDD}/                - PHASE 1: Immutable DRF archive
+#     {YYYY-MM-DDTHH}/rf@{timestamp}.h5              - 20 kHz complex64 IQ
+#     metadata/                                       - NTP status, gaps, provenance
+#
+#   phase2/{CHANNEL}/                                - PHASE 2: Analytical engine
+#     clock_offset/                                   - D_clock(t) time series
+#     carrier_analysis/                               - Amplitude, phase, Doppler
+#     channel_quality/                                - Delay spread, coherence
+#     discrimination/                                 - WWV/WWVH per-minute
+#     bcd_correlation/                                - 100 Hz BCD analysis
+#     ground_truth/                                   - 440/500/600 Hz station ID
+#
+#   products/{CHANNEL}/                              - PHASE 3: Derived products
+#     decimated/                                      - 10 Hz DRF time series
+#     spectrograms/                                   - PNG images
+#     psws_upload/                                    - PSWS format files
+#
+#   state/                                           - Global state
+#   status/                                          - System status
 
 recording_interval = 60
 continuous = true

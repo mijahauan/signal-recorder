@@ -446,48 +446,32 @@ class ClockOffsetEngine:
     def _init_analyzers(self):
         """Initialize analysis components."""
         try:
-            from .tone_detector import MultiStationToneDetector
-            from .wwvh_discrimination import WWVHDiscriminator
-            from .transmission_time_solver import (
-                TransmissionTimeSolver,
-                MultiStationSolver,
-                create_solver_from_grid,
-                create_multi_station_solver
-            )
+            from .phase2_temporal_engine import Phase2TemporalEngine
             from .raw_archive_writer import RawArchiveReader
             
-            # Tone detector
-            self.tone_detector = MultiStationToneDetector(
+            # Phase 2 Temporal Engine - implements refined analysis order:
+            # 1. Fundamental Tone Detection → Time Snap Anchor
+            # 2. Ionospheric Channel Characterization → Confidence Scoring
+            # 3. Transmission Time Solution → D_clock
+            self.phase2_engine = Phase2TemporalEngine(
+                raw_archive_dir=self.raw_archive_dir,
+                output_dir=self.output_dir,
                 channel_name=self.channel_name,
-                sample_rate=3000  # Internal processing rate after decimation
-            )
-            
-            # WWV/H discriminator
-            self.discriminator = WWVHDiscriminator(
-                channel_name=self.channel_name,
+                frequency_hz=self.frequency_hz,
                 receiver_grid=self.receiver_grid,
                 sample_rate=self.sample_rate
             )
             
-            # Transmission time solver for UTC back-calculation
-            self.solver = create_solver_from_grid(self.receiver_grid, self.sample_rate)
-            
-            # Multi-station solver for combining WWV/WWVH/CHU
-            self.multi_station_solver = create_multi_station_solver(
-                self.receiver_grid,
-                self.sample_rate
-            )
-            
-            # Raw archive reader
+            # Raw archive reader (for batch processing)
             self.archive_reader = RawArchiveReader(
                 self.raw_archive_dir,
                 self.channel_name
             )
             
-            logger.info("✅ All analyzers initialized")
+            logger.info("✅ Phase 2 Temporal Engine initialized")
             
         except ImportError as e:
-            logger.error(f"Failed to initialize analyzers: {e}")
+            logger.error(f"Failed to initialize Phase 2 engine: {e}")
             raise
     
     def process_minute(
@@ -499,11 +483,12 @@ class ClockOffsetEngine:
         """
         Process one minute of IQ data to produce a clock offset measurement.
         
-        This is the core analysis function that:
-        1. Detects WWV/WWVH tones
-        2. Discriminates between stations
-        3. Calculates propagation delay
-        4. Produces D_clock
+        This method now delegates to the Phase2TemporalEngine which implements
+        the refined temporal analysis order:
+        
+        1. Fundamental Tone Detection → Time Snap Anchor
+        2. Ionospheric Channel Characterization → Confidence Scoring
+        3. Transmission Time Solution → D_clock
         
         Args:
             iq_samples: Complex64 IQ samples (60 seconds at sample_rate)
@@ -513,142 +498,62 @@ class ClockOffsetEngine:
         Returns:
             ClockOffsetMeasurement or None if no valid detection
         """
-        from ..interfaces.data_models import StationType
-        
-        # Calculate expected minute boundary
-        minute_boundary = (int(system_time) // 60) * 60
-        
-        # Step 1: Resample to 3 kHz for tone detection
-        # (existing tone detector expects 3 kHz)
-        decimation_factor = self.sample_rate // 3000
-        iq_3k = iq_samples[::decimation_factor]
-        
-        # Step 2: Run tone detection
+        # Delegate to Phase2TemporalEngine for refined analysis order
         try:
-            detections = self.tone_detector.process_samples(
-                timestamp=system_time,
-                samples=iq_3k
+            phase2_result = self.phase2_engine.process_minute(
+                iq_samples=iq_samples,
+                system_time=system_time,
+                rtp_timestamp=rtp_timestamp
             )
         except Exception as e:
-            logger.warning(f"Tone detection failed: {e}")
+            logger.warning(f"Phase 2 processing failed: {e}")
             return None
         
-        if not detections:
-            logger.debug("No tones detected")
+        if phase2_result is None:
+            logger.debug("Phase 2 returned no result")
             return None
         
-        # Step 3: Run discrimination to identify dominant station
-        discrimination = self.discriminator.compute_discrimination(
-            detections=detections,
-            minute_timestamp=system_time
-        )
+        # Convert Phase2Result to ClockOffsetMeasurement
+        solution = phase2_result.solution
+        channel = phase2_result.channel
+        time_snap = phase2_result.time_snap
         
-        # Step 4: Get channel metrics from discrimination
-        delay_spread_ms = getattr(discrimination, 'test_signal_delay_spread_ms', 0.5) or 0.5
-        doppler_std_hz = getattr(discrimination, 'doppler_wwv_std_hz', 0.1) or 0.1
-        fss_db = getattr(discrimination, 'test_signal_frequency_selectivity_db', None)
+        # Map quality grade
+        quality_map = {
+            'A': ClockOffsetQuality.EXCELLENT,
+            'B': ClockOffsetQuality.GOOD,
+            'C': ClockOffsetQuality.FAIR,
+            'D': ClockOffsetQuality.POOR,
+            'X': ClockOffsetQuality.INVALID
+        }
+        quality = quality_map.get(phase2_result.quality_grade, ClockOffsetQuality.FAIR)
         
-        # Step 5: Solve for transmission time using TransmissionTimeSolver
-        # This is the "Holy Grail" - back-calculating UTC(NIST)
-        best_detection = None
-        best_confidence = 0
-        
-        for det in detections:
-            if det.confidence > best_confidence:
-                best_detection = det
-                best_confidence = det.confidence
-        
-        if best_detection is None:
-            return None
-        
-        # Determine station
-        station = discrimination.dominant_station or 'UNKNOWN'
-        if station == 'BALANCED':
-            # Use detection's station
-            station = best_detection.station.value if best_detection.station else 'WWV'
-        
-        # Map station name for solver
-        solver_station = 'WWV' if station in ('WWV', 'UNKNOWN') else station
-        if solver_station == 'WWVH':
-            solver_station = 'WWVH'
-        elif solver_station not in ('WWV', 'WWVH', 'CHU'):
-            solver_station = 'WWV'
-        
-        # Calculate expected second boundary RTP
-        # (tone should arrive shortly after the second boundary)
-        expected_second_rtp = rtp_timestamp  # First sample of minute
-        
-        # Get arrival RTP from detection
-        # timing_error_ms is offset from expected arrival
-        arrival_offset_samples = int((best_detection.timing_error_ms or 0) * self.sample_rate / 1000)
-        arrival_rtp = rtp_timestamp + arrival_offset_samples
-        
-        try:
-            solver_result = self.solver.solve(
-                station=solver_station,
-                frequency_mhz=self.frequency_hz / 1e6,
-                arrival_rtp=arrival_rtp,
-                delay_spread_ms=delay_spread_ms,
-                doppler_std_hz=doppler_std_hz,
-                fss_db=fss_db,
-                expected_second_rtp=expected_second_rtp
-            )
-        except Exception as e:
-            logger.warning(f"TransmissionTimeSolver failed: {e}")
-            return None
-        
-        # Step 6: Calculate D_clock
-        # D_clock = t_system - t_UTC
-        # emission_offset_ms is the offset from the second boundary
-        # If emission_offset_ms ≈ 0, our clock is accurate
-        # If positive, our clock is fast; if negative, our clock is slow
-        
-        # The solver gives us utc_nist_offset_ms which is the clock error
-        clock_offset_ms = solver_result.utc_nist_offset_ms or solver_result.emission_offset_ms
-        
-        # Calculate actual UTC time
-        utc_time = system_time - (clock_offset_ms / 1000.0)
-        
-        # Determine quality grade
-        if solver_result.confidence > 0.8 and abs(clock_offset_ms) < 2:
-            quality = ClockOffsetQuality.EXCELLENT
-            uncertainty_ms = 0.5
-        elif solver_result.confidence > 0.6 and abs(clock_offset_ms) < 5:
-            quality = ClockOffsetQuality.GOOD
-            uncertainty_ms = 1.5
-        elif solver_result.confidence > 0.3:
-            quality = ClockOffsetQuality.FAIR
-            uncertainty_ms = 3.0
-        else:
-            quality = ClockOffsetQuality.POOR
-            uncertainty_ms = 5.0
-        
-        # Create measurement
+        # Create measurement from Phase2Result
         measurement = ClockOffsetMeasurement(
-            system_time=system_time,
-            utc_time=utc_time,
-            minute_boundary_utc=minute_boundary,
-            clock_offset_ms=clock_offset_ms,
-            station=station,
-            frequency_mhz=self.frequency_hz / 1e6,
-            propagation_delay_ms=solver_result.propagation_delay_ms,
-            propagation_mode=solver_result.mode.value,
-            n_hops=solver_result.n_hops,
-            confidence=solver_result.confidence,
-            uncertainty_ms=uncertainty_ms,
+            system_time=phase2_result.system_time,
+            utc_time=phase2_result.utc_time,
+            minute_boundary_utc=phase2_result.minute_boundary_utc,
+            clock_offset_ms=solution.d_clock_ms,
+            station=solution.station,
+            frequency_mhz=solution.frequency_mhz,
+            propagation_delay_ms=solution.t_propagation_ms,
+            propagation_mode=solution.propagation_mode,
+            n_hops=solution.n_hops,
+            confidence=solution.confidence,
+            uncertainty_ms=solution.uncertainty_ms,
             quality_grade=quality,
-            snr_db=best_detection.snr_db or 0.0,
-            delay_spread_ms=delay_spread_ms,
-            doppler_std_hz=doppler_std_hz,
-            fss_db=fss_db,
-            wwv_power_db=discrimination.wwv_power_db,
-            wwvh_power_db=discrimination.wwvh_power_db,
-            discrimination_confidence=discrimination.confidence,
-            utc_verified=solver_result.utc_nist_verified,
-            multi_station_verified=False,  # Set later if multi-station solving used
+            snr_db=time_snap.wwv_snr_db or time_snap.wwvh_snr_db or 0.0,
+            delay_spread_ms=channel.delay_spread_ms or 0.5,
+            doppler_std_hz=channel.doppler_wwv_std_hz or channel.doppler_wwvh_std_hz or 0.1,
+            fss_db=None,  # TODO: Extract from test signal if available
+            wwv_power_db=None,  # TODO: Map from channel characterization
+            wwvh_power_db=None,
+            discrimination_confidence=channel.station_confidence,
+            utc_verified=solution.utc_verified,
+            multi_station_verified=solution.dual_station_verified,
             rtp_timestamp=rtp_timestamp,
-            processed_at=datetime.now(tz=timezone.utc).timestamp(),
-            processing_version="2.0.0"
+            processed_at=phase2_result.processed_at,
+            processing_version=phase2_result.processing_version
         )
         
         # Add to series and write to CSV
@@ -658,8 +563,9 @@ class ClockOffsetEngine:
             self.measurements_processed += 1
         
         logger.info(
-            f"D_clock: {clock_offset_ms:+.2f}ms (station={station}, "
-            f"mode={solver_result.mode.value}, confidence={solver_result.confidence:.2f})"
+            f"D_clock: {solution.d_clock_ms:+.2f}ms (station={solution.station}, "
+            f"mode={solution.propagation_mode}, confidence={solution.confidence:.2f}, "
+            f"grade={phase2_result.quality_grade})"
         )
         
         return measurement

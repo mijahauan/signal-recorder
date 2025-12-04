@@ -87,31 +87,22 @@ class ChannelPipeline:
         self.control = control
         
         try:
-            # Create channel on radiod
-            logger.info(f"[{self.channel_desc}] Creating channel at {self.frequency_hz/1e6:.2f} MHz...")
+            # SSRC should be pre-assigned by ChannelManager
+            if not self.ssrc:
+                logger.error(f"[{self.channel_desc}] No SSRC assigned!")
+                return False
             
-            self.ssrc = control.create_channel(
-                frequency_hz=self.frequency_hz,
-                preset='iq',
-                sample_rate=self.sample_rate,
-                agc_enable=0  # AGC disabled - F32 has 144 dB dynamic range
-            )
-            
-            # Set 32-bit float encoding - provides enough dynamic range
-            # that AGC is not needed (144 dB vs 96 dB for 16-bit)
-            control.set_output_encoding(self.ssrc, Encoding.F32)
-            logger.info(f"[{self.channel_desc}] SSRC: {self.ssrc} (F32, no AGC)")
-            
-            # Wait for channel to appear
-            time.sleep(0.3)
-            
-            # Discover channel info
+            # Discover channel info using the pre-assigned SSRC
             channels = discover_channels(self.status_address)
             self.ka9q_channel = channels.get(self.ssrc)
             
-            if self.ka9q_channel is None:
-                logger.error(f"[{self.channel_desc}] Channel not found in status")
+            if not self.ka9q_channel:
+                logger.error(f"[{self.channel_desc}] SSRC {self.ssrc} not found in radiod")
                 return False
+            
+            # Log the channel info
+            logger.info(f"[{self.channel_desc}] Channel ready: freq={self.ka9q_channel.frequency/1e6:.3f} MHz, "
+                        f"rate={self.ka9q_channel.sample_rate}, mcast={self.ka9q_channel.multicast_address}:{self.ka9q_channel.port}")
             
             # Create pipeline config
             pipeline_config = PipelineConfig(
@@ -281,8 +272,6 @@ def run_all_channels(
         duration_sec: Recording duration (None = run until Ctrl+C)
         quota_gb: Storage quota per channel in GB (None = unlimited)
     """
-    from ka9q import RadiodControl
-    
     # Load config
     config = load_toml(config_path)
     
@@ -332,19 +321,49 @@ def run_all_channels(
             quota=storage_quota
         )
     
-    # Connect to radiod
-    logger.info("Connecting to radiod...")
+    # Use ChannelManager to ensure channels exist (matches by frequency, reuses existing)
+    logger.info("Setting up channels via ChannelManager...")
     try:
-        control = RadiodControl(status_address)
-        logger.info("✅ Connected to radiod")
+        from grape_recorder.channel_manager import ChannelManager
+        channel_manager = ChannelManager(status_address)
+        
+        # Build channel specs and defaults for ChannelManager
+        channel_defaults = {
+            'preset': 'iq',
+            'sample_rate': sample_rate,
+            'agc': 0,
+            'gain': 0.0
+        }
+        
+        # Ensure channels exist - this reuses existing or creates new
+        freq_to_ssrc = channel_manager.ensure_channels_from_config(
+            channels=channels_config,
+            defaults=channel_defaults,
+            destination=None  # Use radiod's default
+        )
+        
+        if not freq_to_ssrc:
+            logger.error("Failed to set up channels in radiod")
+            return False
+        
+        logger.info(f"✅ {len(freq_to_ssrc)} channels ready")
+        
     except Exception as e:
-        logger.error(f"Failed to connect to radiod: {e}")
+        logger.error(f"Failed to set up channels: {e}")
+        import traceback
+        traceback.print_exc()
         return False
     
-    # Create pipelines for all channels
+    # Create pipelines for all channels (using allocated SSRCs)
     pipelines: List[ChannelPipeline] = []
     
     for ch_config in channels_config:
+        freq_hz = int(ch_config['frequency_hz'])
+        ssrc = freq_to_ssrc.get(freq_hz)
+        if not ssrc:
+            logger.warning(f"No SSRC for {freq_hz/1e6:.3f} MHz, skipping")
+            continue
+            
         pipeline = ChannelPipeline(
             channel_desc=ch_config['description'],
             frequency_hz=ch_config['frequency_hz'],
@@ -353,17 +372,18 @@ def run_all_channels(
             station_config=station_config,
             status_address=status_address
         )
+        pipeline.ssrc = ssrc  # Pre-assign SSRC from ChannelManager
         pipelines.append(pipeline)
     
-    # Start all pipelines
+    # Start all pipelines (channels already exist)
     logger.info("")
     logger.info("Starting pipelines...")
     started = 0
     
     for pipeline in pipelines:
-        if pipeline.start(control):
+        if pipeline.start(channel_manager.control):
             started += 1
-        time.sleep(0.2)  # Stagger starts
+        time.sleep(0.1)  # Brief stagger
     
     logger.info("")
     logger.info(f"✅ Started {started}/{len(pipelines)} channels")

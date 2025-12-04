@@ -220,8 +220,13 @@ class MultiStationToneDetector(IMultiStationToneDetector):
             List of ToneDetectionResult objects, sorted by SNR (strongest first)
         """
         # Get minute boundary for the EXPECTED tone (around :00.0)
+        # Calculate buffer start time (current_unix_time is buffer MIDPOINT)
         buffer_duration_sec = len(iq_samples) / self.sample_rate
-        minute_boundary = int((current_unix_time + buffer_duration_sec/2) / 60) * 60
+        buffer_start_time = current_unix_time - (buffer_duration_sec / 2)
+        
+        # Use floor to find the minute boundary that the buffer START falls in
+        # This ensures we detect the tone at the start of the buffer, not the next minute
+        minute_boundary = int(buffer_start_time / 60) * 60
         
         # Check if we already detected this minute (prevent duplicates)
         if minute_boundary in self.last_detections_by_minute:
@@ -631,6 +636,179 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         """Configure station priorities for time_snap selection"""
         self.station_priorities.update(priorities)
         logger.info(f"Station priorities updated: {self.station_priorities}")
+    
+    # ===== Extended Tone Analysis (440/500/600 Hz) =====
+    
+    def analyze_extended_tones(
+        self,
+        iq_samples: np.ndarray,
+        buffer_start_time: float
+    ) -> Dict[str, any]:
+        """
+        Analyze extended WWV/WWVH tones for STATION DISCRIMINATION.
+        
+        KEY INSIGHT: 500 Hz and 600 Hz are STATION IDENTIFIERS:
+        - WWV broadcasts 500 Hz during seconds 1-44 (except voice/silent)
+        - WWVH broadcasts 600 Hz during seconds 1-44 (except voice/silent)
+        
+        This provides DIRECT station identification without timing analysis!
+        If 500 Hz > 600 Hz → WWV dominant
+        If 600 Hz > 500 Hz → WWVH dominant
+        
+        Conditions for valid discrimination:
+        - Buffer must contain mid-minute data (seconds 1-44)
+        - Avoid seconds 0, 29-30 (minute markers), 45-59 (voice/announcements)
+        - Both tones should be checked - ratio determines station
+        
+        Also analyzes:
+        - 440 Hz: Test tone (seconds 1-2 on some minutes)
+        - 1000 Hz: Reference for comparison
+        
+        Args:
+            iq_samples: Complex IQ samples
+            buffer_start_time: UTC timestamp of buffer start
+            
+        Returns:
+            Dict with discrimination results and tone analysis
+        """
+        if self.is_chu_channel:
+            return {'status': 'CHU channel - WWV tones not applicable'}
+        
+        # Check if buffer is in valid discrimination window
+        # 500/600 Hz discrimination only valid when ONE station broadcasts alone
+        # (otherwise BCD 100 Hz intermod creates 500/600 Hz products)
+        buffer_second = int(buffer_start_time) % 60
+        buffer_minute = int(buffer_start_time / 60) % 60
+        
+        # WWV-only minutes: 1, 16, 17, 19 (WWVH silent - 500 Hz is pure WWV)
+        wwv_only_minutes = {1, 16, 17, 19}
+        # WWVH-only minutes: 2, 43-51 (WWV silent - 600 Hz is pure WWVH)
+        wwvh_only_minutes = {2, 43, 44, 45, 46, 47, 48, 49, 50, 51}
+        
+        # Valid for discrimination only during single-station minutes
+        is_wwv_only_minute = buffer_minute in wwv_only_minutes
+        is_wwvh_only_minute = buffer_minute in wwvh_only_minutes
+        valid_for_discrimination = (is_wwv_only_minute or is_wwvh_only_minute) and (1 <= buffer_second <= 44)
+        
+        results = {
+            'buffer_time': buffer_start_time,
+            'buffer_second': buffer_second,
+            'buffer_minute': buffer_minute,
+            'valid_for_discrimination': valid_for_discrimination,
+            'is_wwv_only_minute': is_wwv_only_minute,
+            'is_wwvh_only_minute': is_wwvh_only_minute,
+            'expected_station': 'WWV' if is_wwv_only_minute else ('WWVH' if is_wwvh_only_minute else 'BOTH'),
+            'tones': {},
+            'dominant_tone': None,
+            'frequency_spread_db': 0.0,
+            # Station discrimination results
+            'wwv_indicator_snr': None,      # 500 Hz SNR
+            'wwvh_indicator_snr': None,     # 600 Hz SNR  
+            'discrimination_ratio_db': None, # 500 Hz - 600 Hz (positive = WWV)
+            'indicated_station': None,       # 'WWV', 'WWVH', or 'AMBIGUOUS'
+            'discrimination_confidence': 0.0
+        }
+        
+        # Convert to audio (envelope detection)
+        audio_signal = np.abs(iq_samples)
+        audio_signal = audio_signal - np.mean(audio_signal)  # Remove DC
+        
+        # Extended tone frequencies to analyze
+        extended_tones = {
+            '440Hz': 440,
+            '500Hz': 500,
+            '600Hz': 600,
+            '1000Hz': 1000,  # Include for comparison
+        }
+        
+        tone_powers = {}
+        
+        for tone_name, freq_hz in extended_tones.items():
+            # Create matched filter template (short duration for mid-second tones)
+            duration = 0.5  # 500ms analysis window
+            t = np.arange(0, duration, 1/self.sample_rate)
+            template_sin = np.sin(2 * np.pi * freq_hz * t)
+            template_cos = np.cos(2 * np.pi * freq_hz * t)
+            
+            # Correlate with audio
+            # Use only the middle portion of the buffer to avoid edge effects
+            mid_start = len(audio_signal) // 4
+            mid_end = 3 * len(audio_signal) // 4
+            audio_segment = audio_signal[mid_start:mid_end]
+            
+            if len(audio_segment) < len(template_sin):
+                continue
+            
+            corr_sin = correlate(audio_segment, template_sin, mode='valid')
+            corr_cos = correlate(audio_segment, template_cos, mode='valid')
+            
+            # Phase-invariant magnitude
+            magnitude = np.sqrt(corr_sin**2 + corr_cos**2)
+            peak_power = np.max(magnitude)
+            
+            # Estimate noise floor
+            noise_floor = np.median(magnitude)
+            
+            # SNR estimate
+            if noise_floor > 0:
+                snr_db = 10 * np.log10(peak_power / noise_floor)
+            else:
+                snr_db = 0.0
+            
+            tone_powers[tone_name] = peak_power
+            results['tones'][tone_name] = {
+                'frequency_hz': freq_hz,
+                'peak_power': float(peak_power),
+                'snr_db': float(snr_db),
+                'detected': snr_db > 6.0  # 6 dB threshold
+            }
+        
+        # Find dominant tone
+        if tone_powers:
+            dominant = max(tone_powers, key=tone_powers.get)
+            results['dominant_tone'] = dominant
+            
+            # Calculate frequency spread (max - min power ratio)
+            max_power = max(tone_powers.values())
+            min_power = min(tone_powers.values()) if min(tone_powers.values()) > 0 else 1e-10
+            results['frequency_spread_db'] = float(10 * np.log10(max_power / min_power))
+        
+        # === STATION DISCRIMINATION via 500/600 Hz ===
+        # Only valid during single-station minutes (avoids BCD 100 Hz intermod)
+        if '500Hz' in results['tones'] and '600Hz' in results['tones']:
+            snr_500 = results['tones']['500Hz']['snr_db']
+            snr_600 = results['tones']['600Hz']['snr_db']
+            
+            results['wwv_indicator_snr'] = snr_500
+            results['wwvh_indicator_snr'] = snr_600
+            results['discrimination_ratio_db'] = snr_500 - snr_600
+            
+            if valid_for_discrimination:
+                if is_wwv_only_minute:
+                    # WWV broadcasting alone - check for 500 Hz presence
+                    # If 500 Hz detected, confirms WWV propagation to receiver
+                    if snr_500 > 6.0:
+                        results['indicated_station'] = 'WWV'
+                        results['discrimination_confidence'] = min(1.0, snr_500 / 15.0)
+                    else:
+                        results['indicated_station'] = 'WEAK_OR_ABSENT'
+                        results['discrimination_confidence'] = 0.0
+                        
+                elif is_wwvh_only_minute:
+                    # WWVH broadcasting alone - check for 600 Hz presence
+                    # If 600 Hz detected, confirms WWVH propagation to receiver
+                    if snr_600 > 6.0:
+                        results['indicated_station'] = 'WWVH'
+                        results['discrimination_confidence'] = min(1.0, snr_600 / 15.0)
+                    else:
+                        results['indicated_station'] = 'WEAK_OR_ABSENT'
+                        results['discrimination_confidence'] = 0.0
+            else:
+                # Both stations may be broadcasting - ratio method unreliable due to BCD intermod
+                results['indicated_station'] = 'INTERMOD_RISK'
+                results['discrimination_confidence'] = 0.0
+        
+        return results
     
     # ===== Legacy Compatibility =====
     
