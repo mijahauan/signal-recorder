@@ -510,7 +510,8 @@ class TransmissionTimeSolver:
             delay_separation_ms = 10.0
         
         # Back-calculate emission time
-        propagation_samples = int(
+        # Use round() not int() for proper rounding (at 20kHz, 1 sample = 0.05ms)
+        propagation_samples = round(
             (best_candidate.total_delay_ms / 1000) * self.sample_rate
         )
         emission_rtp = arrival_rtp - propagation_samples

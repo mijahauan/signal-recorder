@@ -27,80 +27,16 @@ from .tone_detector import MultiStationToneDetector
 from .wwv_bcd_encoder import WWVBCDEncoder
 from .wwv_geographic_predictor import WWVGeographicPredictor
 from .wwv_test_signal import WWVTestSignalDetector, TestSignalDetection
+from .wwv_constants import (
+    TONE_SCHEDULE_500_600,
+    WWV_ONLY_TONE_MINUTES,
+    WWVH_ONLY_TONE_MINUTES
+)
 
 logger = logging.getLogger(__name__)
 
-# WWV/WWVH 500/600 Hz tone schedule (per minute)
-# During certain minutes, only one station broadcasts these tones
-# This provides ground truth for discrimination
-TONE_SCHEDULE_500_600 = {
-    0: {'WWV': None, 'WWVH': None},
-    1: {'WWV': 600, 'WWVH': 440},   # 440 Hz ground truth minutes
-    2: {'WWV': 440, 'WWVH': 600},
-    3: {'WWV': 600, 'WWVH': 500},
-    4: {'WWV': 500, 'WWVH': 600},
-    5: {'WWV': 600, 'WWVH': 500},
-    6: {'WWV': 500, 'WWVH': 600},
-    7: {'WWV': 600, 'WWVH': 500},
-    8: {'WWV': None, 'WWVH': None},   # Test signal minute (WWV)
-    9: {'WWV': None, 'WWVH': None},
-    10: {'WWV': None, 'WWVH': None},
-    11: {'WWV': 600, 'WWVH': 500},
-    12: {'WWV': 500, 'WWVH': 600},
-    13: {'WWV': 600, 'WWVH': 500},
-    14: {'WWV': None, 'WWVH': None},
-    15: {'WWV': None, 'WWVH': None},
-    16: {'WWV': 500, 'WWVH': None},   # WWV-only
-    17: {'WWV': 600, 'WWVH': None},   # WWV-only
-    18: {'WWV': None, 'WWVH': None},
-    19: {'WWV': 600, 'WWVH': None},   # WWV-only
-    20: {'WWV': 500, 'WWVH': 600},
-    21: {'WWV': 600, 'WWVH': 500},
-    22: {'WWV': 500, 'WWVH': 600},
-    23: {'WWV': 600, 'WWVH': 500},
-    24: {'WWV': 500, 'WWVH': 600},
-    25: {'WWV': 600, 'WWVH': 500},
-    26: {'WWV': 500, 'WWVH': 600},
-    27: {'WWV': 600, 'WWVH': 500},
-    28: {'WWV': 500, 'WWVH': 600},
-    29: {'WWV': None, 'WWVH': None},
-    30: {'WWV': None, 'WWVH': None},
-    31: {'WWV': 600, 'WWVH': 500},
-    32: {'WWV': 500, 'WWVH': 600},
-    33: {'WWV': 600, 'WWVH': 500},
-    34: {'WWV': 500, 'WWVH': 600},
-    35: {'WWV': 600, 'WWVH': 500},
-    36: {'WWV': 500, 'WWVH': 600},
-    37: {'WWV': 600, 'WWVH': 500},
-    38: {'WWV': 500, 'WWVH': 600},
-    39: {'WWV': 600, 'WWVH': 500},
-    40: {'WWV': 500, 'WWVH': 600},
-    41: {'WWV': 600, 'WWVH': 500},
-    42: {'WWV': 500, 'WWVH': 600},
-    43: {'WWV': None, 'WWVH': 500},   # WWVH-only
-    44: {'WWV': None, 'WWVH': 600},   # WWVH-only (even minute) (+ test signal)
-    45: {'WWV': None, 'WWVH': 500},   # WWVH-only
-    46: {'WWV': None, 'WWVH': 600},   # WWVH-only
-    47: {'WWV': None, 'WWVH': 500},   # WWVH-only
-    48: {'WWV': None, 'WWVH': 600},   # WWVH-only (even minute)
-    49: {'WWV': None, 'WWVH': 500},   # WWVH-only
-    50: {'WWV': None, 'WWVH': 600},   # WWVH-only (even minute)
-    51: {'WWV': None, 'WWVH': 500},   # WWVH-only
-    52: {'WWV': 500, 'WWVH': 600},
-    53: {'WWV': 600, 'WWVH': 500},
-    54: {'WWV': 500, 'WWVH': 600},
-    55: {'WWV': 600, 'WWVH': 500},
-    56: {'WWV': 500, 'WWVH': 600},
-    57: {'WWV': 600, 'WWVH': 500},
-    58: {'WWV': 500, 'WWVH': 600},
-    59: {'WWV': None, 'WWVH': None}
-}
-
-# Minutes where only one station broadcasts 500/600 Hz tones (ground truth)
-# Minute 1: WWV=600 Hz while WWVH=440 Hz (WWV 600 Hz exclusive)
-# Minute 2: WWV=440 Hz while WWVH=600 Hz (WWVH 600 Hz exclusive)
-WWVH_ONLY_TONE_MINUTES = [2, 43, 44, 45, 46, 47, 48, 49, 50, 51]  # 10 minutes (600 Hz at min 2)
-WWV_ONLY_TONE_MINUTES = [1, 16, 17, 19]  # 4 minutes (600 Hz at min 1)
+# Note: TONE_SCHEDULE_500_600, WWV_ONLY_TONE_MINUTES, WWVH_ONLY_TONE_MINUTES
+# are now imported from wwv_constants.py (single source of truth)
 
 
 @dataclass

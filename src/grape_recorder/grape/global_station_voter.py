@@ -53,15 +53,18 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
-# Dispersion constants (empirical, can be refined)
-MAX_DISPERSION_MS = 3.0  # Maximum frequency-dependent group delay difference
-STATION_SEPARATION_MS = 15.0  # Minimum WWV-WWVH time separation
-SAMPLES_PER_MS_16KHZ = 16  # 16 kHz sample rate
+# Import shared constants
+from .wwv_constants import (
+    MAX_DISPERSION_MS,
+    STATION_SEPARATION_MS,
+    ANCHOR_SNR_HIGH,
+    ANCHOR_SNR_MEDIUM,
+    ANCHOR_SNR_LOW,
+    SAMPLE_RATE_FULL
+)
 
-# SNR thresholds for anchor quality
-ANCHOR_SNR_HIGH = 15.0  # dB - very confident anchor
-ANCHOR_SNR_MEDIUM = 10.0  # dB - usable anchor
-ANCHOR_SNR_LOW = 6.0  # dB - marginal anchor
+# Samples per millisecond (computed from sample rate)
+SAMPLES_PER_MS = SAMPLE_RATE_FULL // 1000  # 20 samples/ms at 20 kHz
 
 
 class AnchorQuality(Enum):
@@ -102,10 +105,10 @@ class StationAnchor:
         dispersion_ms = min(MAX_DISPERSION_MS, 0.1 * freq_diff_mhz + 1.0)
         
         # Convert to samples (± window)
-        window_samples = int(dispersion_ms * SAMPLES_PER_MS_16KHZ)
+        window_samples = int(dispersion_ms * SAMPLES_PER_MS)
         
-        # Minimum window of 16 samples (1 ms) for timing jitter
-        return max(16, window_samples)
+        # Minimum window based on sample rate (1 ms) for timing jitter
+        return max(SAMPLES_PER_MS, window_samples)
 
 
 @dataclass

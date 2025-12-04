@@ -78,10 +78,9 @@ EXPECTED_DTYPE = np.complex64
 SAMPLE_RATE_FULL = 20000      # Phase 1 archive sample rate
 
 # Decimation for tone detection
-# Use integer decimation factor that gives ~3 kHz
-# 20000 / 6 = 3333.33 Hz - close enough for matched filter detection
-DECIMATION_FACTOR = 6
-SAMPLE_RATE_ANALYSIS = SAMPLE_RATE_FULL // DECIMATION_FACTOR  # Actual: 3333 Hz
+# Note: Decimation was considered but removed - tone detection now uses full rate
+# for maximum timing accuracy. The matched filter templates are generated at
+# the full sample rate (20 kHz).
 
 # Normalization threshold for 32-bit float data
 # Since AGC is disabled (F32 has sufficient dynamic range), we apply
@@ -403,11 +402,9 @@ class Phase2TemporalEngine:
         buffer_duration = len(iq_samples) / self.sample_rate
         buffer_mid_time = system_time + buffer_duration / 2
         
-        # Run matched filter tone detection at FULL RATE
-        # Note: The tone detector is initialized with SAMPLE_RATE_ANALYSIS,
-        # so we pass iq_samples directly without decimation. The detector
-        # will handle any internal sample rate requirements.
-        # 
+        # Run matched filter tone detection at FULL RATE (20 kHz)
+        # The tone detector is initialized with self.sample_rate (full rate)
+        # for maximum timing accuracy and sub-sample interpolation precision.
         # Full-rate detection provides more accurate timing than decimated.
         # Future optimization: implement proper anti-alias decimation.
         detections = self.tone_detector.process_samples(
@@ -465,7 +462,8 @@ class Phase2TemporalEngine:
             timing_error_ms = wwvh_det.timing_error_ms or 0.0
         
         # Calculate arrival RTP from timing error
-        timing_offset_samples = int(timing_error_ms * self.sample_rate / 1000)
+        # Use round() not int() for proper rounding (at 20kHz, 1 sample = 0.05ms)
+        timing_offset_samples = round(timing_error_ms * self.sample_rate / 1000)
         arrival_rtp = rtp_timestamp + timing_offset_samples
         
         result = TimeSnapResult(
@@ -736,7 +734,11 @@ class Phase2TemporalEngine:
         # FSS from discrimination result (if test signal detected)
         fss_db = None  # TODO: Extract from test signal if available
         
-        # Calculate expected second boundary RTP
+        # Calculate expected second boundary RTP (minute boundary for all stations)
+        # All stations (WWV, WWVH, CHU) transmit at second 0:
+        # - WWV: 1000 Hz, 0.8s tone
+        # - WWVH: 1200 Hz, 0.8s tone
+        # - CHU: 1000 Hz, 0.5s tone (1.0s at top of hour)
         expected_second_rtp = rtp_timestamp
         
         # Get arrival RTP from time snap
