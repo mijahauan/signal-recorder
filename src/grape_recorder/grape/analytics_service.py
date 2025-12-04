@@ -51,6 +51,7 @@ from .differential_time_solver import (
     GlobalDifferentialSolver, GlobalSolveResult
 )
 from .global_timing_coordinator import GlobalTimingCoordinator, create_coordinator
+from .gpsdo_monitor import GPSDOMonitor, AnchorState
 from ..interfaces.data_models import (
     TimeSnapReference, 
     QualityInfo, 
@@ -430,6 +431,12 @@ class AnalyticsService:
         self.last_timing_metrics_write = 0.0
         self.timing_metrics_interval = 60.0  # Write every 60 seconds
         
+        # GPSDO Monitoring Architecture
+        # Implements "Set, Monitor, Intervention" strategy for GPS-disciplined timing
+        # Trust the sample counter, use tone detections for verification not correction
+        self.gpsdo_monitor = GPSDOMonitor(sample_rate=20000)
+        logger.info(f"✅ GPSDOMonitor initialized - GPSDO monitoring architecture active")
+        
         # Per-channel statistics
         self.stats = {
             'last_processed_file': None,
@@ -691,6 +698,14 @@ class AnalyticsService:
             results['quality_metrics'] = quality.to_dict()
             self._write_quality_metrics(archive, quality)
             
+            # Step 1.5: GPSDO Sample Integrity Watchdog (Monitor A)
+            # If we detect gaps/packet loss, the "steel ruler" is broken and we need to re-anchor
+            sample_integrity_ok = self.gpsdo_monitor.check_sample_integrity(quality)
+            results['gpsdo_state'] = self.gpsdo_monitor.state.name
+            if not sample_integrity_ok:
+                # Force re-anchor on next valid minute
+                results['gpsdo_reanchor_required'] = True
+            
             # Step 2: Calculate timing product ONCE for all consumers
             # Note: _get_timing_annotation() calls _maybe_adopt_archive_time_snap()
             # which extracts the tone-detected time_snap from NPZ metadata
@@ -748,6 +763,10 @@ class AnalyticsService:
                                 self.state.time_snap = updated_snap
                                 logger.info(f"📊 PPM correction applied: {ppm_offset:+.2f} ppm "
                                            f"(conf={ppm_confidence:.2f}, clock_ratio={updated_snap.clock_ratio:.8f})")
+                            
+                            # GPSDO Drift Watchdog (Monitor B)
+                            # Check if drift indicates GPSDO unlock
+                            self.gpsdo_monitor.check_drift(ppm_offset, ppm_confidence)
                         
                         self.last_timing_metrics_write = current_time
                     else:
@@ -1098,6 +1117,10 @@ class AnalyticsService:
         """
         Update time_snap reference from tone detections
         
+        GPSDO MONITORING ARCHITECTURE:
+        - In STARTUP/REANCHOR state: Establish anchor normally
+        - In STEADY_STATE: Verify projection, only update if physics requires it
+        
         Args:
             detections: List of detected tones
             archive: Source archive
@@ -1129,22 +1152,40 @@ class AnalyticsService:
             return False
         
         # Find minute boundary closest to detection
-        # CRITICAL: Use archive.unix_timestamp (correct wall clock), NOT best.timestamp_utc
-        # (which may be corrupted from a stale time_snap)
         minute_boundary = int(archive.unix_timestamp / 60) * 60
         
+        # ========================================================================
+        # GPSDO MONITORING: Check if we're in verification mode or anchor mode
+        # ========================================================================
+        gpsdo_state = self.gpsdo_monitor.state
+        
+        if gpsdo_state == AnchorState.STEADY_STATE and self.state.time_snap is not None:
+            # STEADY STATE: Verify projection, don't re-anchor unless physics requires it
+            verification = self.gpsdo_monitor.verify_tone_arrival(
+                self.state.time_snap, best, minute_boundary
+            )
+            
+            # Update minute counter
+            self.gpsdo_monitor.on_minute_processed()
+            
+            # Only update anchor if verification failed badly
+            if not self.gpsdo_monitor.should_update_anchor(verification):
+                # Trust the counter - don't update time_snap
+                logger.debug(f"🔒 GPSDO: Verification OK ({verification.error_ms:+.2f}ms), "
+                           f"trusting counter (minute {self.gpsdo_monitor.minutes_since_anchor})")
+                return False
+            else:
+                logger.warning(f"⚠️ GPSDO: Verification failed ({verification.error_ms:+.1f}ms), "
+                              f"forcing re-anchor")
+                # Fall through to anchor establishment
+        
+        # ========================================================================
+        # ANCHOR ESTABLISHMENT (STARTUP, REANCHOR, or verification failure)
+        # ========================================================================
+        
         # Calculate RTP timestamp at minute boundary using ACTUAL detected sample position
-        # This is the key: derive RTP directly from where the tone was physically detected
         if best.sample_position_original is not None and best.buffer_rtp_start is not None:
             # PRECISE METHOD: Use actual detected sample position and buffer RTP start
-            # 
-            # The tone was found at sample_position_original in the detection buffer
-            # The detection buffer starts at buffer_rtp_start
-            # timing_error_ms tells us how far the tone arrival was from minute boundary
-            # 
-            # RTP at tone arrival = buffer_rtp_start + sample_position_original
-            # RTP at minute boundary = RTP at tone arrival - (timing_error_ms * sample_rate / 1000)
-            
             rtp_at_tone = best.buffer_rtp_start + best.sample_position_original
             timing_offset_samples = int(best.timing_error_ms * archive.sample_rate / 1000)
             rtp_at_minute = rtp_at_tone - timing_offset_samples
@@ -1153,7 +1194,7 @@ class AnalyticsService:
                        f"timing_error={best.timing_error_ms:+.1f}ms, "
                        f"minute boundary at RTP {rtp_at_minute}")
         else:
-            # FALLBACK: Use UTC-based calculation (less precise, depends on existing time_snap)
+            # FALLBACK: Use UTC-based calculation (less precise)
             samples_from_archive_to_minute = (minute_boundary - archive.unix_timestamp) * archive.sample_rate
             rtp_at_minute = int(archive.rtp_timestamp + samples_from_archive_to_minute)
             logger.info(f"Time snap: UTC-based (no precise sample position available)")
@@ -1165,14 +1206,12 @@ class AnalyticsService:
             sample_rate=archive.sample_rate,
             source=f"{best.station.value.lower()}_verified",
             confidence=best.confidence,
-            station=best.station,  # Pass enum, not string
+            station=best.station,
             established_at=time.time()
         )
         
         # Check if this is a significant update (clock drift detection)
-        # NOTE: Large "drift" between time_snaps may just be correction, not actual drift
         if self.state.time_snap:
-            # Calculate expected RTP advancement based on UTC time difference
             utc_elapsed = new_time_snap.utc_timestamp - self.state.time_snap.utc_timestamp
             
             if utc_elapsed > 0:
@@ -1182,8 +1221,6 @@ class AnalyticsService:
                 rtp_drift_samples = abs(actual_rtp_delta - expected_rtp_delta)
                 drift_ms = (rtp_drift_samples / archive.sample_rate) * 1000
                 
-                # Only warn if drift > 50ms AND elapsed time is reasonable
-                # (Large diffs may be corrections when transitioning to precise method)
                 if drift_ms > 50.0 and utc_elapsed > 30:
                     logger.warning(f"RTP clock drift detected: {drift_ms:.1f}ms over {utc_elapsed:.0f}s")
                 elif drift_ms > 5.0:
@@ -1193,15 +1230,22 @@ class AnalyticsService:
         old_time_snap = self.state.time_snap
         self._store_time_snap(new_time_snap)
         
+        # Notify GPSDO monitor that anchor is established
+        station_str = best.station.value if hasattr(best.station, 'value') else str(best.station)
+        self.gpsdo_monitor.on_anchor_established(
+            new_time_snap, 
+            self.channel_name,
+            station_str
+        )
+        
         logger.info(f"Time snap {'updated' if old_time_snap else 'established'}: "
                    f"{best.station.value}, confidence={best.confidence:.2f}, "
                    f"timing_error={best.timing_error_ms:+.1f}ms")
         
-        # If this is the FIRST time_snap (transitioning from None), log milestone
+        # If this is the FIRST time_snap, log milestone
         if not old_time_snap:
             logger.info("✅ TIME_SNAP ESTABLISHED - Tone-locked timestamps now available")
-            logger.info("   Timing quality upgraded from NTP/wall-clock to tone-locked (±1ms)")
-            logger.info("   Earlier data uploaded with lower quality can be reprocessed if needed")
+            logger.info("   GPSDO mode: Now trusting the counter, verifying with tones")
         
         return True
     
