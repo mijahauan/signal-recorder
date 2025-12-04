@@ -1,17 +1,34 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-03 (Evening)  
-**Version:** 3.1.0  
-**Status:** ✅ Phase 1 Complete, 🔄 Phase 2 In Progress
+**Last Updated:** 2025-12-04 (Morning)  
+**Version:** 3.2.0  
+**Status:** ✅ Phase 1 Complete, ✅ Phase 2 Core Complete, 🔄 GPSDO Monitoring Architecture Implemented
 
 ---
 
-## 🎯 CURRENT STATE: PHASE 2 ANALYTICAL ENGINE
+## 🎯 CURRENT STATE: GPSDO MONITORING ARCHITECTURE
 
-### Ready to Complete Phase 2
+### Major Architecture Shift: "Set, Monitor, Intervention"
 
-All core components for Phase 2 are **implemented and tested**. A 6-hour recording session is currently in progress gathering data for refinement.
+The timing system has transitioned from **corrective** (re-anchor every minute) to **monitoring** (project and verify). With a GPS-Disciplined Oscillator (GPSDO), the hardware clock is a secondary standard - we now trust it rather than constantly replacing it with noisier propagation-jittered measurements.
+
+### What Changed (Dec 4, 2025)
+
+| Before | After |
+|--------|-------|
+| Re-anchor TimeSnapReference every minute | Establish once, project forward by counting samples |
+| Tone detection = UPDATE anchor | Tone detection = VERIFY projection |
+| Propagation jitter corrupts timing | GPSDO precision preserved |
+| No discontinuity handling | Automatic re-anchor on RTP gaps |
+
+### Next Session: Web-UI Alignment
+
+The web-UI needs updates to reflect the new GPSDO monitoring architecture:
+- Display GPSDO state (STARTUP, STEADY_STATE, HOLDOVER, REANCHOR)
+- Show verification results instead of anchor updates
+- Display minutes since anchor established
+- Visualize propagation plausibility filtering
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -51,7 +68,149 @@ All core components for Phase 2 are **implemented and tested**. A 6-hour recordi
 
 ---
 
-## 🔄 PHASE 2 IMPLEMENTATION STATUS (Dec 3, 2025 Evening)
+## 🔒 GPSDO MONITORING ARCHITECTURE (Dec 4, 2025)
+
+### Philosophy: Trust the Counter
+
+With a GPS-Disciplined Oscillator, the hardware clock is effectively a secondary time standard. Once we establish an initial `TimeSnapReference` anchor, we should **project** time forward by counting samples rather than constantly re-anchoring from noisy tone detections.
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                     GPSDO "STEEL RULER" LOGIC                                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                                │
+│  OLD (Corrective):    Find tone → UPDATE anchor → timing = detection        │
+│                       ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓                                │
+│                       Each minute adds propagation jitter noise               │
+│                                                                                │
+│  NEW (Monitoring):    Find tone → VERIFY projection → timing = counter       │
+│                       ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓ ↓                                │
+│                       GPSDO precision preserved across session                │
+│                                                                                │
+│  PROJECTION:                                                                   │
+│    Expected_Sample = Previous_Sample + (60 × Sample_Rate)                     │
+│    Expected_RTP = time_snap.rtp_timestamp + (elapsed_sec × rate / clock_ratio)│
+│                                                                                │
+│  VERIFICATION:                                                                 │
+│    If tone arrives within ±0.1ms: Do nothing, trust counter                   │
+│    If tone arrives within ±3ms: Normal propagation jitter, log only           │
+│    If tone arrives beyond ±10ms: Something broke, force re-anchor             │
+│                                                                                │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### State Machine
+
+| State | Description | Behavior |
+|-------|-------------|----------|
+| `STARTUP` | No anchor established | Full Pass 0 search, establish anchor |
+| `STEADY_STATE` | Anchor valid, projecting | Verify only, trust counter |
+| `HOLDOVER` | Potential issue detected | Flag data quality, continue projecting |
+| `REANCHOR` | Discontinuity detected | Force fresh anchor search |
+
+### Monitors (Watchdogs)
+
+**Monitor A: Sample Integrity Watchdog**
+```python
+# In AnalyticsService.process_archive()
+if quality.gap_count > 0 or quality.packet_loss_pct > 0.0:
+    # Steel ruler is broken - we lost count of samples
+    gpsdo_monitor.state = AnchorState.REANCHOR
+```
+
+**Monitor B: Drift Watchdog (GPSDO Health)**
+```python
+# After PPM measurement
+if abs(drift_ppm) > 0.1:  # 0.1 PPM generous for GPSDO
+    logger.warning("GPSDO drift alarm - may be unlocked")
+    gpsdo_monitor.state = AnchorState.HOLDOVER
+```
+
+### Thresholds
+
+| Threshold | Value | Purpose |
+|-----------|-------|---------|
+| `VERIFICATION_TOLERANCE_MS` | 0.1 | Normal GPSDO jitter |
+| `PHYSICS_THRESHOLD_MS` | 3.0 | Beyond this = something wrong |
+| `REANCHOR_THRESHOLD_MS` | 10.0 | Force fresh anchor |
+| `DRIFT_ALARM_PPM` | 0.1 | GPSDO unlock warning |
+| `DRIFT_CRITICAL_PPM` | 1.0 | Force holdover mode |
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `gpsdo_monitor.py` | GPSDOMonitor class, state machine, watchdogs |
+| `analytics_service.py` | Integration: calls check_sample_integrity(), check_drift(), verify_tone_arrival() |
+| `data_models.py` | TimeSnapReference with ppm_offset, clock_ratio |
+
+### Integration Points
+
+```python
+# In AnalyticsService.__init__()
+self.gpsdo_monitor = GPSDOMonitor(sample_rate=20000)
+
+# In AnalyticsService.process_archive() - after quality metrics
+sample_integrity_ok = self.gpsdo_monitor.check_sample_integrity(quality)
+
+# In AnalyticsService.process_archive() - after PPM measurement
+self.gpsdo_monitor.check_drift(ppm_offset, ppm_confidence)
+
+# In AnalyticsService._update_time_snap()
+if gpsdo_state == AnchorState.STEADY_STATE and self.state.time_snap:
+    verification = self.gpsdo_monitor.verify_tone_arrival(time_snap, detection, minute)
+    if not self.gpsdo_monitor.should_update_anchor(verification):
+        return False  # Trust the counter, don't update
+```
+
+---
+
+## 📡 PROPAGATION PLAUSIBILITY FILTER (Dec 4, 2025)
+
+### Problem Solved
+
+Tone detection was picking up strong interference peaks outside physically plausible propagation delays. Example: CHU expected at ~20ms, but interference at 488ms was 8dB stronger and selected instead.
+
+### Solution
+
+Added propagation bounds filtering in `tone_detector.py` that rejects detections outside reasonable ionospheric path delays:
+
+| Station | Min Delay | Max Delay | Rationale |
+|---------|-----------|-----------|-----------|
+| WWV | 2 ms | 35 ms | Continental US to Fort Collins |
+| WWVH | 12 ms | 60 ms | Continental US to Hawaii |
+| CHU | 3 ms | 40 ms | Continental US to Ottawa |
+
+### Implementation
+
+```python
+# In wwv_constants.py
+PROPAGATION_BOUNDS_MS = {
+    'WWV': (2.0, 35.0),
+    'WWVH': (12.0, 60.0),
+    'CHU': (3.0, 40.0),
+}
+
+# In tone_detector.py (_correlate_with_template)
+min_delay_ms, max_delay_ms = PROPAGATION_BOUNDS_MS.get(station_name, (0.0, 100.0))
+if timing_error_ms < min_delay_ms or timing_error_ms > max_delay_ms:
+    logger.debug(f"REJECTED: {timing_error_ms:+.1f}ms outside plausible range")
+    return None
+```
+
+### Test Results
+
+| Station | Measured Timing | Plausible | Status |
+|---------|-----------------|-----------|--------|
+| WWV | +13.2 ms | 2-35 ms | ✅ Valid |
+| WWVH | +49.5 ms | 12-60 ms | ✅ Valid |
+| CHU | +19.9 ms | 3-40 ms | ✅ Valid |
+
+**WWV-WWVH Differential: -36.2ms** (geographically consistent - Hawaii ~37ms further than Fort Collins from Texas)
+
+---
+
+## 🔄 PHASE 2 IMPLEMENTATION STATUS (Dec 4, 2025)
 
 ### Phase 2 Temporal Engine - IMPLEMENTED
 
@@ -997,6 +1156,107 @@ data/time_standard/
 ---
 
 ## Session History
+
+### Dec 4, 2025 (Morning): GPSDO Monitoring Architecture + Propagation Plausibility Filter
+
+**Goal:** Implement "Set, Monitor, Intervention" timing architecture that trusts GPSDO-disciplined clock, and add propagation plausibility filtering to reject false detections.
+
+**Major Accomplishments:**
+
+1. **GPSDO Monitoring Architecture** (`gpsdo_monitor.py` - NEW FILE)
+   - **Philosophy**: With GPSDO, hardware clock is secondary standard - trust it, don't constantly re-anchor
+   - **State Machine**: STARTUP → STEADY_STATE → HOLDOVER → REANCHOR
+   - **Monitor A**: Sample Integrity Watchdog - detects RTP gaps/discontinuities, forces re-anchor
+   - **Monitor B**: Drift Watchdog - detects GPSDO unlock via excessive PPM drift (>0.1 PPM)
+   - **Verification**: In STEADY_STATE, tones VERIFY projection instead of UPDATING anchor
+   - **Thresholds**: ±0.1ms tolerance, ±3ms physics, ±10ms re-anchor
+
+2. **Propagation Plausibility Filter** (`tone_detector.py`, `wwv_constants.py`)
+   - **Problem**: Interference peaks at 373ms, 464ms, 488ms being selected over actual tones
+   - **Solution**: Added bounds filtering based on ionospheric path physics
+   - **Bounds**: WWV (2-35ms), WWVH (12-60ms), CHU (3-40ms)
+   - **Result**: Only physically plausible detections pass through
+
+3. **WWVH Timing Eligibility** (`tone_detector.py`, `analytics_service.py`, `global_station_voter.py`)
+   - **Problem**: WWVH was hardcoded as ineligible for `use_for_time_snap`
+   - **Solution**: WWVH now eligible AFTER propagation delay back-calculation
+   - **Priority**: WWV/CHU (direct) > WWVH (after back-calculation)
+
+4. **Multi-Pass Timing Detection** (`tone_detector.py`)
+   - **Pass 0**: Wide window (±500ms) with plausibility filter → find anchors
+   - **Pass 1**: Narrow window (±25-30ms) centered at anchor timing → rescue weak signals
+   - **Parameters**: `search_window_ms`, `expected_offset_ms` now configurable
+
+**Test Results:**
+| Station | Timing | SNR | Bounds Check |
+|---------|--------|-----|--------------|
+| WWV | +13.2 ms | 7.9 dB | ✅ Within 2-35 ms |
+| WWVH | +49.5 ms | 22.6 dB | ✅ Within 12-60 ms |
+| CHU | +19.9 ms | 20.5 dB | ✅ Within 3-40 ms |
+
+**WWV-WWVH Differential: -36.2ms** (geographically correct for Texas receiver)
+
+**Files Created:**
+- `src/grape_recorder/grape/gpsdo_monitor.py` - GPSDO monitoring state machine
+
+**Files Modified:**
+- `src/grape_recorder/grape/analytics_service.py` - GPSDOMonitor integration
+- `src/grape_recorder/grape/tone_detector.py` - Propagation plausibility filter, multi-pass parameters
+- `src/grape_recorder/grape/wwv_constants.py` - PROPAGATION_BOUNDS_MS constants
+- `src/grape_recorder/grape/global_station_voter.py` - WWVH eligibility for time_snap
+
+**Commits:**
+- `83875e9` - Add propagation plausibility filter for tone detection
+- `855d01d` - Implement GPSDO monitoring architecture: Set, Monitor, Intervention
+
+---
+
+### 🎯 NEXT SESSION: Web-UI Alignment with GPSDO Architecture
+
+The web-UI needs updates to display new GPSDO monitoring information:
+
+**Required Updates:**
+
+1. **Timing Dashboard** (`timing-dashboard-enhanced.html`)
+   - Display GPSDO state (STARTUP/STEADY_STATE/HOLDOVER/REANCHOR)
+   - Show "Minutes since anchor" counter
+   - Show verification error (should be ~0.1ms in steady state)
+   - Visual indicator when in HOLDOVER (amber) or REANCHOR (red)
+
+2. **API Endpoints** (`monitoring-server-v3.js`)
+   - Add `/api/v1/gpsdo-status` endpoint returning GPSDOStatus
+   - Include in `/api/v1/channels/:channel` response
+   - Return: state, minutes_since_anchor, last_verification_error_ms, drift_ppm
+
+3. **Status Display**
+   - Replace "Time snap updated" with "Time snap verified" in steady state
+   - Show verification history (last N verification errors)
+   - Add propagation bounds visualization (min/max delay per station)
+
+**Data Sources:**
+
+The GPSDOMonitor provides:
+```python
+status = gpsdo_monitor.get_status()
+# Returns GPSDOStatus:
+#   state: AnchorState
+#   minutes_since_anchor: int
+#   last_verification_error_ms: float
+#   drift_ppm: float
+#   drift_confidence: float
+#   holdover_reason: Optional[str]
+#   best_channel: Optional[str]
+```
+
+**Key Files for Web-UI Work:**
+| File | Purpose |
+|------|---------|
+| `web-ui/monitoring-server-v3.js` | Express API server |
+| `web-ui/grape-paths.js` | Path management |
+| `web-ui/timing-dashboard-enhanced.html` | Timing display |
+| `web-ui/utils/timing-analysis-helpers.js` | Timing data parsing |
+
+---
 
 ### Dec 3, 2025 (Evening): Phase 2 Analytical Engine - Core Complete
 
