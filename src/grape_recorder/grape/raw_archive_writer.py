@@ -664,11 +664,110 @@ class RawArchiveWriter:
         self.current_segment: Optional[ArchiveSegmentInfo] = None
         self.segment_counter: int = 0
         
+        # Sliding window monitor (10-second real-time quality tracking)
+        # Provides low-latency metrics while 60-second D_clock analysis runs
+        self.sliding_monitor = None
+        self.sliding_monitor_enabled = True
+        self.window_sample_buffer: List[np.ndarray] = []  # Accumulate for 10s windows
+        self.window_sample_count = 0
+        self.window_gap_count = 0
+        self.window_gap_samples = 0
+        self.samples_per_window = config.sample_rate * 10  # 10 seconds
+        self._init_sliding_monitor()
+        
         logger.info(f"RawArchiveWriter initialized for {config.channel_name}")
         logger.info(f"  Output: {self.archive_dir}")
         logger.info(f"  Sample rate: {config.sample_rate} Hz")
         logger.info(f"  File duration: {config.file_duration_sec}s")
         logger.info(f"  Compression: {config.compression} (shuffle={config.use_shuffle})")
+    
+    def _init_sliding_monitor(self):
+        """Initialize the 10-second sliding window monitor."""
+        if not self.sliding_monitor_enabled:
+            return
+        
+        try:
+            from .sliding_window_monitor import SlidingWindowMonitor
+            
+            # Output to status directory alongside raw archive
+            status_dir = self.config.output_dir / 'status'
+            status_dir.mkdir(parents=True, exist_ok=True)
+            
+            self.sliding_monitor = SlidingWindowMonitor(
+                channel_name=self.config.channel_name,
+                sample_rate=self.config.sample_rate,
+                output_dir=status_dir,
+                enabled=True
+            )
+            logger.info(f"  Sliding window monitor: ENABLED (10s windows)")
+        except ImportError as e:
+            logger.warning(f"  Sliding window monitor: DISABLED ({e})")
+            self.sliding_monitor = None
+        except Exception as e:
+            logger.warning(f"  Sliding window monitor initialization failed: {e}")
+            self.sliding_monitor = None
+    
+    def _process_sliding_window(self, system_time: float):
+        """
+        Process accumulated samples through the 10-second sliding window monitor.
+        
+        Called when we've accumulated enough samples for a complete window.
+        """
+        if self.sliding_monitor is None or not self.sliding_monitor_enabled:
+            return
+        
+        if self.window_sample_count < self.samples_per_window:
+            return
+        
+        try:
+            # Concatenate buffered samples
+            if self.window_sample_buffer:
+                window_samples = np.concatenate(self.window_sample_buffer)
+                
+                # Trim to exact window size
+                window_samples = window_samples[:self.samples_per_window]
+                
+                # Calculate timestamp for window start (10 seconds ago)
+                window_timestamp = system_time - 10.0
+                
+                # Process through monitor
+                gap_info = {
+                    'gap_count': self.window_gap_count,
+                    'gap_samples': self.window_gap_samples
+                }
+                
+                metrics = self.sliding_monitor.process_chunk(
+                    samples=window_samples,
+                    timestamp=window_timestamp,
+                    gap_info=gap_info
+                )
+                
+                if metrics and metrics.signal_present:
+                    logger.debug(
+                        f"{self.config.channel_name} 10s monitor: "
+                        f"SNR={metrics.dominant_snr_db:.1f}dB, "
+                        f"quality={metrics.quality.value}"
+                    )
+            
+            # Reset window buffer, keeping overflow for next window
+            overflow_samples = self.window_sample_count - self.samples_per_window
+            if overflow_samples > 0 and self.window_sample_buffer:
+                # Keep the overflow portion
+                all_samples = np.concatenate(self.window_sample_buffer)
+                self.window_sample_buffer = [all_samples[self.samples_per_window:]]
+                self.window_sample_count = overflow_samples
+            else:
+                self.window_sample_buffer = []
+                self.window_sample_count = 0
+            
+            self.window_gap_count = 0
+            self.window_gap_samples = 0
+            
+        except Exception as e:
+            logger.warning(f"Sliding window processing error: {e}")
+            # Reset on error
+            self.window_sample_buffer = []
+            self.window_sample_count = 0
     
     def _check_ntp_on_init(self):
         """Check NTP status at initialization and log warnings."""
@@ -1030,6 +1129,18 @@ class RawArchiveWriter:
                     if gap_samples > 0:
                         self.current_segment.gap_count += 1
                         self.current_segment.gap_samples += gap_samples
+                
+                # Accumulate samples for 10-second sliding window monitor
+                if self.sliding_monitor_enabled and self.sliding_monitor is not None:
+                    self.window_sample_buffer.append(samples.copy())
+                    self.window_sample_count += len(samples)
+                    if gap_samples > 0:
+                        self.window_gap_count += 1
+                        self.window_gap_samples += gap_samples
+                    
+                    # Process when we have a complete 10-second window
+                    if self.window_sample_count >= self.samples_per_window:
+                        self._process_sliding_window(system_time)
                 
                 return len(samples)
                 

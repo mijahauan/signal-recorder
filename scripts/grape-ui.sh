@@ -1,5 +1,12 @@
 #!/bin/bash
-# GRAPE Web-UI Control
+# GRAPE Web-UI Control (Monitoring Dashboard)
+#
+# Provides real-time visualization of all three phases:
+#   - Phase 1: Raw archive status, recording quality
+#   - Phase 2: Timing analysis, D_clock, discrimination
+#   - Phase 3: Product status, PSWS upload readiness
+#   - 10-second sliding window metrics
+#
 # Usage: grape-ui.sh -start|-stop|-status [config-file]
 
 # Source common settings (sets PYTHON, PROJECT_DIR, etc.)
@@ -70,6 +77,11 @@ stop)
 status)
     if pgrep -f "monitoring-server" > /dev/null; then
         echo "✅ Web-UI: RUNNING → http://localhost:3000/"
+        echo "   Dashboard pages:"
+        echo "   - /            Overview and channel status"
+        echo "   - /spectrogram Spectrograms and signal quality"
+        echo "   - /timing      Timing analysis and D_clock"
+        echo "   - /carriers    Carrier tracking and Doppler"
     else
         echo "⭕ Web-UI: STOPPED"
     fi

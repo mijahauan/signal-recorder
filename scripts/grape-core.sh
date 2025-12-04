@@ -1,5 +1,14 @@
 #!/bin/bash
-# GRAPE Core Recorder Control
+# GRAPE Phase 1: Core Recorder Control
+#
+# Phase 1 captures raw IQ data from radiod RTP stream:
+#   - 20 kHz sample rate, complex float32
+#   - Digital RF format with gzip compression
+#   - System time tagging (NO UTC corrections)
+#   - 10-second sliding window monitoring
+#
+# Output: raw_archive/{CHANNEL}/ (immutable source of truth)
+#
 # Usage: grape-core.sh -start|-stop|-status [config-file]
 
 # Source common settings (sets PYTHON, PROJECT_DIR, etc.)
@@ -28,7 +37,7 @@ DATA_ROOT=$(get_data_root "$CONFIG")
 
 case $ACTION in
 start)
-    echo "▶️  Starting Core Recorder..."
+    echo "▶️  Starting Phase 1 Core Recorder..."
     
     if pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
         echo "   ℹ️  Already running (PID: $(pgrep -f 'grape_recorder.grape.core_recorder'))"
@@ -40,27 +49,29 @@ start)
         exit 1
     fi
     
-    mkdir -p "$DATA_ROOT/logs"
+    # Create three-phase directory structure
+    mkdir -p "$DATA_ROOT/logs" "$DATA_ROOT/raw_archive" "$DATA_ROOT/status"
     cd "$PROJECT_DIR"
     
     nohup $PYTHON -m grape_recorder.grape.core_recorder --config "$CONFIG" \
-        > "$DATA_ROOT/logs/core-recorder.log" 2>&1 &
+        > "$DATA_ROOT/logs/phase1-core.log" 2>&1 &
     
     PID=$!
     sleep 3
     
     if ps -p $PID > /dev/null 2>&1; then
         echo "   ✅ Started (PID: $PID)"
-        echo "   📄 Log: $DATA_ROOT/logs/core-recorder.log"
+        echo "   📄 Log: $DATA_ROOT/logs/phase1-core.log"
+        echo "   📦 Output: $DATA_ROOT/raw_archive/{CHANNEL}/"
     else
         echo "   ❌ Failed to start"
-        tail -5 "$DATA_ROOT/logs/core-recorder.log" 2>/dev/null
+        tail -5 "$DATA_ROOT/logs/phase1-core.log" 2>/dev/null
         exit 1
     fi
     ;;
 
 stop)
-    echo "🛑 Stopping Core Recorder..."
+    echo "🛑 Stopping Phase 1 Core Recorder..."
     
     if ! pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
         echo "   ℹ️  Not running"
@@ -79,9 +90,16 @@ stop)
 
 status)
     if pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
-        echo "✅ Core Recorder: RUNNING (PID: $(pgrep -f 'grape_recorder.grape.core_recorder'))"
+        echo "✅ Phase 1 Core Recorder: RUNNING (PID: $(pgrep -f 'grape_recorder.grape.core_recorder'))"
+        echo "   Output: $DATA_ROOT/raw_archive/{CHANNEL}/"
+        
+        # Show channel count if raw_archive exists
+        if [ -d "$DATA_ROOT/raw_archive" ]; then
+            CHANNELS=$(ls -d "$DATA_ROOT/raw_archive"/*/  2>/dev/null | wc -l)
+            echo "   Active channels: $CHANNELS"
+        fi
     else
-        echo "⭕ Core Recorder: STOPPED"
+        echo "⭕ Phase 1 Core Recorder: STOPPED"
     fi
     ;;
 esac

@@ -178,6 +178,39 @@ from .phase2_temporal_engine import (
     create_phase2_engine
 )
 
+# Phase 3: Product Generation Engine (10 Hz Decimated DRF with Timing Annotations)
+from .phase3_product_engine import (
+    Phase3ProductEngine,
+    Phase3Config,
+    GapInfo,
+    GapAnalysis,
+    TimingAnnotation,
+    create_phase3_engine,
+    process_channel_day
+)
+
+# GPSDO Monitoring
+from .gpsdo_monitor import (
+    GPSDOMonitor,
+    AnchorState,
+    GPSDOMonitorState
+)
+
+# Sliding Window Monitor (10-second real-time quality tracking)
+from .sliding_window_monitor import (
+    SlidingWindowMonitor,
+    WindowMetrics,
+    MinuteSummary,
+    SignalQuality
+)
+
+# Spectrogram Generation (from Phase 3 decimated data)
+from .spectrogram_generator import (
+    SpectrogramGenerator,
+    SpectrogramConfig,
+    generate_spectrograms_for_day
+)
+
 __all__ = [
     # Core recorder
     "GrapeRecorder",
@@ -271,4 +304,21 @@ __all__ = [
     "ChannelCharacterization",
     "TransmissionTimeSolution",
     "create_phase2_engine",
+    # Phase 3: Product Generation Engine
+    "Phase3ProductEngine",
+    "Phase3Config",
+    "GapInfo",
+    "GapAnalysis",
+    "TimingAnnotation",
+    "create_phase3_engine",
+    "process_channel_day",
+    # GPSDO Monitoring
+    "GPSDOMonitor",
+    "AnchorState",
+    "GPSDOMonitorState",
+    # Sliding Window Monitor
+    "SlidingWindowMonitor",
+    "WindowMetrics",
+    "MinuteSummary",
+    "SignalQuality",
 ]

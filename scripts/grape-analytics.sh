@@ -1,5 +1,15 @@
 #!/bin/bash
-# GRAPE Analytics Services Control (all 9 channels)
+# GRAPE Phase 2 Analytics Services Control (all 9 channels)
+#
+# Phase 2 processes raw archive data to produce:
+#   - D_clock (timing correction for UTC alignment)
+#   - Station discrimination (WWV vs WWVH)
+#   - Quality metrics and tone detections
+#   - 10-second sliding window monitoring
+#
+# Input:  raw_archive/{CHANNEL}/ (20 kHz Digital RF from Phase 1)
+# Output: phase2/{CHANNEL}/      (timing analysis, clock offset CSV)
+#
 # Usage: grape-analytics.sh -start|-stop|-status [config-file]
 
 # Source common settings (sets PYTHON, PROJECT_DIR, etc.)
@@ -28,7 +38,7 @@ DATA_ROOT=$(get_data_root "$CONFIG")
 
 case $ACTION in
 start)
-    echo "▶️  Starting Analytics Services..."
+    echo "▶️  Starting Phase 2 Analytics Services..."
     
     # Stop existing first
     pkill -f "grape_recorder.grape.analytics_service" 2>/dev/null
@@ -44,26 +54,32 @@ start)
     STATION_ID=$(grep '^id' "$CONFIG" | head -1 | cut -d'"' -f2)
     INSTRUMENT_ID=$(grep '^instrument_id' "$CONFIG" | head -1 | cut -d'"' -f2)
     
-    mkdir -p "$DATA_ROOT/logs" "$DATA_ROOT/state"
+    # Create directories for three-phase structure
+    mkdir -p "$DATA_ROOT/logs" "$DATA_ROOT/state" "$DATA_ROOT/status"
+    mkdir -p "$DATA_ROOT/phase2" "$DATA_ROOT/products"
     cd "$PROJECT_DIR"
     
     # WWV Channels (PYTHON is set by common.sh)
+    # Input: raw_archive/WWV_X_MHz/ (Phase 1 DRF)
+    # Output: phase2/WWV_X_MHz/    (D_clock, timing metrics)
     for freq_mhz in 2.5 5 10 15 20 25; do
         freq_hz=$(echo "$freq_mhz * 1000000" | bc | cut -d. -f1)
         channel_dir="WWV_${freq_mhz}_MHz"
         
+        # Phase 2 reads from raw_archive (Phase 1 output)
+        # and writes timing analysis to phase2/
         nohup $PYTHON -m grape_recorder.grape.analytics_service \
-          --archive-dir "$DATA_ROOT/archives/$channel_dir" \
-          --output-dir "$DATA_ROOT/analytics/$channel_dir" \
+          --archive-dir "$DATA_ROOT/raw_archive/$channel_dir" \
+          --output-dir "$DATA_ROOT/phase2/$channel_dir" \
           --channel-name "WWV ${freq_mhz} MHz" \
           --frequency-hz "$freq_hz" \
-          --state-file "$DATA_ROOT/state/analytics-wwv${freq_mhz}.json" \
+          --state-file "$DATA_ROOT/state/phase2-wwv${freq_mhz}.json" \
           --poll-interval 10.0 --backfill-gaps --max-backfill 100 \
           --log-level INFO \
           --callsign "$CALLSIGN" --grid-square "$GRID" \
           --receiver-name "GRAPE" \
           --psws-station-id "$STATION_ID" --psws-instrument-id "$INSTRUMENT_ID" \
-          > "$DATA_ROOT/logs/analytics-wwv${freq_mhz}.log" 2>&1 &
+          > "$DATA_ROOT/logs/phase2-wwv${freq_mhz}.log" 2>&1 &
         
         sleep 0.2
     done
@@ -76,29 +92,30 @@ start)
         channel_dir="CHU_${freq_mhz}_MHz"
         
         nohup $PYTHON -m grape_recorder.grape.analytics_service \
-          --archive-dir "$DATA_ROOT/archives/$channel_dir" \
-          --output-dir "$DATA_ROOT/analytics/$channel_dir" \
+          --archive-dir "$DATA_ROOT/raw_archive/$channel_dir" \
+          --output-dir "$DATA_ROOT/phase2/$channel_dir" \
           --channel-name "CHU ${freq_mhz} MHz" \
           --frequency-hz "$freq_hz" \
-          --state-file "$DATA_ROOT/state/analytics-chu${freq_mhz}.json" \
+          --state-file "$DATA_ROOT/state/phase2-chu${freq_mhz}.json" \
           --poll-interval 10.0 --backfill-gaps --max-backfill 100 \
           --log-level INFO \
           --callsign "$CALLSIGN" --grid-square "$GRID" \
           --receiver-name "GRAPE" \
           --psws-station-id "$STATION_ID" --psws-instrument-id "$INSTRUMENT_ID" \
-          > "$DATA_ROOT/logs/analytics-chu${freq_mhz}.log" 2>&1 &
+          > "$DATA_ROOT/logs/phase2-chu${freq_mhz}.log" 2>&1 &
         
         sleep 0.2
     done
     
     sleep 2
     COUNT=$(pgrep -f "grape_recorder.grape.analytics_service" 2>/dev/null | wc -l)
-    echo "   ✅ Started $COUNT/9 channels"
-    echo "   📄 Logs: $DATA_ROOT/logs/analytics-*.log"
+    echo "   ✅ Started $COUNT/9 Phase 2 analytics channels"
+    echo "   📄 Logs: $DATA_ROOT/logs/phase2-*.log"
+    echo "   📊 Output: $DATA_ROOT/phase2/{CHANNEL}/clock_offset/"
     ;;
 
 stop)
-    echo "🛑 Stopping Analytics Services..."
+    echo "🛑 Stopping Phase 2 Analytics Services..."
     
     COUNT=$(pgrep -f "grape_recorder.grape.analytics_service" 2>/dev/null | wc -l)
     if [ "$COUNT" -eq 0 ]; then
@@ -114,15 +131,17 @@ stop)
         pkill -9 -f "grape_recorder.grape.analytics_service" 2>/dev/null
     fi
     
-    echo "   ✅ Stopped $COUNT services"
+    echo "   ✅ Stopped $COUNT Phase 2 services"
     ;;
 
 status)
     COUNT=$(pgrep -f "grape_recorder.grape.analytics_service" 2>/dev/null | wc -l)
     if [ "$COUNT" -gt 0 ]; then
-        echo "✅ Analytics: RUNNING ($COUNT/9 channels)"
+        echo "✅ Phase 2 Analytics: RUNNING ($COUNT/9 channels)"
+        echo "   Input:  $DATA_ROOT/raw_archive/{CHANNEL}/"
+        echo "   Output: $DATA_ROOT/phase2/{CHANNEL}/clock_offset/"
     else
-        echo "⭕ Analytics: STOPPED"
+        echo "⭕ Phase 2 Analytics: STOPPED"
     fi
     ;;
 esac
