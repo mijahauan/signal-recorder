@@ -1105,14 +1105,28 @@ class AnalyticsService:
         Returns:
             True if time_snap was updated
         """
-        # Find best time_snap-eligible detection (WWV or CHU, not WWVH)
+        # Find best time_snap-eligible detection
+        # Priority: WWV/CHU (direct) > WWVH (after back-calculation)
         eligible = [d for d in detections if d.use_for_time_snap]
         
         if not eligible:
             return False
         
-        # Use strongest SNR detection
-        best = max(eligible, key=lambda d: d.snr_db)
+        # Prioritize by station type, then SNR within each tier
+        # Tier 1: WWV, CHU (direct UTC(NIST) references)
+        # Tier 2: WWVH (valid after propagation delay subtraction)
+        primary = [d for d in eligible if d.station in [StationType.WWV, StationType.CHU]]
+        secondary = [d for d in eligible if d.station == StationType.WWVH]
+        
+        if primary:
+            best = max(primary, key=lambda d: d.snr_db)
+        elif secondary:
+            # Use WWVH only if no WWV/CHU available
+            best = max(secondary, key=lambda d: d.snr_db)
+            logger.info(f"Using WWVH for time_snap (no WWV/CHU available) - "
+                       f"propagation delay back-calculation required")
+        else:
+            return False
         
         # Find minute boundary closest to detection
         # CRITICAL: Use archive.unix_timestamp (correct wall clock), NOT best.timestamp_utc

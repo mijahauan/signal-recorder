@@ -586,7 +586,7 @@ class GlobalStationVoter:
             'snr_db': anchor.snr_db,
             'confidence': anchor.confidence,
             'quality': anchor.quality.value,
-            'use_for_time_snap': anchor.station in ('WWV', 'CHU'),
+            'use_for_time_snap': anchor.station in ('WWV', 'CHU', 'WWVH'),
             'all_candidates': len(candidates)
         }
     

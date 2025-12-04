@@ -510,8 +510,22 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         confidence = min(1.0, peak_val / (noise_floor * 2.0))
         
         # Determine if this station should be used for time_snap
-        # CRITICAL: Only WWV and CHU, NEVER WWVH
-        use_for_time_snap = station_type in [StationType.WWV, StationType.CHU]
+        # 
+        # TIMING PHILOSOPHY (Updated):
+        # - WWV and CHU: Primary references (direct UTC(NIST) source)
+        # - WWVH: Eligible AFTER back-calculation subtracts propagation delay
+        #
+        # At this detection level, we mark WWVH as "eligible" but with lower
+        # initial preference. The TransmissionTimeSolver does the back-calculation
+        # to make WWVH's timing as accurate as WWV.
+        #
+        # Priority order for TimeSnapReference creation:
+        #   1. WWV (direct, ~5-6ms propagation from Fort Collins)
+        #   2. CHU (direct, ~4ms propagation from Ottawa)  
+        #   3. WWVH (requires back-calculation, ~21ms from Hawaii)
+        #
+        # All three become valid once propagation delay is subtracted.
+        use_for_time_snap = station_type in [StationType.WWV, StationType.CHU, StationType.WWVH]
         
         # Calculate sample position in ORIGINAL sample rate (for precise RTP calculation)
         # onset_sample_idx is at self.sample_rate (detection rate)
