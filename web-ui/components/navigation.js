@@ -3,13 +3,14 @@
  * 
  * Creates consistent navigation across all GRAPE web-UI pages
  * 
- * 6 Core Pages:
+ * 7 Core Pages:
  * 1. Summary - Station info, processes, uptime
  * 2. Carrier - 10 Hz spectrograms, quality
  * 3. Discrimination - WWV/WWVH analysis (all methods)
- * 4. Timing - Time basis, precision, variance
- * 5. Gaps - Data gaps by frequency, time, SNR
- * 6. Logs - System and analytics log viewer
+ * 4. Timing - Time basis, precision, D_clock
+ * 5. Advanced Timing - Kalman, Constellation, KDE, Mode visualizations
+ * 6. Gaps - Data gaps by frequency, time, SNR
+ * 7. Logs - System and analytics log viewer
  */
 
 class GRAPENavigation {
@@ -25,8 +26,10 @@ class GRAPENavigation {
     const pages = [
       { id: 'summary', label: 'Summary', url: 'summary.html', icon: '📊' },
       { id: 'carrier', label: 'Carrier Analysis', url: 'carrier.html', icon: '📡' },
+      { id: 'phase2', label: 'Phase 2 Analysis', url: 'phase2-dashboard.html', icon: '📡' },
       { id: 'discrimination', label: 'Discrimination', url: 'discrimination.html', icon: '🎯' },
       { id: 'timing', label: 'Timing Analysis', url: 'timing-dashboard-enhanced.html', icon: '⏱️' },
+      { id: 'timing-advanced', label: 'Advanced Timing', url: 'timing-advanced.html', icon: '🔬' },
       { id: 'gaps', label: 'Gap Analysis', url: 'gaps.html', icon: '📈' },
       { id: 'logs', label: 'Logs', url: 'logs.html', icon: '📋' }
     ];

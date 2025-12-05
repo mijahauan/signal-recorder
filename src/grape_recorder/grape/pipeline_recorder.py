@@ -80,7 +80,7 @@ class PipelineRecorderConfig:
     station_config: Dict[str, Any] = field(default_factory=dict)
     
     # RTP packet timing
-    blocktime_ms: float = 20.0
+    blocktime_ms: float = 8.0  # radiod IQ mode uses 160 samples @ 20kHz = 8ms
     max_gap_seconds: float = 60.0
     
     # Phase 1 settings

@@ -784,10 +784,12 @@
 
         <div class="header">
         <h1>⏱️ Timing Analysis Dashboard</h1>
-        <div class="live-indicator">
-            <span class="live-dot"></span>
-            <span>Live Monitoring</span>
-            <span class="refresh-countdown" id="countdown-timer">Next update in 30s</span>
+        <div style="display: flex; align-items: center; gap: 20px;">
+            <div class="live-indicator">
+                <span class="live-dot"></span>
+                <span>Live Monitoring</span>
+                <span class="refresh-countdown" id="countdown-timer">Next update in 30s</span>
+            </div>
         </div>
     </div>
 
@@ -835,18 +837,20 @@
         
         async function loadDashboard() {
             try {
-                // Load all data in parallel
-                const [gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming] = await Promise.all([
+                // Load all data in parallel including new Phase 2 endpoints
+                const [gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming, phase2Status, bestDClock] = await Promise.all([
                     fetch('/api/v1/gpsdo-status').then(r => r.json()).catch(() => ({ available: false })),
                     fetch('/api/v1/timing/primary-reference').then(r => r.json()),
                     fetch('/api/v1/timing/health-summary').then(r => r.json()),
                     fetch('/api/v1/timing/transitions?hours=24').then(r => r.json()),
                     fetch('/api/v1/timing/propagation').then(r => r.json()).catch(() => ({ channels: [] })),
                     fetch('/api/v1/timing/transmission?hours=1').then(r => r.json()).catch(() => ({ results: [] })),
-                    fetch('/api/v1/timing/global').then(r => r.json()).catch(() => ({ available: false }))
+                    fetch('/api/v1/timing/global').then(r => r.json()).catch(() => ({ available: false })),
+                    fetch('/api/v1/timing/phase2-status').then(r => r.json()).catch(() => ({ available: false })),
+                    fetch('/api/v1/timing/best-d-clock').then(r => r.json()).catch(() => ({ available: false }))
                 ]);
                 
-                renderDashboard(gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming);
+                renderDashboard(gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming, phase2Status, bestDClock);
                 checkAlerts(primaryRef, healthSummary, gpsdoStatus);
                 startCountdown();
                 
@@ -862,7 +866,7 @@
             }
         }
         
-        function renderDashboard(gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming) {
+        function renderDashboard(gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming, phase2Status, bestDClock) {
             const container = document.getElementById('dashboard-content');
             
             // Extract channel names for chart dropdowns, sorted by frequency
@@ -872,16 +876,17 @@
                 );
             }
             
+            // Store phase2 data globally for chart loading
+            window.phase2ChannelStatus = phase2Status;
+            
+            // Phase 2 D_clock focused layout - zeroing in on UTC(NIST)
             container.innerHTML = `
-                ${renderGpsdoStatus(gpsdoStatus)}
-                ${renderPrimaryReference(primaryRef)}
-                ${renderGlobalTiming(globalTiming)}
+                ${renderBestDClock(bestDClock)}
+                ${renderPhase2PipelineOverview(phase2Status)}
+                ${renderChannelTable(healthSummary, phase2Status)}
+                ${renderDClockChartPlaceholder()}
                 ${renderTransmissionTime(transmission)}
                 ${renderPropagationModes(propagation)}
-                ${renderHealthCards(healthSummary)}
-                ${renderChannelTable(healthSummary)}
-                ${renderChartPlaceholders()}
-                ${renderTransitions(transitions)}
             `;
             
             // Load charts after DOM is ready
@@ -1007,6 +1012,209 @@
             `;
         }
         
+        function renderBestDClock(data) {
+            if (!data || !data.available) {
+                return `
+                    <div class="d-clock-panel" style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); 
+                                border: 2px solid #334155; border-radius: 10px; padding: 20px; margin-bottom: 20px;">
+                        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 15px;">
+                            <span style="font-size: 24px;">🎯</span>
+                            <div>
+                                <div style="font-size: 18px; font-weight: 600; color: #fff;">UTC(NIST) Clock Offset</div>
+                                <div style="font-size: 13px; color: #94a3b8;">Converging to true UTC - Awaiting Data</div>
+                            </div>
+                        </div>
+                        <div style="color: #64748b; text-align: center; padding: 20px;">
+                            Waiting for Phase 2 analytics to compute D_clock from broadcast timing...
+                        </div>
+                    </div>
+                `;
+            }
+            
+            const gradeColors = { 'A': '#22c55e', 'B': '#3b82f6', 'C': '#eab308', 'D': '#f97316', 'X': '#ef4444' };
+            const gradeColor = gradeColors[data.quality_grade] || '#94a3b8';
+            const dClockStr = `${data.d_clock_ms >= 0 ? '+' : ''}${data.d_clock_ms.toFixed(3)} ms`;
+            
+            // Explain what the offset means
+            const offsetExplanation = data.d_clock_ms >= 0 
+                ? `System clock is ${Math.abs(data.d_clock_ms).toFixed(1)}ms ahead of UTC(NIST)`
+                : `System clock is ${Math.abs(data.d_clock_ms).toFixed(1)}ms behind UTC(NIST)`;
+            
+            return `
+                <div class="d-clock-panel" style="background: linear-gradient(135deg, #1e3a8a 0%, #312e81 100%); 
+                            border: 2px solid ${gradeColor}; border-radius: 10px; padding: 20px; margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 20px;">
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                                <span style="font-size: 24px;">🎯</span>
+                                <div>
+                                    <div style="font-size: 18px; font-weight: 600; color: #fff;">UTC(NIST) Clock Offset</div>
+                                    <div style="font-size: 13px; color: #94a3b8;">Best estimate from ${data.channel}</div>
+                                </div>
+                            </div>
+                            <div style="font-size: 48px; font-weight: 700; color: ${gradeColor}; font-family: 'Monaco', 'Menlo', monospace;">
+                                ${dClockStr}
+                            </div>
+                            <div style="font-size: 14px; color: #cbd5e1; margin-top: 8px;">
+                                ${offsetExplanation}
+                            </div>
+                        </div>
+                        
+                        <div style="display: flex; gap: 30px; text-align: center;">
+                            <div>
+                                <div style="font-size: 36px; font-weight: 700; color: ${gradeColor};">${data.quality_grade}</div>
+                                <div style="font-size: 12px; color: #94a3b8; text-transform: uppercase;">Confidence</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 36px; font-weight: 600; color: #e0e0e0;">${data.station || '—'}</div>
+                                <div style="font-size: 12px; color: #94a3b8; text-transform: uppercase;">Station</div>
+                            </div>
+                            ${data.snr_db ? `
+                            <div>
+                                <div style="font-size: 36px; font-weight: 600; color: #e0e0e0;">${data.snr_db.toFixed(1)}</div>
+                                <div style="font-size: 12px; color: #94a3b8; text-transform: uppercase;">SNR (dB)</div>
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 15px; padding: 12px 15px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+                        <div style="font-size: 13px; color: #94a3b8; margin-bottom: 8px;">
+                            <strong>How D_clock works:</strong> Each channel detects WWV/WWVH/CHU broadcast timing, 
+                            subtracts propagation delay, and computes T<sub>system</sub> − T<sub>UTC(NIST)</sub>. 
+                            The best-quality measurement becomes the reference for aligning all channels.
+                        </div>
+                        <div style="display: flex; gap: 20px; font-size: 12px;">
+                            <span style="color: #22c55e;">● A = Sub-ms precision</span>
+                            <span style="color: #3b82f6;">● B = 1-3ms precision</span>
+                            <span style="color: #eab308;">● C = 3-10ms</span>
+                            <span style="color: #f97316;">● D = Low confidence</span>
+                            <span style="color: #ef4444;">● X = No measurement</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderPhase2PipelineOverview(data) {
+            if (!data || !data.available) {
+                return `
+                    <div class="phase2-pipeline" style="background: #1e293b; border: 1px solid #334155; 
+                                border-radius: 10px; padding: 20px; margin-bottom: 20px;">
+                        <div style="font-size: 16px; font-weight: 600; color: #fff; margin-bottom: 10px;">
+                            📡 Per-Channel UTC Alignment
+                        </div>
+                        <div style="color: #64748b; text-align: center; padding: 20px;">
+                            Waiting for Phase 2 analytics to process channels...
+                        </div>
+                    </div>
+                `;
+            }
+            
+            const summary = data.summary || {};
+            const dClockCount = summary.with_d_clock || 0;
+            const totalChannels = summary.total_channels || 0;
+            const gradeAB = (summary.grade_a_count || 0) + (summary.grade_b_count || 0);
+            
+            const gradeColors = { 'A': '#22c55e', 'B': '#3b82f6', 'C': '#eab308', 'D': '#f97316', 'X': '#ef4444' };
+            
+            // Build per-channel alignment rows - sorted by quality grade
+            const channelEntries = Object.entries(data.channels || {})
+                .filter(([_, status]) => status.available)
+                .sort((a, b) => {
+                    const gradeOrder = { 'A': 0, 'B': 1, 'C': 2, 'D': 3, 'X': 4 };
+                    return (gradeOrder[a[1].quality_grade] || 5) - (gradeOrder[b[1].quality_grade] || 5);
+                });
+            
+            const channelRows = channelEntries.map(([name, status]) => {
+                const gradeColor = gradeColors[status.quality_grade] || '#64748b';
+                const dClockMs = status.d_clock_ms;
+                const hasDClock = dClockMs !== undefined;
+                
+                const dClockDisplay = hasDClock 
+                    ? `${dClockMs >= 0 ? '+' : ''}${dClockMs.toFixed(2)} ms` 
+                    : '—';
+                
+                // Show alignment status relative to best D_clock
+                const alignmentStatus = hasDClock ? '✓ Aligned' : '⋯ Pending';
+                const alignmentColor = hasDClock ? '#22c55e' : '#64748b';
+                
+                return `
+                    <div style="display: grid; grid-template-columns: 140px 1fr 100px 60px 80px; 
+                                align-items: center; gap: 12px; padding: 10px 12px; 
+                                background: rgba(30,41,59,0.5); border-radius: 6px; border-left: 3px solid ${gradeColor};">
+                        <span style="font-weight: 600; color: #e0e0e0;">${name}</span>
+                        <span style="font-size: 12px; color: ${alignmentColor};">${alignmentStatus}</span>
+                        <span style="font-family: monospace; font-size: 14px; font-weight: 600; color: ${gradeColor}; text-align: right;">
+                            ${dClockDisplay}
+                        </span>
+                        <span style="text-align: center; color: #94a3b8; font-size: 12px;">
+                            ${status.station || '—'}
+                        </span>
+                        <span style="background: ${gradeColor}; color: #fff; padding: 3px 10px; border-radius: 4px; 
+                                    font-size: 12px; font-weight: 600; text-align: center;">${status.quality_grade || '—'}</span>
+                    </div>
+                `;
+            }).join('');
+            
+            // Add pending channels
+            const pendingChannels = Object.entries(data.channels || {})
+                .filter(([_, status]) => !status.available)
+                .map(([name, _]) => `
+                    <div style="display: grid; grid-template-columns: 140px 1fr 100px 60px 80px; 
+                                align-items: center; gap: 12px; padding: 10px 12px; 
+                                background: rgba(100,116,139,0.1); border-radius: 6px; border-left: 3px solid #475569;">
+                        <span style="font-weight: 600; color: #94a3b8;">${name}</span>
+                        <span style="font-size: 12px; color: #64748b;">⏳ Initializing...</span>
+                        <span style="color: #64748b; text-align: right;">—</span>
+                        <span style="text-align: center; color: #64748b;">—</span>
+                        <span style="background: #475569; color: #94a3b8; padding: 3px 10px; border-radius: 4px; 
+                                    font-size: 12px; text-align: center;">—</span>
+                    </div>
+                `).join('');
+            
+            return `
+                <div class="phase2-pipeline" style="background: #1e293b; border: 1px solid #334155; 
+                            border-radius: 10px; padding: 20px; margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <div>
+                            <div style="font-size: 16px; font-weight: 600; color: #fff;">
+                                📡 Per-Channel UTC Alignment
+                            </div>
+                            <div style="font-size: 13px; color: #94a3b8;">
+                                Each channel independently computes its offset from UTC(NIST)
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 20px; text-align: center;">
+                            <div style="background: rgba(34,197,94,0.15); padding: 8px 16px; border-radius: 6px;">
+                                <div style="font-size: 20px; font-weight: 600; color: #22c55e;">${dClockCount}/${totalChannels}</div>
+                                <div style="font-size: 10px; color: #94a3b8;">Aligned</div>
+                            </div>
+                            <div style="background: rgba(59,130,246,0.15); padding: 8px 16px; border-radius: 6px;">
+                                <div style="font-size: 20px; font-weight: 600; color: #3b82f6;">${gradeAB}</div>
+                                <div style="font-size: 10px; color: #94a3b8;">High Quality</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 140px 1fr 100px 60px 80px; 
+                                gap: 12px; padding: 8px 12px; font-size: 11px; color: #64748b; 
+                                border-bottom: 1px solid #334155; margin-bottom: 8px;">
+                        <span>CHANNEL</span>
+                        <span>STATUS</span>
+                        <span style="text-align: right;">D_clock</span>
+                        <span style="text-align: center;">STATION</span>
+                        <span style="text-align: center;">GRADE</span>
+                    </div>
+                    
+                    <div style="display: flex; flex-direction: column; gap: 6px;">
+                        ${channelRows}
+                        ${pendingChannels}
+                    </div>
+                </div>
+            `;
+        }
+        
         function renderPrimaryReference(data) {
             if (!data.available) {
                 return `
@@ -1082,7 +1290,7 @@
                     <div class="ref-details">
                         <div class="ref-detail-item">
                             <span class="ref-detail-label">RTP Anchor:</span>
-                            <span class="ref-detail-value">${data.rtp_anchor.toLocaleString()}</span>
+                            <span class="ref-detail-value">${data.rtp_anchor}</span>
                         </div>
                         <div class="ref-detail-item">
                             <span class="ref-detail-label">UTC Anchor:</span>
@@ -1167,8 +1375,8 @@
                         </div>
                         <div style="margin-top: 8px; font-size: 12px; color: #94a3b8;">
                             ${verifiedIcon} | 
-                            Minute: ${new Date(g.minute_utc).toLocaleTimeString()} |
-                            Updated: ${new Date(g.last_updated).toLocaleTimeString()}
+                            Minute: ${UTCTime.formatTime(g.minute_utc)} UTC |
+                            Updated: ${UTCTime.formatTime(g.last_updated)} UTC
                         </div>
                     </div>
                     
@@ -1285,7 +1493,7 @@
                         <td>${r.propagation_delay_ms.toFixed(2)} ms</td>
                         <td style="${verifiedClass} font-weight: 600;">${offsetDisplay} ${verifiedIcon}</td>
                         <td><span style="color: ${confColor};">${(r.confidence * 100).toFixed(0)}%</span></td>
-                        <td style="color: #94a3b8; font-size: 11px;">${new Date(r.timestamp).toLocaleTimeString()}</td>
+                        <td style="color: #94a3b8; font-size: 11px;">${UTCTime.formatTime(r.timestamp)} UTC</td>
                     </tr>
                 `;
             }).join('');
@@ -1499,9 +1707,11 @@
             `;
         }
         
-        function renderChannelTable(data) {
+        function renderChannelTable(data, phase2Status) {
             // Sort channels by frequency
             const sortedChannels = window.GRAPE_UTILS.sortByChannelFrequency(data.channels, 'channel');
+            const gradeColors = { 'A': '#22c55e', 'B': '#3b82f6', 'C': '#eab308', 'D': '#f97316', 'X': '#ef4444' };
+            
             const rows = sortedChannels.map(ch => {
                 const healthClass = ch.health_score >= 90 ? 'excellent' :
                                    ch.health_score >= 70 ? 'good' :
@@ -1519,10 +1729,33 @@
                     `<span style="color: #ef4444;">${ch.drift_ms.toFixed(3)} ms</span>` :
                     `${ch.drift_ms.toFixed(3)} ms`;
                 
+                // Get Phase 2 D_clock data for this channel
+                const phase2Ch = phase2Status?.channels?.[ch.channel];
+                let dClockDisplay = '<span style="color: #64748b;">—</span>';
+                let gradeDisplay = '<span style="color: #64748b;">—</span>';
+                let stationDisplay = '<span style="color: #64748b;">—</span>';
+                let modeDisplay = '<span style="color: #64748b;">—</span>';
+                
+                if (phase2Ch && phase2Ch.available && phase2Ch.d_clock_ms !== undefined) {
+                    const dClockMs = phase2Ch.d_clock_ms;
+                    const grade = phase2Ch.quality_grade || 'X';
+                    const gradeColor = gradeColors[grade] || '#64748b';
+                    
+                    dClockDisplay = `<span style="font-family: monospace; color: ${gradeColor}; font-weight: 600;">
+                        ${dClockMs >= 0 ? '+' : ''}${dClockMs.toFixed(2)}
+                    </span>`;
+                    gradeDisplay = `<span style="background: ${gradeColor}; color: #fff; padding: 2px 8px; 
+                                          border-radius: 4px; font-size: 11px; font-weight: 600;">${grade}</span>`;
+                    stationDisplay = phase2Ch.station || '—';
+                }
+                
                 return `
                     <tr>
                         <td><strong>${ch.channel}</strong></td>
                         <td><span class="quality-badge ${qualityClass}">${ch.quality}</span></td>
+                        <td style="text-align: right;">${dClockDisplay}</td>
+                        <td style="text-align: center;">${gradeDisplay}</td>
+                        <td style="text-align: center;">${stationDisplay}</td>
                         <td style="text-align: right;">${driftDisplay}</td>
                         <td style="text-align: right;">${jitterDisplay}</td>
                         <td><span class="health-score ${healthClass}">${ch.health_score}/100</span></td>
@@ -1532,15 +1765,18 @@
             
             return `
                 <div class="channel-table-container">
-                    <div class="chart-header">📋 Per-Channel Timing Detail</div>
+                    <div class="chart-header">📋 Per-Channel Timing Detail (with Phase 2 D_clock)</div>
                     <table>
                         <thead>
                             <tr>
                                 <th>Channel</th>
                                 <th>Quality</th>
-                                <th>Drift</th>
-                                <th>Jitter</th>
-                                <th>Health Score</th>
+                                <th style="text-align: right;">D_clock (ms)</th>
+                                <th style="text-align: center;">Grade</th>
+                                <th style="text-align: center;">Station</th>
+                                <th style="text-align: right;">RTP Drift</th>
+                                <th style="text-align: right;">Jitter</th>
+                                <th>Health</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1612,6 +1848,60 @@
             `;
         }
         
+        function renderDClockChartPlaceholder() {
+            return `
+                <div class="chart-section">
+                    <div class="chart-header">
+                        🎯 D_clock Time Series (Phase 2)
+                        <select id="dclock-channel-select" onchange="loadDClockChart()" style="margin-left: 20px; padding: 5px 10px; background: #1e293b; color: #e0e0e0; border: 1px solid #334155; border-radius: 4px;">
+                            <option value="">Select Channel...</option>
+                        </select>
+                        <select id="dclock-hours-select" onchange="loadDClockChart()" style="margin-left: 10px; padding: 5px 10px; background: #1e293b; color: #e0e0e0; border: 1px solid #334155; border-radius: 4px;">
+                            <option value="1">Last 1 Hour</option>
+                            <option value="6">Last 6 Hours</option>
+                            <option value="24" selected>Last 24 Hours</option>
+                        </select>
+                    </div>
+                    <div class="chart-container" id="dclock-chart" style="height: 350px;"></div>
+                    <div id="dclock-stats" style="display: flex; justify-content: center; gap: 40px; padding: 15px; 
+                                background: rgba(30,58,138,0.2); border-radius: 6px; margin-top: 10px;">
+                        <div style="text-align: center; color: #94a3b8;">Select a channel to view D_clock measurements</div>
+                    </div>
+                </div>
+                
+                <!-- D_clock Quality Grades Legend -->
+                <div class="chart-section" style="padding: 20px 25px;">
+                    <div class="chart-header" style="margin-bottom: 15px;">📊 D_clock Quality Grades</div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;">
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <span style="background: #22c55e; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">Grade A</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Excellent - UTC verified + ground truth OR multi-method agreement. Uncertainty &lt;1ms.</span>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <span style="background: #3b82f6; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">Grade B</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Good - High confidence from single station with strong signal. Uncertainty 1-3ms.</span>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <span style="background: #eab308; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">Grade C</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Moderate - Acceptable confidence. May have propagation uncertainty. Uncertainty 3-10ms.</span>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <span style="background: #f97316; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">Grade D</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">Low - Limited confidence. Propagation mode uncertain or weak signal.</span>
+                        </div>
+                        <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <span style="background: #ef4444; color: #fff; padding: 4px 12px; border-radius: 12px; font-weight: 600; font-size: 12px; white-space: nowrap;">Grade X</span>
+                            <span style="color: #cbd5e1; font-size: 13px; line-height: 1.4;">No measurement - Tone detection failed or no valid solution found.</span>
+                        </div>
+                    </div>
+                    <div style="margin-top: 15px; padding: 12px; background: rgba(59, 130, 246, 0.1); border-radius: 6px; font-size: 13px; color: #3b82f6;">
+                        💡 <strong>D_clock = T<sub>system</sub> − T<sub>UTC</sub></strong>: The clock offset represents how far the system clock differs from true UTC. 
+                        A value of +2.5ms means the system clock is 2.5ms ahead of UTC.
+                    </div>
+                </div>
+            `;
+        }
+        
         function renderTransitions(data) {
             if (data.count === 0) {
                 return `
@@ -1627,7 +1917,7 @@
             const items = data.transitions.slice(0, 10).map(t => {
                 return `
                     <div class="transition-item">
-                        <div class="transition-time">${new Date(t.timestamp).toLocaleString()}</div>
+                        <div class="transition-time">${UTCTime.formatDateTime(t.timestamp)}</div>
                         <div class="transition-title">
                             ${t.channel}: ${t.from_quality} → ${t.to_quality}
                         </div>
@@ -1653,11 +1943,10 @@
         let availableChannels = [];
         
         function loadCharts() {
-            // Populate channel dropdown from health summary
-            populateChannelDropdown();
-            // Load both charts
-            loadDriftChart();
-            loadTimelineChart();
+            // Populate D_clock channel dropdown
+            populateDClockDropdown();
+            // Auto-load D_clock chart if a channel has data
+            autoSelectDClockChannel();
         }
         
         function populateChannelDropdown() {
@@ -1674,6 +1963,178 @@
                 option.textContent = ch;
                 select.appendChild(option);
             });
+        }
+        
+        function populateDClockDropdown() {
+            const select = document.getElementById('dclock-channel-select');
+            if (!select || availableChannels.length === 0) return;
+            
+            // Keep "Select Channel" option
+            select.innerHTML = '<option value="">Select Channel...</option>';
+            
+            // Add each channel
+            availableChannels.forEach(ch => {
+                const option = document.createElement('option');
+                option.value = ch;
+                option.textContent = ch;
+                select.appendChild(option);
+            });
+        }
+        
+        function autoSelectDClockChannel() {
+            // If Phase 2 status has a channel with D_clock, auto-select it
+            const phase2Status = window.phase2ChannelStatus;
+            if (!phase2Status || !phase2Status.available) return;
+            
+            const select = document.getElementById('dclock-channel-select');
+            if (!select) return;
+            
+            // Find first channel with D_clock data
+            for (const [channelName, status] of Object.entries(phase2Status.channels || {})) {
+                if (status.available && status.d_clock_ms !== undefined) {
+                    select.value = channelName;
+                    loadDClockChart();
+                    break;
+                }
+            }
+        }
+        
+        async function loadDClockChart() {
+            const channelSelect = document.getElementById('dclock-channel-select');
+            const hoursSelect = document.getElementById('dclock-hours-select');
+            const chartDiv = document.getElementById('dclock-chart');
+            const statsDiv = document.getElementById('dclock-stats');
+            
+            if (!chartDiv) return;
+            
+            const selectedChannel = channelSelect ? channelSelect.value : '';
+            const hours = hoursSelect ? parseInt(hoursSelect.value) : 24;
+            
+            if (!selectedChannel) {
+                chartDiv.innerHTML = '<div style="height: 100%; display: flex; align-items: center; justify-content: center; color: #64748b;">Select a channel to view D_clock measurements</div>';
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/v1/timing/clock-offset?channel=${encodeURIComponent(selectedChannel)}&hours=${hours}`);
+                const data = await response.json();
+                
+                if (!data.available || !data.measurements || data.measurements.length === 0) {
+                    chartDiv.innerHTML = `<div style="height: 100%; display: flex; align-items: center; justify-content: center; color: #94a3b8;">No D_clock data available for ${selectedChannel}</div>`;
+                    if (statsDiv) statsDiv.innerHTML = '<div style="text-align: center; color: #94a3b8;">No data</div>';
+                    return;
+                }
+                
+                const gradeColors = { 'A': '#22c55e', 'B': '#3b82f6', 'C': '#eab308', 'D': '#f97316', 'X': '#ef4444' };
+                
+                // Build main D_clock trace
+                const x = data.measurements.map(m => new Date(m.timestamp));
+                const y = data.measurements.map(m => m.d_clock_ms);
+                const colors = data.measurements.map(m => gradeColors[m.quality_grade] || '#64748b');
+                const hoverText = data.measurements.map(m => 
+                    `D_clock: ${m.d_clock_ms >= 0 ? '+' : ''}${m.d_clock_ms.toFixed(3)} ms<br>` +
+                    `Grade: ${m.quality_grade}<br>` +
+                    `Station: ${m.station}<br>` +
+                    `Mode: ${m.propagation_mode || 'N/A'}<br>` +
+                    `Confidence: ${(m.confidence * 100).toFixed(0)}%`
+                );
+                
+                const traces = [{
+                    x: x,
+                    y: y,
+                    mode: 'lines+markers',
+                    name: 'D_clock',
+                    line: { color: '#3b82f6', width: 2 },
+                    marker: { 
+                        size: 8, 
+                        color: colors,
+                        line: { color: '#fff', width: 1 }
+                    },
+                    hovertext: hoverText,
+                    hoverinfo: 'text+x'
+                }];
+                
+                // Add uncertainty band if available
+                const hasUncertainty = data.measurements.some(m => m.uncertainty_ms !== null);
+                if (hasUncertainty) {
+                    const yUpper = data.measurements.map(m => m.d_clock_ms + (m.uncertainty_ms || 0));
+                    const yLower = data.measurements.map(m => m.d_clock_ms - (m.uncertainty_ms || 0));
+                    
+                    traces.push({
+                        x: [...x, ...x.slice().reverse()],
+                        y: [...yUpper, ...yLower.reverse()],
+                        fill: 'toself',
+                        fillcolor: 'rgba(59, 130, 246, 0.1)',
+                        line: { color: 'transparent' },
+                        name: 'Uncertainty',
+                        showlegend: false,
+                        hoverinfo: 'skip'
+                    });
+                }
+                
+                const layout = {
+                    paper_bgcolor: 'transparent',
+                    plot_bgcolor: 'transparent',
+                    margin: { l: 60, r: 30, t: 20, b: 50 },
+                    xaxis: {
+                        gridcolor: '#334155',
+                        tickcolor: '#64748b',
+                        tickfont: { color: '#94a3b8' },
+                        title: { text: 'Time (UTC)', font: { color: '#94a3b8', size: 12 } }
+                    },
+                    yaxis: {
+                        gridcolor: '#334155',
+                        tickcolor: '#64748b',
+                        tickfont: { color: '#94a3b8' },
+                        title: { text: 'D_clock (ms)', font: { color: '#94a3b8', size: 12 } },
+                        zeroline: true,
+                        zerolinecolor: '#94a3b8',
+                        zerolinewidth: 1
+                    },
+                    legend: {
+                        font: { color: '#e0e0e0' },
+                        bgcolor: 'rgba(30, 41, 59, 0.8)'
+                    },
+                    hovermode: 'closest'
+                };
+                
+                Plotly.newPlot(chartDiv, traces, layout, { responsive: true, displayModeBar: false });
+                
+                // Update stats display
+                if (statsDiv && data.statistics) {
+                    const stats = data.statistics;
+                    const gradeDistHtml = Object.entries(data.grade_distribution || {})
+                        .map(([grade, count]) => `<span style="color: ${gradeColors[grade] || '#64748b'};">${grade}: ${count}</span>`)
+                        .join(' | ');
+                    
+                    statsDiv.innerHTML = `
+                        <div style="text-align: center;">
+                            <div style="font-size: 13px; color: #94a3b8;">Mean</div>
+                            <div style="font-size: 18px; font-weight: 600; color: #e0e0e0;">${stats.mean_ms} ms</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 13px; color: #94a3b8;">Std Dev</div>
+                            <div style="font-size: 18px; font-weight: 600; color: #e0e0e0;">±${stats.std_ms} ms</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 13px; color: #94a3b8;">Range</div>
+                            <div style="font-size: 18px; font-weight: 600; color: #e0e0e0;">${stats.min_ms} to ${stats.max_ms}</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 13px; color: #94a3b8;">Samples</div>
+                            <div style="font-size: 18px; font-weight: 600; color: #e0e0e0;">${data.count}</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 13px; color: #94a3b8;">Grades</div>
+                            <div style="font-size: 14px; font-weight: 500;">${gradeDistHtml}</div>
+                        </div>
+                    `;
+                }
+                
+            } catch (err) {
+                console.error('Failed to load D_clock chart:', err);
+                chartDiv.innerHTML = `<div style="height: 100%; display: flex; align-items: center; justify-content: center; color: #ef4444;">Error loading D_clock data: ${err.message}</div>`;
+            }
         }
         
         async function loadDriftChart() {
@@ -1976,6 +2437,7 @@
         startAutoRefresh();
     </script>
     </div><!-- end container -->
+    <script src="/utils/utc-time.js"></script>
     <script src="/components/theme-toggle.js"></script>
     <script src="/components/navigation.js"></script>
 </body>

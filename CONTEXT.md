@@ -1,71 +1,321 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-04  
-**Version:** 3.5.0  
-**Status:** ✅ Three-Phase Pipeline Complete, Ready for Web-UI Integration Testing
+**Last Updated:** 2025-12-05  
+**Version:** 3.8.0  
+**Status:** ✅ Clock Convergence Model Implemented, UTC Standardized
 
 ---
 
-## 🎯 NEXT SESSION: WEB-UI INTEGRATION TESTING
+## 🎯 NEXT SESSION: DISCRIMINATION PAGE INTEGRATION
 
-The next session will focus on testing the Web-UI integration with the new three-phase architecture. The backend Python code is complete; now we need to verify the web dashboard correctly reads from the new directory structure.
+The next task is to bring `discrimination.html` into coordination with the Phase 2 analytic data. The discrimination system should display real-time WWV/WWVH station identification results from the analytics engine.
 
-### Testing Priorities
+### Key Files for Discrimination Integration
 
-1. **Verify path synchronization** between `paths.py` and `grape-paths.js`
-2. **Test spectrogram display** from `products/{CHANNEL}/spectrograms/`
-3. **Test timing display** from `phase2/{CHANNEL}/clock_offset/`
-4. **Test real-time status** from `status/` directory
-5. **Verify 10-second sliding window monitor** JSON output
+| File | Purpose | Notes |
+|------|---------|-------|
+| `web-ui/discrimination.html` | Frontend display | Needs to consume Phase 2 data |
+| `web-ui/discrimination.js` | Chart/logic | Currently may use legacy patterns |
+| `src/grape_recorder/grape/wwvh_discrimination.py` | Backend discrimination | Power ratio, BCD, tone methods |
+| `src/grape_recorder/grape/phase2_temporal_engine.py` | Integrates discrimination | `compute_discrimination()` |
+| `src/grape_recorder/grape/discrimination_csv_writers.py` | CSV output | Per-method CSV files |
 
-### Key Files for Web-UI Integration
+### Discrimination Data Locations
+
+```
+phase2/{CHANNEL}/
+├── discrimination/
+│   └── discrimination_summary.csv    # Weighted voting result
+├── tone_detections/
+│   └── tone_detections.csv           # 1000/1200 Hz tones
+├── bcd_discrimination/
+│   └── bcd_discrimination.csv        # BCD correlation method
+├── doppler/
+│   └── doppler_analysis.csv          # Doppler shift analysis
+└── station_id_440hz/
+    └── station_id.csv                # Voice ID + 500/600 Hz
+```
+
+### Existing API Endpoints for Discrimination
+
+```javascript
+// In monitoring-server-v3.js
+app.get('/api/v1/phase2/reception-matrix')    // WWV/WWVH detection per channel
+app.get('/api/v1/phase2/diurnal-pattern')     // Hourly dominance patterns
+app.get('/api/v1/discrimination/:channel')    // Per-channel discrimination details
+```
+
+### WWVH Frequency Constraint (Fixed Dec 5)
+
+**IMPORTANT**: WWVH only broadcasts on 2.5, 5, 10, 15 MHz. It does NOT broadcast on 20 or 25 MHz.
+
+```javascript
+// web-ui/monitoring-server-v3.js
+const WWVH_FREQUENCIES_MHZ = [2.5, 5, 10, 15];
+const canReceiveWWVH = WWVH_FREQUENCIES_MHZ.includes(freqMHz);
+```
+
+---
+
+## 🎯 SESSION COMPLETE (Dec 5): Clock Convergence & UTC Standardization
+
+### 1. Clock Convergence Model ("Set, Monitor, Intervention")
+
+**New Module**: `src/grape_recorder/grape/clock_convergence.py`
+
+With a GPSDO-disciplined receiver, we converge to a locked clock offset estimate, then monitor for anomalies instead of constantly recalculating.
+
+```
+State Machine:
+ACQUIRING (N<10) → CONVERGING (building stats) → LOCKED (monitoring)
+                                                       ↓
+                                              5 anomalies → REACQUIRE
+```
+
+**Key Features:**
+- **Running statistics**: Welford's online algorithm for mean/variance
+- **Uncertainty**: σ/√N (shrinks with each measurement)
+- **Lock criterion**: uncertainty < 1ms AND N ≥ 30 samples
+- **Anomaly detection**: |residual| > 3σ flags propagation events
+- **State persistence**: JSON file survives service restarts
+
+**Integration**: `Phase2AnalyticsService._write_clock_offset()` now uses the convergence model:
+- Locked state writes converged mean (not raw measurement)
+- Quality grades A/B indicate convergence lock
+- `utc_verified` field = True when locked
+- Residuals reveal real ionospheric propagation effects
+
+**Expected Timeline**:
+| Time | State | Uncertainty | Kalman Color |
+|------|-------|-------------|--------------|
+| 0-10 min | ACQUIRING | ∞ | Gray |
+| 10-30 min | CONVERGING | ~10 ms | Gray |
+| 30+ min | **LOCKED** | < 1 ms | **Blue** |
+
+### 2. Propagation Mode Probability (Gaussian Discrimination)
+
+**Updated**: `web-ui/utils/transmission-time-helpers.js` → `getModeProbabilityData()`
+
+Mode probabilities now use Gaussian likelihood based on converged uncertainty:
+
+```
+P(mode) ∝ exp(-0.5 × ((measured - expected) / σ)²)
+where σ = √(uncertainty² + mode_spread²)
+```
+
+| Uncertainty | Discrimination |
+|-------------|----------------|
+| > 30 ms | Flat (no information) |
+| 10-30 ms | Weak peaks |
+| 3-10 ms | Moderate |
+| **< 3 ms** | **Sharp peaks** ✓ |
+
+### 3. UTC Time Standardization
+
+**New Utility**: `web-ui/utils/utc-time.js`
+
+All time displays now use UTC for scientific consistency:
+
+```javascript
+UTCTime.now()           // "13:45:23"
+UTCTime.formatTime(ts)  // "13:45:23"
+UTCTime.formatDate(ts)  // "2025-12-05"
+UTCTime.formatDateTime(ts) // "2025-12-05 13:45:23 UTC"
+```
+
+**Updated Pages**: summary.html, timing-dashboard-enhanced.html, carrier.html, phase2-dashboard.html, gaps.html, logs.html, timing-visualizations.js
+
+**Plotly Charts**: Use ISO strings for timestamps to force UTC display:
+```javascript
+const timestamps = data.map(p => new Date(p.timestamp * 1000).toISOString());
+```
+
+### 4. Phase 2 Dashboard Fixes
+
+- **Receiver Location**: Fixed grid lookup from `[station]` config section
+- **Maidenhead Conversion**: Proper 6-character grid to lat/lon
+- **WWVH Filtering**: 20/25 MHz channels show "N/A" for WWVH (doesn't broadcast there)
+
+### 5. Status JSON Enhancements
+
+`phase2/{CHANNEL}/status/analytics-service-status.json` now includes:
+
+```json
+{
+  "channels": {
+    "WWV 10 MHz": {
+      "d_clock_ms": -5.823,
+      "quality_grade": "B",
+      "uncertainty_ms": 0.87,
+      "convergence": {
+        "state": "locked",
+        "is_locked": true,
+        "sample_count": 45,
+        "uncertainty_ms": 0.87,
+        "convergence_progress": 1.0,
+        "residual_ms": 0.12,
+        "is_anomaly": false
+      }
+    }
+  }
+}
+```
+
+---
+
+## 📋 SESSION HISTORY
+
+### Dec 5, 2025 - Clock Convergence & UTC
+- ✅ **Clock Convergence Model**: "Set, Monitor, Intervention" architecture
+- ✅ **Convergence State Machine**: ACQUIRING → CONVERGING → LOCKED → REACQUIRE
+- ✅ **Welford Algorithm**: Running mean/variance with proper uncertainty
+- ✅ **Anomaly Detection**: 3σ threshold for propagation events
+- ✅ **State Persistence**: Convergence survives service restart
+- ✅ **Mode Probability**: Gaussian likelihood-based discrimination
+- ✅ **UTC Standardization**: All web-UI displays use UTC
+- ✅ **Plotly Charts**: Force UTC timezone in all visualizations
+- ✅ **WWVH Filtering**: 20/25 MHz correctly shows N/A for WWVH
+- ✅ **Receiver Location**: Fixed grid square lookup and conversion
+
+### Dec 4, 2025 - Session 2 (Audio & Status Fixes)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Phase 1 (Core Recorder) | ✅ Working | 9 channels recording, auto-recovery on radiod restart |
+| Phase 2 (Analytics) | ✅ Working | All 9 channels processing, D_clock being computed |
+| Phase 3 (Products) | ✅ Working | Spectrograms, decimated DRF |
+| Web-UI Summary | ✅ Working | Per-channel RTP status lights now accurate |
+| Web-UI Audio | ✅ Working | AM streaming with AGC via ka9q-python |
+| Web-UI Timing | ✅ Integrated | D_clock display, charts, pipeline status |
+
+### Testing the Changes
+
+```bash
+cd ~/grape-recorder
+./scripts/grape-ui.sh -stop      # Stop existing instance
+./scripts/grape-ui.sh -start     # Start with new changes
+./scripts/grape-ui.sh -status    # Verify running → http://localhost:3000/
+```
+
+Check logs if needed: `tail -f $DATA_ROOT/logs/webui.log`
+
+### Key Files for Timing Integration
 
 | Python (Backend) | JavaScript (Frontend) | Purpose |
 |------------------|----------------------|---------|
-| `src/grape_recorder/paths.py` | `web-ui/grape-paths.js` | Path conventions (MUST STAY SYNCHRONIZED) |
-| `analytics_service.py` | `monitoring-server-v3.js` | Status JSON writing/reading |
-| `spectrogram_generator.py` | Spectrogram display pages | PNG image paths |
-| `sliding_window_monitor.py` | Real-time dashboard | 10-second metrics JSON |
+| `phase2_analytics_service.py` | `monitoring-server-v3.js` | Timing metrics JSON |
+| `phase2_temporal_engine.py` | `carrier.html` / `timing.html` | D_clock computation |
+| `clock_offset_series.py` | Data display | CSV output format |
+| `timing_metrics_writer.py` | Real-time dashboard | Web-UI timing data |
 
-### Path Synchronization (CRITICAL)
-
-**SYNC VERSION:** `2025-12-04-v2-three-phase`
-
-Both files must define matching paths:
+### Timing Data Locations (Phase 2 Architecture)
 
 ```
-{DATA_ROOT}/
-├── raw_archive/{CHANNEL}/       # Phase 1: 20 kHz Digital RF
-├── phase2/{CHANNEL}/            # Phase 2: Timing analysis
-│   ├── clock_offset/            # D_clock CSV files
-│   └── state/                   # channel-status.json
-├── products/{CHANNEL}/          # Phase 3: Derived products
-│   ├── decimated/               # 10 Hz DRF for PSWS
-│   ├── spectrograms/{YYYYMMDD}/ # PNG images
-│   ├── gap_analysis/            # Gap JSON
-│   └── timing_annotations/      # Timing CSV
-├── status/                      # Real-time monitoring
-│   ├── gpsdo_status.json        # GPSDO state
-│   ├── timing_status.json       # Primary time reference
-│   └── {CHANNEL}_monitor.json   # Sliding window metrics
-├── state/                       # Service state files
-└── logs/                        # Service logs
+phase2/{CHANNEL}/
+├── clock_offset/               # D_clock CSV files (per-minute)
+│   └── YYYYMMDD/
+│       └── {channel}_clock_offset_{YYYYMMDD}.csv
+├── status/
+│   └── analytics-service-status.json  # Real-time status including:
+│       ├── last_carrier_snr_db        # Carrier SNR from 10 Hz IQ
+│       ├── minutes_processed          # Processing count
+│       └── last_d_clock_ms            # Most recent D_clock
+└── state/
+    └── channel-status.json     # TimeSnap reference, quality
 ```
 
-### Web-UI API Endpoints to Test
+### Carrier SNR (Fixed This Session)
 
-| Endpoint | Source | Status |
-|----------|--------|--------|
-| `/api/channels` | `phase2/*/state/channel-status.json` | Verify |
-| `/api/spectrograms/:channel/:date` | `products/*/spectrograms/` | Verify |
-| `/api/timing/:channel/:date` | `phase2/*/clock_offset/` | Verify |
-| `/api/carriers/:channel/:date` | `phase2/*/carrier/` | Verify |
-| `/api/status/gpsdo` | `status/gpsdo_status.json` | Verify |
+**Important Change**: Carrier SNR is now computed from 10 Hz decimated IQ data in `_calculate_carrier_snr()` in `phase2_analytics_service.py`. This provides SNR for ALL channels regardless of tone detection success.
+
+```python
+# Carrier SNR calculation (always available)
+carrier_snr_db = 10 * log10(mean_power / noise_variance)
+
+# Previously depended on tone detection (often null for weak signals)
+```
 
 ---
 
-## 📁 THREE-PHASE ARCHITECTURE (Complete)
+## � AUDIO STREAMING (Fixed This Session)
+
+### Architecture
+
+Audio streaming uses **ka9q-python** from the venv (NOT SWL-ka9q). The web-UI calls `radiod_audio_client.py` to create AM audio channels.
+
+**Critical**: SSRC is **dynamically allocated by ka9q** - do NOT use legacy SSRC conventions (frequency + 999).
+
+### Audio Flow
+
+```
+Browser → WebSocket → Node.js Server → RTP Multicast ← radiod AM Channel
+                                              ↑
+                              radiod_audio_client.py (Python/ka9q)
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `web-ui/radiod_audio_client.py` | Creates AM channels via ka9q-python |
+| `web-ui/monitoring-server-v3.js` | WebSocket audio forwarding (lines 185-245) |
+| `web-ui/summary.html` | Browser audio player (GRAPEAudioPlayer class) |
+
+### Audio Client Usage
+
+```python
+# Create AM audio channel (ka9q auto-allocates SSRC)
+from ka9q import RadiodControl, discover_channels
+
+control = RadiodControl('bee1-hf-status.local')
+
+# Check for existing channel first
+channels = discover_channels('bee1-hf-status.local')
+for ssrc, ch in channels.items():
+    if ch.preset == 'am' and abs(ch.frequency - frequency_hz) < 1000:
+        return existing_channel_info
+
+# Create new channel
+ssrc = control.create_channel(
+    frequency_hz=10000000,
+    preset='am',
+    sample_rate=12000,
+    agc_enable=1
+)
+
+# Explicitly set AM preset and AGC
+control.set_preset(ssrc, 'am')
+control.set_agc(ssrc, enable=True, headroom=6.0)
+control.set_agc_threshold(ssrc, threshold_db=0.0)
+control.set_gain(ssrc, gain_db=40.0)  # Boost for low SNR
+```
+
+### Server-Side SSRC Handling (Fixed)
+
+The server **MUST use the SSRC returned by ka9q**, not calculate a legacy one:
+
+```javascript
+// monitoring-server-v3.js startAudioStream()
+const result = JSON.parse(stdout.trim());
+const ssrc = result.ssrc;  // Use ka9q's SSRC, NOT getAudioSSRC(freq)
+this.activeStreams.set(ssrc, stream);
+```
+
+### Deprecated Patterns (DO NOT USE)
+
+```javascript
+// ❌ WRONG - Legacy SSRC calculation
+const AUDIO_SSRC_OFFSET = 999;
+const ssrc = frequencyHz + AUDIO_SSRC_OFFSET;  // Don't do this!
+
+// ✅ CORRECT - Use SSRC from ka9q response
+const ssrc = result.ssrc;
+```
+
+---
+
+## � THREE-PHASE ARCHITECTURE (Complete)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -257,7 +507,16 @@ python3 -c "from src.grape_recorder.grape import SpectrogramGenerator; print('OK
 
 ## 📋 SESSION HISTORY
 
-### Dec 4, 2025 (Current)
+### Dec 4, 2025 - Session 2 (Audio & Status Fixes)
+- ✅ **Audio Streaming Fixed**: Uses ka9q-python from venv with dynamic SSRC allocation
+- ✅ **AGC Configured**: headroom=6dB, threshold=0dB, gain=40dB for comfortable listening
+- ✅ **Per-Channel RTP Status**: Fixed status lights to check `last_packet_time` per channel
+- ✅ **Carrier SNR**: Now calculated from 10 Hz IQ data (independent of tone detection)
+- ✅ **Duplicate AM Prevention**: Audio client checks for existing AM channels before creating
+- ✅ **Server SSRC Fix**: Uses `result.ssrc` from ka9q, not legacy calculation
+- ✅ **Channel Recovery Test**: Core recorder auto-recovers all 9 channels on radiod restart
+
+### Dec 4, 2025 - Session 1 (Phase 3 Implementation)
 - ✅ Implemented `Phase3ProductEngine` for 10 Hz DRF generation
 - ✅ Created `SpectrogramGenerator` for PNG visualization
 - ✅ Integrated `SlidingWindowMonitor` into `RawArchiveWriter`
@@ -292,9 +551,31 @@ python3 -c "from src.grape_recorder.grape import SpectrogramGenerator; print('OK
 ## ⚠️ KNOWN ISSUES / WATCHPOINTS
 
 1. **Path Sync**: `paths.py` and `grape-paths.js` MUST stay synchronized
-2. **ka9q module**: Not available in all environments (import may fail)
-3. **matplotlib**: Required for spectrogram generation (optional dependency)
-4. **digital_rf**: Required for DRF read/write operations
+2. **ka9q-python**: Must run scripts in venv (`source venv/bin/activate`)
+3. **SSRC Allocation**: ka9q auto-allocates SSRCs - never hardcode or calculate legacy SSRCs
+4. **matplotlib**: Required for spectrogram generation (optional dependency)
+5. **digital_rf**: Required for DRF read/write operations
+6. **Audio Channels**: Always check for existing AM channel before creating new one
+
+### Per-Channel RTP Status (Fixed)
+
+The web-UI now checks per-channel status using `last_packet_time` from the core status file:
+
+```javascript
+// monitoring-server-v3.js getChannelStatuses()
+const coreStatusFile = paths.getCoreStatusFile();
+const coreStatus = JSON.parse(fs.readFileSync(coreStatusFile, 'utf8'));
+
+for (const [ssrc, chInfo] of Object.entries(coreStatus.channels)) {
+    if (chInfo.description === channelName) {
+        const lastPacket = new Date(chInfo.last_packet_time).getTime() / 1000;
+        const age = Date.now() / 1000 - lastPacket;
+        rtpStreaming = age < 10;  // 10 second timeout
+    }
+}
+```
+
+Previously, all channels showed same status (overall core running state). Now each channel's status light accurately reflects its individual RTP stream state.
 
 ---
 
@@ -303,18 +584,34 @@ python3 -c "from src.grape_recorder.grape import SpectrogramGenerator; print('OK
 ```bash
 cd /home/wsprdaemon/grape-recorder
 
-# 1. Verify services can start
+# 1. Verify services running
 ./scripts/grape-all.sh -status
 
-# 2. Start services
+# 2. Start if needed
 ./scripts/grape-all.sh -start
 
 # 3. Open web dashboard
 # http://localhost:3000/
 
-# 4. Check if paths are correct
-grep "SYNC VERSION" src/grape_recorder/paths.py web-ui/grape-paths.js
+# 4. Check Phase 2 timing data is being produced
+ls -la /tmp/grape-test/phase2/*/clock_offset/
+cat /tmp/grape-test/phase2/WWV\ 10\ MHz/status/analytics-service-status.json | jq .
 
-# 5. Verify new directory structure is being used
-ls -la /tmp/grape-test/
+# 5. Verify carrier SNR is being calculated
+grep "carrier_snr" /tmp/grape-test/logs/phase2-wwv10.log | tail -5
+
+# 6. Test audio (if needed)
+source venv/bin/activate
+python3 web-ui/radiod_audio_client.py --radiod-host bee1-hf-status.local create --frequency 10000000
+```
+
+### Files to Review for Timing Integration
+
+```bash
+# Backend - where timing data is written
+cat src/grape_recorder/grape/phase2_analytics_service.py | head -100
+
+# Frontend - where timing should be displayed
+cat web-ui/monitoring-server-v3.js | grep -A5 "getChannelStatuses"
+cat web-ui/carrier.html | grep -A5 "timeBasis"
 ```

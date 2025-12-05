@@ -55,8 +55,8 @@ continuous = true
 
 # RTP packet timing (from radiod)
 # blocktime_ms controls samples per RTP packet: samples_per_packet = sample_rate * blocktime_ms / 1000
-# radiod default is 10ms for IQ mode, giving 200 samples/packet at 20 kHz
-blocktime_ms = 10
+# radiod IQ mode uses 8ms blocktime, giving 160 samples/packet at 20 kHz
+blocktime_ms = 8
 
 # Maximum gap to fill with zeros (seconds)
 # Gaps larger than this indicate stream restart or corruption

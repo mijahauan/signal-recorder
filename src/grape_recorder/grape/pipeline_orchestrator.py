@@ -182,26 +182,11 @@ class PipelineOrchestrator:
             sample_rate=config.sample_rate
         )
         
-        # Phase 3: Corrected Product Generator
-        from .corrected_product_generator import (
-            StreamingProductGenerator,
-            ProductConfig
-        )
-        
-        product_config = ProductConfig(
-            raw_archive_dir=config.raw_archive_dir,
-            clock_offset_dir=config.clock_offset_dir,
-            output_dir=config.processed_dir,
-            channel_name=config.channel_name,
-            frequency_hz=config.frequency_hz,
-            station_config=config.station_config,
-            input_sample_rate=config.sample_rate,
-            output_sample_rate=config.output_sample_rate
-        )
-        self.product_generator = StreamingProductGenerator(
-            product_config,
-            latency_minutes=config.streaming_latency_minutes
-        )
+        # Phase 3: Product generation is now handled separately as batch processing
+        # See phase3_product_engine.py and scripts/grape-phase3.sh
+        # The streaming product generator is disabled - Phase 3 runs as batch job
+        self.product_generator = None
+        logger.info("Phase 3 streaming disabled - use batch processing via grape-phase3.sh")
         
         # Sample accumulation for minute-aligned processing
         self.samples_per_minute = config.sample_rate * 60
@@ -283,7 +268,8 @@ class PipelineOrchestrator:
         self._flush_current_minute()
         self.raw_archive_writer.close()
         self.clock_offset_engine.save_series()
-        self.product_generator.close()
+        if self.product_generator:
+            self.product_generator.close()
         
         with self._lock:
             self.state = PipelineState.IDLE
@@ -445,14 +431,16 @@ class PipelineOrchestrator:
                 except Exception as e:
                     logger.error(f"Phase 2 analysis error: {e}", exc_info=True)
                 
-                # Phase 3: Generate corrected product
-                try:
-                    # Add to streaming generator (will process when D_clock available)
-                    self.product_generator.add_raw_minute(system_time, samples)
-                    self.stats['products_generated'] += 1
-                
-                except Exception as e:
-                    logger.error(f"Phase 3 product generation error: {e}", exc_info=True)
+                # Phase 3: Generate corrected product (disabled in three-phase architecture)
+                # Phase 3 now runs as batch processing via grape-phase3.sh
+                if self.product_generator:
+                    try:
+                        # Add to streaming generator (will process when D_clock available)
+                        self.product_generator.add_raw_minute(system_time, samples)
+                        self.stats['products_generated'] += 1
+                    
+                    except Exception as e:
+                        logger.error(f"Phase 3 product generation error: {e}", exc_info=True)
                 
             except queue.Empty:
                 continue
@@ -476,7 +464,7 @@ class PipelineOrchestrator:
                 'queue_depth': self.analysis_queue.qsize(),
                 'phase1_stats': self.raw_archive_writer.get_stats(),
                 'phase2_stats': self.clock_offset_engine.get_stats(),
-                'phase3_stats': self.product_generator.get_stats()
+                'phase3_stats': self.product_generator.get_stats() if self.product_generator else {'status': 'disabled'}
             }
     
     def get_status(self) -> Dict[str, Any]:
@@ -654,6 +642,9 @@ class BatchReprocessor:
         """
         Reprocess Phase 1 data through Phase 3 with specific D_clock version.
         
+        Note: This method has been deprecated. Use Phase3ProductEngine directly
+        via the grape-phase3.sh script for batch processing.
+        
         Args:
             start_time: Start time
             end_time: End time
@@ -663,33 +654,9 @@ class BatchReprocessor:
         Returns:
             Processing results summary
         """
-        from .corrected_product_generator import (
-            CorrectedProductGenerator,
-            ProductConfig
+        # Phase 3 batch processing should use Phase3ProductEngine directly
+        # See: scripts/grape-phase3.sh and src/grape_recorder/grape/phase3_product_engine.py
+        raise NotImplementedError(
+            "BatchReprocessor.reprocess_phase3() is deprecated. "
+            "Use Phase3ProductEngine directly via grape-phase3.sh for batch processing."
         )
-        
-        # Use versioned clock offset
-        clock_offset_versioned = self.clock_offset_dir / clock_offset_version
-        
-        # Create versioned output
-        output_versioned = self.processed_dir / output_version
-        
-        config = ProductConfig(
-            raw_archive_dir=self.raw_archive_dir,
-            clock_offset_dir=clock_offset_versioned,
-            output_dir=output_versioned,
-            channel_name=self.channel_name,
-            frequency_hz=self.frequency_hz,
-            station_config=self.station_config
-        )
-        
-        generator = CorrectedProductGenerator(config)
-        
-        # Process range
-        results = generator.process_range(start_time, end_time)
-        results['clock_offset_version'] = clock_offset_version
-        results['output_version'] = output_version
-        
-        generator.close()
-        
-        return results

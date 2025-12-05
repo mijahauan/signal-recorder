@@ -278,10 +278,12 @@ class ClockOffsetSeriesWriter:
         Initialize writer.
         
         Args:
-            output_dir: Base output directory
+            output_dir: Clock offset directory from paths.get_clock_offset_dir()
+                       Should be: {data_root}/phase2/{CHANNEL}/clock_offset/
             channel_name: Channel identifier
         """
-        self.output_dir = Path(output_dir) / 'clock_offset' / channel_name.replace(' ', '_')
+        # Use output_dir directly - caller should provide paths.get_clock_offset_dir()
+        self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.channel_name = channel_name
         

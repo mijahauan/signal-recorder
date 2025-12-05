@@ -1,5 +1,4 @@
-"""
-GRAPE Application - Global Radio Amateur Propagation Experiment
+"""GRAPE Application - Global Radio Amateur Propagation Experiment
 
 This package provides GRAPE-specific components for recording and analyzing
 WWV/WWVH/CHU time station signals for ionospheric propagation studies.
@@ -13,33 +12,23 @@ Phase 1: Immutable Raw Archive (20 kHz IQ DRF)
 - Fixed-duration file splitting (1 hour) - NOT event-based
 - Lossless compression (Shuffle + ZSTD/gzip)
 - NEVER modified based on subsequent analysis
+- Key: RawArchiveWriter, CoreRecorder
 
 Phase 2: Analytical Engine (Clock Offset Series)
 - Reads from Phase 1 raw archive
 - Produces D_clock = t_system - t_UTC
 - Uses tone detection, discrimination, propagation modeling
 - Output: Separate versionable CSV/JSON files
+- Key: AnalyticsService, Phase2TemporalEngine
 
 Phase 3: Corrected Telemetry Product (10 Hz DRF)
 - Reads Phase 1 + applies D_clock from Phase 2
 - Decimates 20 kHz → 10 Hz
 - UTC(NIST) aligned timestamps
 - Output: PROCESSED/ALIGNED DRF for upload
+- Key: Phase3ProductEngine, SpectrogramGenerator
 
-Key Components:
-- RawArchiveWriter: Phase 1 immutable raw archive
-- ClockOffsetEngine: Phase 2 analytical engine
-- CorrectedProductGenerator: Phase 3 product generator
-- PipelineOrchestrator: Coordinates all three phases
-- TransmissionTimeSolver: UTC(NIST) back-calculation
-
-Legacy Components (still supported):
-- GrapeRecorder: Two-phase recorder (startup buffering → recording)
-- GrapeNPZWriter: SegmentWriter for NPZ format with time_snap
-- AnalyticsService: Discrimination, decimation, tone detection
-- StartupToneDetector: WWV/CHU tone-based time_snap establishment
-
-Example (New Pipeline):
+Example:
     from grape_recorder.grape import create_pipeline
     
     orchestrator = create_pipeline(
@@ -53,25 +42,9 @@ Example (New Pipeline):
     
     # Feed RTP data
     orchestrator.process_samples(iq_samples, rtp_timestamp)
-
-Example (Legacy):
-    from grape_recorder.grape import GrapeRecorder, GrapeConfig
-    
-    config = GrapeConfig(
-        channel_name="WWV 10 MHz",
-        frequency_hz=10.0e6,
-        output_dir=Path("grape_output"),
-    )
-    recorder = GrapeRecorder(config, rtp_receiver)
-    recorder.start()
 """
 
-# Core GRAPE recorder
-from .grape_recorder import GrapeRecorder, GrapeConfig, GrapeState
-from .grape_npz_writer import GrapeNPZWriter
-
 # Tone detection and timing
-from .startup_tone_detector import StartupToneDetector
 from .tone_detector import ToneDetector
 
 # Analytics and discrimination
@@ -84,9 +57,7 @@ from .discrimination_csv_writers import DiscriminationCSVWriters
 from .decimation import decimate_for_upload, get_decimator
 
 # DRF output
-from .digital_rf_writer import DigitalRFWriter
 from .drf_batch_writer import DRFBatchWriter
-from .drf_writer_service import DRFWriterService
 
 # Supporting components
 from .wwv_geographic_predictor import WWVGeographicPredictor
@@ -96,12 +67,19 @@ from .quality_metrics import QualityMetricsTracker, MinuteQualityMetrics
 from .timing_metrics_writer import TimingMetricsWriter
 from .solar_zenith_calculator import calculate_solar_zenith_for_day
 from .gap_backfill import find_gaps, backfill_gaps
-from .core_npz_writer import CoreNPZWriter
 from .core_recorder import CoreRecorder
 
 # Cross-channel coordination (Station Lock)
 from .global_station_voter import GlobalStationVoter, StationAnchor, AnchorQuality
 from .station_lock_coordinator import StationLockCoordinator, GuidedDetection, MinuteProcessingResult
+
+# Clock Convergence Model ("Set, Monitor, Intervention" for GPSDO)
+from .clock_convergence import (
+    ClockConvergenceModel,
+    ConvergenceState,
+    ConvergenceResult,
+    StationAccumulator
+)
 
 # Primary Time Standard (HF Time Transfer)
 from .propagation_mode_solver import (
@@ -140,12 +118,6 @@ from .clock_offset_series import (
     ClockOffsetQuality,
     ClockOffsetSeriesWriter,
     create_clock_offset_engine
-)
-from .corrected_product_generator import (
-    CorrectedProductGenerator,
-    StreamingProductGenerator,
-    ProductConfig,
-    create_product_generator
 )
 from .pipeline_orchestrator import (
     PipelineOrchestrator,
@@ -213,14 +185,8 @@ from .spectrogram_generator import (
 
 __all__ = [
     # Core recorder
-    "GrapeRecorder",
-    "GrapeConfig",
-    "GrapeState",
-    "GrapeNPZWriter",
     "CoreRecorder",
-    "CoreNPZWriter",
     # Tone detection
-    "StartupToneDetector",
     "ToneDetector",
     # Analytics
     "AnalyticsService",
@@ -231,9 +197,7 @@ __all__ = [
     "decimate_for_upload",
     "get_decimator",
     # DRF
-    "DigitalRFWriter",
     "DRFBatchWriter",
-    "DRFWriterService",
     # Supporting
     "WWVGeographicPredictor",
     "wwv_tone_schedule",
@@ -251,6 +215,11 @@ __all__ = [
     "StationLockCoordinator",
     "GuidedDetection",
     "MinuteProcessingResult",
+    # Clock Convergence Model
+    "ClockConvergenceModel",
+    "ConvergenceState",
+    "ConvergenceResult",
+    "StationAccumulator",
     # Primary Time Standard
     "PropagationModeSolver",
     "PropagationMode",
@@ -279,10 +248,6 @@ __all__ = [
     "ClockOffsetQuality",
     "ClockOffsetSeriesWriter",
     "create_clock_offset_engine",
-    "CorrectedProductGenerator",
-    "StreamingProductGenerator",
-    "ProductConfig",
-    "create_product_generator",
     "PipelineOrchestrator",
     "PipelineConfig",
     "PipelineState",

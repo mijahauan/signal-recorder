@@ -505,7 +505,7 @@
                 renderLog();
 
                 lineCount.textContent = `${logContent.length} lines`;
-                lastUpdate.textContent = `Updated: ${new Date().toLocaleTimeString()}`;
+                lastUpdate.textContent = `Updated: ${UTCTime.now()} UTC`;
                 statusText.textContent = tailMode ? 'Tailing...' : 'Ready';
                 statusDot.classList.toggle('paused', !tailMode);
 
@@ -664,6 +664,8 @@
         // Initialize
         loadLogList();
     </script>
+    <script src="/utils/utc-time.js"></script>
+    <script src="/components/theme-toggle.js"></script>
     <script src="/components/navigation.js"></script>
 </body>
 </html>

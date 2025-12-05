@@ -51,6 +51,11 @@ class PacketResequencer:
     # Default maximum gap (can be overridden via constructor)
     DEFAULT_MAX_GAP_SAMPLES = 1_200_000  # 60 seconds at 20 kHz
     
+    # Threshold for detecting stream discontinuity (reset instead of fill)
+    # 10 seconds is long enough to distinguish from network jitter but
+    # short enough to detect radiod restarts quickly
+    DISCONTINUITY_THRESHOLD_SAMPLES = 200_000  # 10 seconds at 20 kHz
+    
     def __init__(
         self, 
         buffer_size: int = 64, 
@@ -85,6 +90,7 @@ class PacketResequencer:
         self.packets_resequenced = 0
         self.gaps_detected = 0
         self.samples_filled = 0
+        self.stream_resets = 0  # Count of detected discontinuities
         
         logger.debug(f"PacketResequencer initialized: buffer={buffer_size}, samples/pkt={samples_per_packet}")
     
@@ -107,6 +113,12 @@ class PacketResequencer:
             self._initialize(packet)
             return None, None  # Buffer first packet
         
+        # Check for stream discontinuity BEFORE processing
+        # This detects radiod restarts, channel recreation, etc.
+        if self._detect_discontinuity(packet):
+            self._reset_for_discontinuity(packet)
+            return None, None  # Start fresh from this packet
+        
         # Check for duplicate
         if packet.sequence in self.buffer_seq_nums:
             logger.debug(f"Duplicate packet seq={packet.sequence}, ignoring")
@@ -126,6 +138,63 @@ class PacketResequencer:
         self._add_to_buffer(packet)
         self.initialized = True
         logger.info(f"Sequencer initialized: seq={packet.sequence}, ts={packet.timestamp}")
+    
+    def _detect_discontinuity(self, packet: RTPPacket) -> bool:
+        """
+        Detect stream discontinuity that requires resequencer reset.
+        
+        A discontinuity is a timestamp jump so large it indicates the RTP
+        session restarted (e.g., radiod recreated the channel). We detect:
+        - Forward jumps > DISCONTINUITY_THRESHOLD_SAMPLES
+        - Backward jumps > DISCONTINUITY_THRESHOLD_SAMPLES (absolute value)
+        
+        Returns:
+            True if discontinuity detected (caller should reset)
+        """
+        if not self.initialized or self.next_expected_ts is None:
+            return False
+        
+        # Calculate signed timestamp difference (handles 32-bit wrap)
+        ts_diff = (packet.timestamp - self.next_expected_ts) & 0xFFFFFFFF
+        if ts_diff >= 0x80000000:
+            ts_diff = ts_diff - 0x100000000  # Convert to signed
+        
+        # Check for discontinuity in either direction
+        if abs(ts_diff) > self.DISCONTINUITY_THRESHOLD_SAMPLES:
+            logger.warning(
+                f"Stream discontinuity detected: timestamp jump of {ts_diff} samples "
+                f"({ts_diff / 20000:.1f} seconds). "
+                f"Expected ts={self.next_expected_ts}, received ts={packet.timestamp}. "
+                f"Resetting resequencer state (likely radiod restart or channel recreation)."
+            )
+            return True
+        
+        return False
+    
+    def _reset_for_discontinuity(self, packet: RTPPacket):
+        """
+        Reset resequencer state after detecting a stream discontinuity.
+        
+        This allows seamless recovery when the RTP stream restarts with
+        a new timestamp base (e.g., after radiod restart).
+        """
+        self.stream_resets += 1
+        
+        # Clear buffer
+        self.buffer.clear()
+        self.buffer_seq_nums.clear()
+        
+        # Reinitialize from current packet
+        self.next_expected_seq = packet.sequence
+        self.next_expected_ts = packet.timestamp
+        self.last_output_ts = packet.timestamp
+        self._add_to_buffer(packet)
+        
+        logger.info(
+            f"Resequencer reset #{self.stream_resets}: "
+            f"new seq={packet.sequence}, ts={packet.timestamp}. "
+            f"Recording will continue from this point."
+        )
     
     def _add_to_buffer(self, packet: RTPPacket):
         """Add packet to circular buffer"""
@@ -222,12 +291,15 @@ class PacketResequencer:
             # Only count as gap if there's actual missing samples
             self.gaps_detected += 1
         
-        # Sanity check: cap absurdly large gaps
-        if ts_gap > self.max_gap_samples:
-            logger.error(
-                f"Absurd forward gap: {ts_gap} samples. Capping at {self.max_gap_samples}."
+        # Cap gap to reasonable maximum (discontinuities should be caught earlier)
+        # This is a safety net - large gaps here indicate the discontinuity
+        # detection didn't trigger for some reason
+        if ts_gap > self.DISCONTINUITY_THRESHOLD_SAMPLES:
+            logger.warning(
+                f"Large gap {ts_gap} samples exceeds threshold. "
+                f"Capping to {self.DISCONTINUITY_THRESHOLD_SAMPLES}."
             )
-            ts_gap = self.max_gap_samples
+            ts_gap = self.DISCONTINUITY_THRESHOLD_SAMPLES
         
         # Estimate packets lost
         packets_lost = ts_gap // self.samples_per_packet
@@ -266,13 +338,16 @@ class PacketResequencer:
         # Only fill forward gaps
         if ts_gap <= 0:
             if ts_gap < 0:
-                logger.warning(f"Backward jump in lost packet recovery: {ts_gap} samples. Ignoring.")
+                logger.debug(f"Backward jump in lost packet recovery: {ts_gap} samples. Ignoring.")
             ts_gap = 0
         
-        # Sanity check: cap absurdly large gaps
-        if ts_gap > self.max_gap_samples:
-            logger.error(f"Absurd gap in lost packet recovery: {ts_gap} samples. Capping at {self.max_gap_samples}.")
-            ts_gap = self.max_gap_samples
+        # Cap to discontinuity threshold (larger gaps should trigger reset, not fill)
+        if ts_gap > self.DISCONTINUITY_THRESHOLD_SAMPLES:
+            logger.warning(
+                f"Large gap in lost packet recovery: {ts_gap} samples. "
+                f"Capping to {self.DISCONTINUITY_THRESHOLD_SAMPLES}."
+            )
+            ts_gap = self.DISCONTINUITY_THRESHOLD_SAMPLES
         
         # Create gap info
         gap_info = GapInfo(
@@ -354,6 +429,7 @@ class PacketResequencer:
             'packets_resequenced': self.packets_resequenced,
             'gaps_detected': self.gaps_detected,
             'samples_filled': self.samples_filled,
+            'stream_resets': self.stream_resets,  # Discontinuity recoveries
             'buffer_used': len(self.buffer),
             'buffer_size': self.buffer_size
         }

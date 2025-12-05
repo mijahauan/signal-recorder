@@ -196,6 +196,9 @@ class TransmissionTimeSolution:
     # Dual-station cross-validation
     dual_station_agreement_ms: Optional[float] = None  # |T_wwv - T_wwvh|
     dual_station_verified: bool = False
+    
+    # All propagation mode candidates with probabilities (for Mode Ridge visualization)
+    mode_candidates: List[Dict] = field(default_factory=list)
 
 
 @dataclass
@@ -692,6 +695,32 @@ class Phase2TemporalEngine:
         
         return result
     
+    def _station_from_channel_name(self) -> str:
+        """
+        Derive the transmitting station from the channel name.
+        
+        Channel names like "WWV 15 MHz", "WWVH 10 MHz", "CHU 7.85 MHz"
+        tell us exactly which station we're receiving.
+        
+        Returns:
+            'WWV', 'WWVH', 'CHU', or 'UNKNOWN'
+        """
+        if not self.channel_name:
+            return 'UNKNOWN'
+        
+        name_upper = self.channel_name.upper()
+        
+        # Check for CHU first (to avoid matching "CHU" in other strings)
+        if 'CHU' in name_upper:
+            return 'CHU'
+        # Check for WWVH before WWV (WWVH contains WWV)
+        elif 'WWVH' in name_upper:
+            return 'WWVH'
+        elif 'WWV' in name_upper:
+            return 'WWV'
+        else:
+            return 'UNKNOWN'
+    
     def _step3_transmission_time_solution(
         self,
         time_snap: TimeSnapResult,
@@ -715,16 +744,39 @@ class Phase2TemporalEngine:
             TransmissionTimeSolution with final D_clock
         """
         # Determine which station to use for solution
-        # Priority: Ground truth > High confidence discrimination > Anchor station
+        # 
+        # For CHU channels: Always CHU (single station on those frequencies)
+        # For WWV/WWVH channels: Use discrimination - WWVH is detectable on same freqs!
+        #
+        # Priority 1: Ground truth (500/600 Hz exclusive minutes, 440 Hz)
+        station = None
         if channel.ground_truth_station:
             station = channel.ground_truth_station
-        elif channel.station_confidence == 'high' and channel.dominant_station != 'UNKNOWN':
-            station = channel.dominant_station
-        else:
-            station = time_snap.anchor_station
+            logger.debug(f"Station from ground truth: {station}")
         
-        if station == 'BALANCED' or station == 'UNKNOWN':
-            station = 'WWV'  # Default fallback
+        # Priority 2: High confidence discrimination (detected via voting)
+        if not station and channel.station_confidence == 'high' and channel.dominant_station not in ['UNKNOWN', 'BALANCED', None]:
+            station = channel.dominant_station
+            logger.debug(f"Station from discrimination (high confidence): {station}")
+        
+        # Priority 3: Channel name hint (for CHU channels, or when discrimination fails)
+        if not station:
+            channel_station = self._station_from_channel_name()
+            if channel_station == 'CHU':
+                # CHU channels only receive CHU
+                station = 'CHU'
+            elif channel.dominant_station not in ['UNKNOWN', 'BALANCED', 'NONE', None, '']:
+                # WWV/WWVH channel - use discrimination result even if medium confidence
+                station = channel.dominant_station
+            else:
+                # Fallback to channel name
+                station = channel_station
+            logger.debug(f"Station from channel hint/fallback: {station}")
+        
+        # Final fallback
+        if not station or station in ['BALANCED', 'UNKNOWN', 'NONE', '']:
+            station = 'WWV'
+            logger.debug(f"Station fallback to WWV")
         
         # Prepare channel metrics for solver
         delay_spread_ms = channel.delay_spread_ms or 0.5
@@ -758,6 +810,18 @@ class Phase2TemporalEngine:
             # Extract D_clock
             d_clock_ms = solver_result.utc_nist_offset_ms or solver_result.emission_offset_ms
             
+            # Convert mode candidates to dict format for serialization
+            mode_candidates = [
+                {
+                    'mode': c.mode.value,
+                    'delay_ms': round(c.total_delay_ms, 2),
+                    'probability': round(c.plausibility, 3),
+                    'n_hops': c.n_hops,
+                    'elevation_deg': round(c.elevation_angle_deg, 1)
+                }
+                for c in solver_result.candidates
+            ]
+            
             solution = TransmissionTimeSolution(
                 d_clock_ms=d_clock_ms,
                 t_emission_ms=solver_result.emission_offset_ms,
@@ -770,7 +834,8 @@ class Phase2TemporalEngine:
                 frequency_mhz=self.frequency_mhz,
                 confidence=solver_result.confidence,
                 uncertainty_ms=self._calculate_uncertainty(solver_result, channel),
-                utc_verified=solver_result.utc_nist_verified
+                utc_verified=solver_result.utc_nist_verified,
+                mode_candidates=mode_candidates
             )
             
             # Check for dual-station cross-validation

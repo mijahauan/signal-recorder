@@ -95,7 +95,7 @@ status)
     fi
     
     # Phase 2: Analytics
-    ANALYTICS_COUNT=$(pgrep -f "grape_recorder.grape.analytics_service" 2>/dev/null | wc -l)
+    ANALYTICS_COUNT=$(pgrep -f "grape_recorder.grape.phase2_analytics_service" 2>/dev/null | wc -l)
     if [ "$ANALYTICS_COUNT" -gt 0 ]; then
         echo "✅ Phase 2 (Analytics): RUNNING ($ANALYTICS_COUNT/9 channels)"
     else

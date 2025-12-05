@@ -108,6 +108,65 @@ class GRAPEPaths {
         this.dataRoot = dataRoot;
     }
     
+    /**
+     * Get the data root directory.
+     * 
+     * @returns {string} Path: {data_root}/
+     */
+    getDataRoot() {
+        return this.dataRoot;
+    }
+    
+    /**
+     * Get tick windows directory for BCD analysis.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/tick_windows/
+     */
+    getTickWindowsDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'tick_windows');
+    }
+    
+    /**
+     * Get station ID 440Hz directory.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/station_id_440hz/
+     */
+    getStationId440HzDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'station_id_440hz');
+    }
+    
+    /**
+     * Get test signal directory (minutes 8 and 44).
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/test_signal/
+     */
+    getTestSignalDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'test_signal');
+    }
+    
+    /**
+     * Get BCD discrimination directory.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/bcd_discrimination/
+     */
+    getBcdDiscriminationDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'bcd_discrimination');
+    }
+    
+    /**
+     * Get Doppler analysis directory.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/doppler/
+     */
+    getDopplerDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'doppler');
+    }
+    
     // ========================================================================
     // Phase 2 Analytics Paths (Per-channel analytical results)
     // These methods provide convenient aliases to Phase 2 paths
@@ -161,6 +220,28 @@ class GRAPEPaths {
      */
     getPhase2StateDir(channelName) {
         return join(this.getPhase2Dir(channelName), 'state');
+    }
+    
+    /**
+     * Get Phase 2 status directory (per-channel status files).
+     * Note: The analytics service writes to 'status/' subdirectory.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/status/
+     */
+    getPhase2StatusDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'status');
+    }
+    
+    /**
+     * Get analytics service status file (per-channel).
+     * This is where the analytics_service writes its status.
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/status/analytics-service-status.json
+     */
+    getAnalyticsServiceStatusFileForChannel(channelName) {
+        return join(this.getPhase2StatusDir(channelName), 'analytics-service-status.json');
     }
     
     /**
@@ -416,8 +497,11 @@ class GRAPEPaths {
         const channels = [];
         const entries = readdirSync(rawArchiveDir, { withFileTypes: true });
         
+        // Non-channel directories to exclude
+        const excludeDirs = ['status', 'metadata', 'state', 'logs'];
+        
         for (const entry of entries) {
-            if (entry.isDirectory()) {
+            if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
                 channels.push(dirToChannelName(entry.name));
             }
         }

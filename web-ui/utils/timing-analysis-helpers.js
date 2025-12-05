@@ -165,7 +165,53 @@ async function getTimingHealthSummary(paths, config) {
     const channelName = channel.description || `Channel ${channel.ssrc}`;
     const cleanName = channelName.replace(/\s+/g, '_');
     
-    // Load latest timing metrics
+    // Try Phase 2 status first (new system)
+    const phase2StatusFile = join(
+      paths.getPhase2Dir(channelName),
+      'status',
+      'analytics-service-status.json'
+    );
+    
+    const phase2Status = parseJSON(phase2StatusFile);
+    if (phase2Status.status === 'OK' && phase2Status.data) {
+      const ch = Object.values(phase2Status.data.channels || {})[0];
+      if (ch && ch.d_clock_ms !== undefined) {
+        // Use Phase 2 data
+        const quality = ch.quality_grade === 'A' || ch.quality_grade === 'B' ? 'TONE_LOCKED' :
+                       ch.quality_grade === 'C' ? 'INTERPOLATED' : 'WALL_CLOCK';
+        
+        if (quality === 'TONE_LOCKED') toneLocked++;
+        else if (quality === 'INTERPOLATED') interpolated++;
+        else wallClock++;
+        
+        const drift = ch.d_clock_ms || 0;
+        // Estimate jitter from quality grade if uncertainty not available
+        const jitter = ch.uncertainty_ms || (
+          ch.quality_grade === 'A' ? 0.5 :
+          ch.quality_grade === 'B' ? 1.0 :
+          ch.quality_grade === 'C' ? 2.0 :
+          ch.quality_grade === 'D' ? 5.0 : 10.0
+        );
+        if (!isNaN(drift)) driftValues.push(drift);
+        if (!isNaN(jitter)) jitterValues.push(jitter);
+        
+        channelDetails.push({
+          channel: channelName,
+          quality,
+          drift_ms: drift,
+          jitter_ms: jitter,
+          d_clock_ms: ch.d_clock_ms,
+          station: ch.station,
+          health_score: ch.quality_grade === 'A' ? 100 : 
+                       ch.quality_grade === 'B' ? 80 :
+                       ch.quality_grade === 'C' ? 60 :
+                       ch.quality_grade === 'D' ? 40 : 20
+        });
+        continue; // Skip legacy timing file check
+      }
+    }
+    
+    // Fallback to legacy timing metrics
     const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
     const metricsFile = join(
       paths.getTimingDir(channelName),

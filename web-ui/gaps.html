@@ -303,7 +303,7 @@
         renderGapTimeline(data);
         renderGapList(data.gaps || []);
         
-        document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+        document.getElementById('last-update').textContent = (typeof UTCTime !== 'undefined' ? UTCTime.now() : new Date().toISOString().substring(11, 19)) + ' UTC';
         
       } catch (err) {
         console.log('Gap data not available:', err.message);
@@ -486,5 +486,8 @@
       `;
     }
   </script>
+  <script src="utils/utc-time.js"></script>
+  <script src="components/theme-toggle.js"></script>
+  <script src="components/navigation.js"></script>
 </body>
 </html>

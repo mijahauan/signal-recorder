@@ -470,9 +470,14 @@ class WWVHDiscriminator:
             )
         
         # Detect tones using process_samples() method
+        # IMPORTANT: tone_detector.process_samples() expects timestamp to be buffer MIDPOINT
+        # minute_timestamp is the minute boundary (buffer START), so add half the buffer duration
+        buffer_duration_sec = len(iq_samples) / sample_rate
+        buffer_midpoint = minute_timestamp + (buffer_duration_sec / 2)
+        
         try:
             detections = self.tone_detector.process_samples(
-                timestamp=minute_timestamp,
+                timestamp=buffer_midpoint,
                 samples=iq_samples
             )
             if detections is None:
@@ -569,7 +574,7 @@ class WWVHDiscriminator:
         # 500/600 Hz ground truth minutes (14 total per hour!)
         # WWV-only: 1, 16, 17, 19 (WWV broadcasts 500/600 Hz, WWVH silent)
         # WWVH-only: 2, 43, 44, 45, 46, 47, 48, 49, 50, 51 (WWVH broadcasts, WWV silent)
-        ground_truth_500_600_minutes = WWV_ONLY_TONE_MINUTES + WWVH_ONLY_TONE_MINUTES
+        ground_truth_500_600_minutes = WWV_ONLY_TONE_MINUTES | WWVH_ONLY_TONE_MINUTES
         
         # Initialize voting scores
         wwv_score = 0.0

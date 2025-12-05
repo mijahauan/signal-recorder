@@ -95,6 +95,7 @@ class TimingStatusWidget {
         </div>
         
         ${data.primary_reference ? this.renderReference(data) : this.renderNoReference()}
+        ${data.best_d_clock ? this.renderDClock(data.best_d_clock) : ''}
         ${this.renderChannelBreakdown(data)}
         ${this.options.showAdoptions && data.recent_adoptions?.length > 0 ? this.renderAdoptions(data.recent_adoptions) : ''}
       </div>
@@ -174,6 +175,48 @@ class TimingStatusWidget {
         <span style="color: #f59e0b; margin-left: 8px;">🟡 ${breakdown.ntp_synced} NTP-synced</span>
         ${breakdown.interpolated > 0 ? `<span style="color: #fb923c; margin-left: 8px;">🟠 ${breakdown.interpolated} interpolated</span>` : ''}
         ${breakdown.wall_clock > 0 ? `<span style="color: #ef4444; margin-left: 8px;">🔴 ${breakdown.wall_clock} wall-clock</span>` : ''}
+      </div>
+    `;
+  }
+  
+  renderDClock(dClock) {
+    const gradeColors = { 'A': '#22c55e', 'B': '#3b82f6', 'C': '#eab308', 'D': '#f97316', 'X': '#ef4444' };
+    const gradeColor = gradeColors[dClock.quality_grade] || '#94a3b8';
+    const dClockStr = `${dClock.d_clock_ms >= 0 ? '+' : ''}${dClock.d_clock_ms.toFixed(3)} ms`;
+    
+    return `
+      <div style="
+        margin-top: 15px;
+        padding: 12px;
+        background: rgba(59, 130, 246, 0.1);
+        border-radius: 6px;
+        border-left: 4px solid ${gradeColor};
+      ">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <div style="font-size: 11px; color: #94a3b8; text-transform: uppercase;">D_clock (Phase 2)</div>
+            <div style="font-size: 20px; font-weight: 700; color: ${gradeColor}; font-family: monospace;">
+              ${dClockStr}
+            </div>
+            <div style="font-size: 11px; color: #94a3b8;">Channel: ${dClock.channel}</div>
+          </div>
+          <div style="display: flex; gap: 16px; text-align: center;">
+            <div>
+              <div style="font-size: 18px; font-weight: 600; color: ${gradeColor};">${dClock.quality_grade}</div>
+              <div style="font-size: 10px; color: #94a3b8;">Grade</div>
+            </div>
+            <div>
+              <div style="font-size: 18px; font-weight: 600; color: #e0e0e0;">${dClock.station || '—'}</div>
+              <div style="font-size: 10px; color: #94a3b8;">Station</div>
+            </div>
+            ${dClock.snr_db ? `
+            <div>
+              <div style="font-size: 18px; font-weight: 600; color: #e0e0e0;">${dClock.snr_db.toFixed(1)}</div>
+              <div style="font-size: 10px; color: #94a3b8;">SNR dB</div>
+            </div>
+            ` : ''}
+          </div>
+        </div>
       </div>
     `;
   }

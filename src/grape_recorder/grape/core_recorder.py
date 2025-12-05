@@ -32,7 +32,7 @@ from ..core.rtp_receiver import RTPReceiver
 from ..channel_manager import ChannelManager
 from ..radiod_health import RadiodHealthChecker
 from ..quota_manager import QuotaManager
-from .grape_recorder import GrapeRecorder, GrapeConfig
+from .pipeline_recorder import PipelineRecorder, PipelineRecorderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +105,8 @@ class CoreRecorder:
         # RTP receiver will be initialized after channels are created
         self.rtp_receiver = None
         
-        # Per-channel recorders (using new GrapeRecorder)
-        self.channels: Dict[int, GrapeRecorder] = {}
+        # Per-channel recorders (using PipelineRecorder for three-phase architecture)
+        self.channels: Dict[int, PipelineRecorder] = {}
         
         # Timing parameters
         self.blocktime_ms = self.recorder_config.get('blocktime_ms', 20.0)
@@ -235,7 +235,7 @@ class CoreRecorder:
                     status['overall']['channels_active'] += 1
                 status['overall']['total_npz_written'] += ch_stats.get('npz_files_written', 0)
                 status['overall']['total_packets_received'] += ch_stats.get('packets_received', 0)
-                # GrapeRecorder doesn't track gaps the same way
+                # PipelineRecorder doesn't track gaps the same way
                 # status['overall']['total_gaps_detected'] += ch_stats.get('gaps_detected', 0)
             
             # Write atomically (write to temp file, then rename)
@@ -339,7 +339,7 @@ class CoreRecorder:
     def _ensure_channels_exist(self) -> bool:
         """
         Verify all configured channels exist in radiod, create if missing.
-        Also initializes RTP receiver and GrapeRecorder instances.
+        Also initializes RTP receiver and PipelineRecorder instances.
         Called at startup.
         
         Returns:
@@ -376,7 +376,7 @@ class CoreRecorder:
             # Get sample_rate from defaults
             sample_rate = self.channel_defaults.get('sample_rate', 20000)
             
-            # Create GrapeRecorder instances for each allocated channel
+            # Create PipelineRecorder instances for each allocated channel
             for ch_spec in self.channel_specs:
                 freq_hz = int(ch_spec['frequency_hz'])
                 if freq_hz not in freq_to_ssrc:
@@ -394,21 +394,20 @@ class CoreRecorder:
                     **self.channel_defaults
                 }
                 
-                grape_config = GrapeConfig(
+                pipeline_config = PipelineRecorderConfig(
                     ssrc=ssrc,
                     frequency_hz=freq_hz,
                     sample_rate=sample_rate,
                     description=description,
                     output_dir=self.output_dir,
                     station_config=self.station_config,
+                    receiver_grid=self.station_config.get('grid_square', ''),
                     blocktime_ms=self.blocktime_ms,
                     max_gap_seconds=self.max_gap_seconds,
-                    startup_buffer_duration=ch_spec.get('startup_buffer_duration', 120.0),
-                    tone_check_interval=ch_spec.get('tone_check_interval', 300.0),
                 )
                 
-                recorder = GrapeRecorder(
-                    config=grape_config,
+                recorder = PipelineRecorder(
+                    config=pipeline_config,
                     rtp_receiver=self.rtp_receiver,
                     get_ntp_status=self.get_ntp_status,
                 )

@@ -111,7 +111,7 @@ class RawArchiveConfig:
     station_config: Dict[str, Any] = field(default_factory=dict)
     
     # File splitting policy - FIXED DURATION, NOT EVENT-BASED
-    file_duration_sec: int = 3600  # 1 hour files
+    file_duration_sec: int = 60  # 60 second files for real-time Phase 2 access
     max_file_size_bytes: int = 1_073_741_824  # 1 GB
     
     # Compression settings
@@ -120,7 +120,7 @@ class RawArchiveConfig:
     
     # DRF-specific
     subdir_cadence_secs: int = 86400  # Daily subdirectories
-    file_cadence_millisecs: int = 3600000  # 1 hour file cadence
+    file_cadence_millisecs: int = 60000  # 60 second file cadence for real-time access
     # Note: Storage quota is managed at top-level by StorageQuotaManager
     
     def __post_init__(self):
@@ -611,7 +611,9 @@ class RawArchiveWriter:
         self._lock = threading.Lock()
         
         # Create output directory structure
-        self.archive_dir = config.output_dir / 'raw_archive' / config.channel_name.replace(' ', '_')
+        # output_dir is expected to be the raw_archive root (e.g., /data/raw_archive/)
+        # We add only the channel name subdirectory
+        self.archive_dir = config.output_dir / config.channel_name.replace(' ', '_')
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         
         # Metadata directory
@@ -1318,7 +1320,8 @@ class RawArchiveReader:
         if not DRF_AVAILABLE:
             raise ImportError("digital_rf required for reading raw archives")
         
-        self.archive_dir = Path(archive_dir) / 'raw_archive' / channel_name.replace(' ', '_')
+        # archive_dir is expected to be the raw_archive root (e.g., /data/raw_archive/)
+        self.archive_dir = Path(archive_dir) / channel_name.replace(' ', '_')
         self.channel_name = channel_name
         
         # Create DRF reader

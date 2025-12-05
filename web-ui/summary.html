@@ -589,7 +589,7 @@
           <div class="process-item">
             <div>
               <div class="process-name">Core Recorder</div>
-              <div style="font-size: 12px; color: #7f8c8d;">RTP → NPZ archives</div>
+              <div style="font-size: 12px; color: #7f8c8d;">RTP → Digital RF</div>
             </div>
             <div class="process-status">
               <span class="status-indicator ${core.running ? 'status-running' : 'status-stopped'}"></span>
@@ -604,7 +604,7 @@
           <div class="process-item">
             <div>
               <div class="process-name">Analytics Service</div>
-              <div style="font-size: 12px; color: #7f8c8d;">NPZ → Products (DRF, quality, detection)</div>
+              <div style="font-size: 12px; color: #7f8c8d;">Digital RF → Time precision, WWV/H discrimination, GRAPE uploads</div>
             </div>
             <div class="process-status">
               <span class="status-indicator ${analytics.running ? 'status-running' : 'status-stopped'}"></span>
@@ -624,8 +624,8 @@
       const span = continuity.data_span || {};
       const gaps = continuity.gaps || [];
       
-      const startDate = span.start ? new Date(span.start).toLocaleString() : 'Unknown';
-      const endDate = span.end ? new Date(span.end).toLocaleString() : 'Unknown';
+      const startDate = span.start ? UTCTime.formatDateTime(span.start) : 'Unknown';
+      const endDate = span.end ? UTCTime.formatDateTime(span.end) : 'Unknown';
       const duration = span.duration_seconds ? formatDuration(span.duration_seconds) : 'Unknown';
       
       let gapsHtml = '';
@@ -634,7 +634,7 @@
         gaps.forEach(gap => {
           gapsHtml += `
             <div class="gap-item">
-              ${new Date(gap.start).toLocaleString()} → ${new Date(gap.end).toLocaleString()} 
+              ${UTCTime.formatDateTime(gap.start)} → ${UTCTime.formatDateTime(gap.end)} 
               (${formatDuration(gap.duration_seconds)}) - ${gap.reason}
             </div>
           `;
@@ -717,28 +717,7 @@
         snrCells += `<td>${snr}</td>`;
       });
       
-      // Build Time Basis row
-      let timingCells = '<th>Time Basis</th>';
-      channels.forEach(ch => {
-        let timingClass = 'timing-wall';
-        let shortBasis = ch.time_basis;
-        
-        if (ch.time_basis === 'TONE_LOCKED') {
-          timingClass = 'timing-tone';
-          shortBasis = 'TONE';
-        } else if (ch.time_basis === 'INTERPOLATED') {
-          timingClass = 'timing-ntp';
-          shortBasis = 'INTERP';
-        } else if (ch.time_basis === 'NTP_SYNCED') {
-          timingClass = 'timing-ntp';
-          shortBasis = 'NTP';
-        } else if (ch.time_basis === 'WALL_CLOCK') {
-          timingClass = 'timing-wall';
-          shortBasis = 'WALL';
-        }
-        
-        timingCells += `<td><span class="timing-badge ${timingClass}">${shortBasis}</span></td>`;
-      });
+      // Time Basis row removed - unified timing from Timing Status panel
       
       // Build Audio row
       let audioCells = '<th>Audio</th>';
@@ -772,7 +751,6 @@
               <tbody>
                 <tr>${rtpCells}</tr>
                 <tr>${snrCells}</tr>
-                <tr>${timingCells}</tr>
                 <tr>${audioCells}</tr>
               </tbody>
             </table>
@@ -807,7 +785,7 @@
         html += renderChannels(sortedChannels);
         
         document.getElementById('content').innerHTML = html;
-        document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+        document.getElementById('last-update').textContent = UTCTime.now() + ' UTC';
       } catch (err) {
         document.getElementById('content').innerHTML = `
           <div class="section">
@@ -1061,6 +1039,9 @@
     updateSummary();
     startAutoRefresh();
   </script>
+  
+  <!-- UTC time utilities (all displays in UTC) -->
+  <script src="utils/utc-time.js"></script>
   
   <!-- Load new analytics components -->
   <script src="components/theme-toggle.js"></script>

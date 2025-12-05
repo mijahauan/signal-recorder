@@ -64,10 +64,11 @@ from .stream import (
 # =============================================================================
 # GRAPE APPLICATION (WWV/WWVH/CHU time signals)
 # Moved to grape_recorder/grape/ package (Dec 1, 2025)
+# Now using three-phase pipeline architecture
 # =============================================================================
 from .grape import (
-    GrapeRecorder, GrapeConfig, GrapeState,
-    GrapeNPZWriter,
+    PipelineRecorder, PipelineRecorderConfig, PipelineRecorderState,
+    CoreRecorder,
 )
 
 # =============================================================================
@@ -122,11 +123,11 @@ __all__ = [
     "PacketResequencer",
     "RTPPacket",
     "GapInfo",
-    # === GRAPE application ===
-    "GrapeRecorder",
-    "GrapeConfig",
-    "GrapeState",
-    "GrapeNPZWriter",
+    # === GRAPE application (three-phase pipeline) ===
+    "PipelineRecorder",
+    "PipelineRecorderConfig",
+    "PipelineRecorderState",
+    "CoreRecorder",
     # === WSPR application ===
     "WsprRecorder",
     "WsprConfig",

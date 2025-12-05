@@ -244,8 +244,9 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         buffer_start_time = current_unix_time - (buffer_duration_sec / 2)
         
         # Use floor to find the minute boundary that the buffer START falls in
-        # This ensures we detect the tone at the start of the buffer, not the next minute
-        minute_boundary = int(buffer_start_time / 60) * 60
+        # IMPORTANT: Add small epsilon to handle floating point precision issues
+        # Without this, 1764932339.9999999 would floor to 1764932280 instead of 1764932340
+        minute_boundary = int((buffer_start_time + 0.5) / 60) * 60
         
         # Check if we already detected this minute (prevent duplicates)
         if minute_boundary in self.last_detections_by_minute:
@@ -882,24 +883,3 @@ class MultiStationToneDetector(IMultiStationToneDetector):
     
     # ===== Legacy Compatibility =====
     
-    def detect_tone_onset(
-        self,
-        iq_samples: np.ndarray,
-        buffer_start_time: float
-    ) -> Tuple[bool, int, float]:
-        """
-        Compatibility wrapper for V2 recorder's old API
-        
-        Returns:
-            tuple: (detected: bool, onset_idx: int, timing_error_ms: float)
-        """
-        detections = self._detect_tones_internal(iq_samples, buffer_start_time)
-        
-        if detections:
-            # Return first (strongest) detection
-            det = detections[0]
-            # Calculate onset index (approximate from timing error)
-            onset_idx = int((det.timestamp_utc - buffer_start_time) * self.sample_rate)
-            return (True, onset_idx, det.timing_error_ms)
-        else:
-            return (False, 0, 0.0)

@@ -35,6 +35,17 @@ import {
   getTimingTransitions,
   getTimingTimeline
 } from './utils/timing-analysis-helpers.js';
+import {
+  getClockOffsetSeries,
+  getPhase2AnalyticsStatus,
+  getAllPhase2Status,
+  getBestDClock,
+  getPhase2PipelineStatus,
+  getKalmanFunnelData,
+  getConstellationData,
+  getConsensusData,
+  getModeProbabilityData
+} from './utils/transmission-time-helpers.js';
 
 const execAsync = promisify(exec);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -246,15 +257,12 @@ class Ka9qRadioProxy extends EventEmitter {
   }
 
   async startAudioStream(frequencyHz) {
-    const ssrc = getAudioSSRC(frequencyHz);
     const freqMHz = frequencyHz / 1000000;
     
-    console.log(`🎵 Starting audio stream: ${freqMHz} MHz (SSRC ${ssrc})`);
+    console.log(`🎵 Starting audio stream: ${freqMHz} MHz`);
     
-    // Use Python client to create/get audio channel
-    const interfaceArg = MULTICAST_INTERFACE ? `--interface ${MULTICAST_INTERFACE}` : '';
-    const fallbackArg = RADIOD_AUDIO_MULTICAST ? `--fallback-multicast ${RADIOD_AUDIO_MULTICAST}` : '';
-    const cmd = `${PYTHON_CMD} -u ${AUDIO_CLIENT_SCRIPT} --radiod-host ${RADIOD_HOSTNAME} ${interfaceArg} ${fallbackArg} get-or-create --frequency ${frequencyHz}`;
+    // Use Python client to create/get audio channel (SSRC is auto-allocated by ka9q)
+    const cmd = `${PYTHON_CMD} -u ${AUDIO_CLIENT_SCRIPT} --radiod-host ${RADIOD_HOSTNAME} create --frequency ${frequencyHz}`;
     
     try {
       const { stdout, stderr } = await execAsync(cmd, { timeout: 30000 });
@@ -270,10 +278,12 @@ class Ka9qRadioProxy extends EventEmitter {
         throw new Error(result.error);
       }
       
-      console.log(`✅ Audio channel ready: SSRC ${result.ssrc} (${result.mode})`);
+      // Use the SSRC returned by ka9q (auto-allocated)
+      const ssrc = result.ssrc;
+      console.log(`✅ Audio channel ready: SSRC ${ssrc} (${result.mode})`);
       
       const stream = {
-        ssrc: result.ssrc,
+        ssrc: ssrc,
         active: true,
         frequency: result.frequency_hz,
         multicastAddress: result.multicast_address,
@@ -523,8 +533,8 @@ async function getAnalyticsServiceStatus(paths) {
     let oldestUptime = Infinity;
     
     for (const channelName of channels) {
-      const statusDir = paths.getAnalyticsStatusDir(channelName);
-      const statusFile = join(statusDir, 'analytics-service-status.json');
+      // Use Phase 2 status directory (phase2/{CHANNEL}/status/)
+      const statusFile = paths.getAnalyticsServiceStatusFileForChannel(channelName);
       
       if (fs.existsSync(statusFile)) {
         try {
@@ -641,12 +651,19 @@ async function getDataContinuity(paths) {
     let globalNewest = 0;
     
     for (const channelName of channels) {
-      const archiveDir = paths.getArchiveDir(channelName);
+      // Use raw_archive for Phase 1 data (DRF format)
+      const archiveDir = paths.getRawArchiveDir(channelName);
       
       if (!fs.existsSync(archiveDir)) continue;
       
       const timestamps = [];
       
+      // Scan for date directories (YYYYMMDD) in raw_archive structure
+      const dateDirs = fs.readdirSync(archiveDir)
+        .filter(f => /^\d{8}$/.test(f))
+        .sort();
+      
+      // For legacy NPZ structure fallback
       const files = fs.readdirSync(archiveDir)
         .filter(f => f.endsWith('_iq.npz'))
         .sort();
@@ -729,22 +746,26 @@ async function getDataContinuity(paths) {
     
     // Calculate totals
     const totalDowntime = systemGaps.reduce((sum, gap) => sum + gap.duration_seconds, 0);
-    const spanDuration = globalNewest - globalOldest;
+    const spanDuration = (globalNewest > globalOldest) ? globalNewest - globalOldest : 0;
     const downtimePercentage = spanDuration > 0 ? (totalDowntime / spanDuration) * 100 : 0;
     
     const recentGaps = systemGaps.slice(-5); // Return only 5 most recent gaps
     const uptimeSeconds = spanDuration - totalDowntime;
     const uptimePercentage = spanDuration > 0 ? (uptimeSeconds / spanDuration) * 100 : 100;
     
+    // Handle case where no data files found (new DRF structure may not have NPZ files)
+    const nowISO = new Date().toISOString();
+    const hasData = globalOldest < Infinity && globalNewest > 0;
+    
     return {
       data_span: {
-        start: new Date(globalOldest * 1000).toISOString(),
-        end: new Date(globalNewest * 1000).toISOString(),
+        start: hasData ? new Date(globalOldest * 1000).toISOString() : nowISO,
+        end: hasData ? new Date(globalNewest * 1000).toISOString() : nowISO,
         duration_seconds: spanDuration
       },
       available_data: {
-        oldest_npz: new Date(globalOldest * 1000).toISOString(),
-        newest_npz: new Date(globalNewest * 1000).toISOString(),
+        oldest_data: hasData ? new Date(globalOldest * 1000).toISOString() : nowISO,
+        newest_data: hasData ? new Date(globalNewest * 1000).toISOString() : nowISO,
         total_duration_seconds: spanDuration
       },
       continuity: {
@@ -1191,14 +1212,34 @@ async function getChannelStatuses(paths) {
     const ntpStatus = await getNTPStatus();
     const channelStatuses = [];
     
+    // Read core status once for all channels
+    let coreChannels = {};
+    try {
+      const coreStatusFile = paths.getCoreStatusFile();
+      if (fs.existsSync(coreStatusFile)) {
+        const content = fs.readFileSync(coreStatusFile, 'utf8');
+        const coreStatus = JSON.parse(content);
+        coreChannels = coreStatus.channels || {};
+      }
+    } catch (err) {
+      console.error('Error reading core status:', err.message);
+    }
+    
     for (const channelName of channels) {
-      // Get RTP status from core recorder
-      const coreStatus = await getCoreRecorderStatus(paths);
-      const rtpStreaming = coreStatus.running;
+      // Check per-channel RTP status from core recorder
+      let rtpStreaming = false;
+      for (const [ssrc, chInfo] of Object.entries(coreChannels)) {
+        if (chInfo.description === channelName) {
+          // Check if last_packet_time is recent (within 10 seconds)
+          const lastPacket = new Date(chInfo.last_packet_time).getTime() / 1000;
+          const age = Date.now() / 1000 - lastPacket;
+          rtpStreaming = age < 10;  // 10 second timeout for per-channel status
+          break;
+        }
+      }
       
-      // Get analytics status for this channel
-      const statusDir = paths.getAnalyticsStatusDir(channelName);
-      const statusFile = join(statusDir, 'analytics-service-status.json');
+      // Get analytics status for this channel (Phase 2 status directory)
+      const statusFile = paths.getAnalyticsServiceStatusFileForChannel(channelName);
       
       let snrDb = null;
       let timeBasis = 'WALL_CLOCK';
@@ -1222,7 +1263,7 @@ async function getChannelStatuses(paths) {
             const age = Date.now() / 1000 - channelData.time_snap.utc_timestamp;
             timeSnapAge = age;
             
-            const source = channelData.time_snap.source || '';
+            const source = (channelData.time_snap.source || '').toLowerCase();
             const isToneSource = source.includes('wwv') || source.includes('chu') || 
                                 source === 'wwv_startup' || source === 'chu_startup' || 
                                 source === 'wwvh_startup';
@@ -1286,8 +1327,8 @@ async function getCarrierQuality(paths, date) {
   // Process each channel (all are 20 kHz wide channels with Digital RF)
   for (const channelName of channels) {
     try {
-      // Per-channel status is now in Phase 2 state directory
-      const statusFile = paths.getChannelStatusFile(channelName);
+      // Per-channel status is in Phase 2 status directory (analytics-service-status.json)
+      const statusFile = paths.getAnalyticsServiceStatusFileForChannel(channelName);
       
       // Spectrogram URL: products/{CHANNEL}/spectrograms/{date}_spectrogram.png
       const channelDir = channelName.replace(/ /g, '_');
@@ -1350,8 +1391,8 @@ async function getCarrierQuality(paths, date) {
             quality.timing_quality = ntpStatus.synchronized ? 'NTP_SYNCED' : 'WALL_CLOCK';
           }
           
-          // SNR (if available)
-          quality.snr_db = channelData.current_snr_db || null;
+          // SNR (if available) - from quality_metrics.last_snr_db
+          quality.snr_db = channelData.quality_metrics?.last_snr_db || channelData.current_snr_db || null;
           
           // Upload status
           if (channelData.digital_rf && channelData.digital_rf.last_write_time) {
@@ -2550,11 +2591,10 @@ app.get('/api/monitoring/timing-quality', async (req, res) => {
       }
     }
     
-    // Add analytics data if available
+    // Add analytics data if available (from Phase 2 status directory)
     const channels = paths.discoverChannels();
     for (const channelName of channels) {
-      const statusDir = paths.getAnalyticsStatusDir(channelName);
-      const statusFile = join(statusDir, 'analytics-service-status.json');
+      const statusFile = paths.getAnalyticsServiceStatusFileForChannel(channelName);
       
       if (fs.existsSync(statusFile)) {
         try {
@@ -2638,17 +2678,32 @@ app.get('/spectrograms/:channel/:filename', (req, res) => {
     
     // Convert URL channel format back to channel name for path lookup
     const channelName = channel.replace(/_/g, ' ');
+    
+    // Try new path structure first: products/{CHANNEL}/spectrograms/
     const spectrogramPath = join(paths.getProductsSpectrogramsDir(channelName), filename);
     
-    if (!fs.existsSync(spectrogramPath)) {
-      return res.status(404).json({ 
-        error: 'Spectrogram not found',
-        path: spectrogramPath,
-        channel: channelName
-      });
+    if (fs.existsSync(spectrogramPath)) {
+      return res.sendFile(spectrogramPath);
     }
     
-    res.sendFile(spectrogramPath);
+    // Fallback to legacy path: spectrograms/{date}/{channel}_{date}_decimated_spectrogram.png
+    // Extract date from filename (e.g., "20251204_spectrogram.png" -> "20251204")
+    const dateMatch = filename.match(/^(\d{8})/);
+    if (dateMatch) {
+      const date = dateMatch[1];
+      const legacyFilename = `${channel}_${date}_decimated_spectrogram.png`;
+      const legacyPath = join(paths.dataRoot, 'spectrograms', date, legacyFilename);
+      
+      if (fs.existsSync(legacyPath)) {
+        return res.sendFile(legacyPath);
+      }
+    }
+    
+    return res.status(404).json({ 
+      error: 'Spectrogram not found',
+      tried: [spectrogramPath],
+      channel: channelName
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2742,7 +2797,11 @@ app.get('/api/analysis/correlations', async (req, res) => {
 // Helper functions for correlation analysis
 
 async function loadNPZData(paths, channelName, dateStr) {
-  const npzDir = paths.getArchiveDir(channelName);
+  // Note: This function is for legacy NPZ data. New three-phase architecture uses DRF.
+  const npzDir = paths.getRawArchiveDir(channelName);
+  if (!fs.existsSync(npzDir)) {
+    return [];  // No data available
+  }
   const pattern = `${dateStr}T*Z_*_iq.npz`;
   const npzFiles = fs.readdirSync(npzDir).filter(f => f.match(new RegExp(`^${dateStr}T.*_iq\\.npz$`))).sort();
   
@@ -3167,6 +3226,165 @@ app.get('/api/v1/timing/timeline', async (req, res) => {
   }
 });
 
+// ============================================================================
+// PHASE 2 TIMING API - D_clock and Transmission Time Analysis
+// ============================================================================
+
+/**
+ * GET /api/v1/timing/clock-offset?channel=WWV%2010%20MHz&date=YYYYMMDD&hours=24
+ * D_clock time series from Phase 2 analytics
+ * 
+ * Returns:
+ *   measurements[]: Array of D_clock measurements with timestamps
+ *   statistics: min, max, mean, std, range
+ *   grade_distribution: Count by quality grade (A/B/C/D/X)
+ */
+app.get('/api/v1/timing/clock-offset', async (req, res) => {
+  try {
+    const { channel, date, hours = 24 } = req.query;
+    
+    if (!channel) {
+      return res.status(400).json({ error: 'Channel parameter is required' });
+    }
+    
+    const data = await getClockOffsetSeries(channel, date, parseInt(hours), paths);
+    res.json(data);
+  } catch (err) {
+    console.error('Error getting clock offset series:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/phase2-status
+ * Phase 2 analytics status for all channels
+ * 
+ * Returns per-channel: d_clock_ms, quality_grade, station, minutes_processed
+ */
+app.get('/api/v1/timing/phase2-status', async (req, res) => {
+  try {
+    const status = await getAllPhase2Status(paths, config);
+    res.json(status);
+  } catch (err) {
+    console.error('Error getting Phase 2 status:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/phase2-status/:channel
+ * Phase 2 analytics status for a specific channel
+ */
+app.get('/api/v1/timing/phase2-status/:channel', async (req, res) => {
+  try {
+    const channel = decodeURIComponent(req.params.channel);
+    const status = await getPhase2AnalyticsStatus(channel, paths);
+    res.json(status);
+  } catch (err) {
+    console.error('Error getting Phase 2 status:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/best-d-clock
+ * Get the best (highest quality) D_clock reference across all channels
+ */
+app.get('/api/v1/timing/best-d-clock', async (req, res) => {
+  try {
+    const best = await getBestDClock(paths, config);
+    res.json(best);
+  } catch (err) {
+    console.error('Error getting best D_clock:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/pipeline/:channel
+ * Phase 2 pipeline status (3-step process) for a channel
+ * Shows status of: Tone Detection → Channel Characterization → D_clock Solution
+ */
+app.get('/api/v1/timing/pipeline/:channel', async (req, res) => {
+  try {
+    const channel = decodeURIComponent(req.params.channel);
+    const status = await getPhase2PipelineStatus(channel, paths);
+    res.json(status);
+  } catch (err) {
+    console.error('Error getting pipeline status:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// ADVANCED TIMING VISUALIZATION ENDPOINTS
+// ============================================================================
+
+/**
+ * GET /api/v1/timing/kalman-funnel
+ * Clock stability data for Kalman Funnel visualization
+ * Shows offset with uncertainty bounds over time
+ */
+app.get('/api/v1/timing/kalman-funnel', async (req, res) => {
+  try {
+    const minutes = parseInt(req.query.minutes) || 60;
+    const channel = req.query.channel;
+    
+    // Get D_clock series with uncertainty
+    const data = await getKalmanFunnelData(paths, config, { minutes, channel });
+    res.json(data);
+  } catch (err) {
+    console.error('Error getting Kalman funnel data:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/constellation
+ * Station constellation data for polar radar visualization
+ * Shows timing error by azimuth for each station
+ */
+app.get('/api/v1/timing/constellation', async (req, res) => {
+  try {
+    const data = await getConstellationData(paths, config);
+    res.json(data);
+  } catch (err) {
+    console.error('Error getting constellation data:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/consensus
+ * Consensus time estimates from all channels for KDE visualization
+ * Shows probability distribution of time offset estimates
+ */
+app.get('/api/v1/timing/consensus', async (req, res) => {
+  try {
+    const data = await getConsensusData(paths, config);
+    res.json(data);
+  } catch (err) {
+    console.error('Error getting consensus data:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/timing/mode-probability
+ * Propagation mode probabilities for ridgeline visualization
+ * Shows which ionospheric hops are currently active
+ */
+app.get('/api/v1/timing/mode-probability', async (req, res) => {
+  try {
+    const channel = req.query.channel;
+    const data = await getModeProbabilityData(paths, config, channel);
+    res.json(data);
+  } catch (err) {
+    console.error('Error getting mode probability data:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /**
  * GET /api/v1/timing/propagation
  * Propagation mode data for all channels (from PropagationModeSolver)
@@ -3181,7 +3399,8 @@ app.get('/api/v1/timing/propagation', async (req, res) => {
     for (const channel of enabledChannels) {
       const channelName = channel.description || `Channel ${channel.ssrc}`;
       const key = channelNameToKey(channelName);
-      const propFile = join(paths.getAnalyticsDir(channelName), 'timing', 'propagation_status.json');
+      // Use Phase 2 timing directory (phase2/{CHANNEL}/timing/)
+      const propFile = join(paths.getTimingDir(channelName), 'propagation_status.json');
       
       if (fs.existsSync(propFile)) {
         try {
@@ -3235,11 +3454,53 @@ app.get('/api/v1/channels/:channelName/discrimination/:date/methods', async (req
 
 /**
  * GET /api/v1/channels/:channelName/carrier-power/:date
- * Get 10Hz carrier power time series from decimated NPZ files
+ * Get carrier power time series from Phase 2 CSV or legacy NPZ files
  */
 app.get('/api/v1/channels/:channelName/carrier-power/:date', async (req, res) => {
   try {
     const { channelName, date } = req.params;
+    
+    // Try Phase 2 carrier power CSV first (new real-time data)
+    const phase2PowerDir = join(paths.getPhase2Dir(channelName), 'carrier_power');
+    const phase2CsvFile = join(phase2PowerDir, `carrier_power_${date}.csv`);
+    
+    if (fs.existsSync(phase2CsvFile)) {
+      // Read from Phase 2 CSV
+      const content = fs.readFileSync(phase2CsvFile, 'utf-8');
+      const lines = content.trim().replace(/\r/g, '').split('\n');
+      
+      if (lines.length > 1) {
+        const headers = lines[0].split(',');
+        const records = [];
+        
+        for (let i = 1; i < lines.length; i++) {
+          const values = lines[i].split(',');
+          const record = {};
+          headers.forEach((h, idx) => {
+            const val = values[idx] ? values[idx].trim() : '';
+            if (h === 'timestamp') record[h] = val;
+            else if (h === 'utc_time') record[h] = val;
+            else if (h === 'power_db' || h === 'snr_db' || h === 'wwv_tone_db' || h === 'wwvh_tone_db') {
+              record[h] = val ? parseFloat(val) : null;
+            } else {
+              record[h] = val;
+            }
+          });
+          records.push(record);
+        }
+        
+        return res.json({
+          channel: channelName,
+          date,
+          records,
+          count: records.length,
+          source: 'phase2_csv',
+          status: 'OK'
+        });
+      }
+    }
+    
+    // Fall back to legacy decimated NPZ files
     const decimatedDir = paths.getDecimatedDir(channelName);
     
     if (!fs.existsSync(decimatedDir)) {
@@ -3438,6 +3699,42 @@ async function getTimingStatus(paths) {
   // Sort adoptions by timestamp (newest first)
   recentAdoptions.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   
+  // Also fetch Phase 2 D_clock data for enhanced display
+  let phase2Data = null;
+  let bestDClock = null;
+  
+  try {
+    // Get Phase 2 status for all channels
+    const phase2Status = await getAllPhase2Status(paths, config);
+    
+    if (phase2Status.available) {
+      phase2Data = {
+        active_channels: phase2Status.summary.phase2_active,
+        with_d_clock: phase2Status.summary.with_d_clock,
+        grade_distribution: {
+          A: phase2Status.summary.grade_a_count,
+          B: phase2Status.summary.grade_b_count,
+          C: phase2Status.summary.grade_c_count,
+          DX: phase2Status.summary.grade_dx_count
+        }
+      };
+      
+      // Find best D_clock
+      const best = await getBestDClock(paths, config);
+      if (best.available) {
+        bestDClock = {
+          channel: best.channel,
+          d_clock_ms: best.d_clock_ms,
+          quality_grade: best.quality_grade,
+          station: best.station,
+          snr_db: best.snr_db
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch Phase 2 status:', err.message);
+  }
+  
   return {
     overall_status: overallStatus,
     precision_estimate_ms: precisionEstimateMs,
@@ -3445,6 +3742,8 @@ async function getTimingStatus(paths) {
     channel_breakdown: channelBreakdown,
     total_channels: enabledChannels.length,
     recent_adoptions: recentAdoptions.slice(0, 5), // Top 5 most recent
+    phase2: phase2Data,
+    best_d_clock: bestDClock,
     last_updated: new Date().toISOString()
   };
 }
@@ -3582,16 +3881,23 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
   // Use GRAPEPaths API for all method-specific directories (matches Python paths.py)
   
   // 1. Load 1000/1200 Hz tone detections
+  // CSV columns: timestamp_utc, minute_boundary, wwv_detected, wwvh_detected, 
+  //              wwv_snr_db, wwvh_snr_db, wwv_timing_ms, wwvh_timing_ms, anchor_station, anchor_confidence
   const tonesPath = join(paths.getToneDetectionsDir(channelName), `${fileChannelName}_tones_${date}.csv`);
   const tonesData = parseCSV(tonesPath);
   result.methods.timing_tones = {
     status: tonesData.status,
     records: tonesData.records.map(r => ({
       timestamp_utc: r.timestamp_utc,
-      station: r.station,
-      frequency_hz: parseFloat(r.frequency_hz),
-      tone_power_db: parseFloat(r.tone_power_db),
-      snr_db: parseFloat(r.snr_db)
+      minute_boundary: parseInt(r.minute_boundary),
+      wwv_detected: r.wwv_detected === '1',
+      wwvh_detected: r.wwvh_detected === '1',
+      wwv_snr_db: r.wwv_snr_db ? parseFloat(r.wwv_snr_db) : null,
+      wwvh_snr_db: r.wwvh_snr_db ? parseFloat(r.wwvh_snr_db) : null,
+      wwv_timing_ms: r.wwv_timing_ms ? parseFloat(r.wwv_timing_ms) : null,
+      wwvh_timing_ms: r.wwvh_timing_ms ? parseFloat(r.wwvh_timing_ms) : null,
+      anchor_station: r.anchor_station || null,
+      anchor_confidence: r.anchor_confidence ? parseFloat(r.anchor_confidence) : null
     })),
     count: tonesData.count
   };
@@ -3613,17 +3919,20 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
   };
   
   // 3. Load 440 Hz station ID detections
+  // CSV columns: timestamp_utc, minute_boundary, minute_number, ground_truth_station, 
+  //              ground_truth_source, station_confidence, dominant_station
   const id440Path = join(paths.getStationId440HzDir(channelName), `${fileChannelName}_440hz_${date}.csv`);
   const id440Data = parseCSV(id440Path);
   result.methods.station_id = {
     status: id440Data.status,
     records: id440Data.records.map(r => ({
       timestamp_utc: r.timestamp_utc,
+      minute_boundary: parseInt(r.minute_boundary),
       minute_number: parseInt(r.minute_number),
-      wwv_detected: r.wwv_detected === '1',
-      wwvh_detected: r.wwvh_detected === '1',
-      wwv_power_db: r.wwv_power_db ? parseFloat(r.wwv_power_db) : null,
-      wwvh_power_db: r.wwvh_power_db ? parseFloat(r.wwvh_power_db) : null
+      ground_truth_station: r.ground_truth_station || null,
+      ground_truth_source: r.ground_truth_source || null,
+      station_confidence: r.station_confidence || null,
+      dominant_station: r.dominant_station || null
     })),
     count: id440Data.count
   };
@@ -4064,10 +4373,9 @@ app.get('/api/v1/timing/transmission', async (req, res) => {
       const channelName = channel.description || `Channel ${channel.ssrc}`;
       const channelKey = channelName.replace(/ /g, '_');
       
-      // Look for transmission_time CSV
+      // Look for transmission_time CSV (in Phase 2 timing directory)
       const csvPath = join(
-        paths.getAnalyticsDir(channelKey),
-        'transmission_time',
+        paths.getTimingDir(channelName),
         `${channelKey}_utc_nist_${targetDate}.csv`
       );
       
@@ -4204,6 +4512,410 @@ app.get('/api/v1/timing/global', async (req, res) => {
     
   } catch (err) {
     console.error('Error getting global timing data:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// PHASE 2 ANALYSIS DASHBOARD API ENDPOINTS
+// ============================================================================
+
+/**
+ * GET /api/v1/phase2/reception-matrix
+ * Station-Channel reception matrix showing all 13 broadcasts
+ */
+app.get('/api/v1/phase2/reception-matrix', async (req, res) => {
+  try {
+    const channels = config.recorder?.channels || [];
+    const result = { channels: [], timestamp: new Date().toISOString() };
+    
+    for (const ch of channels) {
+      if (ch.enabled === false) continue;
+      const channelName = ch.description || `Channel ${ch.ssrc}`;
+      
+      // Read latest carrier power data
+      const powerDir = paths.getPhase2Dir(channelName) ? 
+        join(paths.getPhase2Dir(channelName), 'carrier_power') : null;
+      const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      const powerFile = powerDir ? join(powerDir, `carrier_power_${today}.csv`) : null;
+      
+      let latestPower = null;
+      if (powerFile && fs.existsSync(powerFile)) {
+        const lines = fs.readFileSync(powerFile, 'utf-8').trim().split('\n');
+        if (lines.length > 1) {
+          const lastLine = lines[lines.length - 1].split(',');
+          latestPower = {
+            snr_db: parseFloat(lastLine[3]) || null,
+            station: lastLine[6] || null,
+            quality: lastLine[7] || null
+          };
+        }
+      }
+      
+      // Read discrimination data
+      const discrimDir = paths.getPhase2Dir(channelName) ? 
+        join(paths.getPhase2Dir(channelName), 'discrimination') : null;
+      const fileChannel = channelName.replace(/ /g, '_').replace(/\./g, '_');
+      const discrimFile = discrimDir ? join(discrimDir, `${fileChannel}_discrimination_${today}.csv`) : null;
+      
+      let latestDiscrim = null;
+      if (discrimFile && fs.existsSync(discrimFile)) {
+        const lines = fs.readFileSync(discrimFile, 'utf-8').trim().split('\n');
+        if (lines.length > 1) {
+          const lastLine = lines[lines.length - 1].split(',');
+          latestDiscrim = {
+            dominant_station: lastLine[2] || 'NONE',
+            confidence: lastLine[3] || 'low',
+            wwv_snr_db: parseFloat(lastLine[4]) || null,
+            wwvh_snr_db: parseFloat(lastLine[5]) || null
+          };
+        }
+      }
+      
+      // Read tone detections
+      const tonesDir = paths.getToneDetectionsDir ? paths.getToneDetectionsDir(channelName) : null;
+      const tonesFile = tonesDir ? join(tonesDir, `${fileChannel}_tones_${today}.csv`) : null;
+      
+      let latestTones = { wwv_detected: false, wwvh_detected: false };
+      if (tonesFile && fs.existsSync(tonesFile)) {
+        const lines = fs.readFileSync(tonesFile, 'utf-8').trim().split('\n');
+        if (lines.length > 1) {
+          const lastLine = lines[lines.length - 1].split(',');
+          latestTones = {
+            wwv_detected: lastLine[2] === '1',
+            wwvh_detected: lastLine[3] === '1',
+            wwv_snr_db: parseFloat(lastLine[4]) || null,
+            wwvh_snr_db: parseFloat(lastLine[5]) || null
+          };
+        }
+      }
+      
+      const isCHU = channelName.includes('CHU');
+      
+      // Check if this channel can receive WWVH
+      // WWVH only broadcasts on 2.5, 5, 10, 15 MHz (NOT 20 or 25 MHz)
+      const freqMatch = channelName.match(/([\d.]+)\s*MHz/);
+      const freqMhz = freqMatch ? parseFloat(freqMatch[1]) : 0;
+      const canReceiveWWVH = !isCHU && [2.5, 5, 10, 15].includes(freqMhz);
+      
+      result.channels.push({
+        channel: channelName,
+        canReceiveWWVH: canReceiveWWVH,
+        wwv_detected: !isCHU && (latestTones.wwv_detected || latestDiscrim?.wwv_snr_db > 0),
+        wwvh_detected: canReceiveWWVH && (latestTones.wwvh_detected || latestDiscrim?.wwvh_snr_db > 0),
+        chu_detected: isCHU && latestPower?.snr_db > 10,
+        wwv_snr_db: latestDiscrim?.wwv_snr_db || latestTones.wwv_snr_db || (latestPower?.station === 'WWV' ? latestPower.snr_db : null),
+        wwvh_snr_db: canReceiveWWVH ? (latestDiscrim?.wwvh_snr_db || latestTones.wwvh_snr_db || (latestPower?.station === 'WWVH' ? latestPower.snr_db : null)) : null,
+        chu_snr_db: isCHU ? latestPower?.snr_db : null,
+        dominant_station: latestDiscrim?.dominant_station || latestPower?.station || 'NONE',
+        confidence: latestDiscrim?.confidence || 'low',
+        quality_grade: latestPower?.quality || 'X'
+      });
+    }
+    
+    res.json(result);
+  } catch (err) {
+    console.error('Error getting reception matrix:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/phase2/dclock-consensus
+ * D_clock consensus from all broadcasts
+ */
+app.get('/api/v1/phase2/dclock-consensus', async (req, res) => {
+  try {
+    const channels = config.recorder?.channels || [];
+    const broadcasts = [];
+    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    
+    for (const ch of channels) {
+      if (ch.enabled === false) continue;
+      const channelName = ch.description || `Channel ${ch.ssrc}`;
+      
+      // Read clock offset data
+      const clockDir = paths.getClockOffsetDir ? paths.getClockOffsetDir(channelName) : null;
+      const clockFile = clockDir ? join(clockDir, 'clock_offset_series.csv') : null;
+      
+      if (clockFile && fs.existsSync(clockFile)) {
+        const lines = fs.readFileSync(clockFile, 'utf-8').trim().split('\n');
+        if (lines.length > 1) {
+          // Parse header to get column indices
+          const headers = lines[0].split(',');
+          const colIdx = {};
+          headers.forEach((h, i) => colIdx[h.trim()] = i);
+          
+          const lastLine = lines[lines.length - 1].split(',');
+          const d_clock_ms = parseFloat(lastLine[colIdx['clock_offset_ms']] || lastLine[3]);
+          const station = lastLine[colIdx['station']] || lastLine[4] || 'UNKNOWN';
+          const uncertainty_ms = parseFloat(lastLine[colIdx['uncertainty_ms']] || lastLine[10]) || 5.0;
+          
+          if (!isNaN(d_clock_ms)) {
+            // Extract frequency from channel name
+            const freqMatch = channelName.match(/([\d.]+)\s*MHz/);
+            const frequency = freqMatch ? freqMatch[1] + ' MHz' : '';
+            
+            broadcasts.push({
+              channel: channelName,
+              station: station,
+              frequency: frequency,
+              d_clock_ms: d_clock_ms,
+              uncertainty_ms: uncertainty_ms,
+              timestamp: lastLine[1]
+            });
+          }
+        }
+      }
+    }
+    
+    // Calculate consensus
+    let consensus_ms = null;
+    let uncertainty_ms = null;
+    let agreeing_count = 0;
+    
+    if (broadcasts.length > 0) {
+      // Weighted average using inverse uncertainty
+      let weightSum = 0;
+      let weightedSum = 0;
+      
+      for (const b of broadcasts) {
+        const weight = 1 / (b.uncertainty_ms * b.uncertainty_ms);
+        weightSum += weight;
+        weightedSum += b.d_clock_ms * weight;
+      }
+      
+      consensus_ms = weightedSum / weightSum;
+      uncertainty_ms = 1 / Math.sqrt(weightSum);
+      
+      // Mark which broadcasts agree (within 2x their uncertainty)
+      for (const b of broadcasts) {
+        b.agrees = Math.abs(b.d_clock_ms - consensus_ms) < (2 * b.uncertainty_ms);
+        if (b.agrees) agreeing_count++;
+      }
+    }
+    
+    res.json({
+      consensus_ms: consensus_ms,
+      uncertainty_ms: uncertainty_ms,
+      agreeing_count: agreeing_count,
+      total_count: broadcasts.length,
+      broadcasts: broadcasts.sort((a, b) => a.channel.localeCompare(b.channel)),
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('Error getting D_clock consensus:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/phase2/propagation-paths
+ * Geographic propagation paths to stations
+ */
+app.get('/api/v1/phase2/propagation-paths', async (req, res) => {
+  try {
+    // Station coordinates
+    const stations = {
+      'WWV': { lat: 40.6781, lon: -105.0469, name: 'Fort Collins, CO' },
+      'WWVH': { lat: 21.9886, lon: -159.7642, name: 'Kauai, HI' },
+      'CHU': { lat: 45.2945, lon: -75.7513, name: 'Ottawa, ON' }
+    };
+    
+    // Get receiver location from config (grid_square is under [station] section)
+    const receiverGrid = config.station?.grid_square || config.recorder?.grid_square || config.receiver?.grid || 'DN70';
+    
+    // Maidenhead grid to lat/lon conversion (handles 4 or 6 character grids)
+    function gridToLatLon(grid) {
+      if (!grid || grid.length < 4) return { lat: 40, lon: -100 };
+      
+      // Field (A-R for lon, A-R for lat) - 20° x 10° squares
+      const lonField = (grid.toUpperCase().charCodeAt(0) - 65) * 20 - 180;
+      const latField = (grid.toUpperCase().charCodeAt(1) - 65) * 10 - 90;
+      
+      // Square (0-9) - 2° x 1° squares
+      const lonSquare = parseInt(grid[2]) * 2;
+      const latSquare = parseInt(grid[3]) * 1;
+      
+      // Subsquare (a-x for lon, a-x for lat) - 5' x 2.5' squares
+      let lonSub = 1.0;  // Default to center of square
+      let latSub = 0.5;
+      if (grid.length >= 6) {
+        lonSub = ((grid.toLowerCase().charCodeAt(4) - 97) * 5 / 60) + (2.5 / 60);
+        latSub = ((grid.toLowerCase().charCodeAt(5) - 97) * 2.5 / 60) + (1.25 / 60);
+      }
+      
+      const lon = lonField + lonSquare + lonSub;
+      const lat = latField + latSquare + latSub;
+      
+      return { lat, lon };
+    }
+    
+    const receiver = gridToLatLon(receiverGrid);
+    
+    // Calculate great circle distance
+    function haversine(lat1, lon1, lat2, lon2) {
+      const R = 6371; // Earth radius in km
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+    
+    // Calculate bearing
+    function bearing(lat1, lon1, lat2, lon2) {
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const lat1Rad = lat1 * Math.PI / 180;
+      const lat2Rad = lat2 * Math.PI / 180;
+      const y = Math.sin(dLon) * Math.cos(lat2Rad);
+      const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) - Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon);
+      return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+    }
+    
+    const paths = [];
+    
+    for (const [station, coords] of Object.entries(stations)) {
+      const distance = haversine(receiver.lat, receiver.lon, coords.lat, coords.lon);
+      const bear = bearing(receiver.lat, receiver.lon, coords.lat, coords.lon);
+      
+      // Estimate propagation delay (very rough: 1F at 300km altitude)
+      const delay_ms = distance / 299.792; // Speed of light approximation
+      
+      // Estimate propagation mode based on distance
+      let mode = '1F';
+      if (distance > 3000) mode = '2F';
+      if (distance > 5000) mode = '3F';
+      
+      // Get best SNR for this station across all channels
+      let bestSnr = null;
+      const channels = config.recorder?.channels || [];
+      for (const ch of channels) {
+        if (ch.enabled === false) continue;
+        const channelName = ch.description || '';
+        
+        // Match station to channel type
+        if ((station === 'CHU' && !channelName.includes('CHU')) ||
+            (station !== 'CHU' && channelName.includes('CHU'))) continue;
+        
+        const powerDir = paths.getPhase2Dir ? join(paths.getPhase2Dir(channelName), 'carrier_power') : null;
+        const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+        const powerFile = powerDir ? join(powerDir, `carrier_power_${today}.csv`) : null;
+        
+        if (powerFile && fs.existsSync(powerFile)) {
+          const lines = fs.readFileSync(powerFile, 'utf-8').trim().split('\n');
+          if (lines.length > 1) {
+            const lastLine = lines[lines.length - 1].split(',');
+            const snr = parseFloat(lastLine[3]);
+            const stn = lastLine[6];
+            if (stn === station && snr > (bestSnr || 0)) {
+              bestSnr = snr;
+            }
+          }
+        }
+      }
+      
+      paths.push({
+        station: station,
+        location: coords.name,
+        distance_km: distance,
+        bearing: bear,
+        propagation_mode: mode,
+        delay_ms: delay_ms,
+        best_snr_db: bestSnr
+      });
+    }
+    
+    res.json({
+      receiver_grid: receiverGrid,
+      receiver_lat: receiver.lat,
+      receiver_lon: receiver.lon,
+      paths: paths,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('Error getting propagation paths:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/v1/phase2/diurnal-pattern
+ * 24-hour station dominance pattern
+ */
+app.get('/api/v1/phase2/diurnal-pattern', async (req, res) => {
+  try {
+    const channels = config.recorder?.channels || [];
+    const result = { channels: [], timestamp: new Date().toISOString() };
+    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    
+    for (const ch of channels) {
+      if (ch.enabled === false) continue;
+      const channelName = ch.description || `Channel ${ch.ssrc}`;
+      
+      // Skip CHU channels for WWV/WWVH diurnal pattern
+      if (channelName.includes('CHU')) continue;
+      
+      // Check if this channel can receive WWVH
+      // WWVH only broadcasts on 2.5, 5, 10, 15 MHz (NOT 20 or 25 MHz)
+      const freqMatch = channelName.match(/([\d.]+)\s*MHz/);
+      const freqMhz = freqMatch ? parseFloat(freqMatch[1]) : 0;
+      const canReceiveWWVH = [2.5, 5, 10, 15].includes(freqMhz);
+      
+      // Read discrimination data for today
+      const fileChannel = channelName.replace(/ /g, '_').replace(/\./g, '_');
+      const discrimDir = paths.getPhase2Dir ? join(paths.getPhase2Dir(channelName), 'discrimination') : null;
+      const discrimFile = discrimDir ? join(discrimDir, `${fileChannel}_discrimination_${today}.csv`) : null;
+      
+      // Initialize 24 hours
+      const hours = Array(24).fill(null).map(() => ({ dominant: 'NONE', count: 0, wwv: 0, wwvh: 0 }));
+      
+      if (discrimFile && fs.existsSync(discrimFile)) {
+        const lines = fs.readFileSync(discrimFile, 'utf-8').trim().split('\n');
+        
+        for (let i = 1; i < lines.length; i++) {
+          const cols = lines[i].split(',');
+          const timestamp = cols[0];
+          const station = cols[2];
+          
+          // Extract hour from timestamp
+          const hourMatch = timestamp.match(/T(\d{2}):/);
+          if (hourMatch) {
+            const hour = parseInt(hourMatch[1]);
+            hours[hour].count++;
+            if (station === 'WWV') hours[hour].wwv++;
+            else if (station === 'WWVH') hours[hour].wwvh++;
+          }
+        }
+        
+        // Determine dominant for each hour
+        for (let h = 0; h < 24; h++) {
+          if (hours[h].count === 0) {
+            hours[h].dominant = 'NONE';
+          } else if (!canReceiveWWVH) {
+            // 20/25 MHz can only receive WWV (WWVH doesn't broadcast on these)
+            hours[h].dominant = hours[h].wwv > 0 ? 'WWV' : 'NONE';
+          } else if (hours[h].wwv > hours[h].wwvh * 1.5) {
+            hours[h].dominant = 'WWV';
+          } else if (hours[h].wwvh > hours[h].wwv * 1.5) {
+            hours[h].dominant = 'WWVH';
+          } else {
+            hours[h].dominant = 'MIXED';
+          }
+        }
+      }
+      
+      result.channels.push({
+        channel: channelName,
+        canReceiveWWVH: canReceiveWWVH,
+        hours: hours.map(h => ({ dominant: h.dominant }))
+      });
+    }
+    
+    res.json(result);
+  } catch (err) {
+    console.error('Error getting diurnal pattern:', err);
     res.status(500).json({ error: err.message });
   }
 });

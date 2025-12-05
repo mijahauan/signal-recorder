@@ -403,11 +403,11 @@ class Phase3ProductEngine:
             
             channel = channels[0]
             
-            # Read samples
+            # Read samples (DRF uses start_index, num_samples, channel)
             samples = self.phase1_reader.read_vector(
-                start_sample=start_index,
-                end_sample=end_index,
-                channel=channel
+                start_index,
+                samples_per_minute,
+                channel
             )
             
             if samples is None or len(samples) == 0:

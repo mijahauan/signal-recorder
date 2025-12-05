@@ -296,6 +296,7 @@
     <div id="loading" class="loading">Loading...</div>
   </div>
   
+  <script src="/utils/utc-time.js"></script>
   <script src="/components/theme-toggle.js"></script>
   <script src="/components/navigation.js"></script>
 
@@ -440,7 +441,7 @@
         populateChannelPicker(allChannels);
         await renderChannelQuality();
         renderSelectedChannel();
-        document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+        document.getElementById('last-update').textContent = UTCTime.now() + ' UTC';
         document.getElementById('loading').style.display = 'none';
       } catch (err) {
         console.error('Error fetching carrier data:', err);
@@ -542,7 +543,7 @@
         `;
         
         significantGaps.forEach(gap => {
-          const time = new Date(gap.start_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+          const time = UTCTime.formatTime(gap.start_time).substring(0, 5);  // HH:MM
           const severityClass = gap.severity === 'high' ? 'high' : (gap.severity === 'medium' ? 'medium' : 'low');
           html += `
             <div class="gap-item">
@@ -724,7 +725,11 @@
             <strong>${ch.source_type || channelTypeLabel}</strong> • ${ch.sample_rate || 'N/A'}
           </div>
           
-          <div class="metrics" style="grid-template-columns: repeat(5, 1fr); margin-bottom: 15px;">
+          <div class="metrics" style="grid-template-columns: repeat(6, 1fr); margin-bottom: 15px;">
+            <div class="metric" title="Signal-to-noise ratio of carrier detection">
+              <div class="metric-label">SNR (dB)</div>
+              <div class="metric-value">${ch.snr_db !== null ? ch.snr_db.toFixed(1) : 'N/A'}</div>
+            </div>
             <div class="metric" title="Data completeness: % of expected RTP packets received in this minute">
               <div class="metric-label">Completeness</div>
               <div class="metric-value ${completenessClass}">${ch.completeness_pct !== null ? ch.completeness_pct.toFixed(1) + '%' : 'N/A'}</div>
@@ -734,7 +739,7 @@
               <div class="metric-value">${ch.packet_loss_pct !== null ? ch.packet_loss_pct.toFixed(1) + '%' : 'N/A'}</div>
             </div>
             <div class="metric" title="TONE=locked to WWV/CHU tone, INTERP=aged tone ref, NTP=network time, WALL=fallback">
-              <div class="metric-label">Timing</div>
+              <div class="metric-label">Time Basis</div>
               <div class="metric-value"><span class="timing-badge ${timingClass}">${timingLabel}</span></div>
             </div>
             <div class="metric" title="DRF upload status to wsprdaemon">
