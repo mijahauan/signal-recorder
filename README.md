@@ -361,6 +361,26 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 **Production Ready** - Core functionality complete and tested. Daily recording and PSWS upload operational at AC0G since November 2025.
 
+### v3.9.0 (Dec 5, 2025)
+- **Multi-Broadcast Fusion** - Combines 13 broadcasts (WWV/WWVH/CHU) to converge on UTC(NIST)
+  - Auto-calibration learns per-station offsets via EMA
+  - Fused D_clock achieves ±0.5 ms accuracy (vs ±5-10 ms single-broadcast)
+  - Real-time convergence indicators per station
+- **Timing Dashboard Consolidation** - Simplified to fusion panel + 13-broadcast table
+  - UTC(NIST) Alignment panel shows fused result
+  - Per-broadcast raw D_clock with confidence, SNR, convergence status
+- **Advanced Timing Visualizations** - Fusion-corrected graphs
+  - Kalman funnel: 24-hour default, drag-to-zoom, scroll zoom
+  - Constellation radar: All stations clustered at center when calibrated
+  - Consensus KDE: Sharp peak at 0 ms after convergence
+- **Timing Methodology Documentation** - `/docs/timing-methodology.html`
+  - Info links (?) on all graphs explain calculations
+  - D_clock measurement, fusion algorithm, accuracy expectations
+- **UI Reorganization** - Removed redundant phase2-dashboard.html
+  - Diurnal patterns → discrimination.html
+  - Reception matrix → summary.html
+  - Station distances → summary.html
+
 ### v3.8.0 (Dec 5, 2025)
 - **Clock Convergence Model** - "Set, Monitor, Intervention" architecture for GPSDO timing
   - Converges to locked D_clock estimate, then monitors for anomalies

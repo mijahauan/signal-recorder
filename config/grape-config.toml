@@ -4,10 +4,14 @@
 
 [station]
 callsign = "AC0G"
-grid_square = "EM38ww"
+grid_square = "EM38ww40pk"
 id = "S000171"
 instrument_id = "172"
 description = "beelink rx888 SAS"
+
+# Precise coordinates for improved timing accuracy (~16μs improvement)
+latitude = 38.918461   # Decimal degrees, positive = North
+longitude = -92.127974 # Decimal degrees, negative = West
 
 [ka9q]
 status_address = "bee1-hf-status.local"

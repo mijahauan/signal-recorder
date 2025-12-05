@@ -3182,6 +3182,65 @@ app.get('/api/v1/timing/health-summary', async (req, res) => {
 });
 
 /**
+ * GET /api/v1/timing/fusion
+ * Multi-broadcast fusion results - UTC(NIST) aligned D_clock
+ * Combines 13 broadcasts from WWV, WWVH, CHU
+ */
+app.get('/api/v1/timing/fusion', async (req, res) => {
+  try {
+    const fusionCsv = join(paths.dataRoot, 'phase2', 'fusion', 'fused_d_clock.csv');
+    const calibrationJson = join(paths.dataRoot, 'state', 'broadcast_calibration.json');
+    
+    let latestFusion = null;
+    let history = [];
+    let calibration = {};
+    
+    // Read latest fusion results
+    if (fs.existsSync(fusionCsv)) {
+      const content = fs.readFileSync(fusionCsv, 'utf8');
+      const lines = content.trim().split('\n');
+      if (lines.length > 1) {
+        const headers = lines[0].split(',');
+        // Get last 60 entries for chart
+        const dataLines = lines.slice(Math.max(1, lines.length - 60));
+        for (const line of dataLines) {
+          const values = line.split(',');
+          const record = {};
+          headers.forEach((h, i) => record[h] = values[i]);
+          history.push({
+            timestamp: parseFloat(record.timestamp || 0),
+            d_clock_fused_ms: parseFloat(record.d_clock_fused_ms || 0),
+            d_clock_raw_ms: parseFloat(record.d_clock_raw_ms || 0),
+            uncertainty_ms: parseFloat(record.uncertainty_ms || 0),
+            n_broadcasts: parseInt(record.n_broadcasts || 0),
+            quality_grade: record.quality_grade || 'D'
+          });
+        }
+        if (history.length > 0) {
+          latestFusion = history[history.length - 1];
+        }
+      }
+    }
+    
+    // Read calibration state
+    if (fs.existsSync(calibrationJson)) {
+      calibration = JSON.parse(fs.readFileSync(calibrationJson, 'utf8'));
+    }
+    
+    res.json({
+      status: latestFusion ? 'active' : 'no_data',
+      latest: latestFusion,
+      history: history,
+      calibration: calibration,
+      description: 'Multi-broadcast fusion aligns D_clock to UTC(NIST) using all available broadcasts'
+    });
+  } catch (err) {
+    console.error('Error getting fusion data:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/v1/timing/metrics?channel=WWV%2010%20MHz&date=20251126&hours=24
  * Timing metrics time series for drift analysis
  */

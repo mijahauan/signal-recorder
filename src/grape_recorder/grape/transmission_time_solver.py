@@ -936,19 +936,38 @@ class MultiStationSolver:
 
 
 # Convenience function for quick use
-def create_solver_from_grid(grid_square: str, sample_rate: int = 20000) -> TransmissionTimeSolver:
+def create_solver_from_grid(
+    grid_square: str, 
+    sample_rate: int = 20000,
+    precise_lat: Optional[float] = None,
+    precise_lon: Optional[float] = None
+) -> TransmissionTimeSolver:
     """
     Create a TransmissionTimeSolver from a Maidenhead grid square.
     
     Args:
         grid_square: 4 or 6 character grid square (e.g., "EM38" or "EM38ww")
         sample_rate: Audio sample rate
+        precise_lat: Optional precise latitude (overrides grid square)
+        precise_lon: Optional precise longitude (overrides grid square)
         
     Returns:
         Configured TransmissionTimeSolver
+        
+    Note:
+        Using precise coordinates improves timing accuracy by ~16μs for
+        6-character grid squares. The grid square center can be up to
+        4.3 km from your actual position.
     """
-    # Convert grid square to lat/lon
-    lat, lon = grid_to_latlon(grid_square)
+    if precise_lat is not None and precise_lon is not None:
+        # Use precise coordinates for better timing accuracy
+        lat, lon = precise_lat, precise_lon
+        logger.info(f"Using precise coordinates: {lat:.6f}°N, {lon:.6f}°W")
+    else:
+        # Fall back to grid square center
+        lat, lon = grid_to_latlon(grid_square)
+        logger.info(f"Using grid square {grid_square} center: {lat:.4f}°N, {lon:.4f}°W")
+    
     return TransmissionTimeSolver(lat, lon, sample_rate)
 
 

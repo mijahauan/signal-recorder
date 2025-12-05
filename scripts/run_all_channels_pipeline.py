@@ -281,7 +281,10 @@ def run_all_channels(
         'grid_square': config['station']['grid_square'],
         'psws_station_id': config['station']['id'],
         'psws_instrument_id': config['station']['instrument_id'],
-        'receiver_name': 'GRAPE'
+        'receiver_name': 'GRAPE',
+        # Precise coordinates for improved timing accuracy (~16μs improvement)
+        'latitude': config['station'].get('latitude'),
+        'longitude': config['station'].get('longitude')
     }
     
     # Channel defaults

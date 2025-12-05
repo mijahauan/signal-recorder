@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GRAPE - Timing Methodology</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script>window.GRAPE_CURRENT_PAGE = 'docs';</script>
+    <script src="/components/navigation.js"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        
+        .doc-container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px 40px 60px;
+        }
+        
+        .doc-header {
+            text-align: center;
+            padding: 30px 0;
+            border-bottom: 1px solid #334155;
+            margin-bottom: 40px;
+        }
+        
+        .doc-title {
+            font-size: 32px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 10px;
+        }
+        
+        .doc-subtitle {
+            font-size: 16px;
+            color: #94a3b8;
+        }
+        
+        h2 {
+            color: #3b82f6;
+            font-size: 24px;
+            margin-top: 50px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #334155;
+        }
+        
+        h3 {
+            color: #10b981;
+            font-size: 18px;
+            margin-top: 30px;
+            margin-bottom: 15px;
+        }
+        
+        p {
+            line-height: 1.7;
+            margin-bottom: 15px;
+            color: #cbd5e1;
+        }
+        
+        code {
+            background: #1e293b;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 14px;
+            color: #fbbf24;
+        }
+        
+        pre {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 20px;
+            overflow-x: auto;
+            margin: 20px 0;
+        }
+        
+        pre code {
+            background: none;
+            padding: 0;
+            color: #e0e0e0;
+        }
+        
+        .formula {
+            background: linear-gradient(135deg, #1e3a5f 0%, #1e293b 100%);
+            border-left: 4px solid #3b82f6;
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 0 8px 8px 0;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 15px;
+        }
+        
+        .info-box {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid #10b981;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        
+        .info-box h4 {
+            color: #10b981;
+            margin: 0 0 10px 0;
+        }
+        
+        .warning-box {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid #f59e0b;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        
+        .warning-box h4 {
+            color: #f59e0b;
+            margin: 0 0 10px 0;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        
+        th, td {
+            text-align: left;
+            padding: 12px 15px;
+            border-bottom: 1px solid #334155;
+        }
+        
+        th {
+            background: #1e293b;
+            color: #3b82f6;
+            font-weight: 600;
+        }
+        
+        ul, ol {
+            margin: 15px 0;
+            padding-left: 25px;
+        }
+        
+        li {
+            margin-bottom: 8px;
+            color: #cbd5e1;
+        }
+        
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: #3b82f6;
+            text-decoration: none;
+            margin-bottom: 20px;
+        }
+        
+        .back-link:hover {
+            color: #60a5fa;
+        }
+        
+        .toc {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 20px 30px;
+            margin-bottom: 40px;
+        }
+        
+        .toc h4 {
+            color: #fff;
+            margin: 0 0 15px 0;
+        }
+        
+        .toc a {
+            color: #94a3b8;
+            text-decoration: none;
+            display: block;
+            padding: 5px 0;
+        }
+        
+        .toc a:hover {
+            color: #3b82f6;
+        }
+    </style>
+</head>
+<body>
+    <div id="navigation"></div>
+    
+    <div class="doc-container">
+        <a href="/timing-advanced.html" class="back-link">← Back to Advanced Timing</a>
+        
+        <div class="doc-header">
+            <div class="doc-title">📡 Timing Methodology</div>
+            <div class="doc-subtitle">How GRAPE measures your clock offset from UTC(NIST)</div>
+        </div>
+        
+        <div class="toc">
+            <h4>Contents</h4>
+            <a href="#overview">Overview</a>
+            <a href="#d-clock">The D_clock Measurement</a>
+            <a href="#fusion">Multi-Broadcast Fusion</a>
+            <a href="#kalman-funnel">Clock Stability Convergence</a>
+            <a href="#constellation">Station Constellation</a>
+            <a href="#consensus">Consensus Time Distribution</a>
+            <a href="#propagation">Propagation Mode Probability</a>
+            <a href="#accuracy">Accuracy Expectations</a>
+        </div>
+        
+        <h2 id="overview">Overview</h2>
+        <p>
+            GRAPE measures the offset between your system clock and UTC(NIST) atomic time by 
+            analyzing time standard broadcasts from <strong>WWV</strong> (Colorado), 
+            <strong>WWVH</strong> (Hawaii), and <strong>CHU</strong> (Canada).
+        </p>
+        <p>
+            By combining measurements from up to <strong>13 broadcasts</strong> across 3 stations, 
+            we can achieve sub-millisecond accuracy through statistical fusion and automatic 
+            calibration.
+        </p>
+        
+        <h2 id="d-clock">The D_clock Measurement</h2>
+        <p>
+            <strong>D_clock</strong> (Delta Clock) represents the difference between your system 
+            clock and UTC(NIST):
+        </p>
+        
+        <div class="formula">
+            D_clock = System_Time − UTC(NIST)
+        </div>
+        
+        <ul>
+            <li><strong>D_clock = 0</strong>: Your clock is perfectly aligned with UTC(NIST)</li>
+            <li><strong>D_clock > 0</strong>: Your clock is ahead of UTC(NIST)</li>
+            <li><strong>D_clock < 0</strong>: Your clock is behind UTC(NIST)</li>
+        </ul>
+        
+        <h3>How We Measure It</h3>
+        <ol>
+            <li>
+                <strong>Tone Detection</strong>: WWV/WWVH transmit precisely-timed 1000 Hz and 
+                1200 Hz tones at the start of each minute. We detect these using matched filters.
+            </li>
+            <li>
+                <strong>Propagation Delay Correction</strong>: Radio signals take time to travel 
+                from the transmitter. We calculate the expected delay based on distance, 
+                ionospheric layer, and propagation mode.
+            </li>
+            <li>
+                <strong>Transmission Time Solution</strong>:
+                <div class="formula">
+                    D_clock = Tone_Arrival − (Minute_Boundary + Propagation_Delay)
+                </div>
+            </li>
+        </ol>
+        
+        <h2 id="fusion">Multi-Broadcast Fusion</h2>
+        <p>
+            Single-broadcast D_clock measurements have systematic errors due to ionospheric 
+            uncertainty and propagation mode ambiguity. By <strong>fusing 13 broadcasts</strong>, 
+            we average out these errors.
+        </p>
+        
+        <h3>Station Calibration</h3>
+        <p>
+            Each station may have a consistent offset due to propagation model inaccuracies for 
+            your location. We learn these offsets automatically using an Exponential Moving Average:
+        </p>
+        
+        <div class="formula">
+            new_offset = α × ideal_offset + (1−α) × old_offset
+        </div>
+        
+        <p>
+            Where α = 0.5 means each update moves 50% toward the ideal value. This allows the 
+            system to track drifts while maintaining stability.
+        </p>
+        
+        <h3>Fused Result</h3>
+        <div class="formula">
+            fused_d_clock = Σ(weight × (raw_d_clock + calibration_offset)) / Σ(weight)
+        </div>
+        
+        <p>Weights are based on SNR, quality grade, and propagation mode reliability.</p>
+        
+        <h2 id="kalman-funnel">Clock Stability Convergence</h2>
+        <p>
+            This chart shows D_clock measurements over time. After fusion correction is applied, 
+            measurements should cluster around <strong>0 ms</strong>.
+        </p>
+        
+        <div class="info-box">
+            <h4>What to Look For</h4>
+            <ul>
+                <li><strong>Green points</strong>: Locked with low uncertainty</li>
+                <li><strong>Yellow points</strong>: Holding with medium uncertainty</li>
+                <li><strong>Red points</strong>: Anomalies outside expected bounds</li>
+                <li><strong>Green line at 0</strong>: The UTC(NIST) reference</li>
+            </ul>
+        </div>
+        
+        <h2 id="constellation">Station Constellation</h2>
+        <p>
+            A polar plot showing timing error by station azimuth. Each dot represents a broadcast:
+        </p>
+        <ul>
+            <li><strong>Distance from center</strong>: Magnitude of timing error (closer = better)</li>
+            <li><strong>Angle</strong>: Azimuth to transmitter from your location</li>
+            <li><strong>Color</strong>: Green (&lt;1ms), Yellow (1-5ms), Red (&gt;5ms)</li>
+        </ul>
+        
+        <div class="info-box">
+            <h4>What to Look For</h4>
+            <p>All stations should cluster near the center after calibration converges.</p>
+        </div>
+        
+        <h2 id="consensus">Consensus Time Distribution</h2>
+        <p>
+            A Kernel Density Estimation (KDE) showing how well all measurements agree on the 
+            clock offset.
+        </p>
+        <ul>
+            <li><strong>Sharp peak at 0</strong>: All stations agree, system well-calibrated</li>
+            <li><strong>Peak offset from 0</strong>: Systematic bias (calibration converging)</li>
+            <li><strong>Double hump</strong>: Mode ambiguity (different propagation paths)</li>
+        </ul>
+        
+        <h2 id="propagation">Propagation Mode Probability</h2>
+        <p>
+            Shows which ionospheric propagation modes are most likely for each frequency.
+        </p>
+        <table>
+            <tr>
+                <th>Mode</th>
+                <th>Description</th>
+                <th>Typical Delay</th>
+            </tr>
+            <tr>
+                <td><code>1E</code></td>
+                <td>Single E-layer hop (~110 km)</td>
+                <td>Lowest</td>
+            </tr>
+            <tr>
+                <td><code>1F</code></td>
+                <td>Single F-layer hop (~300 km)</td>
+                <td>Low</td>
+            </tr>
+            <tr>
+                <td><code>2F</code></td>
+                <td>Two F-layer hops</td>
+                <td>Medium</td>
+            </tr>
+            <tr>
+                <td><code>3F</code></td>
+                <td>Three F-layer hops</td>
+                <td>Higher</td>
+            </tr>
+        </table>
+        
+        <h2 id="accuracy">Accuracy Expectations</h2>
+        <table>
+            <tr>
+                <th>Condition</th>
+                <th>Expected Accuracy</th>
+            </tr>
+            <tr>
+                <td>Multiple stations, calibrated</td>
+                <td>±0.5 ms</td>
+            </tr>
+            <tr>
+                <td>Single station, good SNR</td>
+                <td>±1-2 ms</td>
+            </tr>
+            <tr>
+                <td>Poor propagation</td>
+                <td>±5-10 ms</td>
+            </tr>
+            <tr>
+                <td>Uncalibrated</td>
+                <td>Systematic bias up to ±10 ms</td>
+            </tr>
+        </table>
+        
+        <div class="warning-box">
+            <h4>Factors Affecting Accuracy</h4>
+            <ul>
+                <li><strong>Ionospheric conditions</strong>: Solar activity affects F-layer height</li>
+                <li><strong>Time of day</strong>: Propagation modes change between day and night</li>
+                <li><strong>Signal strength</strong>: SNR below 10 dB is unreliable</li>
+                <li><strong>Calibration status</strong>: Allow 5-10 minutes for initial convergence</li>
+            </ul>
+        </div>
+    </div>
+    
+    <script src="/components/theme-toggle.js"></script>
+</body>
+</html>

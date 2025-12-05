@@ -272,7 +272,9 @@ class Phase2TemporalEngine:
         channel_name: str,
         frequency_hz: float,
         receiver_grid: str,
-        sample_rate: int = SAMPLE_RATE_FULL
+        sample_rate: int = SAMPLE_RATE_FULL,
+        precise_lat: Optional[float] = None,
+        precise_lon: Optional[float] = None
     ):
         """
         Initialize the Phase 2 Temporal Engine.
@@ -284,6 +286,8 @@ class Phase2TemporalEngine:
             frequency_hz: Center frequency in Hz
             receiver_grid: Receiver Maidenhead grid square (e.g., 'EM38ww')
             sample_rate: Input sample rate (default 20000 Hz)
+            precise_lat: Optional precise latitude (improves timing by ~16μs)
+            precise_lon: Optional precise longitude (improves timing by ~16μs)
         """
         self.raw_archive_dir = Path(raw_archive_dir)
         self.output_dir = Path(output_dir)
@@ -292,6 +296,8 @@ class Phase2TemporalEngine:
         self.frequency_mhz = frequency_hz / 1e6
         self.receiver_grid = receiver_grid
         self.sample_rate = sample_rate
+        self.precise_lat = precise_lat
+        self.precise_lon = precise_lon
         
         # Initialize sub-components (lazy import to avoid circular deps)
         self._init_components()
@@ -332,7 +338,9 @@ class Phase2TemporalEngine:
             )
             self.solver = create_solver_from_grid(
                 self.receiver_grid,
-                self.sample_rate
+                self.sample_rate,
+                precise_lat=self.precise_lat,
+                precise_lon=self.precise_lon
             )
             
             logger.info("✅ Phase 2 components initialized")

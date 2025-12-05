@@ -60,6 +60,29 @@
             50% { opacity: 0.5; }
         }
         
+        /* Info Link */
+        .info-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+            font-size: 11px;
+            font-weight: 700;
+            text-decoration: none;
+            margin-left: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .info-link:hover {
+            background: #3b82f6;
+            color: #fff;
+        }
+        
         /* Alert Banner */
         .alert-banner {
             background: #dc2626;
@@ -837,21 +860,13 @@
         
         async function loadDashboard() {
             try {
-                // Load all data in parallel including new Phase 2 endpoints
-                const [gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming, phase2Status, bestDClock] = await Promise.all([
-                    fetch('/api/v1/gpsdo-status').then(r => r.json()).catch(() => ({ available: false })),
-                    fetch('/api/v1/timing/primary-reference').then(r => r.json()),
-                    fetch('/api/v1/timing/health-summary').then(r => r.json()),
-                    fetch('/api/v1/timing/transitions?hours=24').then(r => r.json()),
-                    fetch('/api/v1/timing/propagation').then(r => r.json()).catch(() => ({ channels: [] })),
-                    fetch('/api/v1/timing/transmission?hours=1').then(r => r.json()).catch(() => ({ results: [] })),
-                    fetch('/api/v1/timing/global').then(r => r.json()).catch(() => ({ available: false })),
+                // Load data for fusion panel and broadcast table
+                const [phase2Status, fusionData] = await Promise.all([
                     fetch('/api/v1/timing/phase2-status').then(r => r.json()).catch(() => ({ available: false })),
-                    fetch('/api/v1/timing/best-d-clock').then(r => r.json()).catch(() => ({ available: false }))
+                    fetch('/api/v1/timing/fusion').then(r => r.json()).catch(() => ({ status: 'no_data' }))
                 ]);
                 
-                renderDashboard(gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming, phase2Status, bestDClock);
-                checkAlerts(primaryRef, healthSummary, gpsdoStatus);
+                renderDashboard(phase2Status, fusionData);
                 startCountdown();
                 
             } catch (error) {
@@ -866,27 +881,25 @@
             }
         }
         
-        function renderDashboard(gpsdoStatus, primaryRef, healthSummary, transitions, propagation, transmission, globalTiming, phase2Status, bestDClock) {
+        function renderDashboard(phase2Status, fusionData) {
             const container = document.getElementById('dashboard-content');
             
-            // Extract channel names for chart dropdowns, sorted by frequency
-            if (healthSummary.channels && healthSummary.channels.length > 0) {
+            // Extract channel names for chart dropdowns from phase2 status
+            if (phase2Status.channels) {
                 availableChannels = window.GRAPE_UTILS.sortChannelsByFrequency(
-                    healthSummary.channels.map(ch => ch.channel)
+                    Object.keys(phase2Status.channels)
                 );
             }
             
             // Store phase2 data globally for chart loading
             window.phase2ChannelStatus = phase2Status;
+            window.fusionData = fusionData;
             
             // Phase 2 D_clock focused layout - zeroing in on UTC(NIST)
             container.innerHTML = `
-                ${renderBestDClock(bestDClock)}
-                ${renderPhase2PipelineOverview(phase2Status)}
-                ${renderChannelTable(healthSummary, phase2Status)}
+                ${renderFusionPanel(fusionData)}
+                ${renderBroadcastTable(phase2Status)}
                 ${renderDClockChartPlaceholder()}
-                ${renderTransmissionTime(transmission)}
-                ${renderPropagationModes(propagation)}
             `;
             
             // Load charts after DOM is ready
@@ -1013,6 +1026,11 @@
         }
         
         function renderBestDClock(data) {
+            // Hide this panel when fusion is active - fusion panel is the primary display
+            if (window.fusionData && window.fusionData.status === 'active') {
+                return ''; // Fusion panel replaces this
+            }
+            
             if (!data || !data.available) {
                 return `
                     <div class="d-clock-panel" style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); 
@@ -1092,6 +1110,277 @@
                             <span style="color: #ef4444;">● X = No measurement</span>
                         </div>
                     </div>
+                </div>
+            `;
+        }
+        
+        // Helper: render station calibration card with convergence indicator
+        function renderStationCalibration(station, location, mainColor, lightColor, textColor, freqs, cal) {
+            const n = cal?.n_samples || 0;
+            const offset = cal?.offset_ms;
+            const uncertainty = cal?.uncertainty_ms || 1.0;
+            
+            // Convergence: 100% at 50 samples with low uncertainty
+            const sampleProgress = Math.min(100, (n / 50) * 100);
+            const uncertaintyProgress = Math.min(100, Math.max(0, (1 - uncertainty / 2) * 100));
+            const convergence = Math.round((sampleProgress * 0.6) + (uncertaintyProgress * 0.4));
+            
+            const convergeLabel = convergence >= 95 ? '✓ Locked' : 
+                                  convergence >= 50 ? 'Converging' : 
+                                  n === 0 ? 'No signal' : 'Learning';
+            const convergeColor = convergence >= 95 ? '#22c55e' : 
+                                  convergence >= 50 ? '#eab308' : '#64748b';
+            
+            const freqBadges = freqs.map(f => 
+                `<span style="background: ${mainColor}33; padding: 3px 8px; border-radius: 4px; font-size: 11px; color: ${lightColor};">${f} MHz</span>`
+            ).join('');
+            
+            const offsetStr = offset !== undefined ? 
+                `${offset >= 0 ? '+' : ''}${offset.toFixed(2)} ms` : '—';
+            
+            return `
+                <div style="background: ${mainColor}22; padding: 12px; border-radius: 8px; border-left: 3px solid ${mainColor};">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <div style="font-size: 13px; font-weight: 600; color: ${mainColor};">
+                            ${station} <span style="font-weight: 400; color: ${lightColor};">(${location})</span>
+                        </div>
+                        <span style="font-size: 10px; color: ${convergeColor}; font-weight: 600;">${convergeLabel}</span>
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                        ${freqBadges}
+                    </div>
+                    <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                        <div style="font-size: 11px; color: ${textColor};">
+                            Offset: ${offsetStr}
+                        </div>
+                        <div style="font-size: 10px; color: ${lightColor};">
+                            ${n} samples
+                        </div>
+                    </div>
+                    <!-- Convergence progress bar -->
+                    <div style="margin-top: 6px; height: 3px; background: ${mainColor}33; border-radius: 2px; overflow: hidden;">
+                        <div style="width: ${convergence}%; height: 100%; background: ${convergence >= 95 ? '#22c55e' : mainColor}; transition: width 0.3s;"></div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderFusionPanel(data) {
+            if (!data || data.status !== 'active' || !data.latest) {
+                return `
+                    <div class="fusion-panel" style="background: linear-gradient(135deg, #064e3b 0%, #022c22 100%); 
+                                border: 2px solid #10b981; border-radius: 10px; padding: 20px; margin-bottom: 20px;">
+                        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                            <span style="font-size: 24px;">🔀</span>
+                            <div>
+                                <div style="font-size: 18px; font-weight: 600; color: #fff;">Multi-Broadcast Fusion</div>
+                                <div style="font-size: 13px; color: #6ee7b7;">Combining 13 broadcasts → UTC(NIST)</div>
+                            </div>
+                        </div>
+                        <div style="color: #6ee7b7; text-align: center; padding: 20px;">
+                            Waiting for fusion service to collect calibration data...
+                        </div>
+                    </div>
+                `;
+            }
+            
+            const f = data.latest;
+            const gradeColors = { 'A': '#22c55e', 'B': '#3b82f6', 'C': '#eab308', 'D': '#f97316' };
+            const gradeColor = gradeColors[f.quality_grade] || '#94a3b8';
+            
+            // Fused value (calibrated to UTC)
+            const fusedStr = `${f.d_clock_fused_ms >= 0 ? '+' : ''}${f.d_clock_fused_ms.toFixed(4)} ms`;
+            // Raw value (before calibration)
+            const rawStr = `${f.d_clock_raw_ms >= 0 ? '+' : ''}${f.d_clock_raw_ms.toFixed(2)} ms`;
+            
+            // Calibration info
+            const cal = data.calibration || {};
+            const calEntries = Object.entries(cal).map(([station, c]) => 
+                `${station}: ${c.offset_ms >= 0 ? '+' : ''}${c.offset_ms.toFixed(2)}ms`
+            ).join(' | ');
+            
+            return `
+                <div class="fusion-panel" style="background: linear-gradient(135deg, #064e3b 0%, #022c22 100%); 
+                            border: 2px solid #10b981; border-radius: 10px; padding: 20px; margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 20px;">
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                                <span style="font-size: 24px;">🎯</span>
+                                <div>
+                                    <div style="font-size: 18px; font-weight: 600; color: #fff;">
+                                        UTC(NIST) Alignment
+                                        <a href="/docs/timing-methodology.html#fusion" class="info-link" title="How fusion works">?</a>
+                                    </div>
+                                    <div style="font-size: 13px; color: #6ee7b7;">Multi-broadcast fusion from ${f.n_broadcasts} broadcasts</div>
+                                </div>
+                            </div>
+                            <div style="font-size: 56px; font-weight: 700; color: #10b981; font-family: 'Monaco', 'Menlo', monospace;">
+                                ${fusedStr}
+                            </div>
+                            <div style="font-size: 14px; color: #6ee7b7; margin-top: 8px;">
+                                Target: 0.0000 ms = Perfect UTC(NIST) alignment
+                            </div>
+                        </div>
+                        
+                        <div style="display: flex; gap: 25px; text-align: center;">
+                            <div>
+                                <div style="font-size: 32px; font-weight: 700; color: ${gradeColor};">${f.quality_grade}</div>
+                                <div style="font-size: 11px; color: #6ee7b7; text-transform: uppercase;">Grade</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 32px; font-weight: 600; color: #f97316;">${rawStr}</div>
+                                <div style="font-size: 11px; color: #6ee7b7; text-transform: uppercase;">Raw (uncal)</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 32px; font-weight: 600; color: #e0e0e0;">±${f.uncertainty_ms.toFixed(2)}</div>
+                                <div style="font-size: 11px; color: #6ee7b7; text-transform: uppercase;">Uncertainty</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 13 Broadcast Matrix with Convergence -->
+                    <div style="margin-top: 15px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px;">
+                        <!-- WWV Column -->
+                        ${renderStationCalibration('WWV', 'Colorado', '#10b981', '#6ee7b7', '#34d399', 
+                            ['2.5', '5', '10', '15', '20', '25'], cal.WWV)}
+                        
+                        <!-- WWVH Column -->
+                        ${renderStationCalibration('WWVH', 'Hawaii', '#3b82f6', '#93c5fd', '#60a5fa',
+                            ['2.5', '5', '10', '15'], cal.WWVH)}
+                        
+                        <!-- CHU Column -->
+                        ${renderStationCalibration('CHU', 'Canada', '#f59e0b', '#fcd34d', '#fbbf24',
+                            ['3.33', '7.85', '14.67'], cal.CHU)}
+                    </div>
+                    
+                    <div style="margin-top: 12px; font-size: 12px; color: #6ee7b7; text-align: center;">
+                        Fusing <strong>${f.n_broadcasts}</strong> of 13 possible broadcasts • Calibration learned from ${Object.values(cal).reduce((sum, c) => sum + (c.n_samples || 0), 0)} samples
+                    </div>
+                </div>
+            `;
+        }
+        
+        // 13-Broadcast D_clock Status Table
+        function renderBroadcastTable(phase2Status) {
+            if (!phase2Status || !phase2Status.available) {
+                return `
+                    <div class="broadcast-table-container" style="background: #1e293b; border-radius: 10px; 
+                                padding: 20px; margin-bottom: 20px; border: 1px solid #334155;">
+                        <div style="font-size: 16px; font-weight: 600; color: #fff; margin-bottom: 10px;">
+                            📻 13-Broadcast D_clock Status
+                            <a href="/docs/timing-methodology.html#d-clock" class="info-link" title="What is D_clock?">?</a>
+                        </div>
+                        <div style="color: #64748b; text-align: center; padding: 20px;">
+                            Waiting for Phase 2 analytics...
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Define all 13 broadcasts grouped by station
+            const broadcasts = [
+                // WWV broadcasts (6)
+                { id: 'WWV 2.5 MHz', station: 'WWV', freq: 2.5, channel: 'WWV 2.5 MHz' },
+                { id: 'WWV 5 MHz', station: 'WWV', freq: 5, channel: 'WWV 5 MHz' },
+                { id: 'WWV 10 MHz', station: 'WWV', freq: 10, channel: 'WWV 10 MHz' },
+                { id: 'WWV 15 MHz', station: 'WWV', freq: 15, channel: 'WWV 15 MHz' },
+                { id: 'WWV 20 MHz', station: 'WWV', freq: 20, channel: 'WWV 20 MHz' },
+                { id: 'WWV 25 MHz', station: 'WWV', freq: 25, channel: 'WWV 25 MHz' },
+                // WWVH broadcasts (4) - shared frequencies with WWV
+                { id: 'WWVH 2.5 MHz', station: 'WWVH', freq: 2.5, channel: 'WWV 2.5 MHz' },
+                { id: 'WWVH 5 MHz', station: 'WWVH', freq: 5, channel: 'WWV 5 MHz' },
+                { id: 'WWVH 10 MHz', station: 'WWVH', freq: 10, channel: 'WWV 10 MHz' },
+                { id: 'WWVH 15 MHz', station: 'WWVH', freq: 15, channel: 'WWV 15 MHz' },
+                // CHU broadcasts (3)
+                { id: 'CHU 3.33 MHz', station: 'CHU', freq: 3.33, channel: 'CHU 3.33 MHz' },
+                { id: 'CHU 7.85 MHz', station: 'CHU', freq: 7.85, channel: 'CHU 7.85 MHz' },
+                { id: 'CHU 14.67 MHz', station: 'CHU', freq: 14.67, channel: 'CHU 14.67 MHz' }
+            ];
+            
+            const stationColors = { 'WWV': '#10b981', 'WWVH': '#3b82f6', 'CHU': '#f59e0b' };
+            
+            const rows = broadcasts.map(b => {
+                const chData = phase2Status.channels?.[b.channel];
+                const color = stationColors[b.station];
+                
+                // Check if this broadcast is the detected station for its channel
+                let dClock = '—';
+                let confidence = '—';
+                let snr = '—';
+                let lastUpdate = '—';
+                let isActive = false;
+                
+                if (chData && chData.available) {
+                    // For WWV/WWVH shared channels, only show D_clock if this station is detected
+                    const detectedStation = chData.station;
+                    if (b.station === 'CHU' || detectedStation === b.station || detectedStation === 'UNKNOWN') {
+                        if (chData.d_clock_ms !== undefined && chData.d_clock_ms !== null) {
+                            dClock = `${chData.d_clock_ms >= 0 ? '+' : ''}${chData.d_clock_ms.toFixed(2)}`;
+                            isActive = true;
+                        }
+                        
+                        // Confidence based on quality metrics
+                        const snrDb = chData.quality_metrics?.last_snr_db;
+                        if (snrDb !== undefined) {
+                            snr = snrDb.toFixed(1);
+                            confidence = snrDb > 25 ? 'High' : snrDb > 15 ? 'Med' : 'Low';
+                        }
+                        
+                        // Last update time
+                        if (chData.last_updated) {
+                            const dt = new Date(chData.last_updated);
+                            lastUpdate = dt.toISOString().substr(11, 5);
+                        }
+                    }
+                }
+                
+                const rowStyle = isActive ? '' : 'opacity: 0.5;';
+                const confColor = confidence === 'High' ? '#22c55e' : confidence === 'Med' ? '#eab308' : '#64748b';
+                
+                return `
+                    <tr style="${rowStyle}">
+                        <td style="border-left: 3px solid ${color}; padding-left: 12px;">
+                            <span style="color: ${color}; font-weight: 600;">${b.station}</span>
+                            <span style="color: #94a3b8; margin-left: 8px;">${b.freq} MHz</span>
+                        </td>
+                        <td style="text-align: right; font-family: monospace; font-weight: 600;">
+                            ${dClock !== '—' ? `<span style="color: #e0e0e0;">${dClock}</span>` : '<span style="color: #64748b;">—</span>'}
+                        </td>
+                        <td style="text-align: center;">
+                            <span style="color: ${confColor}; font-size: 12px;">${confidence}</span>
+                        </td>
+                        <td style="text-align: right; color: #94a3b8;">${snr !== '—' ? snr + ' dB' : '—'}</td>
+                        <td style="text-align: right; color: #64748b; font-size: 12px;">${lastUpdate}</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            return `
+                <div class="broadcast-table-container" style="background: #1e293b; border-radius: 10px; 
+                            padding: 20px; margin-bottom: 20px; border: 1px solid #334155;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <div style="font-size: 16px; font-weight: 600; color: #fff;">
+                            📻 13-Broadcast D_clock Status
+                            <a href="/docs/timing-methodology.html#d-clock" class="info-link" title="What is D_clock?">?</a>
+                        </div>
+                        <div style="font-size: 12px; color: #64748b;">
+                            Raw uncalibrated measurements → Fusion
+                        </div>
+                    </div>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid #334155;">
+                                <th style="text-align: left; padding: 8px 12px; color: #94a3b8; font-weight: 500;">Broadcast</th>
+                                <th style="text-align: right; padding: 8px; color: #94a3b8; font-weight: 500;">D_clock (ms)</th>
+                                <th style="text-align: center; padding: 8px; color: #94a3b8; font-weight: 500;">Conf</th>
+                                <th style="text-align: right; padding: 8px; color: #94a3b8; font-weight: 500;">SNR</th>
+                                <th style="text-align: right; padding: 8px; color: #94a3b8; font-weight: 500;">Updated</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows}
+                        </tbody>
+                    </table>
                 </div>
             `;
         }
@@ -1529,101 +1818,6 @@
             `;
         }
         
-        function renderPropagationModes(data) {
-            if (!data.channels || data.channels.length === 0) {
-                return '';  // No propagation data available
-            }
-            
-            // Group by station
-            const wwvChannels = data.channels.filter(ch => ch.station === 'WWV');
-            const chuChannels = data.channels.filter(ch => ch.station === 'CHU');
-            
-            // Build WWVH data from wwvh_alternate in WWV channels (shared freqs: 2.5, 5, 10, 15 MHz)
-            const wwvhChannels = data.channels
-                .filter(ch => ch.wwvh_alternate)
-                .map(ch => ({
-                    ...ch.wwvh_alternate,
-                    frequency_mhz: ch.frequency_mhz,
-                    receiver_grid: ch.receiver_grid,
-                    current_snr_db: ch.current_snr_db  // Same SNR - discrimination determines source
-                }));
-            
-            function renderStationSection(station, channels, color, subtitle = '') {
-                if (channels.length === 0) return '';
-                
-                const firstChannel = channels[0];
-                const distance = firstChannel.distance_km;
-                const grid = firstChannel.receiver_grid || 'Unknown';
-                
-                // Show all propagation modes per frequency, grouped by frequency
-                const modeRows = channels.map(ch => {
-                    const modes = ch.propagation_modes || [ch.primary_mode].filter(Boolean);
-                    if (!modes || modes.length === 0) return '';
-                    
-                    // First row shows frequency and SNR, spans multiple modes
-                    const rowCount = modes.length;
-                    return modes.map((mode, idx) => {
-                        const isPrimary = idx === 0;
-                        const freqCell = idx === 0 
-                            ? `<td rowspan="${rowCount}" class="freq-cell">${ch.frequency_mhz} MHz</td>` 
-                            : '';
-                        const snrCell = idx === 0 
-                            ? `<td rowspan="${rowCount}">${ch.current_snr_db ? ch.current_snr_db + ' dB' : '—'}</td>` 
-                            : '';
-                        const rowClass = isPrimary ? 'primary-mode' : 'alt-mode';
-                        return `
-                            <tr class="${rowClass}">
-                                ${freqCell}
-                                <td><span class="mode-badge ${isPrimary ? 'primary' : ''}">${mode.mode}</span></td>
-                                <td>${mode.delay_ms.toFixed(2)} ms</td>
-                                <td>±${mode.uncertainty_ms.toFixed(2)} ms</td>
-                                <td>${mode.elevation_deg.toFixed(1)}°</td>
-                                ${snrCell}
-                            </tr>
-                        `;
-                    }).join('');
-                }).join('');
-                
-                return `
-                    <div class="prop-station" style="border-left: 4px solid ${color};">
-                        <div class="prop-station-header">
-                            <span class="prop-station-name">${station}</span>
-                            <span class="prop-station-distance">${distance} km from ${grid}${subtitle}</span>
-                        </div>
-                        <table class="prop-table">
-                            <thead>
-                                <tr>
-                                    <th>Frequency</th>
-                                    <th>Mode</th>
-                                    <th>Delay</th>
-                                    <th>Uncertainty</th>
-                                    <th>Elevation</th>
-                                    <th>SNR</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${modeRows}
-                            </tbody>
-                        </table>
-                    </div>
-                `;
-            }
-            
-            return `
-                <div class="propagation-section">
-                    <div class="section-header">
-                        <span class="section-title">📡 Propagation Mode Analysis</span>
-                        <span class="section-subtitle">Expected ionospheric delays for HF time transfer</span>
-                    </div>
-                    <div class="prop-grid">
-                        ${renderStationSection('WWV', wwvChannels, '#10b981', ' (Colorado)')}
-                        ${renderStationSection('WWVH', wwvhChannels, '#3b82f6', ' (Hawaii)')}
-                        ${renderStationSection('CHU', chuChannels, '#f59e0b', ' (Canada)')}
-                    </div>
-                </div>
-            `;
-        }
-        
         function renderHealthCards(data) {
             const toneLockPct = parseFloat(data.tone_lock_percentage);
             const driftQuality = data.drift.quality;
@@ -1853,6 +2047,7 @@
                 <div class="chart-section">
                     <div class="chart-header">
                         🎯 D_clock Time Series (Phase 2)
+                        <a href="/docs/timing-methodology.html#kalman-funnel" class="info-link" title="Understanding D_clock charts">?</a>
                         <select id="dclock-channel-select" onchange="loadDClockChart()" style="margin-left: 20px; padding: 5px 10px; background: #1e293b; color: #e0e0e0; border: 1px solid #334155; border-radius: 4px;">
                             <option value="">Select Channel...</option>
                         </select>
@@ -1942,11 +2137,24 @@
         // Store channel list for dropdown population
         let availableChannels = [];
         
+        // Track user's chart selections to preserve across refresh
+        let userSelectedChannel = null;
+        let userSelectedHours = null;
+        
         function loadCharts() {
-            // Populate D_clock channel dropdown
+            // Populate D_clock channel dropdown, preserving user selection
             populateDClockDropdown();
-            // Auto-load D_clock chart if a channel has data
-            autoSelectDClockChannel();
+            // Only auto-select if user hasn't made a selection yet
+            if (!userSelectedChannel) {
+                autoSelectDClockChannel();
+            } else {
+                // Restore user's previous selection
+                const select = document.getElementById('dclock-channel-select');
+                const hoursSelect = document.getElementById('dclock-hours-select');
+                if (select && userSelectedChannel) select.value = userSelectedChannel;
+                if (hoursSelect && userSelectedHours) hoursSelect.value = userSelectedHours;
+                loadDClockChart();
+            }
         }
         
         function populateChannelDropdown() {
@@ -2009,6 +2217,10 @@
             
             const selectedChannel = channelSelect ? channelSelect.value : '';
             const hours = hoursSelect ? parseInt(hoursSelect.value) : 24;
+            
+            // Save user's selection for persistence across refresh
+            if (selectedChannel) userSelectedChannel = selectedChannel;
+            if (hoursSelect) userSelectedHours = hoursSelect.value;
             
             if (!selectedChannel) {
                 chartDiv.innerHTML = '<div style="height: 100%; display: flex; align-items: center; justify-content: center; color: #64748b;">Select a channel to view D_clock measurements</div>';

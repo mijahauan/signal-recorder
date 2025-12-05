@@ -143,13 +143,23 @@ class Phase2AnalyticsService:
         # Initialize Phase 2 engine
         from .phase2_temporal_engine import Phase2TemporalEngine
         
+        # Extract precise coordinates from station_config if available
+        # Precise coordinates improve timing accuracy by ~16μs over grid square center
+        precise_lat = self.station_config.get('latitude')
+        precise_lon = self.station_config.get('longitude')
+        
+        if precise_lat is not None and precise_lon is not None:
+            logger.info(f"Using precise coordinates: {precise_lat:.6f}°N, {precise_lon:.6f}°W")
+        
         self.engine = Phase2TemporalEngine(
             raw_archive_dir=self.archive_dir.parent,  # parent contains all channels
             output_dir=self.output_dir,
             channel_name=channel_name,
             frequency_hz=frequency_hz,
             receiver_grid=receiver_grid,
-            sample_rate=sample_rate
+            sample_rate=sample_rate,
+            precise_lat=precise_lat,
+            precise_lon=precise_lon
         )
         
         # Initialize Clock Convergence Model
@@ -1062,6 +1072,8 @@ def main():
     parser.add_argument('--receiver-name', help='Receiver name')
     parser.add_argument('--psws-station-id', help='PSWS station ID')
     parser.add_argument('--psws-instrument-id', help='PSWS instrument ID')
+    parser.add_argument('--latitude', type=float, help='Precise latitude (improves timing ~16μs)')
+    parser.add_argument('--longitude', type=float, help='Precise longitude (improves timing ~16μs)')
     
     args = parser.parse_args()
     
@@ -1077,7 +1089,9 @@ def main():
         'grid_square': args.grid_square,
         'receiver_name': args.receiver_name,
         'station_id': args.psws_station_id,
-        'instrument_id': args.psws_instrument_id
+        'instrument_id': args.psws_instrument_id,
+        'latitude': args.latitude,
+        'longitude': args.longitude
     }
     
     # Create service

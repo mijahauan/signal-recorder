@@ -112,6 +112,28 @@
             margin-top: 4px;
         }
         
+        .info-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+            font-size: 11px;
+            font-weight: 700;
+            text-decoration: none;
+            margin-left: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .info-link:hover {
+            background: #3b82f6;
+            color: #fff;
+        }
+        
         .viz-controls {
             display: flex;
             gap: 10px;
@@ -279,17 +301,20 @@
                         <span>🎯</span>
                         <div>
                             Clock Stability Convergence
-                            <div class="viz-subtitle">Kalman funnel showing uncertainty narrowing to lock</div>
+                            <a href="/docs/timing-methodology.html#kalman-funnel" class="info-link" title="How this works">?</a>
+                            <div class="viz-subtitle">Fusion-corrected D_clock converging to UTC(NIST)</div>
                         </div>
                     </div>
                     <div class="viz-controls">
                         <select id="funnel-minutes">
-                            <option value="30">Last 30 min</option>
-                            <option value="60" selected>Last 60 min</option>
+                            <option value="60">Last 1 hour</option>
                             <option value="120">Last 2 hours</option>
                             <option value="360">Last 6 hours</option>
+                            <option value="720">Last 12 hours</option>
+                            <option value="1440" selected>Last 24 hours</option>
                         </select>
                         <button onclick="loadKalmanFunnel()">Refresh</button>
+                        <span style="font-size: 11px; color: #64748b; margin-left: 10px;">Drag to zoom, double-click to reset</span>
                     </div>
                 </div>
                 <div class="chart-container" id="kalman-funnel-chart">
@@ -322,6 +347,7 @@
                         <span>🛰️</span>
                         <div>
                             Station Constellation
+                            <a href="/docs/timing-methodology.html#constellation" class="info-link" title="How this works">?</a>
                             <div class="viz-subtitle">Timing error by azimuth (center = perfect)</div>
                         </div>
                     </div>
@@ -355,6 +381,7 @@
                         <span>📈</span>
                         <div>
                             Consensus Time Distribution
+                            <a href="/docs/timing-methodology.html#consensus" class="info-link" title="How this works">?</a>
                             <div class="viz-subtitle">KDE showing agreement across stations</div>
                         </div>
                     </div>
@@ -384,6 +411,7 @@
                         <span>🌊</span>
                         <div>
                             Propagation Mode Probability
+                            <a href="/docs/timing-methodology.html#propagation" class="info-link" title="How this works">?</a>
                             <div class="viz-subtitle">Ionospheric hop identification</div>
                         </div>
                     </div>
@@ -426,6 +454,9 @@
         let probabilityChart = null;
         let modeChart = null;
         
+        // Fusion calibration for correcting D_clock values
+        let fusionCalibration = null;
+        
         // Auto-refresh interval
         let refreshInterval = null;
         
@@ -438,10 +469,34 @@
             refreshInterval = setInterval(loadAllCharts, 30000);
         });
         
+        // Apply fusion calibration correction to a D_clock value
+        function applyFusionCorrection(offset_ms, station) {
+            if (!fusionCalibration || !station || !fusionCalibration[station]) {
+                return offset_ms;  // Return uncorrected if no calibration
+            }
+            // Add calibration offset to bring value toward 0 (UTC aligned)
+            return offset_ms + fusionCalibration[station].offset_ms;
+        }
+        
+        async function loadFusionCalibration() {
+            try {
+                const response = await fetch('/api/v1/timing/fusion');
+                const data = await response.json();
+                if (data.status === 'active' && data.calibration) {
+                    fusionCalibration = data.calibration;
+                }
+            } catch (err) {
+                console.error('Error loading fusion calibration:', err);
+            }
+        }
+        
         async function loadAllCharts() {
             updateStatus('loading');
             
             try {
+                // Load fusion calibration first, then apply to all charts
+                await loadFusionCalibration();
+                
                 await Promise.all([
                     loadKalmanFunnel(),
                     loadConstellation(),
@@ -484,14 +539,20 @@
                     return;
                 }
                 
+                // Apply fusion correction to each point
+                const correctedPoints = data.points.map(pt => ({
+                    ...pt,
+                    offset_ms: applyFusionCorrection(pt.offset_ms, pt.station)
+                }));
+                
                 if (!kalmanChart) {
                     kalmanChart = new KalmanFunnelChart('kalman-funnel-chart', {
                         timeWindowMinutes: parseInt(minutes),
-                        yAxisRange: [-15, 15]
+                        yAxisRange: [-5, 5]  // Narrower range since corrected values near 0
                     });
                 }
                 
-                kalmanChart.update(data.points);
+                kalmanChart.update(correctedPoints);
             } catch (err) {
                 console.error('Error loading Kalman funnel:', err);
                 container.innerHTML = `<div class="chart-loading" style="color: #ef4444;">Error: ${err.message}</div>`;
@@ -505,12 +566,21 @@
                 // Always create the chart (shows vectors even without data)
                 if (!constellationChart) {
                     constellationChart = new ConstellationRadar('constellation-chart', {
-                        maxRadius: 15
+                        maxRadius: 5  // Narrower range for corrected values
                     });
                 }
                 
                 const response = await fetch('/api/v1/timing/constellation');
                 const data = await response.json();
+                
+                // Apply fusion correction to station D_clock values
+                // API uses error_ms and base_station fields
+                if (data && data.stations) {
+                    data.stations = data.stations.map(st => ({
+                        ...st,
+                        error_ms: applyFusionCorrection(st.error_ms, st.base_station)
+                    }));
+                }
                 
                 // Update with data (or empty - vectors still show)
                 constellationChart.update(data || { stations: [] });
@@ -554,14 +624,21 @@
                 stateIndicator.className = `state-indicator ${stateClasses[data.state] || 'unknown'}`;
                 stateIndicator.textContent = stateLabels[data.state] || data.state;
                 
+                // Apply fusion correction to estimates
+                // API uses offset field, not d_clock_ms
+                const correctedEstimates = data.estimates.map(est => ({
+                    ...est,
+                    offset: applyFusionCorrection(est.offset, est.station)
+                }));
+                
                 if (!probabilityChart) {
                     probabilityChart = new ProbabilityPeak('probability-peak-chart', {
-                        xRange: [-8, 8],
+                        xRange: [-3, 3],  // Narrower range for corrected values
                         bandwidth: 0.5
                     });
                 }
                 
-                probabilityChart.update(data.estimates);
+                probabilityChart.update(correctedEstimates);
             } catch (err) {
                 console.error('Error loading probability peak:', err);
                 container.innerHTML = `<div class="chart-loading" style="color: #ef4444;">Error: ${err.message}</div>`;

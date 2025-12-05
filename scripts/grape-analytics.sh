@@ -54,6 +54,17 @@ start)
     STATION_ID=$(grep '^id' "$CONFIG" | head -1 | cut -d'"' -f2)
     INSTRUMENT_ID=$(grep '^instrument_id' "$CONFIG" | head -1 | cut -d'"' -f2)
     
+    # Precise coordinates for improved timing accuracy (~16μs improvement)
+    LATITUDE=$(grep '^latitude' "$CONFIG" | head -1 | awk '{print $3}')
+    LONGITUDE=$(grep '^longitude' "$CONFIG" | head -1 | awk '{print $3}')
+    
+    # Build coordinate args if available
+    COORD_ARGS=""
+    if [ -n "$LATITUDE" ] && [ -n "$LONGITUDE" ]; then
+        COORD_ARGS="--latitude $LATITUDE --longitude $LONGITUDE"
+        echo "   📍 Using precise coordinates: ${LATITUDE}°N, ${LONGITUDE}°W"
+    fi
+    
     # Create directories for three-phase structure
     mkdir -p "$DATA_ROOT/logs" "$DATA_ROOT/state" "$DATA_ROOT/status"
     mkdir -p "$DATA_ROOT/phase2" "$DATA_ROOT/products"
@@ -79,6 +90,7 @@ start)
           --callsign "$CALLSIGN" --grid-square "$GRID" \
           --receiver-name "GRAPE" \
           --psws-station-id "$STATION_ID" --psws-instrument-id "$INSTRUMENT_ID" \
+          $COORD_ARGS \
           > "$DATA_ROOT/logs/phase2-wwv${freq_mhz}.log" 2>&1 &
         
         sleep 0.2
@@ -102,6 +114,7 @@ start)
           --callsign "$CALLSIGN" --grid-square "$GRID" \
           --receiver-name "GRAPE" \
           --psws-station-id "$STATION_ID" --psws-instrument-id "$INSTRUMENT_ID" \
+          $COORD_ARGS \
           > "$DATA_ROOT/logs/phase2-chu${freq_mhz}.log" 2>&1 &
         
         sleep 0.2
@@ -110,12 +123,28 @@ start)
     sleep 2
     COUNT=$(pgrep -f "grape_recorder.grape.phase2_analytics_service" 2>/dev/null | wc -l)
     echo "   ✅ Started $COUNT/9 Phase 2 analytics channels"
+    
+    # Start Multi-Broadcast Fusion Service
+    # Combines all 13 broadcasts (6 WWV + 4 WWVH + 3 CHU) for UTC(NIST) convergence
+    pkill -f "grape_recorder.grape.multi_broadcast_fusion" 2>/dev/null
+    sleep 0.5
+    nohup $PYTHON -m grape_recorder.grape.multi_broadcast_fusion \
+      --data-root "$DATA_ROOT" \
+      --interval 60.0 \
+      --log-level INFO \
+      > "$DATA_ROOT/logs/phase2-fusion.log" 2>&1 &
+    echo "   🔀 Started Multi-Broadcast Fusion (13 broadcasts → UTC(NIST))"
+    
     echo "   📄 Logs: $DATA_ROOT/logs/phase2-*.log"
     echo "   📊 Output: $DATA_ROOT/phase2/{CHANNEL}/clock_offset/"
+    echo "   🎯 Fusion: $DATA_ROOT/phase2/fusion/fused_d_clock.csv"
     ;;
 
 stop)
     echo "🛑 Stopping Phase 2 Analytics Services..."
+    
+    # Stop fusion service first
+    pkill -f "grape_recorder.grape.multi_broadcast_fusion" 2>/dev/null
     
     COUNT=$(pgrep -f "grape_recorder.grape.phase2_analytics_service" 2>/dev/null | wc -l)
     if [ "$COUNT" -eq 0 ]; then
@@ -131,7 +160,7 @@ stop)
         pkill -9 -f "grape_recorder.grape.phase2_analytics_service" 2>/dev/null
     fi
     
-    echo "   ✅ Stopped $COUNT Phase 2 services"
+    echo "   ✅ Stopped $COUNT Phase 2 services + fusion"
     ;;
 
 status)

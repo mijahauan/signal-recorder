@@ -147,12 +147,12 @@ class KalmanFunnelChart {
                 tickcolor: '#64748b',
                 tickfont: { color: '#94a3b8' },
                 type: 'date',
-                tickformat: '%H:%M',
-                // Force UTC timezone display
+                // Adaptive tick format based on zoom level
                 tickformatstops: [
                     { dtickrange: [null, 60000], value: '%H:%M:%S' },
                     { dtickrange: [60000, 3600000], value: '%H:%M' },
-                    { dtickrange: [3600000, null], value: '%H:%M' }
+                    { dtickrange: [3600000, 86400000], value: '%H:%M' },
+                    { dtickrange: [86400000, null], value: '%b %d\n%H:%M' }
                 ]
             },
             yaxis: {
@@ -171,13 +171,22 @@ class KalmanFunnelChart {
                 x: 0.02,
                 y: 0.98
             },
-            hovermode: 'x unified'
+            hovermode: 'x unified',
+            dragmode: 'zoom'  // Enable drag-to-zoom by default
+        };
+
+        const config = {
+            responsive: true,
+            displayModeBar: true,
+            modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d'],
+            displaylogo: false,
+            scrollZoom: true  // Enable scroll to zoom
         };
 
         if (this.chart) {
-            Plotly.react(this.container, traces, layout, { responsive: true, displayModeBar: false });
+            Plotly.react(this.container, traces, layout, config);
         } else {
-            Plotly.newPlot(this.container, traces, layout, { responsive: true, displayModeBar: false });
+            Plotly.newPlot(this.container, traces, layout, config);
             this.chart = true;
         }
     }

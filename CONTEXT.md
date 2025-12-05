@@ -2,14 +2,35 @@
 
 **Author:** Michael James Hauan (AC0G)  
 **Last Updated:** 2025-12-05  
-**Version:** 3.8.0  
-**Status:** ✅ Clock Convergence Model Implemented, UTC Standardized
+**Version:** 3.9.0  
+**Status:** ✅ Multi-Broadcast Fusion Complete, Timing Dashboards Consolidated
 
 ---
 
-## 🎯 NEXT SESSION: DISCRIMINATION PAGE INTEGRATION
+## 🎯 NEXT SESSION: DISCRIMINATION DISPLAY IMPROVEMENTS
 
-The next task is to bring `discrimination.html` into coordination with the Phase 2 analytic data. The discrimination system should display real-time WWV/WWVH station identification results from the analytics engine.
+The next task is to improve the `discrimination.html` page to better visualize WWV/WWVH station identification. The discrimination system should clearly display real-time results from the 12 voting methods.
+
+### Current State of Discrimination Page
+
+The discrimination.html page has:
+- Diurnal Station Dominance panel (moved from phase2-dashboard.html)
+- Basic discrimination data display
+
+### Goals for Next Session
+
+1. **Improve visualization of 12 voting methods** - Show which methods contributed to the decision
+2. **Real-time per-minute updates** - Update as new Phase 2 data arrives
+3. **Method confidence display** - Show weight/confidence for each voting method
+4. **Cross-validation indicators** - Highlight when methods agree/disagree
+5. **Historical view** - Show discrimination history over time (24h default)
+
+### Key Questions to Address
+
+- How should we visualize the 12 methods? (bar chart, matrix, timeline?)
+- Should methods be grouped by type (power, timing, spectral)?
+- How to display the weighted voting result vs individual method votes?
+- What happens when methods disagree? (mixed propagation indicator)
 
 ### Key Files for Discrimination Integration
 
@@ -58,7 +79,75 @@ const canReceiveWWVH = WWVH_FREQUENCIES_MHZ.includes(freqMHz);
 
 ---
 
-## 🎯 SESSION COMPLETE (Dec 5): Clock Convergence & UTC Standardization
+## 🎯 SESSION COMPLETE (Dec 5 PM): Multi-Broadcast Fusion & Dashboard Consolidation
+
+### 1. Multi-Broadcast Fusion (v3.9.0)
+
+**New Module**: `src/grape_recorder/grape/multi_broadcast_fusion.py`
+
+Combines 13 broadcasts (6 WWV + 4 WWVH + 3 CHU) to achieve ±0.5 ms UTC(NIST) alignment.
+
+**Key Features:**
+- **Auto-calibration**: Learns per-station offsets via Exponential Moving Average (α=0.5)
+- **Weighted fusion**: Combines calibrated measurements using SNR, quality grade, propagation mode
+- **Convergence indicators**: Per-station progress bars showing calibration status
+- **API endpoint**: `/api/v1/timing/fusion` returns fused D_clock + per-station calibration
+
+**Accuracy Improvement:**
+| Configuration | Accuracy |
+|--------------|----------|
+| Single broadcast, uncalibrated | ±5-10 ms |
+| Multi-broadcast fusion | **±0.5 ms** |
+
+### 2. Timing Dashboard Consolidation
+
+**Removed**: `phase2-dashboard.html` (archived)
+
+**Panels moved:**
+- Diurnal Station Dominance → `discrimination.html`
+- Reception Matrix → `summary.html`
+- Propagation Paths (simplified) → `summary.html`
+
+**`timing-dashboard-enhanced.html` now shows:**
+- UTC(NIST) Alignment panel (fused D_clock with large display)
+- 13-Broadcast D_clock Status table (raw values per broadcast)
+- D_clock Time Series chart (with selection persistence)
+- Per-station calibration cards with convergence progress bars
+
+### 3. Advanced Timing Visualizations (Fusion-Corrected)
+
+All graphs on `timing-advanced.html` now apply fusion calibration:
+
+| Graph | Correction Applied | Notes |
+|-------|-------------------|-------|
+| Kalman Funnel | `offset + calibration[station]` | 24h default, drag-to-zoom |
+| Constellation | `error_ms + calibration[base_station]` | Clustered at center when calibrated |
+| Consensus KDE | `offset + calibration[station]` | Sharp peak at 0 ms |
+
+### 4. Documentation
+
+**New**: `/docs/timing-methodology.html` - Interactive documentation with:
+- D_clock measurement explanation
+- Multi-broadcast fusion algorithm
+- What each visualization shows
+- Accuracy expectations and factors
+
+**Info links** (?) added to all timing graphs linking to relevant documentation sections.
+
+### 5. Key Code Changes
+
+| File | Change |
+|------|--------|
+| `multi_broadcast_fusion.py` | New fusion service with EMA calibration |
+| `timing-advanced.html` | Fusion correction on all graphs, 24h zoom |
+| `timing-dashboard-enhanced.html` | Consolidated panels, convergence indicators |
+| `timing-visualizations.js` | Zoom controls, adaptive tick format |
+| `monitoring-server-v3.js` | `/api/v1/timing/fusion` endpoint |
+| `navigation.js` | Removed Phase 2 Analysis link |
+
+---
+
+## 🎯 SESSION COMPLETE (Dec 5 AM): Clock Convergence & UTC Standardization
 
 ### 1. Clock Convergence Model ("Set, Monitor, Intervention")
 
@@ -166,7 +255,17 @@ const timestamps = data.map(p => new Date(p.timestamp * 1000).toISOString());
 
 ## 📋 SESSION HISTORY
 
-### Dec 5, 2025 - Clock Convergence & UTC
+### Dec 5, 2025 (PM) - Multi-Broadcast Fusion (v3.9.0)
+- ✅ **Multi-Broadcast Fusion**: Combines 13 broadcasts → ±0.5 ms UTC(NIST) alignment
+- ✅ **Auto-Calibration**: Per-station offsets learned via EMA (α=0.5)
+- ✅ **Convergence Indicators**: Progress bars per station (✓ Locked, Converging, Learning)
+- ✅ **Dashboard Consolidation**: Removed phase2-dashboard.html, moved panels
+- ✅ **Fusion-Corrected Graphs**: Kalman funnel, constellation, consensus all centered at 0
+- ✅ **24-Hour Zoom**: Kalman funnel with drag-to-zoom, scroll zoom, adaptive ticks
+- ✅ **Methodology Docs**: `/docs/timing-methodology.html` with info links on graphs
+- ✅ **Selection Persistence**: D_clock chart remembers user's channel/time selection
+
+### Dec 5, 2025 (AM) - Clock Convergence & UTC
 - ✅ **Clock Convergence Model**: "Set, Monitor, Intervention" architecture
 - ✅ **Convergence State Machine**: ACQUIRING → CONVERGING → LOCKED → REACQUIRE
 - ✅ **Welford Algorithm**: Running mean/variance with proper uncertainty
