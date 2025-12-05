@@ -3,7 +3,7 @@
 **Quick reference for developers working on the GRAPE Signal Recorder.**
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** December 2, 2025
+**Last Updated:** December 5, 2025
 
 ---
 
@@ -339,6 +339,80 @@ class TimeSnapReference:
 ppm = ((rtp_elapsed / utc_elapsed) / nominal_rate - 1) * 1e6
 # Typical values: ±50-200 ppm for consumer SDRs
 ```
+
+### Clock Convergence Model (v3.8.0)
+
+**Philosophy: "Set, Monitor, Intervention"**
+
+With a GPSDO-disciplined receiver, the local clock is a secondary standard. Instead of constantly recalculating D_clock, we converge to a locked estimate and then monitor for anomalies.
+
+```
+State Machine:
+ACQUIRING (N<10) → CONVERGING (building stats) → LOCKED (monitoring)
+                                                       ↓
+                                              5 anomalies → REACQUIRE
+```
+
+**Implementation** (`src/grape_recorder/grape/clock_convergence.py`):
+
+```python
+class ClockConvergenceModel:
+    """Per-station convergence tracking with anomaly detection."""
+    
+    # Lock criteria
+    lock_uncertainty_ms = 1.0    # uncertainty < 1ms required
+    min_samples_for_lock = 30    # need 30 minutes of data
+    anomaly_sigma = 3.0          # 3σ for anomaly detection
+    
+    # Welford's online algorithm for running statistics
+    def update_accumulator(self, station_key, d_clock_ms):
+        acc = self.accumulators[station_key]
+        acc.count += 1
+        delta = d_clock_ms - acc.mean
+        acc.mean += delta / acc.count
+        delta2 = d_clock_ms - acc.mean
+        acc.M2 += delta * delta2
+        
+    @property
+    def uncertainty_ms(self) -> float:
+        """σ/√N - shrinks with each measurement."""
+        if self.count < 2:
+            return float('inf')
+        variance = self.M2 / (self.count - 1)
+        return math.sqrt(variance / self.count)
+```
+
+**Convergence Timeline**:
+
+| Time | State | Uncertainty | Quality Grade |
+|------|-------|-------------|---------------|
+| 0-10 min | ACQUIRING | ∞ | D |
+| 10-30 min | CONVERGING | ~10 ms | C |
+| **30+ min** | **LOCKED** | **< 1 ms** | **A/B** |
+
+**Key Insight**: Once locked, residuals = real ionospheric propagation effects!
+```python
+residual_ms = raw_measurement - converged_d_clock
+# |residual| > 3σ → anomaly → propagation event detected
+```
+
+### Propagation Mode Probability (v3.8.0)
+
+Mode probabilities use Gaussian likelihood based on converged uncertainty:
+
+```python
+# P(mode|measured) ∝ exp(-0.5 × ((measured - expected) / σ)²)
+sigma = sqrt(uncertainty² + mode_spread²)
+z_score = (measured_delay - expected_delay) / sigma
+likelihood = exp(-0.5 * z_score²)
+```
+
+| Uncertainty | Discrimination Quality |
+|-------------|----------------------|
+| > 30 ms | Flat (no information) |
+| 10-30 ms | Weak peaks |
+| 3-10 ms | Moderate |
+| **< 3 ms** | **Sharp peaks** ✓ |
 
 ---
 

@@ -361,6 +361,21 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 **Production Ready** - Core functionality complete and tested. Daily recording and PSWS upload operational at AC0G since November 2025.
 
+### v3.8.0 (Dec 5, 2025)
+- **Clock Convergence Model** - "Set, Monitor, Intervention" architecture for GPSDO timing
+  - Converges to locked D_clock estimate, then monitors for anomalies
+  - Welford's algorithm for running mean/variance
+  - 3σ anomaly detection reveals real propagation events
+- **Propagation Mode Discrimination** - Gaussian likelihood-based hop identification
+  - Sharp mode probabilities after convergence (<3ms uncertainty)
+- **UTC Time Standardization** - All web-UI displays use UTC consistently
+- **Phase 2 Dashboard** - New visualization page for reception matrix, D_clock consensus
+
+### v3.7.0 (Dec 4, 2025)
+- **Three-Phase Pipeline** - Raw archive → Analytics → Products architecture
+- **Advanced Timing Visualizations** - Kalman funnel, constellation radar, mode ridge
+- **Audio Streaming** - Browser-based WWV/CHU audio via ka9q-python
+
 ### v2.2.0 (Dec 2, 2025)
 - **Unified Installer** - `scripts/install.sh --mode test|production`
 - **Systemd Services** - Production-ready with auto-restart, daily uploads
