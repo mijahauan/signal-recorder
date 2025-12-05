@@ -155,6 +155,27 @@ class ChannelCharacterization:
     station_confidence: str = 'low'
     ground_truth_station: Optional[str] = None  # From 500/600 Hz exclusive minutes
     ground_truth_source: Optional[str] = None   # '500Hz', '600Hz', '440Hz'
+    ground_truth_power_db: Optional[float] = None  # Power of detected ground truth tone
+    
+    # Harmonic power ratios (500/600 Hz detection)
+    harmonic_ratio_500_1000: Optional[float] = None  # P_1000/P_500 in dB
+    harmonic_ratio_600_1200: Optional[float] = None  # P_1200/P_600 in dB
+    
+    # Test signal analysis (minutes 8 and 44 only)
+    test_signal_detected: bool = False
+    test_signal_fss_db: Optional[float] = None  # Frequency Selectivity Score (D-layer indicator)
+    test_signal_delay_spread_ms: Optional[float] = None  # Multipath from chirp analysis
+    test_signal_toa_offset_ms: Optional[float] = None  # High-precision ToA
+    test_signal_coherence_time_sec: Optional[float] = None  # Channel stability
+    
+    # CHU FSK analysis (seconds 31-39 of each minute)
+    chu_fsk_detected: bool = False
+    chu_fsk_frames_decoded: int = 0  # Number of successfully decoded frames (max 9)
+    chu_fsk_timing_offset_ms: Optional[float] = None  # Offset from 500ms boundary
+    chu_fsk_dut1_seconds: Optional[float] = None  # UT1-UTC correction
+    chu_fsk_tai_utc: Optional[int] = None  # TAI-UTC (leap seconds)
+    chu_fsk_decode_confidence: float = 0.0  # Frame decode success rate
+    chu_fsk_time_verified: bool = False  # Decoded time matches expected
     
     # Narrowed search window for Step 3
     refined_search_window_ms: float = 50.0  # Tightened from 500ms to 50ms
@@ -543,13 +564,25 @@ class Phase2TemporalEngine:
                 result.bcd_differential_delay_ms = delay_ms
                 result.bcd_correlation_quality = quality
                 
-                # Extract ToA from windows if available
+                # Extract ToA and delay spread from windows if available
                 if windows and len(windows) > 0:
                     # Use first high-quality window
                     for w in windows:
                         if w.get('wwv_toa_ms') is not None:
                             result.bcd_wwv_toa_ms = w['wwv_toa_ms']
                             result.bcd_wwvh_toa_ms = w['wwvh_toa_ms']
+                            
+                            # Extract delay spread from BCD correlation peak widths
+                            # Use the delay spread of the dominant station
+                            wwv_spread = w.get('wwv_delay_spread_ms')
+                            wwvh_spread = w.get('wwvh_delay_spread_ms')
+                            if wwv_spread is not None and wwvh_spread is not None:
+                                # Use average of both stations' delay spreads
+                                result.delay_spread_ms = (wwv_spread + wwvh_spread) / 2.0
+                            elif wwv_spread is not None:
+                                result.delay_spread_ms = wwv_spread
+                            elif wwvh_spread is not None:
+                                result.delay_spread_ms = wwvh_spread
                             break
                 
                 logger.debug(
@@ -597,15 +630,25 @@ class Phase2TemporalEngine:
         # === Step 2C: Station Identity & Ground Truth ===
         # Check for exclusive broadcast minutes (500/600 Hz tones)
         try:
-            gt_detected, gt_power, gt_freq, gt_station = self.discriminator.detect_500_600hz_tone(
+            # Function returns 6 values: (detected, power_db, freq, station, harmonic_500_1000, harmonic_600_1200)
+            gt_result = self.discriminator.detect_500_600hz_tone(
                 iq_samples=iq_samples,
                 sample_rate=self.sample_rate,
                 minute_number=minute_number
             )
+            gt_detected, gt_power, gt_freq, gt_station = gt_result[:4]
+            harmonic_500_1000, harmonic_600_1200 = gt_result[4], gt_result[5]
+            
+            # Always store harmonic ratios when computed (useful for analysis)
+            if harmonic_500_1000 is not None:
+                result.harmonic_ratio_500_1000 = harmonic_500_1000
+            if harmonic_600_1200 is not None:
+                result.harmonic_ratio_600_1200 = harmonic_600_1200
             
             if gt_detected and gt_station:
                 result.ground_truth_station = gt_station
                 result.ground_truth_source = f'{gt_freq}Hz'
+                result.ground_truth_power_db = gt_power
                 agreements.append(f'ground_truth_{gt_station}_{gt_freq}Hz')
                 logger.info(
                     f"Step 2C Ground Truth: {gt_station} confirmed via {gt_freq} Hz "
@@ -630,9 +673,98 @@ class Phase2TemporalEngine:
                     else:  # minute 2
                         result.ground_truth_station = 'WWV'
                         result.ground_truth_source = '440Hz_min2'
+                    result.ground_truth_power_db = power_440
                     agreements.append(f'440Hz_minute{minute_number}')
+                    logger.info(
+                        f"Step 2C Ground Truth: {result.ground_truth_station} confirmed via 440Hz "
+                        f"(power={power_440:.1f}dB)"
+                    )
             except Exception as e:
                 logger.debug(f"440 Hz detection: {e}")
+        
+        # Detect test signal for minutes 8 and 44 (channel sounding)
+        # This provides FSS, delay spread, and high-precision ToA for timing improvement
+        if minute_number in [8, 44]:
+            try:
+                test_result = self.discriminator.test_signal_detector.detect(
+                    iq_samples=iq_samples,
+                    minute_number=minute_number,
+                    sample_rate=self.sample_rate
+                )
+                
+                if test_result.detected:
+                    result.test_signal_detected = True
+                    result.test_signal_fss_db = test_result.frequency_selectivity_db
+                    result.test_signal_delay_spread_ms = test_result.delay_spread_ms
+                    result.test_signal_toa_offset_ms = test_result.toa_offset_ms
+                    result.test_signal_coherence_time_sec = test_result.coherence_time_sec
+                    
+                    # Use test signal delay spread if better than BCD estimate
+                    if test_result.delay_spread_ms is not None:
+                        if result.delay_spread_ms is None or test_result.delay_spread_ms < result.delay_spread_ms:
+                            result.delay_spread_ms = test_result.delay_spread_ms
+                    
+                    # Use test signal coherence time if available
+                    if test_result.coherence_time_sec is not None:
+                        result.coherence_time_sec = test_result.coherence_time_sec
+                    
+                    expected_station = 'WWV' if minute_number == 8 else 'WWVH'
+                    agreements.append(f'test_signal_{expected_station}')
+                    
+                    logger.info(
+                        f"Step 2C Test Signal: {expected_station} detected, "
+                        f"FSS={test_result.frequency_selectivity_db:.1f}dB, "
+                        f"delay_spread={test_result.delay_spread_ms:.2f}ms"
+                        if test_result.delay_spread_ms else
+                        f"Step 2C Test Signal: {expected_station} detected, "
+                        f"FSS={test_result.frequency_selectivity_db}dB"
+                    )
+            except Exception as e:
+                logger.debug(f"Test signal detection: {e}")
+        
+        # CHU FSK detection (all minutes for CHU channels)
+        # CHU transmits FSK time code at seconds 31-39 with precise 500ms boundaries
+        if 'CHU' in self.channel_name.upper():
+            try:
+                from .chu_fsk_decoder import CHUFSKDecoder
+                
+                if not hasattr(self, 'chu_fsk_decoder'):
+                    self.chu_fsk_decoder = CHUFSKDecoder(
+                        sample_rate=self.sample_rate,
+                        channel_name=self.channel_name
+                    )
+                
+                fsk_result = self.chu_fsk_decoder.decode_minute(
+                    iq_samples=iq_samples,
+                    minute_boundary_unix=system_time
+                )
+                
+                if fsk_result.detected:
+                    result.chu_fsk_detected = True
+                    result.chu_fsk_frames_decoded = fsk_result.frames_decoded
+                    result.chu_fsk_timing_offset_ms = fsk_result.timing_offset_ms
+                    result.chu_fsk_dut1_seconds = fsk_result.dut1_seconds
+                    result.chu_fsk_tai_utc = fsk_result.tai_utc
+                    result.chu_fsk_decode_confidence = fsk_result.decode_confidence
+                    
+                    # Verify decoded time matches expected
+                    expected_minute = minute_number
+                    if fsk_result.decoded_minute == expected_minute:
+                        result.chu_fsk_time_verified = True
+                        agreements.append('chu_fsk_time_match')
+                    else:
+                        disagreements.append('chu_fsk_time_mismatch')
+                    
+                    logger.info(
+                        f"Step 2C CHU FSK: {fsk_result.frames_decoded}/9 frames, "
+                        f"timing={fsk_result.timing_offset_ms:.3f}ms, "
+                        f"DUT1={fsk_result.dut1_seconds}s"
+                        if fsk_result.dut1_seconds else
+                        f"Step 2C CHU FSK: {fsk_result.frames_decoded}/9 frames, "
+                        f"timing={fsk_result.timing_offset_ms:.3f}ms"
+                    )
+            except Exception as e:
+                logger.debug(f"CHU FSK detection: {e}")
         
         # Determine dominant station from weighted voting
         # Use finalize_discrimination for complete voting
@@ -783,8 +915,12 @@ class Phase2TemporalEngine:
         doppler_std_hz = channel.doppler_wwv_std_hz if station == 'WWV' else channel.doppler_wwvh_std_hz
         doppler_std_hz = doppler_std_hz or 0.1
         
-        # FSS from discrimination result (if test signal detected)
-        fss_db = None  # TODO: Extract from test signal if available
+        # FSS from test signal detection (minutes 8 and 44 only)
+        # This provides D-layer attenuation indicator for mode disambiguation
+        fss_db = channel.test_signal_fss_db  # Will be None for non-test-signal minutes
+        
+        if fss_db is not None:
+            logger.info(f"Using FSS={fss_db:.1f}dB from test signal for mode disambiguation")
         
         # Calculate expected second boundary RTP (minute boundary for all stations)
         # All stations (WWV, WWVH, CHU) transmit at second 0:
@@ -902,6 +1038,64 @@ class Phase2TemporalEngine:
         
         uncertainty = base_uncertainty * confidence_factor * channel_factor * doppler_factor
         
+        # BCD delay spread improvement: low delay spread = clean channel
+        if channel.delay_spread_ms is not None:
+            if channel.delay_spread_ms < 1.0:
+                # Very clean channel - 20% improvement
+                uncertainty *= 0.8
+                logger.debug(f"BCD delay spread {channel.delay_spread_ms:.1f}ms reduces uncertainty by 20%")
+            elif channel.delay_spread_ms < 2.0:
+                # Clean channel - 10% improvement
+                uncertainty *= 0.9
+                logger.debug(f"BCD delay spread {channel.delay_spread_ms:.1f}ms reduces uncertainty by 10%")
+            elif channel.delay_spread_ms > 5.0:
+                # High multipath - increase uncertainty
+                uncertainty *= 1.3
+                logger.debug(f"BCD delay spread {channel.delay_spread_ms:.1f}ms increases uncertainty by 30%")
+        
+        # BCD correlation quality improvement
+        if channel.bcd_correlation_quality is not None and channel.bcd_correlation_quality > 0.8:
+            uncertainty *= 0.9  # High BCD quality = 10% improvement
+            logger.debug(f"High BCD quality {channel.bcd_correlation_quality:.2f} reduces uncertainty by 10%")
+        
+        # Test signal improvement: reduce uncertainty when test signal provides
+        # high-quality channel characterization
+        if channel.test_signal_detected:
+            test_signal_factor = 0.8  # 20% improvement from test signal
+            
+            # Further reduction if coherence time is good (stable channel)
+            if channel.test_signal_coherence_time_sec is not None:
+                if channel.test_signal_coherence_time_sec > 5.0:
+                    test_signal_factor = 0.6  # Very stable channel
+                elif channel.test_signal_coherence_time_sec > 2.0:
+                    test_signal_factor = 0.7  # Stable channel
+            
+            uncertainty *= test_signal_factor
+            logger.debug(f"Test signal reduces uncertainty by {(1-test_signal_factor)*100:.0f}%")
+        
+        # Ground truth provides additional confidence
+        if channel.ground_truth_station is not None:
+            uncertainty *= 0.9  # 10% improvement from ground truth confirmation
+        
+        # CHU FSK provides precise 500ms timing reference and time verification
+        if channel.chu_fsk_detected:
+            # Base improvement from FSK decode
+            chu_factor = 0.8  # 20% improvement from FSK decode
+            
+            # Additional improvement based on decode confidence
+            if channel.chu_fsk_decode_confidence > 0.8:
+                chu_factor = 0.6  # 40% improvement for high confidence
+            elif channel.chu_fsk_decode_confidence > 0.5:
+                chu_factor = 0.7  # 30% improvement for moderate confidence
+            
+            # Extra boost if decoded time matches expected
+            if channel.chu_fsk_time_verified:
+                chu_factor *= 0.9  # Additional 10% for time verification
+            
+            uncertainty *= chu_factor
+            logger.debug(f"CHU FSK reduces uncertainty by {(1-chu_factor)*100:.0f}% "
+                        f"(confidence={channel.chu_fsk_decode_confidence:.2f})")
+        
         return min(uncertainty, 100.0)  # Cap at 100ms
     
     def _determine_quality_grade(
@@ -910,21 +1104,42 @@ class Phase2TemporalEngine:
         channel: ChannelCharacterization
     ) -> str:
         """Determine overall quality grade based on all metrics."""
+        # Count quality indicators
+        has_ground_truth = channel.ground_truth_station is not None
+        has_test_signal = channel.test_signal_detected
+        has_chu_fsk = channel.chu_fsk_detected and channel.chu_fsk_time_verified
+        agreement_count = len(channel.cross_validation_agreements)
+        disagreement_count = len(channel.cross_validation_disagreements)
+        
         if solution.utc_verified and solution.confidence > 0.8:
-            if channel.ground_truth_station is not None:
+            if has_ground_truth:
                 return 'A'  # Excellent: verified with ground truth
-            elif len(channel.cross_validation_agreements) >= 3:
+            elif has_chu_fsk:
+                return 'A'  # Excellent: CHU FSK time verified
+            elif has_test_signal and agreement_count >= 2:
+                return 'A'  # Excellent: test signal + multi-method agreement
+            elif agreement_count >= 3:
                 return 'A'  # Excellent: multi-method agreement
             else:
                 return 'B'  # Good: verified but fewer confirmations
         elif solution.confidence > 0.6:
-            if len(channel.cross_validation_disagreements) == 0:
+            if has_chu_fsk:
+                return 'A'  # CHU FSK time verified = excellent
+            elif has_test_signal and disagreement_count == 0:
+                return 'A'  # Test signal with no disagreements = excellent
+            elif disagreement_count == 0:
                 return 'B'  # Good: high confidence, no disagreements
             else:
                 return 'C'  # Fair: some disagreements
         elif solution.confidence > 0.3:
+            if has_chu_fsk:
+                return 'A'  # CHU FSK time verified even with moderate confidence
+            elif has_test_signal:
+                return 'B'  # Test signal boosts moderate confidence to Good
             return 'C'  # Fair: moderate confidence
         else:
+            if has_chu_fsk:
+                return 'B'  # CHU FSK provides verification even with low confidence
             return 'D'  # Poor: low confidence
     
     def process_minute(

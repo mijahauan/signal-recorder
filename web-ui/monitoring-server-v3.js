@@ -3881,63 +3881,139 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
   // Use GRAPEPaths API for all method-specific directories (matches Python paths.py)
   
   // 1. Load 1000/1200 Hz tone detections
-  // CSV columns: timestamp_utc, minute_boundary, wwv_detected, wwvh_detected, 
+  // Phase 2 CSV columns: timestamp_utc, minute_boundary, wwv_detected, wwvh_detected, 
   //              wwv_snr_db, wwvh_snr_db, wwv_timing_ms, wwvh_timing_ms, anchor_station, anchor_confidence
   const tonesPath = join(paths.getToneDetectionsDir(channelName), `${fileChannelName}_tones_${date}.csv`);
   const tonesData = parseCSV(tonesPath);
+  
+  // Convert Phase 2 format to per-station records for the charts
+  const toneRecords = [];
+  for (const r of tonesData.records) {
+    // Create WWV record if detected
+    if (r.wwv_detected === '1' && r.wwv_snr_db) {
+      toneRecords.push({
+        timestamp_utc: r.timestamp_utc,
+        station: 'WWV',
+        frequency_hz: 1000,
+        snr_db: parseFloat(r.wwv_snr_db),
+        tone_power_db: parseFloat(r.wwv_snr_db),
+        timing_ms: r.wwv_timing_ms ? parseFloat(r.wwv_timing_ms) : null,
+        anchor_station: r.anchor_station || null
+      });
+    }
+    // Create WWVH record if detected
+    if (r.wwvh_detected === '1' && r.wwvh_snr_db) {
+      toneRecords.push({
+        timestamp_utc: r.timestamp_utc,
+        station: 'WWVH',
+        frequency_hz: 1200,
+        snr_db: parseFloat(r.wwvh_snr_db),
+        tone_power_db: parseFloat(r.wwvh_snr_db),
+        timing_ms: r.wwvh_timing_ms ? parseFloat(r.wwvh_timing_ms) : null,
+        anchor_station: r.anchor_station || null
+      });
+    }
+  }
+  
   result.methods.timing_tones = {
     status: tonesData.status,
-    records: tonesData.records.map(r => ({
-      timestamp_utc: r.timestamp_utc,
-      minute_boundary: parseInt(r.minute_boundary),
-      wwv_detected: r.wwv_detected === '1',
-      wwvh_detected: r.wwvh_detected === '1',
-      wwv_snr_db: r.wwv_snr_db ? parseFloat(r.wwv_snr_db) : null,
-      wwvh_snr_db: r.wwvh_snr_db ? parseFloat(r.wwvh_snr_db) : null,
-      wwv_timing_ms: r.wwv_timing_ms ? parseFloat(r.wwv_timing_ms) : null,
-      wwvh_timing_ms: r.wwvh_timing_ms ? parseFloat(r.wwvh_timing_ms) : null,
-      anchor_station: r.anchor_station || null,
-      anchor_confidence: r.anchor_confidence ? parseFloat(r.anchor_confidence) : null
-    })),
-    count: tonesData.count
+    records: toneRecords,
+    count: toneRecords.length
   };
   
   // 2. Load tick windows (10-sec coherent integration)
+  // Note: Phase 2 doesn't generate tick_windows CSVs currently
+  // Use tone detections as substitute for SNR time series
   const ticksPath = join(paths.getTickWindowsDir(channelName), `${fileChannelName}_ticks_${date}.csv`);
   const ticksData = parseCSV(ticksPath);
-  result.methods.tick_windows = {
-    status: ticksData.status,
-    records: ticksData.records.map(r => ({
+  
+  // If tick windows don't exist, synthesize from tone detections
+  let tickRecords = [];
+  if (ticksData.status === 'OK' && ticksData.records.length > 0) {
+    tickRecords = ticksData.records.map(r => ({
       timestamp_utc: r.timestamp_utc,
-      window_second: parseInt(r.window_second),
-      wwv_snr_db: parseFloat(r.wwv_snr_db),
-      wwvh_snr_db: parseFloat(r.wwvh_snr_db),
-      ratio_db: parseFloat(r.ratio_db),
-      integration_method: r.integration_method
-    })),
-    count: ticksData.count
+      window_second: parseInt(r.window_second) || 0,
+      wwv_snr_db: parseFloat(r.wwv_snr_db) || 0,
+      wwvh_snr_db: parseFloat(r.wwvh_snr_db) || 0,
+      ratio_db: parseFloat(r.ratio_db) || 0,
+      integration_method: r.integration_method || 'coherent'
+    }));
+  } else {
+    // Fallback: create pseudo tick windows from tone detections
+    for (const r of tonesData.records) {
+      const wwvSnr = r.wwv_snr_db ? parseFloat(r.wwv_snr_db) : 0;
+      const wwvhSnr = r.wwvh_snr_db ? parseFloat(r.wwvh_snr_db) : 0;
+      tickRecords.push({
+        timestamp_utc: r.timestamp_utc,
+        window_second: 0,
+        wwv_snr_db: wwvSnr,
+        wwvh_snr_db: wwvhSnr,
+        ratio_db: wwvSnr - wwvhSnr,
+        integration_method: 'tone_fallback'
+      });
+    }
+  }
+  
+  result.methods.tick_windows = {
+    status: tickRecords.length > 0 ? 'OK' : 'NO_DATA',
+    records: tickRecords,
+    count: tickRecords.length
   };
   
   // 3. Load 440 Hz station ID detections
-  // CSV columns: timestamp_utc, minute_boundary, minute_number, ground_truth_station, 
-  //              ground_truth_source, station_confidence, dominant_station
+  // Phase 2 CSV columns: timestamp_utc, minute_boundary, minute_number, ground_truth_station, 
+  //              ground_truth_source, ground_truth_power_db, station_confidence, dominant_station,
+  //              harmonic_ratio_500_1000, harmonic_ratio_600_1200
   const id440Path = join(paths.getStationId440HzDir(channelName), `${fileChannelName}_440hz_${date}.csv`);
   const id440Data = parseCSV(id440Path);
-  result.methods.station_id = {
-    status: id440Data.status,
-    records: id440Data.records.map(r => ({
+  
+  // Convert to format expected by charts (with wwv_power_db, wwvh_power_db)
+  const stationIdRecords = id440Data.records.map(r => {
+    // Use actual power from CSV if available, otherwise fallback to placeholder
+    const actualPower = r.ground_truth_power_db ? parseFloat(r.ground_truth_power_db) : null;
+    let wwvPowerDb = null;
+    let wwvhPowerDb = null;
+    
+    // If ground_truth_station is set, use actual power from CSV
+    if (r.ground_truth_station === 'WWV') {
+      wwvPowerDb = actualPower !== null ? actualPower : 10.0;
+    } else if (r.ground_truth_station === 'WWVH') {
+      wwvhPowerDb = actualPower !== null ? actualPower : 10.0;
+    }
+    
+    // Also check dominant_station for non-ground-truth minutes
+    if (r.dominant_station === 'WWV' && wwvPowerDb === null) {
+      wwvPowerDb = 5.0;
+    } else if (r.dominant_station === 'WWVH' && wwvhPowerDb === null) {
+      wwvhPowerDb = 5.0;
+    }
+    
+    return {
       timestamp_utc: r.timestamp_utc,
-      minute_boundary: parseInt(r.minute_boundary),
-      minute_number: parseInt(r.minute_number),
+      minute_boundary: parseInt(r.minute_boundary) || 0,
+      minute_number: parseInt(r.minute_number) || 0,
       ground_truth_station: r.ground_truth_station || null,
       ground_truth_source: r.ground_truth_source || null,
+      ground_truth_power_db: actualPower,
       station_confidence: r.station_confidence || null,
-      dominant_station: r.dominant_station || null
-    })),
-    count: id440Data.count
+      dominant_station: r.dominant_station || null,
+      wwv_power_db: wwvPowerDb,
+      wwvh_power_db: wwvhPowerDb,
+      harmonic_ratio_500_1000: r.harmonic_ratio_500_1000 ? parseFloat(r.harmonic_ratio_500_1000) : null,
+      harmonic_ratio_600_1200: r.harmonic_ratio_600_1200 ? parseFloat(r.harmonic_ratio_600_1200) : null
+    };
+  });
+  
+  result.methods.station_id = {
+    status: id440Data.status,
+    records: stationIdRecords,
+    count: stationIdRecords.length
   };
   
   // 3.5. Load test signal detections (minutes 8 and 44)
+  // CSV columns: timestamp_utc, minute_boundary, minute_number, detected, station,
+  //              confidence, multitone_score, chirp_score, snr_db,
+  //              fss_db, delay_spread_ms, toa_offset_ms, coherence_time_sec
   const testSignalPath = join(paths.getTestSignalDir(channelName), `${fileChannelName}_test_signal_${date}.csv`);
   const testSignalData = parseCSV(testSignalPath);
   result.methods.test_signal = {
@@ -3950,76 +4026,125 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
       confidence: parseFloat(r.confidence),
       multitone_score: parseFloat(r.multitone_score),
       chirp_score: parseFloat(r.chirp_score),
-      snr_db: r.snr_db ? parseFloat(r.snr_db) : null
+      snr_db: r.snr_db ? parseFloat(r.snr_db) : null,
+      // Channel characterization from test signal (used for timing improvement)
+      fss_db: r.fss_db ? parseFloat(r.fss_db) : null,  // Frequency Selectivity Score
+      delay_spread_ms: r.delay_spread_ms ? parseFloat(r.delay_spread_ms) : null,  // Multipath
+      toa_offset_ms: r.toa_offset_ms ? parseFloat(r.toa_offset_ms) : null,  // ToA offset
+      coherence_time_sec: r.coherence_time_sec ? parseFloat(r.coherence_time_sec) : null  // Channel stability
     })),
     count: testSignalData.count
   };
   
   // 4. Load BCD discrimination windows
+  // Phase 2 CSV columns: timestamp_utc, minute_boundary, wwv_amplitude, wwvh_amplitude,
+  //              differential_delay_ms, correlation_quality, wwv_toa_ms, wwvh_toa_ms, amplitude_ratio_db
   const bcdPath = join(paths.getBcdDiscriminationDir(channelName), `${fileChannelName}_bcd_${date}.csv`);
   const bcdData = parseCSV(bcdPath);
+  
+  // Determine detection_type from amplitude comparison
+  const bcdRecords = bcdData.records.map(r => {
+    const wwvAmp = parseFloat(r.wwv_amplitude) || 0;
+    const wwvhAmp = parseFloat(r.wwvh_amplitude) || 0;
+    let detectionType = 'none';
+    
+    if (wwvAmp > 0.01 && wwvhAmp > 0.01) {
+      detectionType = 'dual_peak';
+    } else if (wwvAmp > 0.01) {
+      detectionType = 'single_wwv';
+    } else if (wwvhAmp > 0.01) {
+      detectionType = 'single_wwvh';
+    }
+    
+    return {
+      timestamp_utc: r.timestamp_utc,
+      window_start_sec: parseFloat(r.minute_boundary) || 0,
+      wwv_amplitude: wwvAmp,
+      wwvh_amplitude: wwvhAmp,
+      differential_delay_ms: parseFloat(r.differential_delay_ms) || 0,
+      correlation_quality: parseFloat(r.correlation_quality) || 0,
+      detection_type: detectionType,
+      amplitude_ratio_db: r.amplitude_ratio_db ? parseFloat(r.amplitude_ratio_db) : null,
+      wwv_toa_ms: r.wwv_toa_ms ? parseFloat(r.wwv_toa_ms) : null,
+      wwvh_toa_ms: r.wwvh_toa_ms ? parseFloat(r.wwvh_toa_ms) : null
+    };
+  });
+  
   result.methods.bcd = {
     status: bcdData.status,
-    records: bcdData.records.map(r => ({
-      timestamp_utc: r.timestamp_utc,
-      window_start_sec: parseFloat(r.window_start_sec),
-      wwv_amplitude: parseFloat(r.wwv_amplitude),
-      wwvh_amplitude: parseFloat(r.wwvh_amplitude),
-      differential_delay_ms: parseFloat(r.differential_delay_ms),
-      correlation_quality: parseFloat(r.correlation_quality),
-      detection_type: r.detection_type || null,
-      amplitude_ratio_db: r.amplitude_ratio_db ? parseFloat(r.amplitude_ratio_db) : null
-    })),
-    count: bcdData.count
+    records: bcdRecords,
+    count: bcdRecords.length
   };
   
   // 4.5. Load Doppler estimation (ionospheric channel characterization)
+  // Phase 2 CSV columns: timestamp_utc, minute_boundary, wwv_doppler_hz, wwvh_doppler_hz,
+  //              wwv_doppler_std_hz, wwvh_doppler_std_hz, doppler_quality, max_coherent_window_sec, phase_variance_rad
   const dopplerPath = join(paths.getDopplerDir(channelName), `${fileChannelName}_doppler_${date}.csv`);
   const dopplerData = parseCSV(dopplerPath);
   result.methods.doppler = {
     status: dopplerData.status,
     records: dopplerData.records.map(r => ({
       timestamp_utc: r.timestamp_utc,
-      wwv_doppler_hz: parseFloat(r.wwv_doppler_hz),
-      wwvh_doppler_hz: parseFloat(r.wwvh_doppler_hz),
-      wwv_doppler_std_hz: parseFloat(r.wwv_doppler_std_hz),
-      wwvh_doppler_std_hz: parseFloat(r.wwvh_doppler_std_hz),
-      max_coherent_window_sec: parseFloat(r.max_coherent_window_sec),
-      doppler_quality: parseFloat(r.doppler_quality),
-      phase_variance_rad: parseFloat(r.phase_variance_rad),
-      valid_tick_count: parseInt(r.valid_tick_count)
+      wwv_doppler_hz: parseFloat(r.wwv_doppler_hz) || 0,
+      wwvh_doppler_hz: parseFloat(r.wwvh_doppler_hz) || 0,
+      wwv_doppler_std_hz: parseFloat(r.wwv_doppler_std_hz) || 0,
+      wwvh_doppler_std_hz: parseFloat(r.wwvh_doppler_std_hz) || 0,
+      max_coherent_window_sec: parseFloat(r.max_coherent_window_sec) || 60,
+      doppler_quality: parseFloat(r.doppler_quality) || 0,
+      phase_variance_rad: parseFloat(r.phase_variance_rad) || 0,
+      valid_tick_count: parseInt(r.valid_tick_count) || 0
     })),
     count: dopplerData.count
   };
   
   // 5. Load final weighted voting results
+  // Phase 2 CSV columns: timestamp_utc, minute_boundary, dominant_station, station_confidence,
+  //              wwv_snr_db, wwvh_snr_db, power_ratio_db, ground_truth_station, quality_grade,
+  //              method_agreements, method_disagreements
   const discPath = join(paths.getDiscriminationDir(channelName), `${fileChannelName}_discrimination_${date}.csv`);
   const discData = parseCSV(discPath);
   result.methods.weighted_voting = {
     status: discData.status,
     records: discData.records.map(r => ({
       timestamp_utc: r.timestamp_utc,
-      dominant_station: r.dominant_station,
-      confidence: r.confidence,
-      method_weights: r.method_weights
+      dominant_station: r.dominant_station || 'NONE',
+      confidence: r.station_confidence || r.confidence || 'low',
+      power_ratio_db: r.power_ratio_db ? parseFloat(r.power_ratio_db) : null,
+      wwv_snr_db: r.wwv_snr_db ? parseFloat(r.wwv_snr_db) : null,
+      wwvh_snr_db: r.wwvh_snr_db ? parseFloat(r.wwvh_snr_db) : null,
+      ground_truth_station: r.ground_truth_station || null,
+      quality_grade: r.quality_grade || 'D',
+      method_agreements: r.method_agreements || null,
+      method_disagreements: r.method_disagreements || null
     })),
     count: discData.count
   };
   
-  // 6. Extract 500/600 Hz ground truth from discrimination CSV
-  // These are exclusive broadcast minutes where only one station transmits 500/600 Hz
-  const groundTruthRecords = discData.records
-    .filter(r => r.tone_500_600_detected === '1' && r.tone_500_600_ground_truth_station)
-    .map(r => ({
-      timestamp_utc: r.timestamp_utc,
-      minute_number: parseInt(r.minute_number),
-      detected: true,
-      power_db: r.tone_500_600_power_db ? parseFloat(r.tone_500_600_power_db) : null,
-      freq_hz: r.tone_500_600_freq_hz ? parseInt(r.tone_500_600_freq_hz) : null,
-      ground_truth_station: r.tone_500_600_ground_truth_station,
-      dominant_station: r.dominant_station,
-      agrees: r.tone_500_600_ground_truth_station === r.dominant_station
-    }));
+  // 6. Extract ground truth from station_id CSV (Phase 2 format)
+  // Ground truth comes from 440Hz detection (minutes 1, 2) and potentially 500/600 Hz
+  // Phase 2 writes ground_truth_station and ground_truth_source to station_id_440hz CSV
+  const groundTruthRecords = stationIdRecords
+    .filter(r => r.ground_truth_station && r.ground_truth_station !== '')
+    .map(r => {
+      // Determine freq based on ground_truth_source
+      let freqHz = null;
+      const source = r.ground_truth_source || '';
+      if (source.includes('440')) freqHz = 440;
+      else if (source.includes('500')) freqHz = 500;
+      else if (source.includes('600')) freqHz = 600;
+      
+      return {
+        timestamp_utc: r.timestamp_utc,
+        minute_number: r.minute_number,
+        detected: true,
+        power_db: r.ground_truth_power_db, // Actual measured power from CSV
+        freq_hz: freqHz,
+        ground_truth_station: r.ground_truth_station,
+        ground_truth_source: r.ground_truth_source,
+        dominant_station: r.dominant_station,
+        agrees: r.ground_truth_station === r.dominant_station
+      };
+    });
   
   result.methods.ground_truth_500_600 = {
     status: groundTruthRecords.length > 0 ? 'OK' : 'NO_DATA',
@@ -4030,14 +4155,14 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
   };
   
   // 7. Extract harmonic power ratios from discrimination CSV (Vote 8)
-  // These columns: harmonic_ratio_500_1000, harmonic_ratio_600_1200
-  const harmonicRecords = discData.records
-    .filter(r => r.harmonic_ratio_500_1000 || r.harmonic_ratio_600_1200)
+  // Harmonic ratios are now stored in station_id CSV, extract from stationIdRecords
+  const harmonicRecords = stationIdRecords
+    .filter(r => r.harmonic_ratio_500_1000 !== null || r.harmonic_ratio_600_1200 !== null)
     .map(r => ({
       timestamp_utc: r.timestamp_utc,
-      minute_number: parseInt(r.minute_number),
-      harmonic_ratio_500_1000: r.harmonic_ratio_500_1000 ? parseFloat(r.harmonic_ratio_500_1000) : null,
-      harmonic_ratio_600_1200: r.harmonic_ratio_600_1200 ? parseFloat(r.harmonic_ratio_600_1200) : null
+      minute_number: r.minute_number,
+      harmonic_ratio_500_1000: r.harmonic_ratio_500_1000,
+      harmonic_ratio_600_1200: r.harmonic_ratio_600_1200
     }));
   
   result.methods.harmonic_ratio = {

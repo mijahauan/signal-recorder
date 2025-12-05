@@ -1206,11 +1206,23 @@ function countTestSignalStation(records, station) {
 
 /**
  * Count 440 Hz detections by station
+ * Works with both old format (wwv_detected) and Phase 2 format (ground_truth_station, dominant_station)
  */
 function count440Detection(records, station) {
   if (!records) return 0;
-  const key = `${station}_detected`;
-  return records.filter(r => r[key] === true || r[key] === 'true' || r[key] === 1).length;
+  const stationUpper = station.toUpperCase();
+  
+  return records.filter(r => {
+    // Old format check
+    const key = `${station.toLowerCase()}_detected`;
+    if (r[key] === true || r[key] === 'true' || r[key] === 1) return true;
+    
+    // Phase 2 format: check ground_truth_station or dominant_station
+    if (r.ground_truth_station === stationUpper) return true;
+    if (r.dominant_station === stationUpper && !r.ground_truth_station) return true;
+    
+    return false;
+  }).length;
 }
 
 // ============ NEW CHART FUNCTIONS ============

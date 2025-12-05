@@ -1132,15 +1132,19 @@ class WWVHDiscriminator:
         ground_truth_station = None
         expected_tone = None
         
+        # Check if this is a ground truth minute (exclusive broadcast)
+        is_ground_truth_minute = False
         if minute_number in WWVH_ONLY_TONE_MINUTES:
             ground_truth_station = 'WWVH'
             expected_tone = wwvh_tone
+            is_ground_truth_minute = True
         elif minute_number in WWV_ONLY_TONE_MINUTES:
             ground_truth_station = 'WWV'
             expected_tone = wwv_tone
-        else:
-            # Both stations broadcast or neither - no ground truth
-            return False, None, None, None
+            is_ground_truth_minute = True
+        
+        # Always compute harmonic ratios (useful for all minutes), 
+        # but only set ground truth for exclusive minutes
         
         # AM demodulation
         magnitude = np.abs(iq_samples)
@@ -1214,21 +1218,28 @@ class WWVHDiscriminator:
         if power_600 > 0:
             harmonic_ratio_600_1200 = 10 * np.log10((power_1200 + 1e-12) / power_600)
         
-        # Validate that detected tone matches expected
-        if detected and expected_tone and detected_freq != expected_tone:
+        # Validate that detected tone matches expected (only for ground truth minutes)
+        if is_ground_truth_minute and detected and expected_tone and detected_freq != expected_tone:
             # Detected wrong tone - could be interference or misidentification
             logger.warning(f"{self.channel_name}: Minute {minute_number} - "
                           f"Expected {expected_tone} Hz ({ground_truth_station}) but detected {detected_freq} Hz")
         
-        if detected:
+        # Only count as "ground truth detected" if it's an exclusive minute
+        ground_truth_detected = detected and is_ground_truth_minute
+        
+        if ground_truth_detected:
             logger.info(f"{self.channel_name}: ✨ {detected_freq} Hz tone detected in minute {minute_number} - "
                        f"Ground truth: {ground_truth_station}, Power: {power_db:.1f}dB, SNR: {snr_db:.1f}dB")
-            if harmonic_ratio_500_1000 is not None or harmonic_ratio_600_1200 is not None:
-                logger.debug(f"{self.channel_name}: Harmonic ratios - 500→1000: {harmonic_ratio_500_1000:.1f}dB, "
-                           f"600→1200: {harmonic_ratio_600_1200:.1f}dB")
         
-        return (detected, power_db if detected else None, detected_freq if detected else None, 
-                ground_truth_station, harmonic_ratio_500_1000, harmonic_ratio_600_1200)
+        # Always log harmonic ratios if computed
+        if harmonic_ratio_500_1000 is not None or harmonic_ratio_600_1200 is not None:
+            logger.debug(f"{self.channel_name}: min {minute_number} Harmonic ratios - "
+                        f"500→1000: {harmonic_ratio_500_1000:.1f}dB, 600→1200: {harmonic_ratio_600_1200:.1f}dB")
+        
+        return (ground_truth_detected, power_db if ground_truth_detected else None, 
+                detected_freq if ground_truth_detected else None, 
+                ground_truth_station if is_ground_truth_minute else None,
+                harmonic_ratio_500_1000, harmonic_ratio_600_1200)
     
     def detect_tick_windows(
         self,

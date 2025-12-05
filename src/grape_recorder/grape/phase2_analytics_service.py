@@ -114,6 +114,11 @@ class Phase2AnalyticsService:
         self.station_id_dir.mkdir(parents=True, exist_ok=True)
         self._init_station_id_csv()
         
+        # Test signal (minutes 8 and 44)
+        self.test_signal_dir = self.output_dir / 'test_signal'
+        self.test_signal_dir.mkdir(parents=True, exist_ok=True)
+        self._init_test_signal_csv()
+        
         # Discrimination summary (weighted voting result)
         self.discrimination_dir = self.output_dir / 'discrimination'
         self.discrimination_dir.mkdir(parents=True, exist_ok=True)
@@ -481,8 +486,9 @@ class Phase2AnalyticsService:
                 writer = csv.writer(f)
                 writer.writerow([
                     'timestamp_utc', 'minute_boundary', 'minute_number',
-                    'ground_truth_station', 'ground_truth_source', 'station_confidence',
-                    'dominant_station'
+                    'ground_truth_station', 'ground_truth_source', 'ground_truth_power_db',
+                    'station_confidence', 'dominant_station',
+                    'harmonic_ratio_500_1000', 'harmonic_ratio_600_1200'
                 ])
             logger.info(f"Created station ID CSV: {self.station_id_csv}")
     
@@ -508,11 +514,77 @@ class Phase2AnalyticsService:
                     minute_number,
                     channel_char.ground_truth_station or '',
                     channel_char.ground_truth_source or '',
+                    round(channel_char.ground_truth_power_db, 2) if channel_char.ground_truth_power_db else '',
                     channel_char.station_confidence or '',
-                    channel_char.dominant_station or ''
+                    channel_char.dominant_station or '',
+                    round(channel_char.harmonic_ratio_500_1000, 2) if channel_char.harmonic_ratio_500_1000 else '',
+                    round(channel_char.harmonic_ratio_600_1200, 2) if channel_char.harmonic_ratio_600_1200 else ''
                 ])
         except Exception as e:
             logger.error(f"Failed to write station ID: {e}")
+    
+    def _init_test_signal_csv(self):
+        """Initialize test signal CSV for today."""
+        today = datetime.now(timezone.utc).strftime('%Y%m%d')
+        file_channel = self._get_file_channel_name()
+        self.test_signal_csv = self.test_signal_dir / f'{file_channel}_test_signal_{today}.csv'
+        
+        if not self.test_signal_csv.exists():
+            with open(self.test_signal_csv, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'timestamp_utc', 'minute_boundary', 'minute_number', 'detected', 'station',
+                    'confidence', 'multitone_score', 'chirp_score', 'snr_db',
+                    'fss_db', 'delay_spread_ms', 'toa_offset_ms', 'coherence_time_sec'
+                ])
+            logger.info(f"Created test signal CSV: {self.test_signal_csv}")
+    
+    def _write_test_signal(self, minute_boundary: int, iq_samples, minute_number: int):
+        """Detect and write test signal for minutes 8 and 44."""
+        try:
+            today = datetime.now(timezone.utc).strftime('%Y%m%d')
+            file_channel = self._get_file_channel_name()
+            expected_csv = self.test_signal_dir / f'{file_channel}_test_signal_{today}.csv'
+            if self.test_signal_csv != expected_csv:
+                self.test_signal_csv = expected_csv
+                self._init_test_signal_csv()
+            
+            # Detect test signal using the engine's discriminator
+            detection = self.engine.discriminator.test_signal_detector.detect(
+                iq_samples=iq_samples,
+                minute_number=minute_number,
+                sample_rate=self.sample_rate
+            )
+            
+            # Determine station from schedule: minute 8 = WWV, minute 44 = WWVH
+            station = 'WWV' if minute_number == 8 else 'WWVH'
+            
+            with open(self.test_signal_csv, 'a', newline='') as f:
+                writer = csv.writer(f)
+                utc_time = datetime.fromtimestamp(minute_boundary, timezone.utc).isoformat()
+                writer.writerow([
+                    utc_time,
+                    minute_boundary,
+                    minute_number,
+                    1 if detection.detected else 0,
+                    station if detection.detected else '',
+                    round(detection.confidence, 4) if detection.confidence else '',
+                    round(detection.multitone_score, 4) if detection.multitone_score else '',
+                    round(detection.chirp_score, 4) if detection.chirp_score else '',
+                    round(detection.snr_db, 2) if detection.snr_db else '',
+                    round(detection.frequency_selectivity_db, 2) if detection.frequency_selectivity_db else '',
+                    round(detection.delay_spread_ms, 3) if detection.delay_spread_ms else '',
+                    round(detection.toa_offset_ms, 3) if detection.toa_offset_ms else '',
+                    round(detection.coherence_time_sec, 3) if detection.coherence_time_sec else ''
+                ])
+            
+            if detection.detected:
+                logger.info(
+                    f"Test signal detected minute {minute_number}: {station}, "
+                    f"confidence={detection.confidence:.2f}, SNR={detection.snr_db:.1f}dB"
+                )
+        except Exception as e:
+            logger.error(f"Failed to write test signal: {e}")
     
     def _init_discrimination_csv(self):
         """Initialize discrimination summary CSV for today."""
@@ -924,6 +996,12 @@ class Phase2AnalyticsService:
                     f"Processed minute {minute_boundary}: no timing result, "
                     f"carrier_snr={self.last_carrier_snr_db:.1f}dB"
                 )
+            
+            # Write test signal for minutes 8 and 44 (channel sounding minutes)
+            # Run OUTSIDE of if result: block since test signal detection doesn't need timing lock
+            minute_number = (minute_boundary // 60) % 60
+            if minute_number in [8, 44]:
+                self._write_test_signal(minute_boundary, iq_samples, minute_number)
             
             return True
                 
