@@ -123,33 +123,45 @@ class AudioToneMonitor:
         magnitude = np.abs(iq_samples)
         audio_signal = magnitude - np.mean(magnitude)
         
-        # Use seconds 5-55 to avoid voice announcements
-        start_sample = int(5.0 * self.sample_rate)
-        end_sample = min(int(55.0 * self.sample_rate), len(audio_signal))
+        # Use 10-second segments from seconds 2-42 (avoids announcements, covers tone period)
+        # This gives us 4 segments to average, capturing propagation variability
+        segment_duration = 10.0  # seconds
+        segment_samples = int(segment_duration * self.sample_rate)
+        segment_starts = [2, 12, 22, 32]  # Start times in seconds
         
-        if end_sample <= start_sample:
+        all_powers = {name: [] for name in self.tone_freqs}
+        all_noise_floors = []
+        
+        for seg_start in segment_starts:
+            start_sample = int(seg_start * self.sample_rate)
+            end_sample = start_sample + segment_samples
+            
+            if end_sample > len(audio_signal):
+                continue
+                
+            audio_window = audio_signal[start_sample:end_sample]
+            
+            # Window and FFT
+            windowed = audio_window * scipy_signal.windows.hann(len(audio_window))
+            fft_result = rfft(windowed)
+            fft_power = np.abs(fft_result) ** 2
+            freqs = rfftfreq(len(windowed), 1/self.sample_rate)
+            
+            # Measure power at each frequency
+            for name, freq in self.tone_freqs.items():
+                all_powers[name].append(self._measure_tone_power(fft_power, freqs, freq))
+            
+            # Calculate noise floor (750-850 Hz band - clear of tones and BCD harmonics)
+            noise_mask = (freqs >= 750) & (freqs <= 850)
+            if np.any(noise_mask):
+                all_noise_floors.append(np.median(fft_power[noise_mask]))
+        
+        if not all_noise_floors:
             return self._empty_result(minute_boundary)
         
-        audio_window = audio_signal[start_sample:end_sample]
-        
-        # Window and FFT
-        windowed = audio_window * scipy_signal.windows.hann(len(audio_window))
-        fft_result = rfft(windowed)
-        fft_power = np.abs(fft_result) ** 2
-        freqs = rfftfreq(len(windowed), 1/self.sample_rate)
-        
-        # Measure power at each frequency
-        powers = {}
-        for name, freq in self.tone_freqs.items():
-            powers[name] = self._measure_tone_power(fft_power, freqs, freq)
-        
-        # Calculate noise floor (median power in 200-300 Hz band)
-        noise_mask = (freqs >= 200) & (freqs <= 300)
-        if np.any(noise_mask):
-            noise_floor = np.median(fft_power[noise_mask])
-        else:
-            noise_floor = np.median(fft_power)
-        
+        # Average across segments
+        powers = {name: np.mean(vals) if vals else 0.0 for name, vals in all_powers.items()}
+        noise_floor = np.mean(all_noise_floors)
         noise_floor_db = 10 * np.log10(noise_floor + 1e-12)
         
         # Convert to dB (SNR relative to noise floor)
