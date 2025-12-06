@@ -4028,7 +4028,7 @@ app.get('/api/v1/audio/simple/:channel', (req, res) => {
   const metaFile = join(audioDir, `${channelKey}.meta`);
   
   // Check if buffer exists
-  if (!existsSync(pcmFile)) {
+  if (!fs.existsSync(pcmFile)) {
     return res.status(404).json({
       success: false,
       error: `No audio buffer for channel: ${channelName}`,
@@ -4827,13 +4827,13 @@ server.on('upgrade', (request, socket, head) => {
         if (!isStreaming) return;
         
         try {
-          if (!existsSync(metaFile)) return;
+          if (!fs.existsSync(metaFile)) return;
           
-          const metaBuf = readFileSync(metaFile);
+          const metaBuf = fs.readFileSync(metaFile);
           const writePos = metaBuf.readUInt32LE(0);
           const bufferSamples = metaBuf.readUInt32LE(8);
           
-          const pcmBuf = readFileSync(pcmFile);
+          const pcmBuf = fs.readFileSync(pcmFile);
           
           let samplesToRead = writePos >= lastReadPos 
             ? writePos - lastReadPos 
