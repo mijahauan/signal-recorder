@@ -4451,103 +4451,6 @@ app.get('/api/v1/audio/simple/:channel', (req, res) => {
 // Simple audio WebSocket sessions
 const simpleAudioSessions = new Map();
 
-// WebSocket upgrade handler for simple audio
-server.on('upgrade', (request, socket, head) => {
-  const url = new URL(request.url, `http://${request.headers.host}`);
-  
-  // Handle simple audio WebSocket
-  if (url.pathname.startsWith('/api/v1/audio/simple-ws/')) {
-    const channelKey = url.pathname.split('/').pop();
-    
-    wsServer.handleUpgrade(request, socket, head, (ws) => {
-      console.log(`🔊 Simple audio WebSocket connected: ${channelKey}`);
-      
-      const audioDir = join(paths.dataRoot, 'audio_buffers');
-      const pcmFile = join(audioDir, `${channelKey}.pcm`);
-      const metaFile = join(audioDir, `${channelKey}.meta`);
-      
-      // Track session
-      const sessionId = `${channelKey}-${Date.now()}`;
-      let lastReadPos = 0;
-      let isStreaming = true;
-      
-      // Read and stream audio
-      const streamInterval = setInterval(() => {
-        if (!isStreaming) return;
-        
-        try {
-          // Read metadata to get current write position
-          if (!existsSync(metaFile)) return;
-          
-          const metaBuf = readFileSync(metaFile);
-          const writePos = metaBuf.readUInt32LE(0);
-          const sampleRate = metaBuf.readUInt32LE(4);
-          const bufferSamples = metaBuf.readUInt32LE(8);
-          
-          // Read new samples since last read
-          const pcmBuf = readFileSync(pcmFile);
-          
-          // Calculate how many new samples to read
-          let samplesToRead;
-          if (writePos >= lastReadPos) {
-            samplesToRead = writePos - lastReadPos;
-          } else {
-            // Wrapped around
-            samplesToRead = (bufferSamples - lastReadPos) + writePos;
-          }
-          
-          if (samplesToRead > 0 && samplesToRead < bufferSamples) {
-            // Extract the new samples (each sample is 2 bytes - int16)
-            const startByte = lastReadPos * 2;
-            const endByte = (lastReadPos + samplesToRead) * 2;
-            
-            let audioData;
-            if (endByte <= pcmBuf.length) {
-              audioData = pcmBuf.slice(startByte, endByte);
-            } else {
-              // Handle wraparound
-              const part1 = pcmBuf.slice(startByte);
-              const part2 = pcmBuf.slice(0, endByte - pcmBuf.length);
-              audioData = Buffer.concat([part1, part2]);
-            }
-            
-            // Send to WebSocket
-            if (ws.readyState === 1) { // WebSocket.OPEN
-              ws.send(audioData);
-            }
-            
-            lastReadPos = writePos;
-          }
-        } catch (err) {
-          // Silently ignore read errors
-        }
-      }, 100); // 100ms chunks = 800 samples at 8kHz
-      
-      simpleAudioSessions.set(sessionId, { ws, interval: streamInterval });
-      
-      ws.on('close', () => {
-        console.log(`🔇 Simple audio WebSocket closed: ${channelKey}`);
-        isStreaming = false;
-        clearInterval(streamInterval);
-        simpleAudioSessions.delete(sessionId);
-      });
-      
-      ws.on('error', (err) => {
-        console.error(`❌ Simple audio WebSocket error: ${err.message}`);
-        isStreaming = false;
-        clearInterval(streamInterval);
-        simpleAudioSessions.delete(sessionId);
-      });
-    });
-    return;
-  }
-  
-  // Handle other WebSocket upgrades (existing audio WS)
-  if (url.pathname.startsWith('/api/v1/audio/ws/')) {
-    // ... existing handler continues below
-  }
-});
-
 // ============================================================================
 // HEALTH CHECK
 // ============================================================================
@@ -5310,6 +5213,70 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
   
+  // Simple audio WebSocket (IQ-derived)
+  if (url.pathname.startsWith('/api/v1/audio/simple-ws/')) {
+    const channelKey = url.pathname.split('/').pop();
+    
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      console.log(`🔊 Simple audio WebSocket connected: ${channelKey}`);
+      
+      const audioDir = join(paths.dataRoot, 'audio_buffers');
+      const pcmFile = join(audioDir, `${channelKey}.pcm`);
+      const metaFile = join(audioDir, `${channelKey}.meta`);
+      
+      const sessionId = `${channelKey}-${Date.now()}`;
+      let lastReadPos = 0;
+      let isStreaming = true;
+      
+      // Read and stream audio at 100ms intervals
+      const streamInterval = setInterval(() => {
+        if (!isStreaming) return;
+        
+        try {
+          if (!existsSync(metaFile)) return;
+          
+          const metaBuf = readFileSync(metaFile);
+          const writePos = metaBuf.readUInt32LE(0);
+          const bufferSamples = metaBuf.readUInt32LE(8);
+          
+          const pcmBuf = readFileSync(pcmFile);
+          
+          let samplesToRead = writePos >= lastReadPos 
+            ? writePos - lastReadPos 
+            : (bufferSamples - lastReadPos) + writePos;
+          
+          if (samplesToRead > 0 && samplesToRead < bufferSamples) {
+            const startByte = lastReadPos * 2;
+            const endByte = (lastReadPos + samplesToRead) * 2;
+            
+            let audioData = endByte <= pcmBuf.length
+              ? pcmBuf.slice(startByte, endByte)
+              : Buffer.concat([pcmBuf.slice(startByte), pcmBuf.slice(0, endByte - pcmBuf.length)]);
+            
+            if (ws.readyState === 1) ws.send(audioData);
+            lastReadPos = writePos;
+          }
+        } catch (err) { /* ignore */ }
+      }, 100);
+      
+      simpleAudioSessions.set(sessionId, { ws, interval: streamInterval });
+      
+      ws.on('close', () => {
+        isStreaming = false;
+        clearInterval(streamInterval);
+        simpleAudioSessions.delete(sessionId);
+      });
+      
+      ws.on('error', () => {
+        isStreaming = false;
+        clearInterval(streamInterval);
+        simpleAudioSessions.delete(sessionId);
+      });
+    });
+    return;
+  }
+  
+  // Legacy radiod audio WebSocket
   if (url.pathname.startsWith('/api/v1/audio/ws/')) {
     const ssrc = parseInt(url.pathname.split('/')[5]);
     if (!isNaN(ssrc)) {
@@ -5323,7 +5290,6 @@ server.on('upgrade', (request, socket, head) => {
       socket.destroy();
     }
   } else {
-    console.warn(`❌ Non-audio WebSocket path: ${url.pathname}`);
     socket.destroy();
   }
 });
