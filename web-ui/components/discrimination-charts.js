@@ -1194,7 +1194,7 @@ function renderIntermodChart(method, utcDate) {
     title: { text: 'BCD Intermod Sidebands (400 Hz = WWV*, 700 Hz = WWVH*)', ...layoutDefaults.title },
     xaxis: { 
       ...layoutDefaults.xaxis,
-      range: getDayRange(utcDate),
+      range: getUTCDayRange(utcDate),
       title: 'Time (UTC)',
       type: 'date'
     },
