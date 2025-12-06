@@ -1107,13 +1107,20 @@ function calcAvgIntermodConfidence(records) {
 }
 
 function renderIntermodChart(method, utcDate) {
+  console.log('renderIntermodChart called, method:', method);
   const container = document.getElementById('chart-intermod');
-  if (!container) return;
+  console.log('chart-intermod container:', container);
+  if (!container) {
+    console.error('chart-intermod container NOT FOUND');
+    return;
+  }
   
   if (!method || !method.records || method.records.length === 0) {
+    console.log('No intermod data, showing message');
     container.innerHTML = '<p style="padding: 20px; text-align: center; color: #7f8c8d;">No intermod data available</p>';
     return;
   }
+  console.log('Rendering intermod chart with', method.records.length, 'records');
   
   // Sort records by timestamp
   const sortedRecords = [...method.records].sort((a, b) => 
@@ -1121,9 +1128,16 @@ function renderIntermodChart(method, utcDate) {
   );
   
   const timestamps = sortedRecords.map(r => r.timestamp_utc);
-  const power400 = sortedRecords.map(r => r.power_400_hz_db);
-  const power700 = sortedRecords.map(r => r.power_700_hz_db);
-  const ratio = sortedRecords.map(r => r.ratio_400_700_db);
+  // Use schedule-corrected values (wwv_intermod_db/wwvh_intermod_db account for tone schedule)
+  const wwvIntermod = sortedRecords.map(r => r.wwv_intermod_db);
+  const wwvhIntermod = sortedRecords.map(r => r.wwvh_intermod_db);
+  // Calculate ratio: positive = WWV dominant, negative = WWVH dominant
+  const ratio = sortedRecords.map(r => {
+    if (r.wwv_intermod_db != null && r.wwvh_intermod_db != null) {
+      return r.wwv_intermod_db - r.wwvh_intermod_db;
+    }
+    return null;
+  });
   
   // Determine station from intermod (considering schedule flip)
   const colors = sortedRecords.map(r => {
@@ -1138,8 +1152,8 @@ function renderIntermodChart(method, utcDate) {
   const traces = [
     {
       x: timestamps,
-      y: power400,
-      name: '400 Hz (500-100)',
+      y: wwvIntermod,
+      name: 'WWV Intermod (schedule-corrected)',
       type: 'scatter',
       mode: 'lines+markers',
       line: { color: COLORS.wwv, width: 2 },
@@ -1147,8 +1161,8 @@ function renderIntermodChart(method, utcDate) {
     },
     {
       x: timestamps,
-      y: power700,
-      name: '700 Hz (600+100)',
+      y: wwvhIntermod,
+      name: 'WWVH Intermod (schedule-corrected)',
       type: 'scatter',
       mode: 'lines+markers',
       line: { color: COLORS.wwvh, width: 2 },
@@ -1157,7 +1171,7 @@ function renderIntermodChart(method, utcDate) {
     {
       x: timestamps,
       y: ratio,
-      name: '400/700 Ratio (dB)',
+      name: 'WWV-WWVH Ratio (dB)',
       type: 'scatter',
       mode: 'lines',
       line: { color: COLORS.accent, width: 1, dash: 'dot' },
@@ -1191,7 +1205,7 @@ function renderIntermodChart(method, utcDate) {
   
   const layout = {
     ...layoutDefaults,
-    title: { text: 'BCD Intermod Sidebands (400 Hz = WWV*, 700 Hz = WWVH*)', ...layoutDefaults.title },
+    title: { text: 'BCD Intermod Power (Schedule-Corrected)', ...layoutDefaults.title },
     xaxis: { 
       ...layoutDefaults.xaxis,
       range: getUTCDayRange(utcDate),
@@ -1225,16 +1239,7 @@ function renderIntermodChart(method, utcDate) {
       y: -0.15,
       font: { color: theme.text, size: 10 }
     },
-    margin: { t: 40, r: 60, b: 60, l: 50 },
-    annotations: [{
-      x: 0.5,
-      y: -0.25,
-      xref: 'paper',
-      yref: 'paper',
-      text: '*Mapping depends on tone schedule (400 Hz = 500-100, 700 Hz = 600+100)',
-      showarrow: false,
-      font: { size: 10, color: theme.textMuted }
-    }]
+    margin: { t: 40, r: 60, b: 60, l: 50 }
   };
   
   Plotly.newPlot('chart-intermod', traces, layout, PLOTLY_CONFIG);
