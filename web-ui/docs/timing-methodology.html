@@ -207,7 +207,9 @@
             <a href="#constellation">Station Constellation</a>
             <a href="#consensus">Consensus Time Distribution</a>
             <a href="#propagation">Propagation Mode Probability</a>
+            <a href="#quality-grades">Quality Grades</a>
             <a href="#accuracy">Accuracy Expectations</a>
+            <a href="#troubleshooting">Troubleshooting</a>
         </div>
         
         <h2 id="overview">Overview</h2>
@@ -260,9 +262,28 @@
         <h2 id="fusion">Multi-Broadcast Fusion</h2>
         <p>
             Single-broadcast D_clock measurements have systematic errors due to ionospheric 
-            uncertainty and propagation mode ambiguity. By <strong>fusing 13 broadcasts</strong>, 
-            we average out these errors.
+            uncertainty and propagation mode ambiguity. By <strong>fusing up to 13 broadcasts</strong> 
+            (6 WWV + 4 WWVH + 3 CHU), we average out these errors and achieve sub-millisecond accuracy.
         </p>
+        
+        <h3>The 13 Broadcasts</h3>
+        <table>
+            <tr><th>Station</th><th>Frequencies</th><th>Location</th></tr>
+            <tr><td>WWV</td><td>2.5, 5, 10, 15, 20, 25 MHz</td><td>Ft. Collins, CO</td></tr>
+            <tr><td>WWVH</td><td>2.5, 5, 10, 15 MHz</td><td>Kauai, HI</td></tr>
+            <tr><td>CHU</td><td>3.33, 7.85, 14.67 MHz</td><td>Ottawa, ON</td></tr>
+        </table>
+        
+        <h3>Per-Station Convergence</h3>
+        <p>
+            Each station/frequency combination maintains a <strong>convergence accumulator</strong> that 
+            tracks the rolling mean and variance of raw D_clock measurements. The states are:
+        </p>
+        <ul>
+            <li><strong>Converging</strong>: Accumulating samples, not yet stable</li>
+            <li><strong>Locked</strong>: Sufficient samples with stable mean (±1.5ms threshold)</li>
+            <li><strong>Anomaly</strong>: Recent measurements outside 4σ bounds</li>
+        </ul>
         
         <h3>Station Calibration</h3>
         <p>
@@ -271,20 +292,36 @@
         </p>
         
         <div class="formula">
+            calibration_offset = -mean(raw_d_clock)  // Brings station to 0<br>
             new_offset = α × ideal_offset + (1−α) × old_offset
         </div>
         
         <p>
             Where α = 0.5 means each update moves 50% toward the ideal value. This allows the 
-            system to track drifts while maintaining stability.
+            system to track ionospheric drifts while maintaining stability.
         </p>
         
-        <h3>Fused Result</h3>
+        <h3>Weighted Fusion</h3>
         <div class="formula">
             fused_d_clock = Σ(weight × (raw_d_clock + calibration_offset)) / Σ(weight)
         </div>
         
-        <p>Weights are based on SNR, quality grade, and propagation mode reliability.</p>
+        <p>Weights are determined by:</p>
+        <ul>
+            <li><strong>Quality Grade</strong>: A=1.0, B=0.8, C=0.5, D=0.2</li>
+            <li><strong>SNR</strong>: Higher SNR = higher weight</li>
+            <li><strong>Convergence State</strong>: Locked stations get full weight</li>
+            <li><strong>Propagation Mode Confidence</strong>: Higher confidence = higher weight</li>
+        </ul>
+        
+        <h3>Running the Fusion Service</h3>
+        <pre><code>python -m grape_recorder.grape.multi_broadcast_fusion \
+    --data-root /tmp/grape-test \
+    --interval 60</code></pre>
+        <p>
+            The fusion service runs every 60 seconds, reading Phase 2 results from all channels 
+            and producing a fused D_clock estimate stored in <code>phase2/fusion/fused_d_clock.csv</code>.
+        </p>
         
         <h2 id="kalman-funnel">Clock Stability Convergence</h2>
         <p>
@@ -360,6 +397,51 @@
             </tr>
         </table>
         
+        <h2 id="quality-grades">Quality Grades</h2>
+        <p>Each D_clock measurement is assigned a quality grade based on multiple factors:</p>
+        <table>
+            <tr>
+                <th>Grade</th>
+                <th>Criteria</th>
+                <th>Fusion Weight</th>
+            </tr>
+            <tr>
+                <td style="color: #22c55e; font-weight: bold;">A</td>
+                <td>Ground truth verified (exclusive tone), CHU FSK decoded, or 3+ method agreement</td>
+                <td>1.0</td>
+            </tr>
+            <tr>
+                <td style="color: #3b82f6; font-weight: bold;">B</td>
+                <td>UTC verified with confidence &gt;0.8, but fewer confirmations</td>
+                <td>0.8</td>
+            </tr>
+            <tr>
+                <td style="color: #f59e0b; font-weight: bold;">C</td>
+                <td>Medium confidence (0.6-0.8), some disagreements</td>
+                <td>0.5</td>
+            </tr>
+            <tr>
+                <td style="color: #ef4444; font-weight: bold;">D</td>
+                <td>Low confidence, fallback calculation, or detection issues</td>
+                <td>0.2</td>
+            </tr>
+            <tr>
+                <td style="color: #6b7280; font-weight: bold;">X</td>
+                <td>No valid measurement (data gap, complete failure)</td>
+                <td>0.0</td>
+            </tr>
+        </table>
+        
+        <div class="info-box">
+            <h4>Ground Truth Minutes</h4>
+            <p>Certain minutes provide unambiguous station identification:</p>
+            <ul>
+                <li><strong>WWV exclusive</strong>: 500 Hz tone at minutes 1, 2 (WWV only)</li>
+                <li><strong>WWVH exclusive</strong>: 600 Hz tone at minutes 3, 4 (WWVH only)</li>
+                <li><strong>CHU marker</strong>: 440 Hz tone and FSK time code</li>
+            </ul>
+        </div>
+        
         <h2 id="accuracy">Accuracy Expectations</h2>
         <table>
             <tr>
@@ -392,6 +474,56 @@
                 <li><strong>Signal strength</strong>: SNR below 10 dB is unreliable</li>
                 <li><strong>Calibration status</strong>: Allow 5-10 minutes for initial convergence</li>
             </ul>
+        </div>
+        
+        <h2 id="troubleshooting">Troubleshooting</h2>
+        
+        <h3>D_clock Not Converging to Zero</h3>
+        <p>If the Clock Stability Convergence chart shows oscillation instead of convergence:</p>
+        <ul>
+            <li><strong>Check quality grades</strong>: If most measurements are "D" grade, tone detection may be failing</li>
+            <li><strong>Check SNR</strong>: SNR below 15 dB often produces unreliable results</li>
+            <li><strong>Check for stuck values</strong>: If D_clock equals <code>-propagation_delay</code> (e.g., -5.7ms, -22ms), 
+                this indicates tone detection failed and the system is using a fallback calculation</li>
+            <li><strong>Allow convergence time</strong>: Initial calibration requires 10-15 minutes of good data</li>
+        </ul>
+        
+        <h3>High Uncertainty Values</h3>
+        <p>If uncertainty is consistently above 3ms:</p>
+        <ul>
+            <li><strong>Multiple propagation modes</strong>: The signal may be arriving via multiple paths</li>
+            <li><strong>Low SNR</strong>: Weak signals have higher timing jitter</li>
+            <li><strong>Multipath interference</strong>: Check delay spread in channel characterization</li>
+        </ul>
+        
+        <h3>Station Not Locking</h3>
+        <p>If a station stays in "Converging" state:</p>
+        <ul>
+            <li><strong>Insufficient samples</strong>: Requires ~30 good measurements to lock</li>
+            <li><strong>High variance</strong>: Measurements too spread out (propagation instability)</li>
+            <li><strong>Frequent anomalies</strong>: Check for interference or poor propagation</li>
+        </ul>
+        
+        <h3>All Stations Show Same Offset</h3>
+        <p>If all stations are offset by the same amount (e.g., all at +5ms):</p>
+        <ul>
+            <li><strong>System clock offset</strong>: Your computer's clock may be off by that amount</li>
+            <li><strong>NTP issue</strong>: Check if NTP synchronization is working</li>
+            <li><strong>GPSDO status</strong>: If using GPSDO, verify lock status</li>
+        </ul>
+        
+        <div class="info-box">
+            <h4>Service Management</h4>
+            <p>To restart the timing services after configuration changes:</p>
+            <pre><code># Restart Phase 2 Analytics (per-channel processing)
+sudo systemctl restart grape-analytics
+
+# Restart Fusion Service (multi-broadcast combination)  
+pkill -f multi_broadcast_fusion
+python -m grape_recorder.grape.multi_broadcast_fusion --data-root /tmp/grape-test --interval 60 &
+
+# Restart Web UI (for display changes)
+sudo systemctl restart grape-web-ui</code></pre>
         </div>
     </div>
     

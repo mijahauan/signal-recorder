@@ -1,9 +1,9 @@
 # GRAPE Signal Recorder - System Architecture
 
-**Last Updated:** December 2, 2025  
+**Last Updated:** December 6, 2025  
 **Author:** Michael James Hauan (AC0G)  
 **Status:** CANONICAL - Single source of truth for system design  
-**Version:** V3 (Generic Recording Infrastructure + Three-Service Architecture)
+**Version:** V3.10 (Multi-Broadcast Fusion + Three-Phase Pipeline)
 
 ---
 
@@ -54,10 +54,12 @@ The GRAPE Signal Recorder is a specialized system for recording, processing, and
 
 **Core Mission:**
 Record WWV/WWVH/CHU time signals to study ionospheric disturbances through:
-1. **Timing variations** (±1ms precision via tone detection)
-2. **WWV/WWVH discrimination** on the 4 shared frequencies (2.5, 5, 10, 15 MHz)
-3. **Propagation delays** (differential delay between WWV Fort Collins and WWVH Kauai)
+1. **Multi-broadcast fusion** - ±0.5 ms accuracy via 13 broadcasts from 3 stations
+2. **WWV/WWVH discrimination** on 4 shared frequencies (2.5, 5, 10, 15 MHz)
+3. **Propagation mode estimation** - Ionospheric hop identification
 4. **Carrier Doppler shifts** (±5 Hz window for ionospheric dynamics)
+
+**For detailed timing metrology:** See [docs/TIMING_METROLOGY.md](docs/TIMING_METROLOGY.md)
 
 **Channel Configuration (9 frequencies):**
 - **Shared frequencies (4):** 2.5, 5, 10, 15 MHz - WWV and WWVH both transmit, requiring discrimination
@@ -610,13 +612,15 @@ T_emit = T_arrival - (τ_geo + τ_iono + τ_mode)
 | 2-hop F2 | 5.51 ms | ±0.33 ms |
 | 3-hop F2 | ~7.0 ms | ±0.50 ms |
 
-**Accuracy Improvement:**
-| Method | Accuracy |
-|--------|----------|
-| Raw arrival time | ±10 ms |
-| + Mode identification | ±2 ms |
-| + Cross-channel consensus | ±1 ms |
-| + Cross-station verification | ±0.5 ms |
+**Accuracy Improvement (Multi-Broadcast Fusion):**
+| Method | Accuracy (1σ) |
+|--------|---------------|
+| Single broadcast, raw | ±5-10 ms |
+| + Mode estimation | ±2-3 ms |
+| + Per-station calibration | ±1.5 ms |
+| + 13-broadcast fusion | ±0.55 ms |
+
+See [docs/TIMING_METROLOGY.md](docs/TIMING_METROLOGY.md) for full uncertainty analysis.
 
 #### PPM-Corrected Timing
 

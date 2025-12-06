@@ -421,8 +421,23 @@
       renderSelectedChannel();
     });
     
-    document.getElementById('btn-refresh').addEventListener('click', () => {
-      fetchData();
+    document.getElementById('btn-refresh').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-refresh');
+      const originalText = btn.textContent;
+      btn.textContent = '⏳ Regenerating...';
+      btn.disabled = true;
+      
+      try {
+        // Trigger spectrogram regeneration
+        await fetch(`/api/v1/spectrograms/regenerate?date=${currentDate}`, { method: 'POST' });
+        // Then refresh data
+        await fetchData();
+      } catch (err) {
+        console.error('Regeneration error:', err);
+      } finally {
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }
     });
     
     document.getElementById('auto-refresh').addEventListener('change', (e) => {

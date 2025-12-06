@@ -7,125 +7,128 @@
 
 ---
 
-## 🎯 NEXT SESSION: PHASE 3 PRODUCT ENGINE
+## 🎯 SIMPLIFIED PHASE 3: STREAMING DECIMATION + DAILY UPLOAD
 
-Phase 3 generates derived products from Phase 1 raw archive + Phase 2 analytics:
+Phase 3 is now streamlined: decimation happens **inline with Phase 2** (not batch),
+spectrograms are generated **on-demand** from the decimated buffer, and DRF packaging
+happens **once daily** for upload.
 
-### Phase 3 Architecture Overview
-
-```
-Phase 1 (raw_archive/)     Phase 2 (phase2/)
-        ↓                         ↓
-    20 kHz IQ              D_clock, discrimination
-        ↓                         ↓
-        └─────────┬───────────────┘
-                  ↓
-         PHASE 3 PRODUCT ENGINE
-                  ↓
-    ┌─────────────┼─────────────┐
-    ↓             ↓             ↓
-10 Hz DRF    Spectrograms    PSWS Format
-(decimated)   (PNG daily)   (compatible)
-```
-
-### Key Files for Phase 3
-
-| File | Purpose | Current State |
-|------|---------|---------------|
-| `phase3_product_engine.py` | Main decimation engine | Implemented, may need review |
-| `decimation.py` | 20 kHz → 10 Hz filter chain | Core algorithm |
-| `drf_batch_writer.py` | PSWS-compatible DRF output | Digital RF format |
-| `spectrogram_generator.py` | PNG visualization | Works, called via batch |
-| `grape-phase3.sh` | Control script | `-yesterday` or `-date YYYYMMDD` |
-
-### Phase 3 Output Structure
+### Simplified Architecture
 
 ```
-products/{CHANNEL}/
-├── drf/                          # Decimated Digital RF (10 Hz)
-│   └── YYYYMMDD/
-│       └── rf_data.h5            # HDF5 with metadata
-├── spectrograms/
-│   └── YYYYMMDD/
-│       ├── {channel}_spectrogram_00-06.png
-│       ├── {channel}_spectrogram_06-12.png
-│       ├── {channel}_spectrogram_12-18.png
-│       └── {channel}_spectrogram_18-24.png
-└── psws/                         # PSWS-compatible format
-    └── YYYYMMDD/
-        └── {station}_{channel}_{date}.csv
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    STREAMLINED PHASE 3 PIPELINE                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  PHASE 2 ANALYTICS (per minute, per channel)                            │
+│    ├─ Read 20 kHz from Phase 1 raw_archive                              │
+│    ├─ Compute D_clock, quality grade                                    │
+│    ├─ Decimate 20 kHz → 10 Hz (1,200,000 → 600 samples)                │
+│    └─ Store to: phase2/{CHANNEL}/decimated/{YYYYMMDD}.bin               │
+│                 phase2/{CHANNEL}/decimated/{YYYYMMDD}_meta.json         │
+│                                                                          │
+│  SPECTROGRAM SERVICE (every 10 min or on-demand)                        │
+│    ├─ Read from .bin files (rolling or daily)                           │
+│    └─ Generate: products/{CHANNEL}/spectrograms/rolling_6h.png          │
+│                                                                          │
+│  DAILY UPLOAD PACKAGER (once at ~00:15 UTC)                             │
+│    ├─ Collect yesterday's .bin + _meta.json                             │
+│    ├─ Combine 9 channels into multi-subchannel DRF                      │
+│    └─ Output: upload/{YYYYMMDD}/OBS.../ch0/rf@*.h5                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Decimation Pipeline (20 kHz → 10 Hz)
+### Key Files for Simplified Phase 3
 
-```python
-# decimation.py - Filter chain
-Stage 1: 20000 → 4000 Hz (decimate by 5, LPF cutoff 1800 Hz)
-Stage 2: 4000 → 400 Hz   (decimate by 10, LPF cutoff 180 Hz)
-Stage 3: 400 → 10 Hz     (decimate by 40, LPF cutoff 4.5 Hz)
+| File | Purpose | Status |
+|------|---------|--------|
+| `decimated_buffer.py` | Binary 10 Hz IQ storage with metadata | ✅ New |
+| `decimation.py` | 3-stage CIC+FIR filter (20kHz→10Hz) | ✅ Existing |
+| `carrier_spectrogram.py` | Generate spectrograms from buffer | ✅ New |
+| `daily_drf_packager.py` | Package .bin to DRF for upload | ✅ New |
+| `phase2_analytics_service.py` | Now includes decimation | ✅ Updated |
 
-# Key: Carrier extraction - AM demodulation BEFORE decimation
-carrier_complex = hilbert(signal) * exp(-j * 2π * carrier_freq * t)
+### Data Flow
+
+```
+Phase 1 (raw_archive/)          Phase 2 Analytics
+        │                              │
+        └──► 20 kHz IQ ───────────────►│
+                                       │
+                              ┌────────┴────────┐
+                              │                 │
+                         D_clock CSV      Decimated Buffer
+                              │           (.bin + _meta.json)
+                              │                 │
+                              └────────┬────────┘
+                                       │
+                    ┌──────────────────┼──────────────────┐
+                    ↓                  ↓                  ↓
+           Spectrogram PNG      Daily DRF Package    Timing CSVs
+            (on-demand)          (for upload)      (for analysis)
 ```
 
-### Spectrogram Generation
+### Binary Buffer Format
 
-```python
-# spectrogram_generator.py
-- 6-hour panels (4 per day)
-- FFT size: 8192, overlap: 4096
-- Frequency range: -5 Hz to +5 Hz (around carrier)
-- Color scale: dB relative to noise floor
-- Output: PNG with metadata annotation
+**Data file**: `{YYYYMMDD}.bin` (6.9 MB per channel per day)
+- Complex64 samples (8 bytes each)
+- 600 samples per minute × 1440 minutes = 864,000 samples/day
+- Random access by minute index
+
+**Metadata file**: `{YYYYMMDD}_meta.json`
+```json
+{
+  "channel": "WWV 10 MHz",
+  "date": "2025-12-06",
+  "sample_rate": 10,
+  "minutes": {
+    "0": {"d_clock_ms": -5.2, "quality_grade": "A", "gap_samples": 0},
+    "1": {"d_clock_ms": -5.1, "quality_grade": "A", "gap_samples": 0}
+  },
+  "summary": {"valid_minutes": 1438, "completeness_pct": 99.86}
+}
 ```
 
-### Current Phase 3 Issues to Investigate
-
-1. **Batch vs Streaming**: Currently batch-only (runs on yesterday's data)
-2. **Gap Handling**: How does decimation handle gaps in Phase 1 archive?
-3. **Quality Metadata**: Should Phase 2 quality grades propagate to products?
-4. **PSWS Compatibility**: Verify output format matches PSWS expectations
-
-### Running Phase 3
+### Running Phase 3 Components
 
 ```bash
-# Process yesterday's data (typical cron job)
-./scripts/grape-phase3.sh -yesterday
+# Spectrograms (on-demand or cron every 10 min)
+./scripts/grape-spectrogram.sh -rolling 6        # Last 6 hours
+./scripts/grape-spectrogram.sh -all              # 6h, 12h, 24h
+./scripts/grape-spectrogram.sh -daily 20251205   # Full day
 
-# Process specific date
-./scripts/grape-phase3.sh -date 20251205
+# Daily upload packaging (cron at 00:15 UTC)
+./scripts/grape-daily-upload.sh -yesterday
+./scripts/grape-daily-upload.sh -status
 
-# Manual single-channel test
-python -m grape_recorder.grape.phase3_product_engine \
-    --data-root /tmp/grape-test \
-    --channel "WWV 10 MHz" \
-    --date 2025-12-05
+# Manual Python commands
+python -m grape_recorder.grape.carrier_spectrogram \
+    --data-root /tmp/grape-test --channel "WWV 10 MHz" --hours 6
 
-# Spectrogram only
-python -m grape_recorder.grape.spectrogram_generator \
-    --data-root /tmp/grape-test \
-    --channel "WWV 10 MHz" \
-    --date 2025-12-05
+python -m grape_recorder.grape.daily_drf_packager \
+    --data-root /tmp/grape-test --yesterday --callsign AC0G --grid EM28
 ```
 
-### Phase 3 Integration Points
+### Cron Schedule
 
-| Input From | Used For |
-|------------|----------|
-| Phase 1 raw_archive | Source IQ data (20 kHz) |
-| Phase 2 clock_offset | D_clock correction (optional) |
-| Phase 2 discrimination | Station ID annotation |
-| Phase 2 quality_grades | Product quality flags |
+```bash
+# Spectrograms every 10 minutes
+*/10 * * * * /path/to/grape-spectrogram.sh -rolling 6
 
-### Dependencies
-
-```python
-# Required for Phase 3
-import digital_rf          # DRF read/write
-import matplotlib.pyplot   # Spectrogram PNG
-import scipy.signal        # Decimation filters
-import h5py                # HDF5 metadata
+# Daily DRF packaging at 00:15 UTC
+15 0 * * * /path/to/grape-daily-upload.sh -yesterday
 ```
+
+### Why This Is Better
+
+| Aspect | Old (Batch) | New (Streaming) |
+|--------|-------------|-----------------|
+| **Decimation** | Re-read 20kHz archive | Done once during Phase 2 |
+| **I/O** | Read 20kHz twice | Read 20kHz once |
+| **Spectrograms** | Generated from DRF (daily) | Generated from buffer (any time) |
+| **Latency** | 24+ hours behind | ~10 minutes behind |
+| **Storage** | DRF overhead | Simple binary (6.9 MB/day/channel) |
 
 ---
 

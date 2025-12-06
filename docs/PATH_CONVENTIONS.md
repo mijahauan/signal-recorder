@@ -100,12 +100,21 @@ dirToChannelName("WWV_10_MHz")   // → "WWV 10 MHz"
 | Discrimination | `discrimination_csv_writers.py` | `getDiscriminationDir()` | `phase2/{CHANNEL}/discrimination/` |
 | Tone detections | `analytics_service.py` | `getToneDetectionsDir()` | `phase2/{CHANNEL}/tone_detections/` |
 
-### Phase 3: Products (Decimation Engine → Web-UI & Upload)
+### Phase 2: Decimated Data (Analytics Service → Spectrogram Generator)
+
+| Data | Python Writer | Python Reader | Path |
+|------|---------------|---------------|------|
+| Decimated binary | `phase2_analytics_service.py` | `carrier_spectrogram.py` | `phase2/{CHANNEL}/decimated/{YYYYMMDD}.bin` |
+| Decimated metadata | `phase2_analytics_service.py` | `carrier_spectrogram.py` | `phase2/{CHANNEL}/decimated/{YYYYMMDD}_meta.json` |
+
+### Phase 3: Products (Spectrogram Generator → Web-UI)
 
 | Data | Python Writer | JS Reader | Path |
 |------|---------------|-----------|------|
-| Decimated DRF | `decimation.py` | `getDecimatedDir()` | `products/{CHANNEL}/decimated/` |
-| Spectrograms | `spectrogram_generator.py` | `getSpectrogramPath()` | `products/{CHANNEL}/spectrograms/{date}_spectrogram.png` |
+| **Daily Spectrogram** | `carrier_spectrogram.py` | `/spectrograms/` endpoint | `products/{CHANNEL}/spectrograms/{YYYYMMDD}_spectrogram.png` |
+| Rolling Spectrogram | `carrier_spectrogram.py` | `/spectrograms/` endpoint | `products/{CHANNEL}/spectrograms/rolling_{N}h.png` |
+
+**⚠️ CANONICAL: There is ONE path for spectrograms. No fallbacks, no alternatives.**
 
 ### System Status (Analytics Service → Web-UI)
 

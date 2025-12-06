@@ -1431,31 +1431,32 @@ app.get('/api/v1/carrier/quality', async (req, res) => {
 
 /**
  * GET /api/v1/carrier/available-dates
- * List dates with available 10 Hz DRF data for spectrogram generation
- * Scans Phase 3 products/{CHANNEL}/decimated/ directories for DRF data
- * Checks products/{CHANNEL}/spectrograms/ for generated spectrograms
+ * List dates with available spectrograms
+ * 
+ * CANONICAL PATHS:
+ * - Decimated data: phase2/{CHANNEL}/decimated/YYYYMMDD.bin
+ * - Spectrograms:   products/{CHANNEL}/spectrograms/YYYYMMDD_spectrogram.png
  */
 app.get('/api/v1/carrier/available-dates', async (req, res) => {
   try {
     const dateMap = new Map();  // date -> {channels: Set, fileCount: number, spectrograms: count}
     
-    // 1. Scan Phase 3 products per-channel decimated directories
-    const productsRoot = paths.getProductsRoot();
-    if (fs.existsSync(productsRoot)) {
-      const channelDirs = fs.readdirSync(productsRoot);
+    // 1. Scan decimated data: phase2/{CHANNEL}/decimated/YYYYMMDD.bin
+    const phase2Root = paths.getPhase2Root();
+    if (fs.existsSync(phase2Root)) {
+      const channelDirs = fs.readdirSync(phase2Root);
       
       for (const channelDir of channelDirs) {
-        const decimatedPath = join(productsRoot, channelDir, 'decimated');
+        const decimatedPath = join(phase2Root, channelDir, 'decimated');
         
         if (fs.existsSync(decimatedPath)) {
           try {
-            // For Digital RF, check for date directories or metadata
             const items = fs.readdirSync(decimatedPath);
             for (const item of items) {
-              // Check for date directories (YYYYMMDD format)
-              const dateMatch = item.match(/^(\d{8})$/);
-              if (dateMatch) {
-                const date = dateMatch[1];
+              // Binary buffer format: YYYYMMDD.bin
+              const binMatch = item.match(/^(\d{8})\.bin$/);
+              if (binMatch) {
+                const date = binMatch[1];
                 if (!dateMap.has(date)) {
                   dateMap.set(date, { channels: new Set(), fileCount: 0, spectrograms: 0 });
                 }
@@ -1467,14 +1468,21 @@ app.get('/api/v1/carrier/available-dates', async (req, res) => {
             // Skip directories we can't read
           }
         }
-        
-        // 2. Check spectrograms for this channel (new structure)
+      }
+    }
+    
+    // 2. Scan spectrograms: products/{CHANNEL}/spectrograms/YYYYMMDD_spectrogram.png
+    const productsRoot = paths.getProductsRoot();
+    if (fs.existsSync(productsRoot)) {
+      const channelDirs = fs.readdirSync(productsRoot);
+      
+      for (const channelDir of channelDirs) {
         const spectrogramPath = join(productsRoot, channelDir, 'spectrograms');
         if (fs.existsSync(spectrogramPath)) {
           try {
             const spectrograms = fs.readdirSync(spectrogramPath);
             for (const file of spectrograms) {
-              // Match spectrogram files: YYYYMMDD_spectrogram.png
+              // Match: YYYYMMDD_spectrogram.png
               const specMatch = file.match(/^(\d{8})_spectrogram\.png$/);
               if (specMatch) {
                 const date = specMatch[1];
@@ -2414,11 +2422,17 @@ app.get('/api/monitoring/timing-quality', async (req, res) => {
 
 /**
  * GET /spectrograms/{channel}/{filename}
- * Serve spectrogram PNG files from Phase 3 products directory
+ * Serve spectrogram PNG files from products directory
  * 
- * New path structure: products/{CHANNEL}/spectrograms/{filename}
- * Example: /spectrograms/WWV_10_MHz/20251204_spectrogram.png
- *          -> products/WWV_10_MHz/spectrograms/20251204_spectrogram.png
+ * CANONICAL PATH: products/{CHANNEL}/spectrograms/{filename}
+ * 
+ * Examples:
+ *   /spectrograms/WWV_10_MHz/20251206_spectrogram.png
+ *     -> products/WWV_10_MHz/spectrograms/20251206_spectrogram.png
+ *   /spectrograms/WWV_10_MHz/rolling_24h.png
+ *     -> products/WWV_10_MHz/spectrograms/rolling_24h.png
+ * 
+ * For today's date, falls back to rolling spectrograms if daily not available
  */
 app.get('/spectrograms/:channel/:filename', (req, res) => {
   try {
@@ -2426,36 +2440,153 @@ app.get('/spectrograms/:channel/:filename', (req, res) => {
     
     // Convert URL channel format back to channel name for path lookup
     const channelName = channel.replace(/_/g, ' ');
+    const spectrogramsDir = paths.getProductsSpectrogramsDir(channelName);
     
-    // Try new path structure first: products/{CHANNEL}/spectrograms/
-    const spectrogramPath = join(paths.getProductsSpectrogramsDir(channelName), filename);
+    // Try exact file: products/{CHANNEL}/spectrograms/{filename}
+    const spectrogramPath = join(spectrogramsDir, filename);
     
     if (fs.existsSync(spectrogramPath)) {
       return res.sendFile(spectrogramPath);
     }
     
-    // Fallback to legacy path: spectrograms/{date}/{channel}_{date}_decimated_spectrogram.png
-    // Extract date from filename (e.g., "20251204_spectrogram.png" -> "20251204")
+    // Extract date from filename (e.g., "20251206_spectrogram.png" -> "20251206")
     const dateMatch = filename.match(/^(\d{8})/);
     if (dateMatch) {
-      const date = dateMatch[1];
-      const legacyFilename = `${channel}_${date}_decimated_spectrogram.png`;
-      const legacyPath = join(paths.dataRoot, 'spectrograms', date, legacyFilename);
+      const requestedDate = dateMatch[1];
+      const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
       
-      if (fs.existsSync(legacyPath)) {
-        return res.sendFile(legacyPath);
+      // For today's date, fall back to rolling spectrograms
+      if (requestedDate === today) {
+        const rollingPaths = [
+          join(spectrogramsDir, 'rolling_24h.png'),
+          join(spectrogramsDir, 'rolling_12h.png'),
+          join(spectrogramsDir, 'rolling_6h.png')
+        ];
+        
+        for (const rollingPath of rollingPaths) {
+          if (fs.existsSync(rollingPath)) {
+            return res.sendFile(rollingPath);
+          }
+        }
       }
     }
     
     return res.status(404).json({ 
       error: 'Spectrogram not found',
-      tried: [spectrogramPath],
+      expected: spectrogramPath,
       channel: channelName
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+/**
+ * POST /api/v1/spectrograms/regenerate
+ * Trigger spectrogram regeneration for all channels or specific channel
+ * 
+ * Query params:
+ *   channel - Optional channel name to regenerate (all if omitted)
+ *   date    - Optional date YYYYMMDD (today if omitted)
+ */
+app.post('/api/v1/spectrograms/regenerate', async (req, res) => {
+  try {
+    const { spawn } = require('child_process');
+    const channel = req.query.channel || '';
+    const date = req.query.date || new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    
+    // Get receiver grid from config
+    const receiverGrid = config.recorder?.receiver_grid || config.recorder?.station_grid || 'EM28ww';
+    
+    // Build Python command
+    const pythonScript = `
+from src.grape_recorder.grape.carrier_spectrogram import generate_all_channel_spectrograms, CarrierSpectrogramGenerator
+from pathlib import Path
+import json
+
+data_root = Path('${dataRoot}')
+channel = '${channel}'
+date = '${date}'
+receiver_grid = '${receiverGrid}'
+
+if channel:
+    gen = CarrierSpectrogramGenerator(data_root, channel, receiver_grid)
+    result = gen.generate_daily(date)
+    print(json.dumps({'status': 'ok', 'channel': channel, 'path': str(result)}))
+else:
+    results = generate_all_channel_spectrograms(data_root, receiver_grid, date)
+    print(json.dumps({'status': 'ok', 'count': len(results), 'paths': [str(p) for p in results]}))
+`;
+    
+    const python = spawn('python3', ['-c', pythonScript], {
+      cwd: join(__dirname, '..'),
+      env: { ...process.env, PYTHONPATH: join(__dirname, '..') }
+    });
+    
+    let stdout = '';
+    let stderr = '';
+    
+    python.stdout.on('data', (data) => { stdout += data; });
+    python.stderr.on('data', (data) => { stderr += data; });
+    
+    python.on('close', (code) => {
+      if (code === 0) {
+        try {
+          const result = JSON.parse(stdout.trim().split('\n').pop());
+          res.json(result);
+        } catch (e) {
+          res.json({ status: 'ok', output: stdout });
+        }
+      } else {
+        res.status(500).json({ error: 'Regeneration failed', stderr, code });
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Auto-regenerate spectrograms every 10 minutes
+let spectrogramRegenInterval = null;
+function startSpectrogramAutoRegen() {
+  if (spectrogramRegenInterval) return;
+  
+  const regenAll = async () => {
+    try {
+      const { spawn } = require('child_process');
+      const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const receiverGrid = config.recorder?.receiver_grid || config.recorder?.station_grid || 'EM28ww';
+      
+      const pythonScript = `
+from src.grape_recorder.grape.carrier_spectrogram import generate_all_channel_spectrograms
+from pathlib import Path
+generate_all_channel_spectrograms(Path('${dataRoot}'), '${receiverGrid}', '${date}')
+print('Spectrograms regenerated')
+`;
+      
+      const python = spawn('python3', ['-c', pythonScript], {
+        cwd: join(__dirname, '..'),
+        env: { ...process.env, PYTHONPATH: join(__dirname, '..') }
+      });
+      
+      python.on('close', (code) => {
+        if (code === 0) {
+          console.log(`[${new Date().toISOString()}] Auto-regenerated spectrograms`);
+        }
+      });
+    } catch (err) {
+      console.error('Spectrogram auto-regen error:', err);
+    }
+  };
+  
+  // Run immediately, then every 10 minutes
+  regenAll();
+  spectrogramRegenInterval = setInterval(regenAll, 10 * 60 * 1000);
+  console.log('Spectrogram auto-regeneration enabled (every 10 min)');
+}
+
+// Start auto-regen when server starts
+startSpectrogramAutoRegen();
 
 /**
  * GET /quality-analysis/{filename}

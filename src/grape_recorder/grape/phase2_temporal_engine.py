@@ -872,6 +872,31 @@ class Phase2TemporalEngine:
         else:
             return 'UNKNOWN'
     
+    def _is_shared_frequency(self) -> bool:
+        """
+        Check if this channel is on a shared WWV/WWVH frequency.
+        
+        Shared frequencies: 2.5, 5, 10, 15 MHz
+        WWV-only: 20, 25 MHz
+        CHU-only: 3.33, 7.85, 14.67 MHz
+        
+        Only shared frequencies need discrimination logic.
+        """
+        # Shared WWV/WWVH frequencies in MHz
+        shared_freqs = {2.5, 5.0, 10.0, 15.0}
+        
+        # Check if this channel's frequency is shared
+        if self.frequency_mhz in shared_freqs:
+            return True
+        
+        # Also check channel name for explicit WWVH prefix on shared freqs
+        # (e.g., "WWVH 10 MHz" is unambiguous even though 10 MHz is shared)
+        name_upper = self.channel_name.upper() if self.channel_name else ''
+        if 'WWVH' in name_upper:
+            return False  # Explicitly WWVH, no discrimination needed
+        
+        return False
+    
     def _step3_transmission_time_solution(
         self,
         time_snap: TimeSnapResult,
@@ -896,33 +921,41 @@ class Phase2TemporalEngine:
         """
         # Determine which station to use for solution
         # 
-        # For CHU channels: Always CHU (single station on those frequencies)
-        # For WWV/WWVH channels: Use discrimination - WWVH is detectable on same freqs!
+        # Shared frequencies (discrimination needed): 2.5, 5, 10, 15 MHz
+        # WWV-only: 20, 25 MHz
+        # WWVH-only: (none in typical configs)
+        # CHU-only: 3.33, 7.85, 14.67 MHz
         #
-        # Priority 1: Ground truth (500/600 Hz exclusive minutes, 440 Hz)
+        # Priority 0: Non-shared channels - station is unambiguous from channel name
         station = None
-        if channel.ground_truth_station:
-            station = channel.ground_truth_station
-            logger.debug(f"Station from ground truth: {station}")
+        channel_station = self._station_from_channel_name()
+        is_shared_frequency = self._is_shared_frequency()
         
-        # Priority 2: High confidence discrimination (detected via voting)
-        if not station and channel.station_confidence == 'high' and channel.dominant_station not in ['UNKNOWN', 'BALANCED', None]:
-            station = channel.dominant_station
-            logger.debug(f"Station from discrimination (high confidence): {station}")
+        if not is_shared_frequency:
+            # CHU, WWV 20/25 MHz, etc. - no discrimination needed
+            station = channel_station
+            logger.debug(f"Station = {station} (non-shared frequency, no discrimination)")
         
-        # Priority 3: Channel name hint (for CHU channels, or when discrimination fails)
+        # For shared frequencies only: use discrimination
         if not station:
-            channel_station = self._station_from_channel_name()
-            if channel_station == 'CHU':
-                # CHU channels only receive CHU
-                station = 'CHU'
-            elif channel.dominant_station not in ['UNKNOWN', 'BALANCED', 'NONE', None, '']:
-                # WWV/WWVH channel - use discrimination result even if medium confidence
+            # Priority 1: Ground truth (500/600 Hz exclusive minutes, 440 Hz)
+            if channel.ground_truth_station:
+                station = channel.ground_truth_station
+                logger.debug(f"Station from ground truth: {station}")
+            
+            # Priority 2: High confidence discrimination (detected via voting)
+            elif channel.station_confidence == 'high' and channel.dominant_station not in ['UNKNOWN', 'BALANCED', None]:
                 station = channel.dominant_station
+                logger.debug(f"Station from discrimination (high confidence): {station}")
+            
+            # Priority 3: Medium confidence discrimination or channel name fallback
+            elif channel.dominant_station not in ['UNKNOWN', 'BALANCED', 'NONE', None, '']:
+                station = channel.dominant_station
+                logger.debug(f"Station from discrimination (medium confidence): {station}")
+            
             else:
-                # Fallback to channel name
                 station = channel_station
-            logger.debug(f"Station from channel hint/fallback: {station}")
+                logger.debug(f"Station from channel name fallback: {station}")
         
         # Final fallback
         if not station or station in ['BALANCED', 'UNKNOWN', 'NONE', '']:
@@ -946,7 +979,12 @@ class Phase2TemporalEngine:
         # - WWV: 1000 Hz, 0.8s tone
         # - WWVH: 1200 Hz, 0.8s tone
         # - CHU: 1000 Hz, 0.5s tone (1.0s at top of hour)
-        expected_second_rtp = rtp_timestamp
+        #
+        # The expected_second_rtp is where the tone WOULD arrive if clock were perfect.
+        # Calculate from system_time (buffer start) to minute boundary:
+        minute_boundary = (int(system_time) // 60) * 60
+        samples_to_boundary = int((minute_boundary - system_time) * self.sample_rate)
+        expected_second_rtp = rtp_timestamp + samples_to_boundary
         
         # Get arrival RTP from time snap
         arrival_rtp = time_snap.arrival_rtp

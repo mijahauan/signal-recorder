@@ -9,13 +9,13 @@
 The [HamSCI GRAPE project](https://hamsci.org/grape) studies ionospheric disturbances through timing variations in WWV/CHU broadcasts. This recorder enables amateur radio operators to contribute scientifically valid data to the global observation network.
 
 **Key Capabilities:**
-- 📡 **Multi-channel recording** - Simultaneous WWV 2.5-25 MHz, CHU 3.33-14.67 MHz
-- 🎯 **GPS-quality timing** - ±1ms via tone detection, PPM-corrected sub-sample precision
-- 🔗 **Cross-channel coherent processing** - Global station lock, ensemble timing, 10·log₁₀(N) dB SNR gain
-- ⏱️ **Primary time standard** - Back-calculate UTC(NIST) from arrival time + propagation mode
-- 🔬 **12 voting methods** - BCD, timing tones, ticks, 440/500/600 Hz, Doppler, test signal channel sounding
+- 📡 **Multi-channel recording** - Simultaneous WWV 2.5-25 MHz, CHU 3.33-14.67 MHz (9 frequencies)
+- 🎯 **Sub-millisecond timing** - ±0.5 ms via 13-broadcast fusion to UTC(NIST)
+- 🔗 **Multi-broadcast fusion** - Combines WWV/WWVH/CHU with per-station calibration
+- ⏱️ **HF time transfer** - D_clock measurement with ionospheric propagation mode estimation
+- 🔬 **Station discrimination** - Power ratio + ground truth for WWV/WWVH on shared frequencies
 - 📊 **Digital RF output** - 10 Hz IQ + metadata (wsprdaemon-compatible)
-- 🌐 **Web UI** - Real-time monitoring, configuration, quality metrics
+- 🌐 **Web UI** - Real-time monitoring, timing visualizations, quality metrics
 - 🚀 **PSWS upload** - Automated SFTP to HamSCI repository
 
 ## Quick Start
@@ -297,12 +297,17 @@ Beyond voting, independent measurements validate each other:
 **Essential:**
 - [INSTALLATION.md](INSTALLATION.md) - Detailed setup guide
 - [docs/PRODUCTION.md](docs/PRODUCTION.md) - Production deployment (systemd, 24/7, uploads)
-- [ARCHITECTURE.md](ARCHITECTURE.md) - System design
+- [docs/THREE_PHASE_PIPELINE.md](docs/THREE_PHASE_PIPELINE.md) - System architecture
 - [DIRECTORY_STRUCTURE.md](DIRECTORY_STRUCTURE.md) - Data paths and file formats
+
+**Timing & Metrology:**
+- [docs/TIMING_METROLOGY.md](docs/TIMING_METROLOGY.md) - Technical reference for metrologists
+- [docs/TIMING_METHODOLOGY.md](docs/TIMING_METHODOLOGY.md) - D_clock measurement and fusion
+- [docs/DISCRIMINATION_SYSTEM.md](docs/DISCRIMINATION_SYSTEM.md) - WWV/WWVH discrimination
 
 **Reference:**
 - [docs/](docs/) - Feature documentation and guides
-- [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md) - Implementation details
+- [docs/API_REFERENCE.md](docs/API_REFERENCE.md) - REST API documentation
 - [CANONICAL_CONTRACTS.md](CANONICAL_CONTRACTS.md) - API standards
 
 
@@ -360,6 +365,22 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 ## Status
 
 **Production Ready** - Core functionality complete and tested. Daily recording and PSWS upload operational at AC0G since November 2025.
+
+### v3.10.0 (Dec 6, 2025)
+- **Timing Metrology Documentation** - Comprehensive technical reference for metrologists
+  - [docs/TIMING_METROLOGY.md](docs/TIMING_METROLOGY.md) - Full uncertainty analysis
+  - Discrimination rationale, fusion math, validation approach
+  - GUM-compliant uncertainty budget (±0.55 ms 1σ fused)
+- **Station Discrimination Fix** - CHU channels now correctly identified
+  - Shared frequencies (2.5, 5, 10, 15 MHz): Use power ratio discrimination
+  - Non-shared frequencies: Station from channel name (no ambiguity)
+- **Spectrogram Auto-Regeneration** - Server-side updates every 10 minutes
+  - POST `/api/v1/spectrograms/regenerate` for on-demand refresh
+  - Carrier Analysis refresh button now triggers regeneration
+- **Advanced Timing Charts** - Now use fused D_clock directly
+  - Clock Stability Convergence shows fusion result (near 0 ms)
+  - Consensus Distribution peaks at 0 ms when calibrated
+  - Station Constellation applies calibration offsets
 
 ### v3.9.0 (Dec 5, 2025)
 - **Multi-Broadcast Fusion** - Combines 13 broadcasts (WWV/WWVH/CHU) to converge on UTC(NIST)

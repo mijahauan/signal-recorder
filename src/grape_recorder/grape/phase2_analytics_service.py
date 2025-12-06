@@ -129,21 +129,22 @@ class Phase2AnalyticsService:
         self.audio_tones_dir.mkdir(parents=True, exist_ok=True)
         self._init_audio_tones_csv()
         
-        # Decimated 10 Hz output directory (Phase 3 products)
-        self.decimated_dir = self.output_dir / 'decimated'
-        self.decimated_dir.mkdir(parents=True, exist_ok=True)
+        # Decimated 10 Hz output buffer (Phase 3 products)
+        from .decimated_buffer import DecimatedBuffer
+        self.decimated_buffer = DecimatedBuffer(self.output_dir.parent.parent, channel_name)
         
-        # Spectrogram output directory
-        self.spectrogram_dir = self.output_dir / 'spectrograms'
-        self.spectrogram_dir.mkdir(parents=True, exist_ok=True)
+        # Initialize decimation filter
+        from .decimation import get_decimator, is_rate_supported
+        if is_rate_supported(sample_rate):
+            self.decimator = get_decimator(sample_rate, 10)
+            logger.info(f"  Decimation: {sample_rate} Hz → 10 Hz enabled")
+        else:
+            self.decimator = None
+            logger.warning(f"  Decimation: {sample_rate} Hz not supported")
         
-        # Decimation parameters: 20 kHz → 10 Hz
+        # Decimation parameters
         self.decimation_factor = int(sample_rate / 10)  # 2000 for 20kHz
         self.output_rate = 10  # 10 Hz output
-        
-        # Accumulator for 10Hz power data (for spectrograms)
-        self.power_accumulator = []  # (timestamp, power_db) tuples
-        self.spectrogram_interval = 60  # Generate spectrogram every N minutes
         
         # Initialize Phase 2 engine
         from .phase2_temporal_engine import Phase2TemporalEngine
@@ -935,88 +936,65 @@ class Phase2AnalyticsService:
         
         return float(snr_db)
     
-    def _decimate_to_10hz(self, iq_samples: np.ndarray, minute_boundary: int):
+    def _decimate_to_10hz(self, iq_samples: np.ndarray, minute_boundary: int,
+                           d_clock_ms: float = 0.0, uncertainty_ms: float = 999.0,
+                           quality_grade: str = 'X', gap_samples: int = 0) -> bool:
         """
-        Decimate 20kHz IQ to 10Hz power time series and accumulate for spectrogram.
+        Decimate 20kHz IQ to 10Hz and store in binary buffer.
         
         Args:
             iq_samples: 20kHz complex IQ samples (1 minute = 1.2M samples)
             minute_boundary: Unix timestamp of minute start
+            d_clock_ms: D_clock correction from Phase 2
+            uncertainty_ms: Timing uncertainty
+            quality_grade: Quality grade (A-X)
+            gap_samples: Number of gap samples detected
+            
+        Returns:
+            True if decimation succeeded
         """
+        if self.decimator is None:
+            logger.debug("Decimation skipped - no decimator configured")
+            return False
+        
         try:
-            # Reshape into 2000-sample blocks (each block = 0.1 sec = 10Hz)
-            n_samples = len(iq_samples)
-            n_blocks = n_samples // self.decimation_factor
+            # Apply high-quality decimation filter: 20kHz → 10Hz
+            decimated_iq = self.decimator(iq_samples)
             
-            if n_blocks == 0:
-                return
+            if decimated_iq is None or len(decimated_iq) == 0:
+                logger.warning(f"Decimation produced no output for minute {minute_boundary}")
+                return False
             
-            # Truncate to exact multiple
-            trimmed = iq_samples[:n_blocks * self.decimation_factor]
-            blocks = trimmed.reshape(n_blocks, self.decimation_factor)
+            # Ensure exactly 600 samples (10 Hz × 60 seconds)
+            expected_samples = 600
+            if len(decimated_iq) != expected_samples:
+                logger.debug(f"Decimation produced {len(decimated_iq)} samples, expected {expected_samples}")
+                # Pad or truncate
+                if len(decimated_iq) < expected_samples:
+                    padded = np.zeros(expected_samples, dtype=np.complex64)
+                    padded[:len(decimated_iq)] = decimated_iq
+                    decimated_iq = padded
+                else:
+                    decimated_iq = decimated_iq[:expected_samples]
             
-            # Calculate power for each 0.1 second block
-            block_power = np.mean(np.abs(blocks) ** 2, axis=1)
-            power_db = 10 * np.log10(block_power + 1e-12)
+            # Write to binary buffer with metadata
+            success = self.decimated_buffer.write_minute(
+                minute_utc=float(minute_boundary),
+                decimated_iq=decimated_iq.astype(np.complex64),
+                d_clock_ms=d_clock_ms,
+                uncertainty_ms=uncertainty_ms,
+                quality_grade=quality_grade,
+                gap_samples=gap_samples
+            )
             
-            # Create timestamps for each 10Hz sample
-            for i, p in enumerate(power_db):
-                ts = minute_boundary + (i / self.output_rate)
-                self.power_accumulator.append((ts, float(p)))
+            if success:
+                logger.debug(f"Decimated minute {minute_boundary}: {len(decimated_iq)} samples")
             
-            # Generate spectrogram if we have enough data
-            if len(self.power_accumulator) >= self.spectrogram_interval * self.output_rate * 60:
-                self._generate_spectrogram()
-                
-        except Exception as e:
-            logger.error(f"Decimation error: {e}")
-    
-    def _generate_spectrogram(self):
-        """Generate spectrogram PNG from accumulated 10Hz power data."""
-        try:
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-            
-            if len(self.power_accumulator) < 600:  # Need at least 1 minute
-                return
-            
-            # Extract data
-            times = [t for t, p in self.power_accumulator]
-            powers = [p for t, p in self.power_accumulator]
-            
-            # Create figure
-            fig, ax = plt.subplots(figsize=(12, 4))
-            
-            # Convert to datetime for x-axis
-            from matplotlib.dates import DateFormatter
-            time_labels = [datetime.fromtimestamp(t, timezone.utc) for t in times]
-            
-            ax.plot(time_labels, powers, 'b-', linewidth=0.5, alpha=0.8)
-            ax.fill_between(time_labels, powers, alpha=0.3)
-            
-            ax.set_xlabel('Time (UTC)')
-            ax.set_ylabel('Carrier Power (dB)')
-            ax.set_title(f'{self.channel_name} - 10Hz Carrier Power')
-            ax.grid(True, alpha=0.3)
-            ax.xaxis.set_major_formatter(DateFormatter('%H:%M'))
-            
-            plt.tight_layout()
-            
-            # Save with date in filename
-            date_str = datetime.fromtimestamp(times[0], timezone.utc).strftime('%Y%m%d')
-            output_file = self.spectrogram_dir / f'{date_str}_spectrogram.png'
-            plt.savefig(output_file, dpi=100)
-            plt.close()
-            
-            logger.info(f"Generated spectrogram: {output_file}")
-            
-            # Keep only last 30 minutes for rolling display
-            cutoff = time.time() - 1800
-            self.power_accumulator = [(t, p) for t, p in self.power_accumulator if t > cutoff]
+            return success
             
         except Exception as e:
-            logger.error(f"Spectrogram generation error: {e}")
+            logger.error(f"Decimation error at {minute_boundary}: {e}")
+            return False
     
     def _write_status(self):
         """Write status file for web-ui monitoring."""
@@ -1128,8 +1106,9 @@ class Phase2AnalyticsService:
         power_linear = np.mean(np.abs(iq_samples) ** 2)
         self.last_carrier_power_db = 10 * np.log10(power_linear + 1e-12)
         
-        # Decimate to 10Hz and accumulate for spectrograms
-        self._decimate_to_10hz(iq_samples, minute_boundary)
+        # Detect gaps in source data (zeros indicate gaps from Phase 1)
+        zero_mask = (iq_samples.real == 0) & (iq_samples.imag == 0)
+        gap_samples = int(np.sum(zero_mask))
         
         try:
             # Process through Phase 2 engine
@@ -1194,6 +1173,29 @@ class Phase2AnalyticsService:
             
             # Write audio tones (500/600 Hz + intermodulation) for every minute
             self._write_audio_tones(minute_boundary, iq_samples)
+            
+            # Decimate to 10 Hz and store in binary buffer (for spectrograms and daily upload)
+            # Pass Phase 2 results for metadata
+            if result:
+                self._decimate_to_10hz(
+                    iq_samples=iq_samples,
+                    minute_boundary=minute_boundary,
+                    d_clock_ms=result.d_clock_ms,
+                    uncertainty_ms=getattr(self, 'last_convergence_result', None) and 
+                                   self.last_convergence_result.uncertainty_ms or 999.0,
+                    quality_grade=result.quality_grade,
+                    gap_samples=gap_samples
+                )
+            else:
+                # No Phase 2 result - still store decimated data for completeness
+                self._decimate_to_10hz(
+                    iq_samples=iq_samples,
+                    minute_boundary=minute_boundary,
+                    d_clock_ms=0.0,
+                    uncertainty_ms=999.0,
+                    quality_grade='X',
+                    gap_samples=gap_samples
+                )
             
             return True
                 

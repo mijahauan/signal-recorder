@@ -531,28 +531,42 @@
             const minutes = document.getElementById('funnel-minutes').value;
             
             try {
-                const response = await fetch(`/api/v1/timing/kalman-funnel?minutes=${minutes}`);
-                const data = await response.json();
+                // Use fusion API directly - it already computes the correctly fused d_clock
+                const response = await fetch('/api/v1/timing/fusion');
+                const fusionData = await response.json();
                 
-                if (!data.available || !data.points || data.points.length === 0) {
-                    container.innerHTML = '<div class="chart-loading">No clock stability data available</div>';
+                if (!fusionData.history || fusionData.history.length === 0) {
+                    container.innerHTML = '<div class="chart-loading">No fusion data available</div>';
                     return;
                 }
                 
-                // Apply fusion correction to each point
-                const correctedPoints = data.points.map(pt => ({
-                    ...pt,
-                    offset_ms: applyFusionCorrection(pt.offset_ms, pt.station)
+                // Filter to requested time window
+                const cutoffTime = Date.now() / 1000 - (parseInt(minutes) * 60);
+                const filteredHistory = fusionData.history.filter(p => p.timestamp >= cutoffTime);
+                
+                // Convert fusion history to chart format
+                const points = filteredHistory.map(p => ({
+                    timestamp: p.timestamp,
+                    offset_ms: p.d_clock_fused_ms,  // Use the FUSED value directly!
+                    uncertainty_ms: p.uncertainty_ms || 1.0,
+                    status: p.uncertainty_ms < 2.0 ? 'LOCKED' : 'HOLD',
+                    channel: 'Fusion (13 broadcasts)',
+                    station: 'FUSED'
                 }));
+                
+                if (points.length === 0) {
+                    container.innerHTML = '<div class="chart-loading">No data in selected time window</div>';
+                    return;
+                }
                 
                 if (!kalmanChart) {
                     kalmanChart = new KalmanFunnelChart('kalman-funnel-chart', {
                         timeWindowMinutes: parseInt(minutes),
-                        yAxisRange: [-5, 5]  // Narrower range since corrected values near 0
+                        yAxisRange: [-5, 5]  // Fused values should be near 0
                     });
                 }
                 
-                kalmanChart.update(correctedPoints);
+                kalmanChart.update(points);
             } catch (err) {
                 console.error('Error loading Kalman funnel:', err);
                 container.innerHTML = `<div class="chart-loading" style="color: #ef4444;">Error: ${err.message}</div>`;
@@ -566,20 +580,28 @@
                 // Always create the chart (shows vectors even without data)
                 if (!constellationChart) {
                     constellationChart = new ConstellationRadar('constellation-chart', {
-                        maxRadius: 5  // Narrower range for corrected values
+                        maxRadius: 3  // Narrower range - calibrated values should be near 0
                     });
                 }
+                
+                // Get fusion data for calibration offsets
+                const fusionResponse = await fetch('/api/v1/timing/fusion');
+                const fusionData = await fusionResponse.json();
+                const calibration = fusionData.calibration || {};
                 
                 const response = await fetch('/api/v1/timing/constellation');
                 const data = await response.json();
                 
-                // Apply fusion correction to station D_clock values
-                // API uses error_ms and base_station fields
+                // Apply calibration directly from fusion data
                 if (data && data.stations) {
-                    data.stations = data.stations.map(st => ({
-                        ...st,
-                        error_ms: applyFusionCorrection(st.error_ms, st.base_station)
-                    }));
+                    data.stations = data.stations.map(st => {
+                        const stationCal = calibration[st.base_station];
+                        const calOffset = stationCal ? stationCal.offset_ms : 0;
+                        return {
+                            ...st,
+                            error_ms: st.error_ms + calOffset  // Apply calibration
+                        };
+                    });
                 }
                 
                 // Update with data (or empty - vectors still show)
@@ -598,47 +620,57 @@
             const stateIndicator = document.getElementById('consensus-state');
             
             try {
-                const response = await fetch('/api/v1/timing/consensus');
-                const data = await response.json();
+                // Use fusion API - it has the correctly fused values
+                const response = await fetch('/api/v1/timing/fusion');
+                const fusionData = await response.json();
                 
-                if (!data.available || !data.estimates || data.estimates.length === 0) {
-                    container.innerHTML = '<div class="chart-loading">No consensus data available</div>';
+                if (!fusionData.history || fusionData.history.length === 0) {
+                    container.innerHTML = '<div class="chart-loading">No fusion data available</div>';
                     stateIndicator.className = 'state-indicator unknown';
                     stateIndicator.textContent = 'No Data';
                     return;
                 }
                 
+                // Get recent fusion values (last 10 minutes)
+                const cutoffTime = Date.now() / 1000 - 600;
+                const recentHistory = fusionData.history.filter(p => p.timestamp >= cutoffTime);
+                
+                // Check consensus state based on uncertainty spread
+                const uncertainties = recentHistory.map(p => p.uncertainty_ms || 3);
+                const avgUncertainty = uncertainties.reduce((a, b) => a + b, 0) / uncertainties.length;
+                const state = avgUncertainty < 2 ? 'LOCKED' : avgUncertainty < 4 ? 'CONVERGING' : 'DIVERGENT';
+                
                 // Update state indicator
                 const stateClasses = {
                     'LOCKED': 'locked',
                     'CONVERGING': 'converging',
-                    'SPLIT_BRAIN': 'split',
-                    'SINGLE_SOURCE': 'converging'
+                    'DIVERGENT': 'split'
                 };
                 const stateLabels = {
                     'LOCKED': '✓ Locked',
                     'CONVERGING': '◐ Converging',
-                    'SPLIT_BRAIN': '⚠ Split Brain',
-                    'SINGLE_SOURCE': '◑ Single Source'
+                    'DIVERGENT': '⚠ Divergent'
                 };
-                stateIndicator.className = `state-indicator ${stateClasses[data.state] || 'unknown'}`;
-                stateIndicator.textContent = stateLabels[data.state] || data.state;
+                stateIndicator.className = `state-indicator ${stateClasses[state] || 'unknown'}`;
+                stateIndicator.textContent = stateLabels[state] || state;
                 
-                // Apply fusion correction to estimates
-                // API uses offset field, not d_clock_ms
-                const correctedEstimates = data.estimates.map(est => ({
-                    ...est,
-                    offset: applyFusionCorrection(est.offset, est.station)
+                // Convert fusion history to estimates format for KDE
+                // Use FUSED d_clock values - already correct!
+                const estimates = recentHistory.map(p => ({
+                    offset: p.d_clock_fused_ms,  // Use fused value directly
+                    uncertainty: p.uncertainty_ms || 1.0,
+                    station: 'FUSED',
+                    weight: 1.0
                 }));
                 
                 if (!probabilityChart) {
                     probabilityChart = new ProbabilityPeak('probability-peak-chart', {
-                        xRange: [-3, 3],  // Narrower range for corrected values
-                        bandwidth: 0.5
+                        xRange: [-3, 3],  // Fused values should be near 0
+                        bandwidth: 0.3
                     });
                 }
                 
-                probabilityChart.update(correctedEstimates);
+                probabilityChart.update(estimates);
             } catch (err) {
                 console.error('Error loading probability peak:', err);
                 container.innerHTML = `<div class="chart-loading" style="color: #ef4444;">Error: ${err.message}</div>`;
