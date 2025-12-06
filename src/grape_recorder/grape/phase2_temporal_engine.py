@@ -593,9 +593,12 @@ class Phase2TemporalEngine:
                                 result.delay_spread_ms = wwvh_spread
                             break
                 
+                # Log with None-safe formatting
                 logger.debug(
-                    f"Step 2A BCD: WWV_amp={wwv_amp:.3f}, WWVH_amp={wwvh_amp:.3f}, "
-                    f"delay={delay_ms:.2f}ms, quality={quality:.2f}"
+                    f"Step 2A BCD: WWV_amp={wwv_amp if wwv_amp is not None else 'None'}, "
+                    f"WWVH_amp={wwvh_amp if wwvh_amp is not None else 'None'}, "
+                    f"delay={delay_ms if delay_ms is not None else 'None'}ms, "
+                    f"quality={quality if quality is not None else 'None'}"
                 )
         except Exception as e:
             logger.warning(f"Step 2A BCD correlation failed: {e}")
