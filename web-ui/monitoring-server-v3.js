@@ -4852,7 +4852,7 @@ server.on('upgrade', (request, socket, head) => {
             lastReadPos = writePos;
           }
         } catch (err) { /* ignore */ }
-      }, 100);
+      }, 200); // 200ms chunks = 1600 samples at 8kHz (less CPU overhead)
       
       simpleAudioSessions.set(sessionId, { ws, interval: streamInterval });
       

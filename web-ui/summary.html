@@ -817,7 +817,7 @@
         this.sampleRate = 8000;  // Simple audio buffer sample rate
         this.bufferQueue = [];
         this.nextPlayTime = 0;
-        this.bufferDelay = 0.5;  // 500ms buffer delay for smoothing
+        this.bufferDelay = 2.0;  // 2 second buffer to absorb CPU spikes at minute boundaries
         this.isBuffering = true;
         this.bufferedSeconds = 0;
         
