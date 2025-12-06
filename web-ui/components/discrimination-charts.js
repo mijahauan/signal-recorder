@@ -1,16 +1,24 @@
 /**
  * Discrimination Charts Component
  * 
- * Visualizes all WWV/WWVH discrimination methods and channel characterization:
- * Vote 0: Test Signal (minutes 8/44) - Ground Truth
- * Vote 1: 440 Hz Station ID - Ground Truth
- * Vote 2: BCD Amplitude Correlation
- * Vote 3: Timing Tones (1000/1200 Hz)
- * Vote 4: Tick SNR Comparison
- * Vote 5: 500/600 Hz Ground Truth - Ground Truth
- * Vote 6: Differential Doppler
- * Vote 7: Test Signal ↔ BCD ToA
- * Vote 8: Harmonic Power Ratio
+ * Visualizes all WWV/WWVH discrimination methods and channel characterization.
+ * The backend implements 13 weighted votes:
+ * 
+ * Vote 0:  Test Signal (minutes 8/44) - Ground Truth from schedule
+ * Vote 1:  440 Hz Station ID (minutes 1/2) - Ground Truth
+ * Vote 2:  BCD Amplitude Correlation (100 Hz subcarrier)
+ * Vote 3:  Timing Tones (1000 Hz WWV / 1200 Hz WWVH power ratio)
+ * Vote 4:  Tick SNR Comparison (5ms tick integration)
+ * Vote 5:  500/600 Hz Ground Truth (14 exclusive minutes/hour)
+ * Vote 6:  Doppler Stability (σ ratio, independent of power)
+ * Vote 7:  Test Signal ToA vs BCD ToA (timing coherence)
+ * Vote 7b: Chirp Delay Spread (multipath quality)
+ * Vote 7c: Coherence Time Quality (channel stability)
+ * Vote 8:  Harmonic Power Ratio (500→1000, 600→1200 Hz)
+ * Vote 9:  FSS Geographic Validator (ionospheric path fingerprint)
+ * Vote 10: Noise Coherence (transient event detection)
+ * Vote 11: Burst ToA Precision (high-resolution timing cross-validation)
+ * Vote 12: Spreading Factor (channel physics: L = τ_D × f_D)
  */
 
 let currentData = null;
@@ -467,11 +475,23 @@ function renderAllMethods(data) {
       </div>
     </div>
     
+    <!-- Votes 9-12: Channel Quality (from Test Signal) -->
+    <div class="method-card full-width">
+      <div class="method-header">
+        <div class="method-title">Votes 9-12: Channel Quality (FSS, Multipath, Stability)</div>
+        <div class="method-badge">Min 8/44 Test Signal</div>
+      </div>
+      <div class="chart-container" id="chart-channel-quality"></div>
+      <div class="insight-grid">
+        ${calcChannelQualityStats(data.methods.test_signal?.records)}
+      </div>
+    </div>
+    
     <!-- Final: Weighted Voting (Full Width) -->
     <div class="method-card full-width">
       <div class="method-header">
         <div class="method-title">Final Decision: Weighted Voting</div>
-        <div class="method-badge">8 Methods Combined</div>
+        <div class="method-badge">13 Votes Combined</div>
       </div>
       <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px;">
         <div class="chart-container" id="chart-voting"></div>
@@ -508,6 +528,7 @@ function renderAllMethods(data) {
   renderGroundTruthChart(data.methods.ground_truth_500_600, utcDate);
   renderDopplerChart(data.methods.doppler, utcDate);
   renderHarmonicRatioChart(data.methods.harmonic_ratio, utcDate);
+  renderChannelQualityChart(data.methods.test_signal, utcDate);
   // Pass tick and tone data for SNR comparison chart
   renderVotingChart(data.methods.weighted_voting, utcDate, data.methods.tick_windows, data.methods.timing_tones);
   renderDetectionTypePie(data.methods.weighted_voting);
@@ -603,8 +624,20 @@ function renderTickWindowsChart(method, utcDate) {
   );
   
   const timestamps = sortedRecords.map(r => r.timestamp_utc);
-  const wwvSNR = sortedRecords.map(r => parseFloat(r.wwv_snr_db) || null);
-  const wwvhSNR = sortedRecords.map(r => parseFloat(r.wwvh_snr_db) || null);
+  const wwvSNR = sortedRecords.map(r => parseFloat(r.wwv_snr_db) || 0);
+  const wwvhSNR = sortedRecords.map(r => parseFloat(r.wwvh_snr_db) || 0);
+  
+  // Check if all SNR values are zero (no real tick detection)
+  const hasNonZeroSNR = wwvSNR.some(v => v > 0.1) || wwvhSNR.some(v => v > 0.1);
+  if (!hasNonZeroSNR) {
+    document.getElementById('chart-tick-windows').innerHTML = `
+      <p style="padding: 20px; text-align: center; color: var(--text-muted);">
+        <strong>Tick SNR data shows all zeros</strong><br>
+        <span style="font-size: 12px;">No 1000/1200 Hz tick tones detected.<br>
+        Phase 2 tick integration requires detectable timing tones.</span>
+      </p>`;
+    return;
+  }
   
   const trace1 = {
     x: timestamps,
@@ -845,9 +878,26 @@ function renderBCDChart(method, utcDate) {
     return;
   }
   
-  const timestamps = method.records.map(r => r.timestamp_utc);
-  const wwvAmp = method.records.map(r => parseFloat(r.wwv_amplitude) || null);
-  const wwvhAmp = method.records.map(r => parseFloat(r.wwvh_amplitude) || null);
+  // Sort records by timestamp to prevent criss-crossing lines
+  const sortedRecords = [...method.records].sort((a, b) => 
+    new Date(a.timestamp_utc) - new Date(b.timestamp_utc)
+  );
+  
+  const timestamps = sortedRecords.map(r => r.timestamp_utc);
+  const wwvAmp = sortedRecords.map(r => parseFloat(r.wwv_amplitude) || 0);
+  const wwvhAmp = sortedRecords.map(r => parseFloat(r.wwvh_amplitude) || 0);
+  
+  // Check if all amplitudes are zero (no real BCD correlation)
+  const hasNonZeroAmp = wwvAmp.some(v => v > 0.01) || wwvhAmp.some(v => v > 0.01);
+  if (!hasNonZeroAmp) {
+    document.getElementById('chart-bcd').innerHTML = `
+      <p style="padding: 20px; text-align: center; color: var(--text-muted);">
+        <strong>BCD amplitudes are all zero</strong><br>
+        <span style="font-size: 12px;">Phase 2 BCD correlation did not detect 100 Hz timing code.<br>
+        This may indicate weak signal or processing issue.</span>
+      </p>`;
+    return;
+  }
   
   const trace1 = {
     x: timestamps,
@@ -936,6 +986,18 @@ function renderVotingChart(method, utcDate, tickData, toneData) {
   const sortedWwv = combined.map(c => c.wwv);
   const sortedWwvh = combined.map(c => c.wwvh);
   
+  // Check if all values are zero/null (no real data)
+  const hasNonZeroData = sortedWwv.some(v => v > 0) || sortedWwvh.some(v => v > 0);
+  if (!hasNonZeroData) {
+    container.innerHTML = `
+      <p style="padding: 20px; text-align: center; color: var(--text-muted);">
+        <strong>SNR data shows all zeros</strong><br>
+        <span style="font-size: 12px;">Phase 2 tone detection did not find valid 1000/1200 Hz tones.<br>
+        Check carrier power and signal conditions.</span>
+      </p>`;
+    return;
+  }
+  
   // WWV trace (blue line)
   const traceWWV = {
     x: sortedTs,
@@ -1016,10 +1078,25 @@ function renderDopplerChart(method, utcDate) {
   );
   
   const timestamps = sortedRecords.map(r => r.timestamp_utc);
-  const wwvDoppler = sortedRecords.map(r => r.wwv_doppler_hz * 1000); // Convert to mHz for readability
-  const wwvhDoppler = sortedRecords.map(r => r.wwvh_doppler_hz * 1000);
-  const coherenceTime = sortedRecords.map(r => r.max_coherent_window_sec);
-  const quality = sortedRecords.map(r => r.doppler_quality);
+  const wwvDoppler = sortedRecords.map(r => (r.wwv_doppler_hz || 0) * 1000); // Convert to mHz
+  const wwvhDoppler = sortedRecords.map(r => (r.wwvh_doppler_hz || 0) * 1000);
+  const coherenceTime = sortedRecords.map(r => r.max_coherent_window_sec || 0);
+  const quality = sortedRecords.map(r => r.doppler_quality || 0);
+  
+  // Check if Doppler data shows meaningful variation (not all constant/zero)
+  const wwvVariance = Math.abs(Math.max(...wwvDoppler) - Math.min(...wwvDoppler));
+  const wwvhVariance = Math.abs(Math.max(...wwvhDoppler) - Math.min(...wwvhDoppler));
+  const hasVariation = wwvVariance > 0.1 || wwvhVariance > 0.1;
+  const hasQuality = quality.some(q => q > 0.1);
+  
+  if (!hasVariation && !hasQuality) {
+    document.getElementById('chart-doppler').innerHTML = `
+      <p style="padding: 20px; text-align: center; color: var(--text-muted);">
+        <strong>Doppler data shows no variation</strong><br>
+        <span style="font-size: 12px;">Phase 2 Doppler estimation requires detectable tones.<br>
+        Values are constant (likely default/fallback).</span>
+      </p>`;
+  }
   
   // Chart 1: Doppler Shift over time
   const trace1 = {
@@ -1365,4 +1442,232 @@ function applyDarkTheme(layout) {
     xaxis: { ...getPlotlyLayoutDefaults().xaxis, ...layout.xaxis },
     yaxis: { ...getPlotlyLayoutDefaults().yaxis, ...layout.yaxis }
   };
+}
+
+/**
+ * Calculate channel quality statistics from test signal data
+ * Used for Votes 9-12: FSS, Delay Spread, Coherence Time, Spreading Factor
+ */
+function calcChannelQualityStats(records) {
+  if (!records || records.length === 0) {
+    return `
+      <div class="insight-card">
+        <div class="insight-label">Status</div>
+        <div class="insight-value" style="color: var(--text-muted);">No test signal data</div>
+      </div>
+      <div class="insight-card">
+        <div class="insight-label">Info</div>
+        <div class="insight-value" style="font-size: 11px;">Test signal in min :08 (WWV) and :44 (WWVH)</div>
+      </div>
+    `;
+  }
+  
+  // Calculate statistics from detected test signals
+  const detected = records.filter(r => r.detected);
+  let fssValues = [], delaySpreadValues = [], coherenceValues = [];
+  
+  detected.forEach(r => {
+    if (r.fss_db != null && !isNaN(r.fss_db)) fssValues.push(r.fss_db);
+    if (r.delay_spread_ms != null && !isNaN(r.delay_spread_ms)) delaySpreadValues.push(r.delay_spread_ms);
+    if (r.coherence_time_sec != null && !isNaN(r.coherence_time_sec)) coherenceValues.push(r.coherence_time_sec);
+  });
+  
+  const avgFSS = fssValues.length > 0 ? (fssValues.reduce((a,b) => a+b, 0) / fssValues.length).toFixed(1) : 'N/A';
+  const avgDelaySpread = delaySpreadValues.length > 0 ? (delaySpreadValues.reduce((a,b) => a+b, 0) / delaySpreadValues.length).toFixed(2) : 'N/A';
+  const avgCoherence = coherenceValues.length > 0 ? (coherenceValues.reduce((a,b) => a+b, 0) / coherenceValues.length).toFixed(1) : 'N/A';
+  
+  // Calculate spreading factor L = τ_D × f_D where f_D ≈ 1/(π×τ_c)
+  let spreadingFactor = 'N/A';
+  if (delaySpreadValues.length > 0 && coherenceValues.length > 0) {
+    const avgTauD = delaySpreadValues.reduce((a,b) => a+b, 0) / delaySpreadValues.length;
+    const avgTauC = coherenceValues.reduce((a,b) => a+b, 0) / coherenceValues.length;
+    if (avgTauC > 0.01) {
+      const fD = 1.0 / (Math.PI * avgTauC);
+      const L = (avgTauD / 1000) * fD;
+      spreadingFactor = L.toFixed(3);
+    }
+  }
+  
+  // Determine channel quality assessment
+  let qualityLabel = 'Unknown', qualityColor = 'var(--text-muted)';
+  if (spreadingFactor !== 'N/A') {
+    const L = parseFloat(spreadingFactor);
+    if (L < 0.05) { qualityLabel = 'Excellent'; qualityColor = '#10b981'; }
+    else if (L < 0.3) { qualityLabel = 'Good'; qualityColor = '#3b82f6'; }
+    else if (L < 1.0) { qualityLabel = 'Fair'; qualityColor = '#f59e0b'; }
+    else { qualityLabel = 'Poor'; qualityColor = '#ef4444'; }
+  }
+  
+  return `
+    <div class="insight-card">
+      <div class="insight-label">Detected</div>
+      <div class="insight-value">${detected.length}/${records.length}</div>
+    </div>
+    <div class="insight-card">
+      <div class="insight-label">Avg FSS</div>
+      <div class="insight-value">${avgFSS} dB</div>
+    </div>
+    <div class="insight-card">
+      <div class="insight-label">Avg τ<sub>D</sub></div>
+      <div class="insight-value">${avgDelaySpread} ms</div>
+    </div>
+    <div class="insight-card">
+      <div class="insight-label">Avg τ<sub>c</sub></div>
+      <div class="insight-value">${avgCoherence} s</div>
+    </div>
+    <div class="insight-card">
+      <div class="insight-label">Spreading L</div>
+      <div class="insight-value">${spreadingFactor}</div>
+    </div>
+    <div class="insight-card">
+      <div class="insight-label">Quality</div>
+      <div class="insight-value" style="color: ${qualityColor};">${qualityLabel}</div>
+    </div>
+  `;
+}
+
+/**
+ * Render channel quality chart from test signal data
+ * Shows FSS, Delay Spread, and Coherence Time over time
+ */
+function renderChannelQualityChart(method, utcDate) {
+  const container = document.getElementById('chart-channel-quality');
+  if (!container) return;
+  
+  if (!method || !method.records || method.records.length === 0) {
+    container.innerHTML = `
+      <p style="padding: 20px; text-align: center; color: var(--text-muted);">
+        No channel quality data available.<br>
+        <span style="font-size: 11px;">Test signal occurs at minutes :08 (WWV) and :44 (WWVH).<br>
+        Provides FSS (geographic fingerprint), delay spread (multipath), and coherence time (stability).</span>
+      </p>
+    `;
+    return;
+  }
+  
+  // Filter to detected test signals with channel quality data and sort by timestamp
+  const detected = method.records
+    .filter(r => r.detected)
+    .sort((a, b) => new Date(a.timestamp_utc) - new Date(b.timestamp_utc));
+  
+  if (detected.length === 0) {
+    container.innerHTML = `
+      <p style="padding: 20px; text-align: center; color: var(--text-muted);">
+        Test signals recorded but none detected.<br>
+        <span style="font-size: 11px;">This may indicate weak signal conditions.</span>
+      </p>
+    `;
+    return;
+  }
+  
+  const timestamps = detected.map(r => r.timestamp_utc);
+  const fssValues = detected.map(r => r.fss_db);
+  const delaySpreadValues = detected.map(r => r.delay_spread_ms);
+  const coherenceValues = detected.map(r => r.coherence_time_sec);
+  
+  const traces = [];
+  
+  // FSS trace (left y-axis)
+  if (fssValues.some(v => v != null)) {
+    traces.push({
+      x: timestamps,
+      y: fssValues,
+      name: 'FSS (dB)',
+      type: 'scatter',
+      mode: 'markers+lines',
+      marker: { color: '#8b5cf6', size: 10, symbol: 'diamond' },
+      line: { color: '#8b5cf6', width: 2 },
+      hovertemplate: 'FSS: %{y:.1f} dB<extra></extra>'
+    });
+  }
+  
+  // Delay spread trace (right y-axis)
+  if (delaySpreadValues.some(v => v != null)) {
+    traces.push({
+      x: timestamps,
+      y: delaySpreadValues,
+      name: 'Delay Spread (ms)',
+      type: 'scatter',
+      mode: 'markers+lines',
+      marker: { color: '#f59e0b', size: 10, symbol: 'circle' },
+      line: { color: '#f59e0b', width: 2 },
+      yaxis: 'y2',
+      hovertemplate: 'τ_D: %{y:.2f} ms<extra></extra>'
+    });
+  }
+  
+  // Coherence time trace (right y-axis, different scale)
+  if (coherenceValues.some(v => v != null)) {
+    traces.push({
+      x: timestamps,
+      y: coherenceValues,
+      name: 'Coherence (s)',
+      type: 'scatter',
+      mode: 'markers+lines',
+      marker: { color: '#10b981', size: 10, symbol: 'square' },
+      line: { color: '#10b981', width: 2, dash: 'dash' },
+      yaxis: 'y3',
+      hovertemplate: 'τ_c: %{y:.1f} s<extra></extra>'
+    });
+  }
+  
+  // Add solar zenith if available
+  traces.push(...createSolarZenithTraces());
+  
+  const xRange = getUTCDayRange(utcDate);
+  
+  let layout = {
+    ...getPlotlyLayoutDefaults(),
+    title: makeTitle('Channel Quality: FSS, Delay Spread, Coherence Time'),
+    xaxis: { 
+      ...getPlotlyLayoutDefaults().xaxis,
+      title: 'Time (UTC)',
+      range: xRange,
+      type: 'date',
+      domain: [0, 0.85]
+    },
+    yaxis: { 
+      ...getPlotlyLayoutDefaults().yaxis,
+      title: 'FSS (dB)',
+      titlefont: { color: '#8b5cf6' },
+      tickfont: { color: '#8b5cf6' }
+    },
+    yaxis2: {
+      title: 'Delay Spread (ms)',
+      titlefont: { color: '#f59e0b' },
+      tickfont: { color: '#f59e0b' },
+      overlaying: 'y',
+      side: 'right',
+      position: 0.88
+    },
+    yaxis3: {
+      title: 'τ_c (s)',
+      titlefont: { color: '#10b981' },
+      tickfont: { color: '#10b981' },
+      overlaying: 'y',
+      side: 'right',
+      position: 0.95,
+      anchor: 'free'
+    },
+    showlegend: true,
+    legend: { ...getPlotlyLayoutDefaults().legend, x: 0, y: 1.15, orientation: 'h' },
+    margin: { l: 60, r: 100, t: 60, b: 50 }
+  };
+  
+  // Add solar y-axis if data available
+  if (solarZenithData) {
+    layout.yaxis4 = {
+      title: 'Solar (°)',
+      overlaying: 'y',
+      side: 'right',
+      position: 1.0,
+      anchor: 'free',
+      range: [-90, 90],
+      showgrid: false
+    };
+    // Update solar traces to use yaxis4
+    traces.filter(t => t.name && t.name.includes('Solar')).forEach(t => t.yaxis = 'y4');
+  }
+  
+  Plotly.newPlot('chart-channel-quality', traces, layout, PLOTLY_CONFIG);
 }

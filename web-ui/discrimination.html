@@ -76,7 +76,7 @@
     <div class="page-header">
       <h1>🎯 WWV/WWVH Discrimination Analysis</h1>
       <div class="page-header-subtitle">
-        8 Voting Methods • BCD Correlation • 440 Hz Ground Truth • Harmonic Analysis
+        13 Voting Methods • Ground Truth (440/500/600 Hz) • BCD • Doppler • Channel Quality
       </div>
     </div>
 
@@ -91,13 +91,14 @@
         <div>
           <label for="channel-selector">Channel</label>
           <select id="channel-selector">
-            <!-- WWV channels only (discrimination is WWV vs WWVH) -->
-            <option value="WWV 2.5 MHz">WWV 2.5 MHz</option>
-            <option value="WWV 5 MHz">WWV 5 MHz</option>
-            <option value="WWV 10 MHz" selected>WWV 10 MHz</option>
-            <option value="WWV 15 MHz">WWV 15 MHz</option>
-            <option value="WWV 20 MHz">WWV 20 MHz</option>
-            <option value="WWV 25 MHz">WWV 25 MHz</option>
+            <!-- WWV/WWVH shared frequencies (2.5, 5, 10, 15 MHz) -->
+            <option value="WWV 2.5 MHz">WWV 2.5 MHz (+ WWVH)</option>
+            <option value="WWV 5 MHz">WWV 5 MHz (+ WWVH)</option>
+            <option value="WWV 10 MHz" selected>WWV 10 MHz (+ WWVH)</option>
+            <option value="WWV 15 MHz">WWV 15 MHz (+ WWVH)</option>
+            <!-- WWV-only frequencies (no WWVH broadcast) -->
+            <option value="WWV 20 MHz">WWV 20 MHz (WWV only)</option>
+            <option value="WWV 25 MHz">WWV 25 MHz (WWV only)</option>
           </select>
         </div>
         <div>
@@ -132,18 +133,22 @@
       <div class="placeholder">
         <h3>Select a date and channel to begin</h3>
         <p>
-          This page visualizes all <strong>8 WWV/WWVH discrimination methods</strong>:
+          This page visualizes the <strong>13 WWV/WWVH discrimination votes</strong>:
         </p>
-        <div style="text-align: left; display: inline-block; margin-top: 16px;">
+        <div style="text-align: left; display: inline-block; margin-top: 16px; columns: 2; column-gap: 32px;">
           <div style="margin-bottom: 8px;"><span class="card-badge ground-truth" style="margin-right: 8px;">GT</span> <strong>Vote 0:</strong> Test Signal (Min 8/44)</div>
-          <div style="margin-bottom: 8px;"><span class="card-badge ground-truth" style="margin-right: 8px;">GT</span> <strong>Vote 1:</strong> 440 Hz Station ID (Min 1/2)</div>
-          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">BCD</span> <strong>Vote 2:</strong> BCD Amplitude Correlation</div>
-          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">TONE</span> <strong>Vote 3:</strong> Timing Tones (1000/1200 Hz)</div>
-          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">TICK</span> <strong>Vote 4:</strong> Tick SNR Comparison</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge ground-truth" style="margin-right: 8px;">GT</span> <strong>Vote 1:</strong> 440 Hz Station ID</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">BCD</span> <strong>Vote 2:</strong> BCD Amplitude</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">TONE</span> <strong>Vote 3:</strong> 1000/1200 Hz Power</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">TICK</span> <strong>Vote 4:</strong> Tick SNR</div>
           <div style="margin-bottom: 8px;"><span class="card-badge ground-truth" style="margin-right: 8px;">GT</span> <strong>Vote 5:</strong> 500/600 Hz Ground Truth</div>
-          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">DOP</span> <strong>Vote 6:</strong> Differential Doppler</div>
-          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">ToA</span> <strong>Vote 7:</strong> Test Signal ↔ BCD ToA</div>
-          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">HAR</span> <strong>Vote 8:</strong> Harmonic Power Ratio</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">DOP</span> <strong>Vote 6:</strong> Doppler Stability</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">ToA</span> <strong>Vote 7:</strong> ToA Cross-validation</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">HAR</span> <strong>Vote 8:</strong> Harmonic Ratio</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">FSS</span> <strong>Vote 9:</strong> Geographic (FSS)</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">NOI</span> <strong>Vote 10:</strong> Noise Coherence</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">HiP</span> <strong>Vote 11:</strong> Burst ToA Precision</div>
+          <div style="margin-bottom: 8px;"><span class="card-badge" style="margin-right: 8px;">CHQ</span> <strong>Vote 12:</strong> Spreading Factor</div>
         </div>
       </div>
     </div>

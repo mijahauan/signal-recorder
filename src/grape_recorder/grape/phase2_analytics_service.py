@@ -646,73 +646,126 @@ class Phase2AnalyticsService:
         except Exception as e:
             logger.error(f"Failed to write discrimination: {e}")
     
-    def _read_drf_minute(self, target_minute: int) -> Optional[Tuple[np.ndarray, float, int]]:
+    def _read_drf_minute(self, target_minute: int):
         """
-        Read one minute of DRF data centered on target_minute.
+        Read one minute of data from the binary archive (or DRF fallback).
+        
+        First tries binary format (raw_buffer), then falls back to DRF.
         
         Args:
             target_minute: Unix timestamp of minute boundary
             
         Returns:
-            (iq_samples, system_time, rtp_timestamp) or None
+            Tuple of (iq_samples, system_time, rtp_timestamp) or None if not available
         """
+        # Try binary format first (new format)
+        result = self._read_binary_minute(target_minute)
+        if result is not None:
+            return result
+        
+        # Fall back to DRF (legacy format)
+        return self._read_drf_minute_legacy(target_minute)
+    
+    def _read_binary_minute(self, target_minute: int):
+        """Read from binary archive format."""
+        from datetime import datetime, timezone
+        
+        # Binary files are in raw_buffer directory
+        # Path: {data_root}/raw_buffer/{channel}/YYYYMMDD/{minute}.bin
+        binary_dir = self.archive_dir.parent.parent / 'raw_buffer'
+        channel_dir = binary_dir / self.channel_name.replace(' ', '_').replace('.', '_')
+        
+        dt = datetime.fromtimestamp(target_minute, tz=timezone.utc)
+        date_str = dt.strftime('%Y%m%d')
+        
+        bin_path = channel_dir / date_str / f"{target_minute}.bin"
+        json_path = channel_dir / date_str / f"{target_minute}.json"
+        
+        if not bin_path.exists():
+            logger.debug(f"Binary file not found: {bin_path}")
+            return None
+        
+        try:
+            # Read metadata
+            if json_path.exists():
+                with open(json_path) as f:
+                    metadata = json.load(f)
+                samples_written = metadata.get('samples_written', 0)
+            else:
+                samples_written = bin_path.stat().st_size // 8  # complex64 = 8 bytes
+            
+            # Memory-map the binary file for zero-copy reading
+            iq_samples = np.memmap(bin_path, dtype=np.complex64, mode='r')
+            
+            samples_per_minute = self.sample_rate * 60
+            if len(iq_samples) < samples_per_minute * 0.9:  # Need at least 90%
+                logger.debug(f"Incomplete minute: {len(iq_samples)}/{samples_per_minute}")
+                return None
+            
+            # Pad if slightly short
+            if len(iq_samples) < samples_per_minute:
+                padded = np.zeros(samples_per_minute, dtype=np.complex64)
+                padded[:len(iq_samples)] = iq_samples
+                iq_samples = padded
+            
+            system_time = float(target_minute)
+            rtp_timestamp = int(target_minute * self.sample_rate)
+            
+            logger.debug(f"Read {len(iq_samples)} samples from binary for minute {target_minute}")
+            return iq_samples, system_time, rtp_timestamp
+            
+        except Exception as e:
+            logger.debug(f"Error reading binary: {e}")
+            return None
+    
+    def _read_drf_minute_legacy(self, target_minute: int):
+        """Read from legacy DRF format (fallback)."""
         try:
             import digital_rf as drf
         except ImportError:
-            logger.error("digital_rf not available")
             return None
         
         if not self.archive_dir.exists():
             return None
         
         try:
-            # Initialize DRF reader on the channel directory
             reader = drf.DigitalRFReader(str(self.archive_dir))
             channels = reader.get_channels()
             
             if not channels:
-                logger.debug(f"No DRF channels found in {self.archive_dir}")
                 return None
             
-            # Use first channel (typically the date directory)
-            channel = channels[0]
-            bounds = reader.get_bounds(channel)
-            
-            if bounds[0] is None or bounds[1] is None:
-                logger.debug(f"No valid data bounds in channel {channel}")
-                return None
-            
-            # Calculate sample indices for target minute
-            # DRF uses global sample index = sample_rate * unix_time
             target_start_index = int(target_minute * self.sample_rate)
             samples_per_minute = self.sample_rate * 60
-            target_end_index = target_start_index + samples_per_minute
             
-            # Check if target minute is within available bounds
+            channel = None
+            bounds = None
+            for ch in sorted(channels, reverse=True):
+                ch_bounds = reader.get_bounds(ch)
+                if ch_bounds[0] is not None and ch_bounds[1] is not None:
+                    if ch_bounds[0] <= target_start_index < ch_bounds[1]:
+                        channel = ch
+                        bounds = ch_bounds
+                        break
+                    if bounds is None or ch_bounds[1] > bounds[1]:
+                        channel = ch
+                        bounds = ch_bounds
+            
+            if channel is None or bounds is None:
+                return None
+            
             if target_start_index < bounds[0] or target_start_index >= bounds[1]:
-                # Try to read whatever is available
-                available_samples = bounds[1] - bounds[0]
-                if available_samples < samples_per_minute:
-                    logger.debug(f"Only {available_samples} samples available, need {samples_per_minute}")
-                    return None
-                # Use latest complete minute
-                target_start_index = bounds[1] - samples_per_minute
+                return None
             
-            # Read the data
             iq_samples = reader.read_vector(target_start_index, samples_per_minute, channel)
             
             if iq_samples is None or len(iq_samples) < samples_per_minute:
-                logger.debug(f"Could not read full minute of data")
                 return None
             
-            # Convert to proper format
             iq_samples = iq_samples.squeeze().astype(np.complex64)
-            
-            # Calculate system time and RTP timestamp
             system_time = target_start_index / self.sample_rate
             rtp_timestamp = target_start_index
             
-            logger.debug(f"Read {len(iq_samples)} samples for minute {target_minute}")
             return iq_samples, system_time, rtp_timestamp
             
         except Exception as e:
@@ -720,10 +773,74 @@ class Phase2AnalyticsService:
             return None
     
     def _get_latest_minute(self) -> int:
-        """Get the latest complete minute boundary."""
+        """Get the latest complete minute boundary from available data."""
+        # Try binary format first
+        latest = self._get_latest_binary_minute()
+        if latest is not None:
+            return latest
+        
+        # Fall back to DRF
+        try:
+            import digital_rf as drf
+            reader = drf.DigitalRFReader(str(self.archive_dir))
+            channels = reader.get_channels()
+            
+            if channels:
+                latest_sample = None
+                for ch in channels:
+                    bounds = reader.get_bounds(ch)
+                    if bounds[1] is not None:
+                        if latest_sample is None or bounds[1] > latest_sample:
+                            latest_sample = bounds[1]
+                
+                if latest_sample is not None:
+                    latest_time = latest_sample / self.sample_rate
+                    latest_minute = ((int(latest_time) // 60) - 3) * 60
+                    return latest_minute
+        except Exception as e:
+            logger.debug(f"Could not get DRF bounds: {e}")
+        
+        # Fallback to wall-clock time
         now = time.time()
-        # Go back 2 minutes to ensure data is complete
         return ((int(now) // 60) - 2) * 60
+    
+    def _get_latest_binary_minute(self) -> Optional[int]:
+        """Get latest minute from binary archive."""
+        from datetime import datetime, timezone
+        
+        binary_dir = self.archive_dir.parent.parent / 'raw_buffer'
+        channel_dir = binary_dir / self.channel_name.replace(' ', '_').replace('.', '_')
+        
+        if not channel_dir.exists():
+            return None
+        
+        # Check today's directory
+        today = datetime.now(timezone.utc).strftime('%Y%m%d')
+        day_dir = channel_dir / today
+        
+        if not day_dir.exists():
+            return None
+        
+        # Find latest .bin file
+        bin_files = list(day_dir.glob('*.bin'))
+        if not bin_files:
+            return None
+        
+        # Extract minute boundaries from filenames
+        minutes = []
+        for f in bin_files:
+            try:
+                minutes.append(int(f.stem))
+            except ValueError:
+                pass
+        
+        if not minutes:
+            return None
+        
+        # Return second-to-last (last might be incomplete)
+        # Go back 2 minutes for safety margin
+        latest = max(minutes)
+        return latest - 120  # 2 minutes behind
     
     def _calculate_carrier_snr(self, iq_samples: np.ndarray) -> float:
         """

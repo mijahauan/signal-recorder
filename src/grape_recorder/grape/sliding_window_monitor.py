@@ -120,21 +120,29 @@ class WindowMetrics:
     quality: SignalQuality = SignalQuality.NO_SIGNAL
     
     def to_dict(self) -> Dict[str, Any]:
+        # Helper to convert numpy types to Python native types for JSON
+        def to_native(v):
+            if v is None:
+                return None
+            if hasattr(v, 'item'):  # numpy scalar
+                return v.item()
+            return v
+        
         return {
-            'timestamp': self.timestamp,
+            'timestamp': to_native(self.timestamp),
             'timestamp_iso': datetime.fromtimestamp(self.timestamp, tz=timezone.utc).isoformat(),
             'window_number': self.window_number,
-            'wwv_snr_db': self.wwv_snr_db,
-            'wwvh_snr_db': self.wwvh_snr_db,
-            'dominant_snr_db': self.dominant_snr_db,
-            'wwv_doppler_hz': self.wwv_doppler_hz,
-            'wwvh_doppler_hz': self.wwvh_doppler_hz,
-            'doppler_stability_hz': self.doppler_stability_hz,
-            'wwv_detected': self.wwv_detected,
-            'wwvh_detected': self.wwvh_detected,
-            'signal_present': self.signal_present,
+            'wwv_snr_db': to_native(self.wwv_snr_db),
+            'wwvh_snr_db': to_native(self.wwvh_snr_db),
+            'dominant_snr_db': to_native(self.dominant_snr_db),
+            'wwv_doppler_hz': to_native(self.wwv_doppler_hz),
+            'wwvh_doppler_hz': to_native(self.wwvh_doppler_hz),
+            'doppler_stability_hz': to_native(self.doppler_stability_hz),
+            'wwv_detected': bool(self.wwv_detected),
+            'wwvh_detected': bool(self.wwvh_detected),
+            'signal_present': bool(self.signal_present),
             'samples_received': self.samples_received,
-            'completeness_pct': self.completeness_pct,
+            'completeness_pct': to_native(self.completeness_pct),
             'gap_count': self.gap_count,
             'quality': self.quality.value
         }

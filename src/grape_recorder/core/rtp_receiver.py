@@ -108,6 +108,15 @@ class RTPReceiver:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
+        # Request large receive buffer to prevent packet loss under load
+        # 25MB buffer for 9 channels @ 20kHz = ~5 seconds of data
+        try:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 26214400)
+            actual_size = self.socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+            logger.info(f"UDP receive buffer: requested 25MB, got {actual_size // 1024 // 1024}MB")
+        except Exception as e:
+            logger.warning(f"Could not set UDP buffer size: {e}")
+        
         # Bind to port
         self.socket.bind(('', self.port))
         

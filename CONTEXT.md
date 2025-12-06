@@ -7,30 +7,44 @@
 
 ---
 
-## 🎯 NEXT SESSION: DISCRIMINATION DISPLAY IMPROVEMENTS
+## 🎯 CURRENT SESSION: DISCRIMINATION DISPLAY IMPROVEMENTS
 
-The next task is to improve the `discrimination.html` page to better visualize WWV/WWVH station identification. The discrimination system should clearly display real-time results from the 12 voting methods.
+The `discrimination.html` page visualizes WWV/WWVH station identification using the 13-vote weighted voting system.
 
-### Current State of Discrimination Page
+### Current State of Discrimination Page (Updated Dec 5 PM)
 
 The discrimination.html page has:
 - Diurnal Station Dominance panel (moved from phase2-dashboard.html)
-- Basic discrimination data display
+- 8 visualization cards for the primary voting methods
+- Per-method insight statistics
+- Solar elevation overlay on all charts
 
-### Goals for Next Session
+### Backend Voting System (13 Votes)
 
-1. **Improve visualization of 12 voting methods** - Show which methods contributed to the decision
-2. **Real-time per-minute updates** - Update as new Phase 2 data arrives
-3. **Method confidence display** - Show weight/confidence for each voting method
-4. **Cross-validation indicators** - Highlight when methods agree/disagree
-5. **Historical view** - Show discrimination history over time (24h default)
+The `wwvh_discrimination.py` implements weighted voting with these votes:
 
-### Key Questions to Address
+| Vote | Method | Weight | Notes |
+|------|--------|--------|-------|
+| 0 | Test Signal | 15.0 | Min 8/44 only, ground truth from schedule |
+| 1 | 440 Hz ID | 10.0 | Min 1/2 only, ground truth |
+| 2 | BCD Amplitude | 2.0-10.0 | 100 Hz subcarrier correlation |
+| 3 | 1000/1200 Hz | 1.0-10.0 | Timing tone power ratio |
+| 4 | Tick SNR | 5.0 | 5ms tick coherent integration |
+| 5 | 500/600 Hz | 10.0-15.0 | 14 ground truth minutes/hour |
+| 6 | Doppler σ | 2.0 | Independent stability metric |
+| 7 | ToA Cross-val | 3.0 | Test signal ↔ BCD coherence |
+| 7b | Delay Spread | 2.0 | Multipath quality (< 2ms = clean) |
+| 7c | Coherence Time | 1.0 | Channel stability (> 2s = stable) |
+| 8 | Harmonic Ratio | 1.5 | 500→1000, 600→1200 Hz |
+| 9 | FSS Geographic | 2.0 | Path fingerprint validation |
+| 10 | Noise Coherence | - | Transient event flag |
+| 11 | Burst ToA | - | High-precision cross-validation |
+| 12 | Spreading Factor | - | Channel physics (L = τ_D × f_D) |
 
-- How should we visualize the 12 methods? (bar chart, matrix, timeline?)
-- Should methods be grouped by type (power, timing, spectral)?
-- How to display the weighted voting result vs individual method votes?
-- What happens when methods disagree? (mixed propagation indicator)
+### WWVH Frequency Constraint
+
+**IMPORTANT**: WWVH only broadcasts on 2.5, 5, 10, 15 MHz. It does NOT broadcast on 20 or 25 MHz.
+The UI channel selector now shows "(+ WWVH)" or "(WWV only)" labels.
 
 ### Key Files for Discrimination Integration
 

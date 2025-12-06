@@ -156,19 +156,18 @@ class PipelineOrchestrator:
         self._lock = threading.Lock()
         self.state = PipelineState.IDLE
         
-        # Phase 1: Raw Archive Writer
-        from .raw_archive_writer import RawArchiveWriter, RawArchiveConfig
+        # Phase 1: Binary Archive Writer (simple, robust)
+        # Uses raw binary files instead of HDF5/DRF for maximum reliability
+        from .binary_archive_writer import BinaryArchiveWriter, BinaryArchiveConfig
         
-        raw_config = RawArchiveConfig(
-            output_dir=config.raw_archive_dir,
+        raw_config = BinaryArchiveConfig(
+            output_dir=config.data_dir / 'raw_buffer',  # Separate from raw_archive
             channel_name=config.channel_name,
             frequency_hz=config.frequency_hz,
             sample_rate=config.sample_rate,
             station_config=config.station_config,
-            compression=config.raw_archive_compression,
-            file_duration_sec=config.raw_archive_file_duration_sec
         )
-        self.raw_archive_writer = RawArchiveWriter(raw_config)
+        self.raw_archive_writer = BinaryArchiveWriter(raw_config)
         
         # Phase 2: Clock Offset Engine
         from .clock_offset_series import ClockOffsetEngine
@@ -310,8 +309,9 @@ class PipelineOrchestrator:
         )
         self.stats['samples_archived'] += samples_written
         
-        # Accumulate samples for minute-aligned processing
-        self._accumulate_minute(samples, rtp_timestamp, system_time)
+        # NOTE: Minute accumulation disabled for performance
+        # Phase 2 reads directly from archive - no need to buffer in memory
+        # self._accumulate_minute(samples, rtp_timestamp, system_time)
     
     def _accumulate_minute(
         self,

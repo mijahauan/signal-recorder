@@ -66,6 +66,11 @@ MAX_SAMPLE_VALUE_CRITICAL = 1e6  # Samples above this are likely decode errors
 MAX_GAP_SAMPLES_WARNING = 20000  # Warn if gap exceeds 1 second at 20kHz
 NTP_SYNC_CHECK_INTERVAL = 60  # Check NTP status every 60 seconds
 
+# Resilience constants
+FORCED_FLUSH_INTERVAL_SEC = 60  # Force flush at least every 60 seconds
+WRITE_WATCHDOG_TIMEOUT_SEC = 120  # Recreate writer if no writes for 2 minutes
+MAX_GAP_BEFORE_WRITER_RESET = 400000  # Reset writer if gap > 20 seconds at 20kHz
+
 # Storage quota constants
 DEFAULT_QUOTA_GB = 100  # Default storage quota per channel
 QUOTA_CHECK_INTERVAL = 300  # Check quota every 5 minutes
@@ -651,7 +656,17 @@ class RawArchiveWriter:
             'late_packets_dropped': 0,
             'write_errors': 0,
             'dtype_conversions': 0,
+            'forced_flushes': 0,
+            'watchdog_resets': 0,
         }
+        
+        # Resilience tracking
+        self.last_flush_time: float = time.time()
+        self.last_write_time: float = time.time()
+        self.last_heartbeat_log: float = time.time()
+        self._recovery_start_time: Optional[float] = None  # Set after write errors
+        self._consecutive_errors: int = 0  # Track errors before full reset
+        self._max_errors_before_reset: int = 5  # Only reset after multiple failures
         
         # RTP sequence tracking for gap detection
         self.last_rtp_timestamp: Optional[int] = None
@@ -667,9 +682,10 @@ class RawArchiveWriter:
         self.segment_counter: int = 0
         
         # Sliding window monitor (10-second real-time quality tracking)
-        # Provides low-latency metrics while 60-second D_clock analysis runs
+        # DISABLED: All analytics should be post-processing in Phase 2
+        # Real-time analysis was causing 244% CPU usage for 1.44 MB/sec data
         self.sliding_monitor = None
-        self.sliding_monitor_enabled = True
+        self.sliding_monitor_enabled = False  # Disabled for performance
         self.window_sample_buffer: List[np.ndarray] = []  # Accumulate for 10s windows
         self.window_sample_count = 0
         self.window_gap_count = 0
@@ -908,6 +924,33 @@ class RawArchiveWriter:
         # This is samples since Unix epoch at sample_rate
         start_global_index = int(system_time * self.config.sample_rate)
         
+        # === RESILIENCE: Use recovery time if set (after write error) ===
+        if hasattr(self, '_recovery_start_time') and self._recovery_start_time is not None:
+            recovery_index = int(self._recovery_start_time * self.config.sample_rate)
+            if recovery_index > start_global_index:
+                logger.info(f"Using recovery start time: skipping from {start_global_index} to {recovery_index}")
+                start_global_index = recovery_index
+            self._recovery_start_time = None  # Clear after use
+        
+        # === RESILIENCE: Check for existing data and skip ahead if needed ===
+        # On restart, there may be files from a previous run at the same timestamp
+        # DRF doesn't allow overwriting, so we must start after existing data
+        try:
+            existing_end = self._find_existing_data_end(drf_dir)
+            if existing_end is not None and existing_end >= start_global_index:
+                # Existing data covers our start point - skip to NEXT minute boundary
+                # Files are created at 60-second boundaries, so align to next minute
+                existing_end_time = existing_end / self.config.sample_rate
+                next_minute = ((int(existing_end_time) // 60) + 1) * 60 + 1  # +1 sec safety
+                new_start = int(next_minute * self.config.sample_rate)
+                logger.warning(
+                    f"⚠️ Existing DRF data found up to index {existing_end}. "
+                    f"Skipping to next minute boundary: {new_start} (time={next_minute})"
+                )
+                start_global_index = new_start
+        except Exception as e:
+            logger.debug(f"Could not check existing data: {e}")
+        
         # Initialize next_sample_index if first write
         if self.next_sample_index is None:
             self.next_sample_index = start_global_index
@@ -987,6 +1030,83 @@ class RawArchiveWriter:
             self.metadata_writer = None
             logger.info("DRF writer closed")
     
+    def _cleanup_conflicting_files(self):
+        """
+        Remove temp files and recent HDF5 files that may conflict with recovery.
+        
+        Called after write errors to allow fresh start.
+        """
+        try:
+            from datetime import datetime, timezone
+            day_date = datetime.now(tz=timezone.utc).date()
+            date_str = day_date.strftime('%Y%m%d')
+            drf_dir = self.archive_dir / date_str
+            
+            if not drf_dir.exists():
+                return
+            
+            # Find and remove temp files
+            for subdir in drf_dir.iterdir():
+                if subdir.is_dir():
+                    for f in subdir.glob('tmp.*.h5'):
+                        try:
+                            f.unlink()
+                            logger.info(f"Removed temp file: {f.name}")
+                        except Exception:
+                            pass
+                    
+                    # Remove files in current minute boundary and future
+                    # DRF uses 60-second file cadence, so delete current + next minute
+                    current_time = time.time()
+                    current_minute = (int(current_time) // 60) * 60
+                    for f in subdir.glob('rf@*.h5'):
+                        try:
+                            # Extract timestamp from filename: rf@TIMESTAMP.000.h5
+                            ts_str = f.stem.split('@')[1].split('.')[0]
+                            file_ts = float(ts_str)
+                            # Remove if file is for current minute or later
+                            if file_ts >= current_minute:
+                                f.unlink()
+                                logger.warning(f"🗑️ Removed conflicting file: {f.name}")
+                        except Exception:
+                            pass
+                            
+        except Exception as e:
+            logger.debug(f"Cleanup failed: {e}")
+    
+    def _find_existing_data_end(self, drf_dir: Path) -> Optional[int]:
+        """
+        Find the end sample index of existing DRF data in directory.
+        
+        Used on restart to avoid overwriting existing files.
+        
+        Returns:
+            End sample index if data exists, None otherwise
+        """
+        try:
+            # Use DRF reader to find bounds of existing data
+            parent_dir = drf_dir.parent  # Go up to channel dir (contains date subdirs)
+            reader = drf.DigitalRFReader(str(parent_dir))
+            channels = reader.get_channels()
+            
+            if not channels:
+                return None
+            
+            # Find the latest end point across all channels (date directories)
+            latest_end = None
+            for ch in channels:
+                bounds = reader.get_bounds(ch)
+                if bounds[1] is not None:
+                    if latest_end is None or bounds[1] > latest_end:
+                        latest_end = bounds[1]
+            
+            return latest_end
+            
+        except Exception as e:
+            # No existing data or error reading - that's fine
+            logger.debug(f"No existing DRF data found: {e}")
+            return None
+    
     def set_time_reference(
         self,
         rtp_timestamp: int,
@@ -1049,6 +1169,36 @@ class RawArchiveWriter:
                 if not self.ntp_status.synced:
                     logger.warning("⚠️ NTP sync lost during recording")
             
+            # === RESILIENCE: Periodic heartbeat log ===
+            current_time = time.time()
+            if current_time - self.last_heartbeat_log >= 60:
+                logger.info(
+                    f"📡 {self.config.channel_name} heartbeat: "
+                    f"{self.samples_written:,} samples, "
+                    f"{self.data_quality['gaps_detected']} gaps, "
+                    f"{self.data_quality['write_errors']} errors"
+                )
+                self.last_heartbeat_log = current_time
+            
+            # === RESILIENCE: Watchdog - reset writer if no writes for too long ===
+            if self.drf_writer is not None and current_time - self.last_write_time > WRITE_WATCHDOG_TIMEOUT_SEC:
+                logger.warning(
+                    f"⚠️ Watchdog: No writes for {WRITE_WATCHDOG_TIMEOUT_SEC}s - resetting DRF writer"
+                )
+                self._close_writer()
+                self.data_quality['watchdog_resets'] += 1
+            
+            # === RESILIENCE: Forced periodic flush ===
+            if self.drf_writer is not None and current_time - self.last_flush_time > FORCED_FLUSH_INTERVAL_SEC:
+                try:
+                    # Close and reopen to force flush
+                    self._close_writer()
+                    self.data_quality['forced_flushes'] += 1
+                    self.last_flush_time = current_time
+                    logger.debug(f"Forced flush completed for {self.config.channel_name}")
+                except Exception as e:
+                    logger.error(f"Forced flush failed: {e}")
+            
             # Note: Storage quota is managed at top-level, not per-channel
             
             # Set time reference if not established
@@ -1082,6 +1232,19 @@ class RawArchiveWriter:
                 return 0
             if detected_gap > 0:
                 gap_samples = max(gap_samples, detected_gap)
+                
+                # === RESILIENCE: Reset writer on extremely large gaps ===
+                if detected_gap > MAX_GAP_BEFORE_WRITER_RESET:
+                    logger.warning(
+                        f"⚠️ Massive gap ({detected_gap} samples = {detected_gap/self.config.sample_rate:.1f}s) - "
+                        f"resetting DRF writer to resync"
+                    )
+                    self._close_writer()
+                    self.system_time_ref = None  # Reset time reference too
+                    self.last_rtp_timestamp = None
+                    # Recreate writer with fresh state
+                    self._create_drf_writer(system_time, rtp_timestamp)
+                    self.set_time_reference(rtp_timestamp, system_time)
             
             # Use RTP timestamp for sample ordering (not wall-clock time)
             # This ensures monotonic writes even with timing jitter
@@ -1106,6 +1269,10 @@ class RawArchiveWriter:
                 # Write samples to DRF
                 # Note: DRF auto-advances from start_global_index
                 self.drf_writer.rf_write(samples)
+                
+                # === RESILIENCE: Update write timestamp for watchdog ===
+                self.last_write_time = time.time()
+                self._consecutive_errors = 0  # Reset error counter on success
                 
                 # Update state
                 self.samples_written += len(samples)
@@ -1147,8 +1314,38 @@ class RawArchiveWriter:
                 return len(samples)
                 
             except Exception as e:
-                logger.error(f"DRF write error: {e}", exc_info=True)
+                self._consecutive_errors += 1
                 self.data_quality['write_errors'] += 1
+                
+                # For first few errors, just skip packet (writer may still be OK)
+                if self._consecutive_errors < self._max_errors_before_reset:
+                    logger.warning(f"DRF write error ({self._consecutive_errors}/{self._max_errors_before_reset}): {e}")
+                    return 0
+                
+                # === RESILIENCE: Full reset after multiple errors ===
+                logger.error(f"DRF write error (resetting after {self._consecutive_errors} errors): {e}")
+                logger.warning("⚠️ Resetting DRF writer after repeated write errors")
+                
+                # Clean up conflicting files FIRST
+                self._cleanup_conflicting_files()
+                
+                try:
+                    self._close_writer()
+                except Exception:
+                    pass  # Ignore errors during cleanup
+                
+                # Reset time reference to resync on next write
+                self.system_time_ref = None
+                self.last_rtp_timestamp = None
+                self.next_sample_index = None
+                self._consecutive_errors = 0  # Reset counter
+                
+                # Set recovery timestamp to NEXT minute boundary
+                # Files are created at 60-second boundaries, so we must skip to next minute
+                current_time = time.time()
+                next_minute = ((int(current_time) // 60) + 1) * 60 + 1  # Next minute + 1 sec
+                self._recovery_start_time = next_minute
+                
                 return 0
     
     def write_gap_metadata(
@@ -1194,6 +1391,7 @@ class RawArchiveWriter:
                     self.drf_writer.close()
                     # Recreate writer for subsequent writes
                     self.drf_writer = None
+                    self.last_flush_time = time.time()
                     logger.info(f"Flushed raw archive: {self.samples_written} total samples")
                 except Exception as e:
                     logger.error(f"Error flushing DRF writer: {e}")
@@ -1339,7 +1537,7 @@ class RawArchiveReader:
             channels = self.drf_reader.get_channels()
             logger.info(f"RawArchiveReader initialized, channels: {channels}")
         except Exception as e:
-            logger.error(f"Failed to initialize DRF reader: {e}")
+            logger.debug(f"DRF reader init (expected on first run): {e}")
             self.drf_reader = None
     
     def read_samples(

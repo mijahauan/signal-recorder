@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""
+Binary Archive Writer - Simple, robust raw IQ storage
+
+Writes raw complex64 binary files with JSON metadata sidecars.
+Designed for maximum reliability - append-only, no HDF5 complexity.
+
+Architecture:
+- One binary file per minute per channel
+- JSON sidecar with timestamps and metadata
+- Memory-mappable for zero-copy Phase 2 reading
+- Optional async compression of completed minutes
+
+File structure:
+    raw_buffer/{CHANNEL}/YYYYMMDD/
+        1765031100.bin      # Raw complex64 samples
+        1765031100.json     # Metadata sidecar
+        1765031040.bin.zst  # Compressed older minute (optional)
+"""
+
+import json
+import logging
+import numpy as np
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
+
+# Constants
+SAMPLES_PER_MINUTE = 20000 * 60  # 1,200,000 samples at 20 kHz
+BYTES_PER_SAMPLE = 8  # complex64 = 2 x float32
+
+
+@dataclass
+class BinaryArchiveConfig:
+    """Configuration for binary archive writer."""
+    channel_name: str
+    frequency_hz: float
+    sample_rate: int = 20000
+    output_dir: Path = Path('/tmp/grape-test/raw_buffer')
+    station_config: Dict[str, Any] = field(default_factory=dict)
+    compress_completed: bool = False  # Async compression of old minutes
+
+
+@dataclass
+class MinuteBuffer:
+    """Buffer for accumulating one minute of samples."""
+    minute_boundary: int  # Unix timestamp of minute start
+    samples: np.ndarray   # Pre-allocated buffer
+    write_pos: int = 0    # Current write position
+    gap_count: int = 0    # Number of gaps in this minute
+    gap_samples: int = 0  # Total gap samples
+    start_rtp: Optional[int] = None
+    
+    @property
+    def is_complete(self) -> bool:
+        return self.write_pos >= SAMPLES_PER_MINUTE
+    
+    @property
+    def samples_remaining(self) -> int:
+        return max(0, SAMPLES_PER_MINUTE - self.write_pos)
+
+
+class BinaryArchiveWriter:
+    """
+    Simple binary archive writer for Phase 1 raw IQ data.
+    
+    Key features:
+    - Append-only binary files (cannot fail like HDF5)
+    - One file per minute (easy for Phase 2 to read)
+    - Memory-mappable output
+    - No complex library dependencies
+    """
+    
+    def __init__(self, config: BinaryArchiveConfig):
+        self.config = config
+        self.archive_dir = config.output_dir / self._sanitize_channel_name()
+        self.archive_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Current minute buffer
+        self.current_buffer: Optional[MinuteBuffer] = None
+        self._lock = threading.Lock()
+        
+        # Statistics
+        self.minutes_written = 0
+        self.samples_written = 0
+        self.total_gaps = 0
+        self.write_errors = 0
+        
+        # Time reference
+        self.system_time_ref: Optional[float] = None
+        self.last_rtp_timestamp: Optional[int] = None
+        
+        logger.info(f"BinaryArchiveWriter initialized for {config.channel_name}")
+        logger.info(f"  Output: {self.archive_dir}")
+        logger.info(f"  Format: raw complex64 binary + JSON metadata")
+    
+    def _sanitize_channel_name(self) -> str:
+        """Convert channel name to filesystem-safe format."""
+        return self.config.channel_name.replace(' ', '_').replace('.', '_')
+    
+    def _get_minute_dir(self, minute_boundary: int) -> Path:
+        """Get directory for a specific minute."""
+        dt = datetime.fromtimestamp(minute_boundary, tz=timezone.utc)
+        date_str = dt.strftime('%Y%m%d')
+        day_dir = self.archive_dir / date_str
+        day_dir.mkdir(parents=True, exist_ok=True)
+        return day_dir
+    
+    def _start_new_minute(self, system_time: float, rtp_timestamp: int) -> MinuteBuffer:
+        """Start a new minute buffer."""
+        minute_boundary = (int(system_time) // 60) * 60
+        
+        buffer = MinuteBuffer(
+            minute_boundary=minute_boundary,
+            samples=np.zeros(SAMPLES_PER_MINUTE, dtype=np.complex64),
+            write_pos=0,
+            start_rtp=rtp_timestamp
+        )
+        
+        logger.debug(f"Started new minute buffer: {minute_boundary}")
+        return buffer
+    
+    def _flush_minute(self, buffer: MinuteBuffer) -> bool:
+        """Write completed minute buffer to disk."""
+        try:
+            minute_dir = self._get_minute_dir(buffer.minute_boundary)
+            
+            # Binary file path
+            bin_path = minute_dir / f"{buffer.minute_boundary}.bin"
+            json_path = minute_dir / f"{buffer.minute_boundary}.json"
+            
+            # Write binary data (just the filled portion)
+            actual_samples = min(buffer.write_pos, SAMPLES_PER_MINUTE)
+            buffer.samples[:actual_samples].tofile(bin_path)
+            
+            # Write metadata sidecar
+            metadata = {
+                'minute_boundary': buffer.minute_boundary,
+                'channel_name': self.config.channel_name,
+                'frequency_hz': self.config.frequency_hz,
+                'sample_rate': self.config.sample_rate,
+                'samples_written': actual_samples,
+                'samples_expected': SAMPLES_PER_MINUTE,
+                'completeness_pct': 100.0 * actual_samples / SAMPLES_PER_MINUTE,
+                'gap_count': buffer.gap_count,
+                'gap_samples': buffer.gap_samples,
+                'start_rtp_timestamp': buffer.start_rtp,
+                'dtype': 'complex64',
+                'byte_order': 'little',
+                'written_at': datetime.now(timezone.utc).isoformat(),
+                'station': self.config.station_config
+            }
+            
+            with open(json_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            
+            self.minutes_written += 1
+            logger.info(
+                f"📁 Wrote minute {buffer.minute_boundary}: "
+                f"{actual_samples}/{SAMPLES_PER_MINUTE} samples "
+                f"({metadata['completeness_pct']:.1f}%) "
+                f"[{bin_path.name}]"
+            )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to write minute {buffer.minute_boundary}: {e}")
+            self.write_errors += 1
+            return False
+    
+    def write_samples(
+        self,
+        samples: np.ndarray,
+        rtp_timestamp: int,
+        system_time: Optional[float] = None,
+        gap_samples: int = 0
+    ) -> int:
+        """
+        Write IQ samples to the archive.
+        
+        Args:
+            samples: Complex64 IQ samples
+            rtp_timestamp: RTP timestamp of first sample
+            system_time: System wall clock time (uses current if None)
+            gap_samples: Number of gap samples (for statistics)
+            
+        Returns:
+            Number of samples written
+        """
+        with self._lock:
+            if system_time is None:
+                system_time = time.time()
+            
+            # Ensure complex64
+            if samples.dtype != np.complex64:
+                samples = samples.astype(np.complex64)
+            
+            # Determine which minute this belongs to
+            sample_minute = (int(system_time) // 60) * 60
+            
+            # Start new buffer if needed
+            if self.current_buffer is None:
+                self.current_buffer = self._start_new_minute(system_time, rtp_timestamp)
+            
+            # Check if we've crossed into a new minute
+            if sample_minute > self.current_buffer.minute_boundary:
+                # Flush current minute
+                self._flush_minute(self.current_buffer)
+                # Start new minute
+                self.current_buffer = self._start_new_minute(system_time, rtp_timestamp)
+            
+            # Write to buffer
+            buffer = self.current_buffer
+            samples_to_write = min(len(samples), buffer.samples_remaining)
+            
+            if samples_to_write > 0:
+                buffer.samples[buffer.write_pos:buffer.write_pos + samples_to_write] = samples[:samples_to_write]
+                buffer.write_pos += samples_to_write
+                self.samples_written += samples_to_write
+            
+            # Track gaps
+            if gap_samples > 0:
+                buffer.gap_count += 1
+                buffer.gap_samples += gap_samples
+                self.total_gaps += 1
+            
+            # Update time reference
+            self.last_rtp_timestamp = rtp_timestamp
+            
+            # Check if minute is complete
+            if buffer.is_complete:
+                self._flush_minute(buffer)
+                self.current_buffer = None
+            
+            return samples_to_write
+    
+    def flush(self):
+        """Flush any pending data to disk."""
+        with self._lock:
+            if self.current_buffer and self.current_buffer.write_pos > 0:
+                self._flush_minute(self.current_buffer)
+                self.current_buffer = None
+    
+    def close(self):
+        """Close the writer, flushing any pending data."""
+        self.flush()
+        logger.info(
+            f"BinaryArchiveWriter closed: {self.minutes_written} minutes, "
+            f"{self.samples_written} samples, {self.write_errors} errors"
+        )
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get writer statistics."""
+        return {
+            'channel_name': self.config.channel_name,
+            'minutes_written': self.minutes_written,
+            'samples_written': self.samples_written,
+            'total_gaps': self.total_gaps,
+            'write_errors': self.write_errors,
+            'current_buffer_pos': self.current_buffer.write_pos if self.current_buffer else 0
+        }
+
+
+class BinaryArchiveReader:
+    """
+    Reader for binary archive files.
+    
+    Provides memory-mapped access for zero-copy reading by Phase 2.
+    """
+    
+    def __init__(self, archive_dir: Path, channel_name: str):
+        self.archive_dir = archive_dir / channel_name.replace(' ', '_').replace('.', '_')
+        self.channel_name = channel_name
+        self.sample_rate = 20000
+    
+    def get_available_minutes(self, date_str: Optional[str] = None) -> List[int]:
+        """Get list of available minute boundaries."""
+        if date_str is None:
+            date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
+        
+        day_dir = self.archive_dir / date_str
+        if not day_dir.exists():
+            return []
+        
+        minutes = []
+        for bin_file in day_dir.glob('*.bin'):
+            try:
+                minute = int(bin_file.stem)
+                minutes.append(minute)
+            except ValueError:
+                pass
+        
+        return sorted(minutes)
+    
+    def read_minute(self, minute_boundary: int) -> Optional[np.ndarray]:
+        """
+        Read samples for a specific minute.
+        
+        Returns memory-mapped array for zero-copy access.
+        """
+        dt = datetime.fromtimestamp(minute_boundary, tz=timezone.utc)
+        date_str = dt.strftime('%Y%m%d')
+        bin_path = self.archive_dir / date_str / f"{minute_boundary}.bin"
+        
+        if not bin_path.exists():
+            return None
+        
+        # Memory-map for zero-copy reading
+        return np.memmap(bin_path, dtype=np.complex64, mode='r')
+    
+    def read_metadata(self, minute_boundary: int) -> Optional[Dict]:
+        """Read metadata for a specific minute."""
+        dt = datetime.fromtimestamp(minute_boundary, tz=timezone.utc)
+        date_str = dt.strftime('%Y%m%d')
+        json_path = self.archive_dir / date_str / f"{minute_boundary}.json"
+        
+        if not json_path.exists():
+            return None
+        
+        with open(json_path) as f:
+            return json.load(f)
+    
+    def get_latest_complete_minute(self) -> Optional[int]:
+        """Get the most recent complete minute boundary."""
+        # Current minute is still being written, so go back 1
+        current_minute = (int(time.time()) // 60) * 60
+        target = current_minute - 60
+        
+        # Check if it exists
+        if self.read_minute(target) is not None:
+            return target
+        
+        # Fall back to scanning
+        minutes = self.get_available_minutes()
+        if minutes:
+            # Return second-to-last (last might be incomplete)
+            return minutes[-2] if len(minutes) > 1 else minutes[-1]
+        
+        return None
