@@ -161,6 +161,14 @@ class ChannelCharacterization:
     harmonic_ratio_500_1000: Optional[float] = None  # P_1000/P_500 in dB
     harmonic_ratio_600_1200: Optional[float] = None  # P_1200/P_600 in dB
     
+    # BCD Intermodulation analysis (Vote 13)
+    # 400 Hz = 500-100 (WWV signature), 700 Hz = 600+100 (WWVH signature)
+    intermod_power_400_hz_db: Optional[float] = None  # WWV BCD sideband
+    intermod_power_700_hz_db: Optional[float] = None  # WWVH BCD sideband
+    intermod_ratio_400_700_db: Optional[float] = None  # WWV vs WWVH intermod signature
+    intermod_dominant_station: Optional[str] = None    # From intermod analysis
+    intermod_confidence: float = 0.0
+    
     # Test signal analysis (minutes 8 and 44 only)
     test_signal_detected: bool = False
     test_signal_fss_db: Optional[float] = None  # Frequency Selectivity Score (D-layer indicator)

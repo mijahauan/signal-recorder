@@ -124,6 +124,11 @@ class Phase2AnalyticsService:
         self.discrimination_dir.mkdir(parents=True, exist_ok=True)
         self._init_discrimination_csv()
         
+        # Audio tone monitor (500/600 Hz + intermodulation)
+        self.audio_tones_dir = self.output_dir / 'audio_tones'
+        self.audio_tones_dir.mkdir(parents=True, exist_ok=True)
+        self._init_audio_tones_csv()
+        
         # Decimated 10 Hz output directory (Phase 3 products)
         self.decimated_dir = self.output_dir / 'decimated'
         self.decimated_dir.mkdir(parents=True, exist_ok=True)
@@ -646,6 +651,63 @@ class Phase2AnalyticsService:
         except Exception as e:
             logger.error(f"Failed to write discrimination: {e}")
     
+    def _init_audio_tones_csv(self):
+        """Initialize audio tones CSV for continuous 500/600 Hz + intermodulation monitoring."""
+        today = datetime.now(timezone.utc).strftime('%Y%m%d')
+        file_channel = self._get_file_channel_name()
+        self.audio_tones_csv = self.audio_tones_dir / f'{file_channel}_audio_tones_{today}.csv'
+        
+        if not self.audio_tones_csv.exists():
+            with open(self.audio_tones_csv, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'timestamp_utc', 'minute_boundary',
+                    'power_400_hz_db', 'power_500_hz_db', 'power_600_hz_db', 'power_700_hz_db',
+                    'power_1000_hz_db', 'power_1200_hz_db',
+                    'ratio_500_600_db', 'ratio_400_700_db',
+                    'wwv_intermod_db', 'wwvh_intermod_db',
+                    'intermod_dominant', 'intermod_confidence'
+                ])
+            logger.info(f"Created audio tones CSV: {self.audio_tones_csv}")
+    
+    def _write_audio_tones(self, minute_boundary: int, iq_samples: np.ndarray):
+        """Analyze and write audio tone powers with intermodulation."""
+        try:
+            from .audio_tone_monitor import AudioToneMonitor
+            
+            today = datetime.now(timezone.utc).strftime('%Y%m%d')
+            file_channel = self._get_file_channel_name()
+            expected_csv = self.audio_tones_dir / f'{file_channel}_audio_tones_{today}.csv'
+            if self.audio_tones_csv != expected_csv:
+                self.audio_tones_csv = expected_csv
+                self._init_audio_tones_csv()
+            
+            # Analyze audio tones
+            monitor = AudioToneMonitor(self.channel_name, self.sample_rate)
+            analysis = monitor.analyze_minute(iq_samples, minute_boundary)
+            
+            with open(self.audio_tones_csv, 'a', newline='') as f:
+                writer = csv.writer(f)
+                utc_time = datetime.fromtimestamp(minute_boundary, timezone.utc).isoformat()
+                writer.writerow([
+                    utc_time,
+                    minute_boundary,
+                    round(analysis.power_400_hz_db, 2),
+                    round(analysis.power_500_hz_db, 2),
+                    round(analysis.power_600_hz_db, 2),
+                    round(analysis.power_700_hz_db, 2),
+                    round(analysis.power_1000_hz_db, 2),
+                    round(analysis.power_1200_hz_db, 2),
+                    round(analysis.ratio_500_600_db, 2),
+                    round(analysis.ratio_400_700_db, 2),
+                    round(analysis.wwv_intermod_500_to_600_db, 2),
+                    round(analysis.wwvh_intermod_600_to_500_db, 2),
+                    analysis.intermod_dominant_station or '',
+                    round(analysis.intermod_confidence, 3) if analysis.intermod_confidence else ''
+                ])
+        except Exception as e:
+            logger.error(f"Failed to write audio tones: {e}")
+    
     def _read_drf_minute(self, target_minute: int):
         """
         Read one minute of data from the binary archive (or DRF fallback).
@@ -1129,6 +1191,9 @@ class Phase2AnalyticsService:
             minute_number = (minute_boundary // 60) % 60
             if minute_number in [8, 44]:
                 self._write_test_signal(minute_boundary, iq_samples, minute_number)
+            
+            # Write audio tones (500/600 Hz + intermodulation) for every minute
+            self._write_audio_tones(minute_boundary, iq_samples)
             
             return True
                 
