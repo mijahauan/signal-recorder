@@ -167,6 +167,16 @@ class GRAPEPaths {
         return join(this.getPhase2Dir(channelName), 'doppler');
     }
     
+    /**
+     * Get audio tones directory (500/600 Hz + BCD intermodulation analysis).
+     * 
+     * @param {string} channelName - Channel name
+     * @returns {string} Path: {data_root}/phase2/{CHANNEL}/audio_tones/
+     */
+    getAudioTonesDir(channelName) {
+        return join(this.getPhase2Dir(channelName), 'audio_tones');
+    }
+    
     // ========================================================================
     // Phase 2 Analytics Paths (Per-channel analytical results)
     // These methods provide convenient aliases to Phase 2 paths

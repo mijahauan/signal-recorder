@@ -487,6 +487,33 @@ function renderAllMethods(data) {
       </div>
     </div>
     
+    <!-- Vote 13: BCD Intermodulation Signature -->
+    <div class="method-card full-width">
+      <div class="method-header">
+        <div class="method-title">Vote 13: BCD Intermodulation Signature</div>
+        <div class="method-badge">400/700 Hz</div>
+      </div>
+      <div class="chart-container" id="chart-intermod"></div>
+      <div class="insight-grid">
+        <div class="insight-card">
+          <div class="insight-label">Records</div>
+          <div class="insight-value">${data.methods.audio_tones?.count || 0}</div>
+        </div>
+        <div class="insight-card">
+          <div class="insight-label">WWV (400 Hz)</div>
+          <div class="insight-value wwv">${countIntermodStation(data.methods.audio_tones?.records, 'WWV')}</div>
+        </div>
+        <div class="insight-card">
+          <div class="insight-label">WWVH (700 Hz)</div>
+          <div class="insight-value wwvh">${countIntermodStation(data.methods.audio_tones?.records, 'WWVH')}</div>
+        </div>
+        <div class="insight-card">
+          <div class="insight-label">Avg Confidence</div>
+          <div class="insight-value">${calcAvgIntermodConfidence(data.methods.audio_tones?.records)}</div>
+        </div>
+      </div>
+    </div>
+    
     <!-- Final: Weighted Voting (Full Width) -->
     <div class="method-card full-width">
       <div class="method-header">
@@ -529,6 +556,7 @@ function renderAllMethods(data) {
   renderDopplerChart(data.methods.doppler, utcDate);
   renderHarmonicRatioChart(data.methods.harmonic_ratio, utcDate);
   renderChannelQualityChart(data.methods.test_signal, utcDate);
+  renderIntermodChart(data.methods.audio_tones, utcDate);
   // Pass tick and tone data for SNR comparison chart
   renderVotingChart(data.methods.weighted_voting, utcDate, data.methods.tick_windows, data.methods.timing_tones);
   renderDetectionTypePie(data.methods.weighted_voting);
@@ -1063,6 +1091,153 @@ function renderVotingChart(method, utcDate, tickData, toneData) {
 function countStation(records, station) {
   if (!records) return 0;
   return records.filter(r => r.dominant_station === station).length;
+}
+
+function countIntermodStation(records, station) {
+  if (!records) return 0;
+  return records.filter(r => r.intermod_dominant === station).length;
+}
+
+function calcAvgIntermodConfidence(records) {
+  if (!records || records.length === 0) return '0%';
+  const valid = records.filter(r => r.intermod_confidence && r.intermod_confidence > 0);
+  if (valid.length === 0) return '0%';
+  const avg = valid.reduce((sum, r) => sum + r.intermod_confidence, 0) / valid.length;
+  return (avg * 100).toFixed(0) + '%';
+}
+
+function renderIntermodChart(method, utcDate) {
+  const container = document.getElementById('chart-intermod');
+  if (!container) return;
+  
+  if (!method || !method.records || method.records.length === 0) {
+    container.innerHTML = '<p style="padding: 20px; text-align: center; color: #7f8c8d;">No intermod data available</p>';
+    return;
+  }
+  
+  // Sort records by timestamp
+  const sortedRecords = [...method.records].sort((a, b) => 
+    new Date(a.timestamp_utc) - new Date(b.timestamp_utc)
+  );
+  
+  const timestamps = sortedRecords.map(r => r.timestamp_utc);
+  const power400 = sortedRecords.map(r => r.power_400_hz_db);
+  const power700 = sortedRecords.map(r => r.power_700_hz_db);
+  const ratio = sortedRecords.map(r => r.ratio_400_700_db);
+  
+  // Determine station from intermod (considering schedule flip)
+  const colors = sortedRecords.map(r => {
+    if (r.intermod_dominant === 'WWV') return COLORS.wwv;
+    if (r.intermod_dominant === 'WWVH') return COLORS.wwvh;
+    return '#7f8c8d';  // Gray for unknown
+  });
+  
+  const theme = getThemeColors();
+  const layoutDefaults = getPlotlyLayoutDefaults();
+  
+  const traces = [
+    {
+      x: timestamps,
+      y: power400,
+      name: '400 Hz (500-100)',
+      type: 'scatter',
+      mode: 'lines+markers',
+      line: { color: COLORS.wwv, width: 2 },
+      marker: { size: 4 }
+    },
+    {
+      x: timestamps,
+      y: power700,
+      name: '700 Hz (600+100)',
+      type: 'scatter',
+      mode: 'lines+markers',
+      line: { color: COLORS.wwvh, width: 2 },
+      marker: { size: 4 }
+    },
+    {
+      x: timestamps,
+      y: ratio,
+      name: '400/700 Ratio (dB)',
+      type: 'scatter',
+      mode: 'lines',
+      line: { color: COLORS.accent, width: 1, dash: 'dot' },
+      yaxis: 'y2'
+    }
+  ];
+  
+  // Add solar elevation if available
+  if (solarZenithData && solarZenithData.timestamps) {
+    traces.push({
+      x: solarZenithData.timestamps,
+      y: solarZenithData.wwv_solar_elevation,
+      name: 'Solar Elev. (WWV path)',
+      type: 'scatter',
+      mode: 'lines',
+      line: { color: COLORS.solarWwv, width: 1, dash: 'dash' },
+      yaxis: 'y3',
+      opacity: 0.5
+    });
+    traces.push({
+      x: solarZenithData.timestamps,
+      y: solarZenithData.wwvh_solar_elevation,
+      name: 'Solar Elev. (WWVH path)',
+      type: 'scatter',
+      mode: 'lines',
+      line: { color: COLORS.solarWwvh, width: 1, dash: 'dash' },
+      yaxis: 'y3',
+      opacity: 0.5
+    });
+  }
+  
+  const layout = {
+    ...layoutDefaults,
+    title: { text: 'BCD Intermod Sidebands (400 Hz = WWV*, 700 Hz = WWVH*)', ...layoutDefaults.title },
+    xaxis: { 
+      ...layoutDefaults.xaxis,
+      range: getDayRange(utcDate),
+      title: 'Time (UTC)',
+      type: 'date'
+    },
+    yaxis: {
+      ...layoutDefaults.yaxis,
+      title: 'Power (dB)',
+      gridcolor: theme.grid
+    },
+    yaxis2: {
+      title: 'Ratio (dB)',
+      overlaying: 'y',
+      side: 'right',
+      showgrid: false,
+      zeroline: true,
+      zerolinecolor: theme.grid,
+      tickfont: { color: COLORS.accent }
+    },
+    yaxis3: {
+      title: 'Solar Elev. (°)',
+      overlaying: 'y',
+      side: 'right',
+      position: 0.95,
+      showgrid: false,
+      visible: false
+    },
+    legend: {
+      orientation: 'h',
+      y: -0.15,
+      font: { color: theme.text, size: 10 }
+    },
+    margin: { t: 40, r: 60, b: 60, l: 50 },
+    annotations: [{
+      x: 0.5,
+      y: -0.25,
+      xref: 'paper',
+      yref: 'paper',
+      text: '*Mapping depends on tone schedule (400 Hz = 500-100, 700 Hz = 600+100)',
+      showarrow: false,
+      font: { size: 10, color: theme.textMuted }
+    }]
+  };
+  
+  Plotly.newPlot('chart-intermod', traces, layout, PLOTLY_CONFIG);
 }
 
 function renderDopplerChart(method, utcDate) {

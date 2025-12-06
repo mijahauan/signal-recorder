@@ -4230,6 +4230,34 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
     count: harmonicRecords.length
   };
   
+  // 8. Load audio tones (Vote 13: BCD Intermodulation Signature)
+  // Phase 2 CSV columns: timestamp_utc, minute_boundary, power_400_hz_db, power_500_hz_db,
+  //              power_600_hz_db, power_700_hz_db, power_1000_hz_db, power_1200_hz_db,
+  //              ratio_500_600_db, ratio_400_700_db, wwv_intermod_db, wwvh_intermod_db,
+  //              intermod_dominant, intermod_confidence
+  const audioTonesPath = join(paths.getAudioTonesDir(channelName), `${fileChannelName}_audio_tones_${date}.csv`);
+  const audioTonesData = parseCSV(audioTonesPath);
+  result.methods.audio_tones = {
+    status: audioTonesData.status,
+    records: audioTonesData.records.map(r => ({
+      timestamp_utc: r.timestamp_utc,
+      minute_boundary: parseInt(r.minute_boundary) || 0,
+      power_400_hz_db: parseFloat(r.power_400_hz_db) || null,
+      power_500_hz_db: parseFloat(r.power_500_hz_db) || null,
+      power_600_hz_db: parseFloat(r.power_600_hz_db) || null,
+      power_700_hz_db: parseFloat(r.power_700_hz_db) || null,
+      power_1000_hz_db: parseFloat(r.power_1000_hz_db) || null,
+      power_1200_hz_db: parseFloat(r.power_1200_hz_db) || null,
+      ratio_500_600_db: parseFloat(r.ratio_500_600_db) || 0,
+      ratio_400_700_db: parseFloat(r.ratio_400_700_db) || 0,
+      wwv_intermod_db: parseFloat(r.wwv_intermod_db) || null,
+      wwvh_intermod_db: parseFloat(r.wwvh_intermod_db) || null,
+      intermod_dominant: r.intermod_dominant || null,
+      intermod_confidence: parseFloat(r.intermod_confidence) || 0
+    })),
+    count: audioTonesData.count
+  };
+  
   return result;
 }
 
