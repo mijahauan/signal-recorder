@@ -4019,7 +4019,8 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
  * Stream audio from IQ-derived buffer files
  */
 app.get('/api/v1/audio/simple/:channel', (req, res) => {
-  const channelName = req.params.channel.replace(/_/g, ' ');
+  const channelKey = req.params.channel;  // Keep underscores for URL
+  const channelName = channelKey.replace(/_/g, ' ');  // Convert to spaces for file
   
   // Audio buffer file paths (files use channel name with spaces)
   const audioDir = join(paths.dataRoot, 'audio_buffers');
