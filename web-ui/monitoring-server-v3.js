@@ -4020,12 +4020,11 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
  */
 app.get('/api/v1/audio/simple/:channel', (req, res) => {
   const channelName = req.params.channel.replace(/_/g, ' ');
-  const channelKey = channelName.replace(/ /g, '_');
   
-  // Audio buffer file paths
+  // Audio buffer file paths (files use channel name with spaces)
   const audioDir = join(paths.dataRoot, 'audio_buffers');
-  const pcmFile = join(audioDir, `${channelKey}.pcm`);
-  const metaFile = join(audioDir, `${channelKey}.meta`);
+  const pcmFile = join(audioDir, `${channelName}.pcm`);
+  const metaFile = join(audioDir, `${channelName}.meta`);
   
   // Check if buffer exists
   if (!fs.existsSync(pcmFile)) {
@@ -4810,13 +4809,14 @@ server.on('upgrade', (request, socket, head) => {
   // Simple audio WebSocket (IQ-derived)
   if (url.pathname.startsWith('/api/v1/audio/simple-ws/')) {
     const channelKey = url.pathname.split('/').pop();
+    const channelName = channelKey.replace(/_/g, ' ');  // Convert back to spaces
     
     wss.handleUpgrade(request, socket, head, (ws) => {
-      console.log(`🔊 Simple audio WebSocket connected: ${channelKey}`);
+      console.log(`🔊 Simple audio WebSocket connected: ${channelName}`);
       
       const audioDir = join(paths.dataRoot, 'audio_buffers');
-      const pcmFile = join(audioDir, `${channelKey}.pcm`);
-      const metaFile = join(audioDir, `${channelKey}.meta`);
+      const pcmFile = join(audioDir, `${channelName}.pcm`);
+      const metaFile = join(audioDir, `${channelName}.meta`);
       
       const sessionId = `${channelKey}-${Date.now()}`;
       let lastReadPos = 0;
