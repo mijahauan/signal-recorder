@@ -817,6 +817,9 @@
         this.sampleRate = 8000;  // Simple audio buffer sample rate
         this.bufferQueue = [];
         this.nextPlayTime = 0;
+        this.bufferDelay = 0.5;  // 500ms buffer delay for smoothing
+        this.isBuffering = true;
+        this.bufferedSeconds = 0;
         
         // UI elements
         this.panelEl = document.getElementById('audio-player');
@@ -862,8 +865,11 @@
           this.ws.onopen = () => {
             console.log(`🔊 Simple audio connected for ${channelName}`);
             this.isPlaying = true;
-            this.nextPlayTime = this.audioContext.currentTime;
-            this.updateUI('playing', `Playing ${channelName}`);
+            this.isBuffering = true;
+            this.bufferedSeconds = 0;
+            this.bufferQueue = [];
+            this.nextPlayTime = this.audioContext.currentTime + this.bufferDelay;
+            this.updateUI('playing', `Buffering ${channelName}...`);
             this.updateButton(channelName, 'playing');
           };
           
@@ -910,15 +916,40 @@
         const audioBuffer = this.audioContext.createBuffer(1, float32Data.length, this.sampleRate);
         audioBuffer.getChannelData(0).set(float32Data);
         
-        // Schedule playback
+        // Queue buffer during initial buffering phase
+        this.bufferQueue.push(audioBuffer);
+        this.bufferedSeconds += audioBuffer.duration;
+        
+        // Start playback once we have enough buffered
+        if (this.isBuffering && this.bufferedSeconds >= this.bufferDelay) {
+          this.isBuffering = false;
+          this.updateUI('playing', `Playing ${this.currentChannel}`);
+          this.drainBufferQueue();
+        } else if (!this.isBuffering) {
+          // Direct playback once buffering is done
+          this.scheduleBuffer(this.bufferQueue.shift());
+        }
+      }
+      
+      drainBufferQueue() {
+        // Schedule all queued buffers
+        while (this.bufferQueue.length > 0) {
+          this.scheduleBuffer(this.bufferQueue.shift());
+        }
+      }
+      
+      scheduleBuffer(audioBuffer) {
+        if (!audioBuffer || !this.audioContext) return;
+        
         const source = this.audioContext.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(this.audioContext.destination);
         
-        // Ensure continuous playback
+        // Ensure continuous playback with buffer margin
         const now = this.audioContext.currentTime;
         if (this.nextPlayTime < now) {
-          this.nextPlayTime = now;
+          // Fell behind - reset with small delay
+          this.nextPlayTime = now + 0.05;
         }
         
         source.start(this.nextPlayTime);
