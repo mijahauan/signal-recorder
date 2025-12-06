@@ -4412,6 +4412,143 @@ app.get('/api/v1/audio/channels', (req, res) => {
 });
 
 // ============================================================================
+// SIMPLE AUDIO STREAMING (IQ-Based)
+// ============================================================================
+// New simplified audio system - reads from IQ-derived audio buffers
+// Much simpler than the radiod RTP/multicast approach
+
+/**
+ * GET /api/v1/audio/simple/:channel
+ * Stream audio from IQ-derived buffer files
+ */
+app.get('/api/v1/audio/simple/:channel', (req, res) => {
+  const channelName = req.params.channel.replace(/_/g, ' ');
+  const channelKey = channelName.replace(/ /g, '_');
+  
+  // Audio buffer file paths
+  const audioDir = join(paths.dataRoot, 'audio_buffers');
+  const pcmFile = join(audioDir, `${channelKey}.pcm`);
+  const metaFile = join(audioDir, `${channelKey}.meta`);
+  
+  // Check if buffer exists
+  if (!existsSync(pcmFile)) {
+    return res.status(404).json({
+      success: false,
+      error: `No audio buffer for channel: ${channelName}`,
+      hint: 'Audio buffers are created by the recording pipeline'
+    });
+  }
+  
+  res.json({
+    success: true,
+    channel: channelName,
+    sample_rate: 8000,
+    format: 'pcm_s16le',
+    websocket: `ws://${req.headers.host}/api/v1/audio/simple-ws/${channelKey}`
+  });
+});
+
+// Simple audio WebSocket sessions
+const simpleAudioSessions = new Map();
+
+// WebSocket upgrade handler for simple audio
+server.on('upgrade', (request, socket, head) => {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  
+  // Handle simple audio WebSocket
+  if (url.pathname.startsWith('/api/v1/audio/simple-ws/')) {
+    const channelKey = url.pathname.split('/').pop();
+    
+    wsServer.handleUpgrade(request, socket, head, (ws) => {
+      console.log(`🔊 Simple audio WebSocket connected: ${channelKey}`);
+      
+      const audioDir = join(paths.dataRoot, 'audio_buffers');
+      const pcmFile = join(audioDir, `${channelKey}.pcm`);
+      const metaFile = join(audioDir, `${channelKey}.meta`);
+      
+      // Track session
+      const sessionId = `${channelKey}-${Date.now()}`;
+      let lastReadPos = 0;
+      let isStreaming = true;
+      
+      // Read and stream audio
+      const streamInterval = setInterval(() => {
+        if (!isStreaming) return;
+        
+        try {
+          // Read metadata to get current write position
+          if (!existsSync(metaFile)) return;
+          
+          const metaBuf = readFileSync(metaFile);
+          const writePos = metaBuf.readUInt32LE(0);
+          const sampleRate = metaBuf.readUInt32LE(4);
+          const bufferSamples = metaBuf.readUInt32LE(8);
+          
+          // Read new samples since last read
+          const pcmBuf = readFileSync(pcmFile);
+          
+          // Calculate how many new samples to read
+          let samplesToRead;
+          if (writePos >= lastReadPos) {
+            samplesToRead = writePos - lastReadPos;
+          } else {
+            // Wrapped around
+            samplesToRead = (bufferSamples - lastReadPos) + writePos;
+          }
+          
+          if (samplesToRead > 0 && samplesToRead < bufferSamples) {
+            // Extract the new samples (each sample is 2 bytes - int16)
+            const startByte = lastReadPos * 2;
+            const endByte = (lastReadPos + samplesToRead) * 2;
+            
+            let audioData;
+            if (endByte <= pcmBuf.length) {
+              audioData = pcmBuf.slice(startByte, endByte);
+            } else {
+              // Handle wraparound
+              const part1 = pcmBuf.slice(startByte);
+              const part2 = pcmBuf.slice(0, endByte - pcmBuf.length);
+              audioData = Buffer.concat([part1, part2]);
+            }
+            
+            // Send to WebSocket
+            if (ws.readyState === 1) { // WebSocket.OPEN
+              ws.send(audioData);
+            }
+            
+            lastReadPos = writePos;
+          }
+        } catch (err) {
+          // Silently ignore read errors
+        }
+      }, 100); // 100ms chunks = 800 samples at 8kHz
+      
+      simpleAudioSessions.set(sessionId, { ws, interval: streamInterval });
+      
+      ws.on('close', () => {
+        console.log(`🔇 Simple audio WebSocket closed: ${channelKey}`);
+        isStreaming = false;
+        clearInterval(streamInterval);
+        simpleAudioSessions.delete(sessionId);
+      });
+      
+      ws.on('error', (err) => {
+        console.error(`❌ Simple audio WebSocket error: ${err.message}`);
+        isStreaming = false;
+        clearInterval(streamInterval);
+        simpleAudioSessions.delete(sessionId);
+      });
+    });
+    return;
+  }
+  
+  // Handle other WebSocket upgrades (existing audio WS)
+  if (url.pathname.startsWith('/api/v1/audio/ws/')) {
+    // ... existing handler continues below
+  }
+});
+
+// ============================================================================
 // HEALTH CHECK
 // ============================================================================
 
@@ -4419,7 +4556,7 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     uptime: Date.now() - serverStartTime,
-    version: '3.1.0'  // Bumped for audio support
+    version: '3.2.0'  // Bumped for simple audio support
   });
 });
 

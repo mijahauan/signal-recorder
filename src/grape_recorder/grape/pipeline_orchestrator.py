@@ -187,6 +187,13 @@ class PipelineOrchestrator:
         self.product_generator = None
         logger.info("Phase 3 streaming disabled - use batch processing via grape-phase3.sh")
         
+        # Audio buffer for web UI playback (simple AM demod from IQ)
+        from .audio_buffer import AudioBufferManager
+        self.audio_buffer_manager = AudioBufferManager(
+            data_root=str(config.data_dir),
+            sample_rate=config.sample_rate
+        )
+        
         # Sample accumulation for minute-aligned processing
         self.samples_per_minute = config.sample_rate * 60
         self.current_minute_samples: List[np.ndarray] = []
@@ -308,6 +315,13 @@ class PipelineOrchestrator:
             system_time=system_time
         )
         self.stats['samples_archived'] += samples_written
+        
+        # Write to audio buffer for web UI playback
+        try:
+            self.audio_buffer_manager.write_iq(self.config.channel_name, samples)
+        except Exception as e:
+            # Don't let audio buffer errors affect main pipeline
+            pass
         
         # NOTE: Minute accumulation disabled for performance
         # Phase 2 reads directly from archive - no need to buffer in memory

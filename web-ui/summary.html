@@ -812,10 +812,9 @@
         this.ws = null;
         this.audioContext = null;
         this.currentChannel = null;
-        this.currentSSRC = null;
         this.volume = 0.8;
         this.isPlaying = false;
-        this.sampleRate = 12000;  // ka9q-radio audio sample rate
+        this.sampleRate = 8000;  // Simple audio buffer sample rate
         this.bufferQueue = [];
         this.nextPlayTime = 0;
         
@@ -839,17 +838,16 @@
         this.updateButton(channelName, 'loading');
         
         try {
-          // Request audio stream from server
+          // Request simple audio stream (IQ-derived)
           const channelKey = channelName.replace(/ /g, '_');
-          const response = await fetch(`/api/v1/audio/stream/${channelKey}`);
+          const response = await fetch(`/api/v1/audio/simple/${channelKey}`);
           const data = await response.json();
           
           if (!data.success) {
-            throw new Error(data.error || 'Failed to start stream');
+            throw new Error(data.error || 'No audio buffer available');
           }
           
-          this.currentSSRC = data.ssrc;
-          this.sampleRate = data.sample_rate || 12000;
+          this.sampleRate = data.sample_rate || 8000;
           
           // Initialize Web Audio API
           this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
@@ -857,13 +855,12 @@
           });
           
           // Connect WebSocket for audio data
-          const wsUrl = data.websocket.replace('http:', 'ws:').replace('https:', 'wss:');
+          const wsUrl = data.websocket;
           this.ws = new WebSocket(wsUrl);
           this.ws.binaryType = 'arraybuffer';
           
           this.ws.onopen = () => {
-            console.log(`🔊 Audio WebSocket connected for ${channelName}`);
-            this.ws.send('A:START');
+            console.log(`🔊 Simple audio connected for ${channelName}`);
             this.isPlaying = true;
             this.nextPlayTime = this.audioContext.currentTime;
             this.updateUI('playing', `Playing ${channelName}`);
@@ -877,7 +874,7 @@
           };
           
           this.ws.onclose = () => {
-            console.log(`👋 Audio WebSocket closed for ${channelName}`);
+            console.log(`👋 Audio closed for ${channelName}`);
             if (this.isPlaying) {
               this.updateUI('stopped', 'Connection closed');
               this.isPlaying = false;
@@ -885,8 +882,8 @@
           };
           
           this.ws.onerror = (error) => {
-            console.error('❌ Audio WebSocket error:', error);
-            this.updateUI('error', 'WebSocket error');
+            console.error('❌ Audio error:', error);
+            this.updateUI('error', 'Connection error');
             this.updateButton(channelName, 'error');
           };
           
@@ -929,8 +926,8 @@
       }
       
       async stop() {
+        // Close WebSocket (server will clean up automatically)
         if (this.ws) {
-          this.ws.send('A:STOP');
           this.ws.close();
           this.ws = null;
         }
@@ -940,19 +937,9 @@
           this.audioContext = null;
         }
         
-        // Delete stream on server
-        if (this.currentSSRC) {
-          try {
-            await fetch(`/api/v1/audio/stream/${this.currentSSRC}`, { method: 'DELETE' });
-          } catch (e) {
-            console.warn('Failed to stop server stream:', e);
-          }
-        }
-        
         const oldChannel = this.currentChannel;
         this.isPlaying = false;
         this.currentChannel = null;
-        this.currentSSRC = null;
         
         this.updateUI('stopped', 'Stopped');
         this.hidePanel();
