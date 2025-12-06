@@ -671,39 +671,36 @@
       `;
     }
     
-    // Render propagation paths (simple: station, distance, bearing)
-    function renderPropagation(data) {
-      if (!data || !data.paths || data.paths.length === 0) {
+    // Render reception matrix (all 13 broadcasts from 3 stations)
+    // Now includes station info (distance, bearing) in column headers
+    function renderReceptionMatrix(data, propagation) {
+      if (!data || !data.channels || data.channels.length === 0) {
         return '';
       }
       
-      const colors = { 'WWV': '#10b981', 'WWVH': '#3b82f6', 'CHU': '#f59e0b' };
+      // Build station info lookup from propagation paths
+      const stationInfo = {};
+      if (propagation && propagation.paths) {
+        propagation.paths.forEach(p => {
+          stationInfo[p.station] = {
+            distance: p.distance_km.toFixed(0) + ' km',
+            bearing: p.bearing.toFixed(0) + '°',
+            location: p.location
+          };
+        });
+      }
       
-      const rows = data.paths.map(p => {
-        const color = colors[p.station] || '#94a3b8';
-        const bearing = p.bearing.toFixed(0) + '°';
-        const dist = p.distance_km.toFixed(0) + ' km';
-        return '<div style="display: flex; align-items: center; gap: 15px; padding: 10px; background: #1e293b; border-radius: 6px; border-left: 3px solid ' + color + ';">' +
-          '<div style="font-weight: 600; color: ' + color + '; width: 60px;">' + p.station + '</div>' +
-          '<div style="color: #94a3b8; font-size: 13px; flex: 1;">' + p.location + '</div>' +
-          '<div style="text-align: right; font-size: 13px;">' +
-            '<span style="color: #e2e8f0;">' + dist + '</span>' +
-            '<span style="color: #64748b; margin-left: 10px;">' + bearing + '</span>' +
-          '</div>' +
-        '</div>';
-      }).join('');
-      
-      return '<div class="section">' +
-        '<div class="section-title">📡 Time Standard Stations</div>' +
-        '<div style="font-size: 13px; color: #94a3b8; margin-bottom: 10px;">Distance and bearing from ' + (data.receiver_grid || 'receiver') + '</div>' +
-        '<div style="display: flex; flex-direction: column; gap: 8px;">' + rows + '</div>' +
-      '</div>';
-    }
-    
-    // Render reception matrix (all 13 broadcasts from 3 stations)
-    function renderReceptionMatrix(data) {
-      if (!data || !data.channels || data.channels.length === 0) {
-        return '';
+      // Helper to build column header with station info
+      function stationHeader(station, color) {
+        const info = stationInfo[station];
+        if (info) {
+          return '<th style="text-align: center; min-width: 90px;">' +
+            '<div style="color: ' + color + '; font-weight: 700; font-size: 14px;">' + station + '</div>' +
+            '<div style="color: #94a3b8; font-size: 11px; font-weight: 400;">' + info.distance + '</div>' +
+            '<div style="color: #64748b; font-size: 10px; font-weight: 400;">' + info.bearing + '</div>' +
+          '</th>';
+        }
+        return '<th style="text-align: center; color: ' + color + ';">' + station + '</th>';
       }
       
       function snrBadge(snr, detected) {
@@ -736,14 +733,14 @@
       
       return '<div class="section">' +
         '<div class="section-title">📻 Station-Channel Reception Matrix</div>' +
-        '<div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px;">Signal strength (dB) for all 13 broadcasts from WWV, WWVH, and CHU</div>' +
+        '<div style="font-size: 13px; color: #94a3b8; margin-bottom: 15px;">Signal strength (dB) • Distance/bearing from receiver</div>' +
         '<div style="overflow-x: auto;">' +
           '<table class="channels-table" style="width: 100%;">' +
             '<thead><tr>' +
               '<th>Channel</th>' +
-              '<th style="text-align: center; color: #10b981;">WWV</th>' +
-              '<th style="text-align: center; color: #3b82f6;">WWVH</th>' +
-              '<th style="text-align: center; color: #f59e0b;">CHU</th>' +
+              stationHeader('WWV', '#10b981') +
+              stationHeader('WWVH', '#3b82f6') +
+              stationHeader('CHU', '#f59e0b') +
               '<th style="text-align: center;">Dominant</th>' +
             '</tr></thead>' +
             '<tbody>' + rows + '</tbody>' +
@@ -773,15 +770,12 @@
         html += renderContinuity(data.continuity);
         html += '</div>';
         
-        // Propagation paths (station-specific)
-        html += renderPropagation(propagation);
-        
         // Sort channels by frequency before rendering
         const sortedChannels = window.GRAPE_UTILS.sortByChannelFrequency(data.channels || [], 'name');
         html += renderChannels(sortedChannels);
         
-        // Reception matrix (all 13 broadcasts)
-        html += renderReceptionMatrix(receptionMatrix);
+        // Reception matrix (all 13 broadcasts) - now includes station info in headers
+        html += renderReceptionMatrix(receptionMatrix, propagation);
         
         document.getElementById('content').innerHTML = html;
         document.getElementById('last-update').textContent = UTCTime.now() + ' UTC';
