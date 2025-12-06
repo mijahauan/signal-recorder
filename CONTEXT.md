@@ -1,95 +1,158 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-05  
-**Version:** 3.9.0  
-**Status:** ✅ Multi-Broadcast Fusion Complete, Timing Dashboards Consolidated
+**Last Updated:** 2025-12-06  
+**Version:** 3.10.0  
+**Status:** ✅ Simplified Audio, Discrimination Docs Complete
 
 ---
 
-## 🎯 CURRENT SESSION: DISCRIMINATION DISPLAY IMPROVEMENTS
+## 🎯 NEXT SESSION: PHASE 3 PRODUCT ENGINE
 
-The `discrimination.html` page visualizes WWV/WWVH station identification using the 13-vote weighted voting system.
+Phase 3 generates derived products from Phase 1 raw archive + Phase 2 analytics:
 
-### Current State of Discrimination Page (Updated Dec 5 PM)
-
-The discrimination.html page has:
-- Diurnal Station Dominance panel (moved from phase2-dashboard.html)
-- 8 visualization cards for the primary voting methods
-- Per-method insight statistics
-- Solar elevation overlay on all charts
-
-### Backend Voting System (13 Votes)
-
-The `wwvh_discrimination.py` implements weighted voting with these votes:
-
-| Vote | Method | Weight | Notes |
-|------|--------|--------|-------|
-| 0 | Test Signal | 15.0 | Min 8/44 only, ground truth from schedule |
-| 1 | 440 Hz ID | 10.0 | Min 1/2 only, ground truth |
-| 2 | BCD Amplitude | 2.0-10.0 | 100 Hz subcarrier correlation |
-| 3 | 1000/1200 Hz | 1.0-10.0 | Timing tone power ratio |
-| 4 | Tick SNR | 5.0 | 5ms tick coherent integration |
-| 5 | 500/600 Hz | 10.0-15.0 | 14 ground truth minutes/hour |
-| 6 | Doppler σ | 2.0 | Independent stability metric |
-| 7 | ToA Cross-val | 3.0 | Test signal ↔ BCD coherence |
-| 7b | Delay Spread | 2.0 | Multipath quality (< 2ms = clean) |
-| 7c | Coherence Time | 1.0 | Channel stability (> 2s = stable) |
-| 8 | Harmonic Ratio | 1.5 | 500→1000, 600→1200 Hz |
-| 9 | FSS Geographic | 2.0 | Path fingerprint validation |
-| 10 | Noise Coherence | - | Transient event flag |
-| 11 | Burst ToA | - | High-precision cross-validation |
-| 12 | Spreading Factor | - | Channel physics (L = τ_D × f_D) |
-
-### WWVH Frequency Constraint
-
-**IMPORTANT**: WWVH only broadcasts on 2.5, 5, 10, 15 MHz. It does NOT broadcast on 20 or 25 MHz.
-The UI channel selector now shows "(+ WWVH)" or "(WWV only)" labels.
-
-### Key Files for Discrimination Integration
-
-| File | Purpose | Notes |
-|------|---------|-------|
-| `web-ui/discrimination.html` | Frontend display | Needs to consume Phase 2 data |
-| `web-ui/discrimination.js` | Chart/logic | Currently may use legacy patterns |
-| `src/grape_recorder/grape/wwvh_discrimination.py` | Backend discrimination | Power ratio, BCD, tone methods |
-| `src/grape_recorder/grape/phase2_temporal_engine.py` | Integrates discrimination | `compute_discrimination()` |
-| `src/grape_recorder/grape/discrimination_csv_writers.py` | CSV output | Per-method CSV files |
-
-### Discrimination Data Locations
+### Phase 3 Architecture Overview
 
 ```
-phase2/{CHANNEL}/
-├── discrimination/
-│   └── discrimination_summary.csv    # Weighted voting result
-├── tone_detections/
-│   └── tone_detections.csv           # 1000/1200 Hz tones
-├── bcd_discrimination/
-│   └── bcd_discrimination.csv        # BCD correlation method
-├── doppler/
-│   └── doppler_analysis.csv          # Doppler shift analysis
-└── station_id_440hz/
-    └── station_id.csv                # Voice ID + 500/600 Hz
+Phase 1 (raw_archive/)     Phase 2 (phase2/)
+        ↓                         ↓
+    20 kHz IQ              D_clock, discrimination
+        ↓                         ↓
+        └─────────┬───────────────┘
+                  ↓
+         PHASE 3 PRODUCT ENGINE
+                  ↓
+    ┌─────────────┼─────────────┐
+    ↓             ↓             ↓
+10 Hz DRF    Spectrograms    PSWS Format
+(decimated)   (PNG daily)   (compatible)
 ```
 
-### Existing API Endpoints for Discrimination
+### Key Files for Phase 3
 
-```javascript
-// In monitoring-server-v3.js
-app.get('/api/v1/phase2/reception-matrix')    // WWV/WWVH detection per channel
-app.get('/api/v1/phase2/diurnal-pattern')     // Hourly dominance patterns
-app.get('/api/v1/discrimination/:channel')    // Per-channel discrimination details
+| File | Purpose | Current State |
+|------|---------|---------------|
+| `phase3_product_engine.py` | Main decimation engine | Implemented, may need review |
+| `decimation.py` | 20 kHz → 10 Hz filter chain | Core algorithm |
+| `drf_batch_writer.py` | PSWS-compatible DRF output | Digital RF format |
+| `spectrogram_generator.py` | PNG visualization | Works, called via batch |
+| `grape-phase3.sh` | Control script | `-yesterday` or `-date YYYYMMDD` |
+
+### Phase 3 Output Structure
+
+```
+products/{CHANNEL}/
+├── drf/                          # Decimated Digital RF (10 Hz)
+│   └── YYYYMMDD/
+│       └── rf_data.h5            # HDF5 with metadata
+├── spectrograms/
+│   └── YYYYMMDD/
+│       ├── {channel}_spectrogram_00-06.png
+│       ├── {channel}_spectrogram_06-12.png
+│       ├── {channel}_spectrogram_12-18.png
+│       └── {channel}_spectrogram_18-24.png
+└── psws/                         # PSWS-compatible format
+    └── YYYYMMDD/
+        └── {station}_{channel}_{date}.csv
 ```
 
-### WWVH Frequency Constraint (Fixed Dec 5)
+### Decimation Pipeline (20 kHz → 10 Hz)
 
-**IMPORTANT**: WWVH only broadcasts on 2.5, 5, 10, 15 MHz. It does NOT broadcast on 20 or 25 MHz.
+```python
+# decimation.py - Filter chain
+Stage 1: 20000 → 4000 Hz (decimate by 5, LPF cutoff 1800 Hz)
+Stage 2: 4000 → 400 Hz   (decimate by 10, LPF cutoff 180 Hz)
+Stage 3: 400 → 10 Hz     (decimate by 40, LPF cutoff 4.5 Hz)
 
-```javascript
-// web-ui/monitoring-server-v3.js
-const WWVH_FREQUENCIES_MHZ = [2.5, 5, 10, 15];
-const canReceiveWWVH = WWVH_FREQUENCIES_MHZ.includes(freqMHz);
+# Key: Carrier extraction - AM demodulation BEFORE decimation
+carrier_complex = hilbert(signal) * exp(-j * 2π * carrier_freq * t)
 ```
+
+### Spectrogram Generation
+
+```python
+# spectrogram_generator.py
+- 6-hour panels (4 per day)
+- FFT size: 8192, overlap: 4096
+- Frequency range: -5 Hz to +5 Hz (around carrier)
+- Color scale: dB relative to noise floor
+- Output: PNG with metadata annotation
+```
+
+### Current Phase 3 Issues to Investigate
+
+1. **Batch vs Streaming**: Currently batch-only (runs on yesterday's data)
+2. **Gap Handling**: How does decimation handle gaps in Phase 1 archive?
+3. **Quality Metadata**: Should Phase 2 quality grades propagate to products?
+4. **PSWS Compatibility**: Verify output format matches PSWS expectations
+
+### Running Phase 3
+
+```bash
+# Process yesterday's data (typical cron job)
+./scripts/grape-phase3.sh -yesterday
+
+# Process specific date
+./scripts/grape-phase3.sh -date 20251205
+
+# Manual single-channel test
+python -m grape_recorder.grape.phase3_product_engine \
+    --data-root /tmp/grape-test \
+    --channel "WWV 10 MHz" \
+    --date 2025-12-05
+
+# Spectrogram only
+python -m grape_recorder.grape.spectrogram_generator \
+    --data-root /tmp/grape-test \
+    --channel "WWV 10 MHz" \
+    --date 2025-12-05
+```
+
+### Phase 3 Integration Points
+
+| Input From | Used For |
+|------------|----------|
+| Phase 1 raw_archive | Source IQ data (20 kHz) |
+| Phase 2 clock_offset | D_clock correction (optional) |
+| Phase 2 discrimination | Station ID annotation |
+| Phase 2 quality_grades | Product quality flags |
+
+### Dependencies
+
+```python
+# Required for Phase 3
+import digital_rf          # DRF read/write
+import matplotlib.pyplot   # Spectrogram PNG
+import scipy.signal        # Decimation filters
+import h5py                # HDF5 metadata
+```
+
+---
+
+## 🎯 SESSION COMPLETE (Dec 6): Audio Simplification & Discrimination Docs
+
+### Audio Streaming Simplified
+
+Replaced complex radiod RTP/multicast audio with direct IQ-based streaming:
+
+| Component | Old (Removed) | New (Simple) |
+|-----------|---------------|--------------|
+| Python | `radiod_audio_client.py` (ka9q) | `audio_buffer.py` (AM demod) |
+| Node.js | RTP multicast, SSRC management | Read PCM buffer files |
+| Browser | Complex WebSocket protocol | Standard WebAudio playback |
+| Latency | Variable | 2 second buffer (smooth) |
+
+**Key Files Changed:**
+- `src/grape_recorder/grape/audio_buffer.py` - New AM demod + downsample
+- `src/grape_recorder/grape/pipeline_orchestrator.py` - Writes audio buffer
+- `web-ui/monitoring-server-v3.js` - Simple WebSocket from buffer files
+- `web-ui/summary.html` - Updated player with 2s buffer
+
+### Discrimination Documentation Added
+
+- Created `/docs/discrimination-methodology.html` with full method explanations
+- Added `?` info-link buttons to all method cards (consistent with timing pages)
+- Each button links to documentation anchor for that method
 
 ---
 
@@ -620,6 +683,21 @@ python3 -c "from src.grape_recorder.grape import SpectrogramGenerator; print('OK
 
 ## 📋 SESSION HISTORY
 
+### Dec 6, 2025 - Audio Simplification & Discrimination Docs
+- ✅ **Simplified Audio**: Replaced radiod RTP/multicast with direct IQ AM demod
+- ✅ **Audio Buffer**: New `audio_buffer.py` writes 8 kHz PCM circular buffer
+- ✅ **2-Second Smoothing**: Browser buffers 2s to absorb CPU spikes
+- ✅ **Removed ~500 Lines**: Legacy Ka9qRadioProxy, SSRC management, RTP handling
+- ✅ **Discrimination Docs**: `/docs/discrimination-methodology.html` created
+- ✅ **Info Links**: Added `?` buttons to all method cards linking to docs
+
+### Dec 5, 2025 (PM) - Multi-Broadcast Fusion (v3.9.0)
+- ✅ **Multi-Broadcast Fusion**: Combines 13 broadcasts → ±0.5 ms UTC(NIST) alignment
+- ✅ **Auto-Calibration**: Per-station offsets learned via EMA (α=0.5)
+- ✅ **Convergence Indicators**: Progress bars per station (✓ Locked, Converging, Learning)
+- ✅ **Dashboard Consolidation**: Removed phase2-dashboard.html, moved panels
+- ✅ **Fusion-Corrected Graphs**: Kalman funnel, constellation, consensus all centered at 0
+
 ### Dec 4, 2025 - Session 2 (Audio & Status Fixes)
 - ✅ **Audio Streaming Fixed**: Uses ka9q-python from venv with dynamic SSRC allocation
 - ✅ **AGC Configured**: headroom=6dB, threshold=0dB, gain=40dB for comfortable listening
@@ -692,7 +770,7 @@ Previously, all channels showed same status (overall core running state). Now ea
 
 ---
 
-## 🏁 QUICK START FOR NEXT SESSION
+## 🏁 QUICK START FOR NEXT SESSION (Phase 3 Focus)
 
 ```bash
 cd /home/wsprdaemon/grape-recorder
@@ -703,28 +781,53 @@ cd /home/wsprdaemon/grape-recorder
 # 2. Start if needed
 ./scripts/grape-all.sh -start
 
-# 3. Open web dashboard
-# http://localhost:3000/
+# 3. Check Phase 1 archive exists (source for Phase 3)
+ls -la /tmp/grape-test/raw_archive/
 
-# 4. Check Phase 2 timing data is being produced
-ls -la /tmp/grape-test/phase2/*/clock_offset/
-cat /tmp/grape-test/phase2/WWV\ 10\ MHz/status/analytics-service-status.json | jq .
+# 4. Run Phase 3 for yesterday
+./scripts/grape-phase3.sh -yesterday
 
-# 5. Verify carrier SNR is being calculated
-grep "carrier_snr" /tmp/grape-test/logs/phase2-wwv10.log | tail -5
+# 5. Check Phase 3 output
+ls -la /tmp/grape-test/products/*/spectrograms/
+ls -la /tmp/grape-test/products/*/drf/
 
-# 6. Test audio (if needed)
-source venv/bin/activate
-python3 web-ui/radiod_audio_client.py --radiod-host bee1-hf-status.local create --frequency 10000000
+# 6. View spectrograms in browser
+# http://localhost:3000/carrier.html (has spectrogram viewer)
 ```
 
-### Files to Review for Timing Integration
+### Key Files to Review for Phase 3
 
 ```bash
-# Backend - where timing data is written
-cat src/grape_recorder/grape/phase2_analytics_service.py | head -100
+# Phase 3 engine - main entry point
+cat src/grape_recorder/grape/phase3_product_engine.py | head -100
 
-# Frontend - where timing should be displayed
-cat web-ui/monitoring-server-v3.js | grep -A5 "getChannelStatuses"
-cat web-ui/carrier.html | grep -A5 "timeBasis"
+# Decimation algorithm
+cat src/grape_recorder/grape/decimation.py | head -100
+
+# Spectrogram generator
+cat src/grape_recorder/grape/spectrogram_generator.py | head -100
+
+# DRF batch writer (PSWS format)
+cat src/grape_recorder/grape/drf_batch_writer.py | head -100
+
+# Control script
+cat scripts/grape-phase3.sh
+```
+
+### Phase 3 Manual Testing
+
+```bash
+source venv/bin/activate
+
+# Test single channel spectrogram
+python -m grape_recorder.grape.spectrogram_generator \
+    --data-root /tmp/grape-test \
+    --channel "WWV 10 MHz" \
+    --date $(date -d yesterday +%Y%m%d)
+
+# Test full Phase 3 pipeline
+python -m grape_recorder.grape.phase3_product_engine \
+    --data-root /tmp/grape-test \
+    --channel "WWV 10 MHz" \
+    --date $(date -d yesterday +%Y%m%d)
 ```
