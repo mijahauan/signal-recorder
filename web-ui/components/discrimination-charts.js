@@ -303,7 +303,7 @@ function renderAllMethods(data) {
     <!-- Vote 0: Test Signal (Ground Truth) -->
     <div class="method-card">
       <div class="method-header">
-        <div class="method-title">Vote 0: Test Signal</div>
+        <div class="method-title">Vote 0: Test Signal<a href="/docs/discrimination-methodology.html#test-signal" class="info-link" title="How test signal detection works">?</a></div>
         <div class="method-badge ground-truth">Ground Truth</div>
       </div>
       <div class="chart-container" id="chart-test-signal"></div>
@@ -326,7 +326,7 @@ function renderAllMethods(data) {
     <!-- Vote 1: 440 Hz Station ID (Ground Truth) -->
     <div class="method-card">
       <div class="method-header">
-        <div class="method-title">Vote 1: 440 Hz Station ID</div>
+        <div class="method-title">Vote 1: 440 Hz Station ID<a href="/docs/discrimination-methodology.html#station-id" class="info-link" title="How 440 Hz detection works">?</a></div>
         <div class="method-badge ground-truth">Ground Truth</div>
       </div>
       <div class="chart-container" id="chart-station-id"></div>
@@ -349,7 +349,7 @@ function renderAllMethods(data) {
     <!-- Vote 2: BCD Amplitude Correlation -->
     <div class="method-card">
       <div class="method-header">
-        <div class="method-title">Vote 2: BCD Amplitude</div>
+        <div class="method-title">Vote 2: BCD Amplitude<a href="/docs/discrimination-methodology.html#bcd" class="info-link" title="How BCD correlation works">?</a></div>
         <div class="method-badge">100 Hz</div>
       </div>
       <div class="chart-container" id="chart-bcd"></div>
@@ -376,7 +376,7 @@ function renderAllMethods(data) {
     <!-- Vote 3: Timing Tones -->
     <div class="method-card">
       <div class="method-header">
-        <div class="method-title">Vote 3: Timing Tones</div>
+        <div class="method-title">Vote 3: Timing Tones<a href="/docs/discrimination-methodology.html#timing-tones" class="info-link" title="How timing tone analysis works">?</a></div>
         <div class="method-badge">1000/1200 Hz</div>
       </div>
       <div class="chart-container" id="chart-timing-tones"></div>
@@ -391,7 +391,7 @@ function renderAllMethods(data) {
     <!-- Vote 4: Tick SNR -->
     <div class="method-card">
       <div class="method-header">
-        <div class="method-title">Vote 4: Tick SNR</div>
+        <div class="method-title">Vote 4: Tick SNR<a href="/docs/discrimination-methodology.html#tick-snr" class="info-link" title="How tick SNR analysis works">?</a></div>
         <div class="method-badge">10-sec Windows</div>
       </div>
       <div class="chart-container" id="chart-tick-windows"></div>
@@ -406,7 +406,7 @@ function renderAllMethods(data) {
     <!-- Vote 5: 500/600 Hz Ground Truth -->
     <div class="method-card">
       <div class="method-header">
-        <div class="method-title">Vote 5: 500/600 Hz</div>
+        <div class="method-title">Vote 5: 500/600 Hz<a href="/docs/discrimination-methodology.html#ground-truth-500" class="info-link" title="How 500/600 Hz ground truth works">?</a></div>
         <div class="method-badge ground-truth">Ground Truth</div>
       </div>
       <div class="chart-container" id="chart-ground-truth"></div>
@@ -429,7 +429,7 @@ function renderAllMethods(data) {
     <!-- Vote 6: Doppler (Full Width) -->
     <div class="method-card full-width">
       <div class="method-header">
-        <div class="method-title">Vote 6: Differential Doppler</div>
+        <div class="method-title">Vote 6: Differential Doppler<a href="/docs/discrimination-methodology.html#doppler" class="info-link" title="How Doppler analysis works">?</a></div>
         <div class="method-badge">Ionospheric</div>
       </div>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
@@ -455,7 +455,7 @@ function renderAllMethods(data) {
     <!-- Vote 8: Harmonic Power Ratio -->
     <div class="method-card full-width">
       <div class="method-header">
-        <div class="method-title">Vote 8: Harmonic Power Ratio</div>
+        <div class="method-title">Vote 8: Harmonic Power Ratio<a href="/docs/discrimination-methodology.html#harmonic" class="info-link" title="How harmonic analysis works">?</a></div>
         <div class="method-badge">500→1000 / 600→1200</div>
       </div>
       <div class="chart-container" id="chart-harmonic"></div>
@@ -478,7 +478,7 @@ function renderAllMethods(data) {
     <!-- Votes 9-12: Channel Quality (from Test Signal) -->
     <div class="method-card full-width">
       <div class="method-header">
-        <div class="method-title">Votes 9-12: Channel Quality (FSS, Multipath, Stability)</div>
+        <div class="method-title">Votes 9-12: Channel Quality<a href="/docs/discrimination-methodology.html#channel-quality" class="info-link" title="How channel quality metrics work">?</a></div>
         <div class="method-badge">Min 8/44 Test Signal</div>
       </div>
       <div class="chart-container" id="chart-channel-quality"></div>
@@ -490,7 +490,7 @@ function renderAllMethods(data) {
     <!-- Vote 13: BCD Intermodulation Signature -->
     <div class="method-card full-width">
       <div class="method-header">
-        <div class="method-title">Vote 13: BCD Intermodulation Signature</div>
+        <div class="method-title">Vote 13: BCD Intermodulation<a href="/docs/discrimination-methodology.html#intermod" class="info-link" title="How intermodulation analysis works">?</a></div>
         <div class="method-badge">400/700 Hz</div>
       </div>
       <div class="chart-container" id="chart-intermod"></div>
@@ -517,7 +517,7 @@ function renderAllMethods(data) {
     <!-- Final: Weighted Voting (Full Width) -->
     <div class="method-card full-width">
       <div class="method-header">
-        <div class="method-title">Final Decision: Weighted Voting</div>
+        <div class="method-title">Final Decision: Weighted Voting<a href="/docs/discrimination-methodology.html#voting" class="info-link" title="How weighted voting works">?</a></div>
         <div class="method-badge">13 Votes Combined</div>
       </div>
       <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px;">
