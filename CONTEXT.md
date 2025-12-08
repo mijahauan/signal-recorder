@@ -1,24 +1,105 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-07  
-**Version:** 3.11.0  
-**Status:** 🔍 Investigating RTP→DRF Pipeline Periodicity
+**Last Updated:** 2025-12-08  
+**Version:** 3.12.0  
+**Status:** 🔧 Web UI ↔ Analytics Synchronization Required
 
 ---
 
-## 🎯 NEXT SESSION: RTP TO DRF PIPELINE INVESTIGATION
+## 🎯 NEXT SESSION: WEB UI ↔ ANALYTICS API SYNCHRONIZATION
 
-### Problem Statement
-Spectrograms show **vertical striping/periodicity** in the carrier power that should be smooth. The carrier from WWV/WWVH/CHU is a continuous CW signal - any periodic artifacts indicate a problem in the data pipeline.
+### Background
+The Phase 2 Analytics critique session (Dec 7-8) implemented **16 fixes** to address methodological issues. These changes modified several APIs that the web UI depends on. The web UI needs to be updated to work with the new analytics output.
 
-### Suspected Causes (to investigate)
-1. **RTP Packet Timing** - Irregular packet arrival causing buffer discontinuities
-2. **Buffer Boundary Effects** - 20ms blocktimes creating 50 Hz artifacts
-3. **Packet Resequencer Issues** - Gap detection/filling creating patterns
-4. **DRF Write Timing** - Write boundaries not aligned with sample timing
-5. **Decimation Artifacts** - CIC filter transients at boundaries
-6. **FFT Windowing** - Spectrogram generation edge effects
+### Key API Changes
+
+| Component | Before | After |
+|-----------|--------|-------|
+| `Phase2Result` | `quality_grade: str` (A/B/C/D) | `uncertainty_ms: float`, `confidence: float` |
+| Status JSON | `quality_grade` only | Both `quality_grade` AND `uncertainty_ms` |
+| Calibration | Per-station (`WWV`) | Per-broadcast (`WWV_10.00`) |
+
+### Backwards Compatibility Provided
+The Python backend now computes a backwards-compatible `quality_grade` from `uncertainty_ms`:
+```python
+# Derived grade for web UI
+grade = 'A' if uncertainty < 1.0 else 'B' if uncertainty < 3.0 else 'C' if uncertainty < 10.0 else 'D'
+```
+
+### Files to Verify/Update
+
+**Priority 1: Status Display**
+| File | What to Check |
+|------|---------------|
+| `web-ui/components/timing-status-widget.js` | `renderDClock()` - grade display |
+| `web-ui/timing-dashboard-enhanced.html` | Grade badges, sorting |
+
+**Priority 2: API Data Processing**
+| File | What to Check |
+|------|---------------|
+| `web-ui/utils/transmission-time-helpers.js` | `getAllPhase2Status()`, `getBestDClock()` |
+| `web-ui/utils/timing-analysis-helpers.js` | Grade → quality level mapping |
+| `web-ui/monitoring-server-v3.js` | Grade distribution counts |
+
+**Priority 3: Calibration (if using fusion)**
+| File | What to Check |
+|------|---------------|
+| `web-ui/monitoring-server-v3.js` | Calibration key format change |
+
+### Verification Commands
+
+```bash
+# 1. Check status JSON format
+cat /tmp/grape-test/phase2/WWV_10_MHz/status/analytics-service-status.json | jq '.channels'
+
+# 2. Test API endpoints
+curl -s http://localhost:3000/api/v1/timing/phase2-status | jq '.summary'
+curl -s http://localhost:3000/api/v1/timing/best-d-clock | jq
+
+# 3. Start web UI
+./scripts/grape-ui.sh -restart
+
+# 4. Open browser to timing dashboard
+# http://localhost:3000/timing-dashboard-enhanced.html
+# Verify: Grade badges show, D_clock values display correctly
+```
+
+### Related Documentation
+- **Full critique details**: `docs/PHASE2_CRITIQUE.md`
+- **Critique context**: `CRITIC_CONTEXT.md` (root of repo)
+
+---
+
+## 📋 COMPLETED: Phase 2 Analytics Critique (Dec 7-8)
+
+### Issues Addressed (16 Fixed, 1 Invalid)
+
+| Category | Fixed | Key Changes |
+|----------|-------|-------------|
+| Methodology | 3 | Two-stage onset, dynamic iono model, 1/f² delay |
+| Discrimination | 3 | Probabilistic model, L2 regularization, probability output |
+| Statistics | 2 | Kalman filter, per-broadcast calibration |
+| Bugs | 2 | Station coordinates, removed hardcoded offsets |
+| Enhancements | 4 | Phase correlation, multipath, cross-corr, CHU FSK |
+| Validation | 2 | Ground truth framework, uncertainty replaces grades |
+
+### New Modules Created
+
+```
+src/grape_recorder/grape/
+├── ionospheric_model.py          # Dynamic F2 layer heights
+├── ground_truth_validator.py     # GPS PPS, silent minute validation
+├── probabilistic_discriminator.py # Logistic regression discriminator
+└── advanced_signal_analysis.py   # Phase, multipath, CHU FSK
+```
+
+### Processing Version
+`Phase2Result.processing_version` bumped to **2.1.0**
+
+---
+
+## 🔍 DEFER: RTP→DRF Pipeline Periodicity Investigation
 
 ### Key Pipeline Architecture
 
