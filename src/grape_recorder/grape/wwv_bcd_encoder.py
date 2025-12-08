@@ -58,12 +58,14 @@ class WWVBCDEncoder:
         self.sample_rate = sample_rate
         self.samples_per_second = sample_rate
         
-    def encode_minute(self, timestamp: float) -> np.ndarray:
+    def encode_minute(self, timestamp: float, envelope_only: bool = False) -> np.ndarray:
         """
         Generate 60-second BCD template for given UTC timestamp
         
         Args:
             timestamp: UTC timestamp at minute boundary
+            envelope_only: If True, return just the envelope (for correlation with
+                          demodulated signals). If False, return with 100 Hz carrier.
             
         Returns:
             60-second BCD waveform as numpy array
@@ -81,6 +83,10 @@ class WWVBCDEncoder:
         
         # Convert to waveform with proper pulse widths
         waveform = self._pattern_to_waveform(bcd_pattern)
+        
+        if envelope_only:
+            # Return envelope only (for correlation with demodulated signal)
+            return waveform
         
         # Modulate onto 100 Hz subcarrier
         modulated = self._apply_100hz_modulation(waveform)

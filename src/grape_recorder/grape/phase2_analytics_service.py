@@ -509,17 +509,25 @@ class Phase2AnalyticsService:
             logger.info(f"Created station ID CSV: {self.station_id_csv}")
     
     def _write_station_id(self, minute_boundary: int, channel_char):
-        """Write station ID results from ChannelCharacterization."""
+        """Write station ID results from ChannelCharacterization.
+        
+        Only writes for minutes 1 (WWVH 440 Hz) and 2 (WWV 440 Hz).
+        This CSV is specifically for 440 Hz voice announcement detection.
+        """
         try:
+            # Calculate minute number within hour (0-59)
+            minute_number = (minute_boundary // 60) % 60
+            
+            # Only write for 440 Hz minutes: 1 = WWVH, 2 = WWV
+            if minute_number not in [1, 2]:
+                return  # Skip - not a 440 Hz minute
+            
             today = datetime.now(timezone.utc).strftime('%Y%m%d')
             file_channel = self._get_file_channel_name()
             expected_csv = self.station_id_dir / f'{file_channel}_440hz_{today}.csv'
             if self.station_id_csv != expected_csv:
                 self.station_id_csv = expected_csv
                 self._init_station_id_csv()
-            
-            # Calculate minute number within hour (0-59)
-            minute_number = (minute_boundary // 60) % 60
             
             with open(self.station_id_csv, 'a', newline='') as f:
                 writer = csv.writer(f)

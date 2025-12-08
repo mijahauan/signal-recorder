@@ -3981,16 +3981,19 @@ async function loadAllDiscriminationMethods(channelName, date, paths) {
   const bcdData = parseCSV(bcdPath);
   
   // Determine detection_type from amplitude comparison
+  // BCD amplitudes are normalized and typically range 0.0001-0.01
+  // Use 0.0005 threshold to capture meaningful detections
   const bcdRecords = bcdData.records.map(r => {
     const wwvAmp = parseFloat(r.wwv_amplitude) || 0;
     const wwvhAmp = parseFloat(r.wwvh_amplitude) || 0;
     let detectionType = 'none';
+    const ampThreshold = 0.0005;  // Lowered from 0.01 - BCD amplitudes are small
     
-    if (wwvAmp > 0.01 && wwvhAmp > 0.01) {
+    if (wwvAmp > ampThreshold && wwvhAmp > ampThreshold) {
       detectionType = 'dual_peak';
-    } else if (wwvAmp > 0.01) {
+    } else if (wwvAmp > ampThreshold) {
       detectionType = 'single_wwv';
-    } else if (wwvhAmp > 0.01) {
+    } else if (wwvhAmp > ampThreshold) {
       detectionType = 'single_wwvh';
     }
     

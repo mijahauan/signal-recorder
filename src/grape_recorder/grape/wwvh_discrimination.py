@@ -2013,18 +2013,20 @@ class WWVHDiscriminator:
             sos_bcd = scipy_signal.butter(4, [bcd_low_norm, bcd_high_norm], 'bandpass', output='sos')
             bcd_100hz = scipy_signal.sosfilt(sos_bcd, iq_samples)
             
-            # Step 2: AM demodulate the 100 Hz tone to get BCD envelope
-            bcd_envelope = np.abs(bcd_100hz)
-            bcd_envelope = bcd_envelope - np.mean(bcd_envelope)
+            # Step 2: Use the bandpass-filtered 100 Hz signal directly for correlation
+            # The 100 Hz carrier IS the BCD signal - correlate directly with template
+            # For complex IQ, take real part since template is real
+            if np.iscomplexobj(bcd_100hz):
+                bcd_signal = np.real(bcd_100hz)
+            else:
+                bcd_signal = bcd_100hz
             
-            # Step 3: Low-pass filter to get the BCD modulation pattern
-            # BCD bit rate is ~1 Hz (1 bit per second), so keep 0-5 Hz
-            lp_cutoff_norm = 5 / nyquist
-            sos_lp = scipy_signal.butter(4, lp_cutoff_norm, 'low', output='sos')
-            bcd_signal = scipy_signal.sosfilt(sos_lp, bcd_envelope)
+            # Normalize signal for correlation
+            bcd_signal = bcd_signal - np.mean(bcd_signal)
             
-            # Step 4: Generate expected BCD template for this minute (full 60 seconds)
-            bcd_template_full = self._generate_bcd_template(minute_timestamp, sample_rate)
+            # Step 3: Generate expected BCD template for this minute (full 60 seconds)
+            # Template includes 100 Hz carrier modulated by BCD pattern
+            bcd_template_full = self._generate_bcd_template(minute_timestamp, sample_rate, envelope_only=False)
             
             if bcd_template_full is None:
                 logger.warning(f"{self.channel_name}: Failed to generate BCD template")
@@ -2069,34 +2071,92 @@ class WWVHDiscriminator:
                 correlation = scipy_signal.correlate(signal_window, template_window, mode='full', method='fft')
                 correlation = np.abs(correlation)
                 
-                # CRITICAL: Restrict peak search to near zero-lag
                 # Zero-lag is at index len(template_window) - 1
-                # Propagation delay is typically 0-100ms, differential delay ~5-30ms
-                # Search within ±150ms of zero-lag to find the two station peaks
                 zero_lag_idx = len(template_window) - 1
-                search_radius_samples = int(0.150 * sample_rate)  # ±150ms
-                search_start = max(0, zero_lag_idx - search_radius_samples)
-                search_end = min(len(correlation), zero_lag_idx + search_radius_samples)
                 
-                # Extract the search region
-                search_region = correlation[search_start:search_end]
-                
-                # Find peaks in the restricted region
-                mean_corr = np.mean(search_region)
-                std_corr = np.std(search_region)
-                threshold = mean_corr + 0.5 * std_corr  # Lower threshold for sensitivity
-                
-                min_peak_distance = int(0.003 * sample_rate)  # 3ms minimum (was 5ms)
-                
-                peaks_local, properties = scipy_signal.find_peaks(
-                    search_region,
-                    height=threshold,
-                    distance=min_peak_distance,
-                    prominence=std_corr * 0.2  # Lower prominence for better sensitivity
-                )
-                
-                # Convert local peak indices back to full correlation indices
-                peaks = peaks_local + search_start
+                # Use geographic predictor for targeted peak search if available
+                # With improved timing, we know where to look for each station's peak
+                if self.geo_predictor and frequency_mhz:
+                    expected = self.geo_predictor.calculate_expected_delays(frequency_mhz)
+                    wwv_expected_ms = expected['wwv_delay_ms']
+                    wwvh_expected_ms = expected['wwvh_delay_ms']
+                    
+                    # Search ±15ms around each expected delay (tight window with good timing)
+                    search_window_ms = 15.0
+                    search_window_samples = int(search_window_ms * sample_rate / 1000)
+                    
+                    # WWV search window
+                    wwv_center_idx = zero_lag_idx + int(wwv_expected_ms * sample_rate / 1000)
+                    wwv_start = max(0, wwv_center_idx - search_window_samples)
+                    wwv_end = min(len(correlation), wwv_center_idx + search_window_samples)
+                    
+                    # WWVH search window
+                    wwvh_center_idx = zero_lag_idx + int(wwvh_expected_ms * sample_rate / 1000)
+                    wwvh_start = max(0, wwvh_center_idx - search_window_samples)
+                    wwvh_end = min(len(correlation), wwvh_center_idx + search_window_samples)
+                    
+                    # Find best peak in each window
+                    wwv_region = correlation[wwv_start:wwv_end]
+                    wwvh_region = correlation[wwvh_start:wwvh_end]
+                    
+                    wwv_peak_local = np.argmax(wwv_region)
+                    wwvh_peak_local = np.argmax(wwvh_region)
+                    
+                    wwv_peak_idx = wwv_start + wwv_peak_local
+                    wwvh_peak_idx = wwvh_start + wwvh_peak_local
+                    
+                    wwv_peak_height = float(wwv_region[wwv_peak_local])
+                    wwvh_peak_height = float(wwvh_region[wwvh_peak_local])
+                    
+                    # Noise floor for quality calculation
+                    noise_floor = np.median(correlation)
+                    
+                    # Build peaks array in order (early, late)
+                    if wwv_peak_idx < wwvh_peak_idx:
+                        peaks = np.array([wwv_peak_idx, wwvh_peak_idx])
+                        properties = {'peak_heights': np.array([wwv_peak_height, wwvh_peak_height])}
+                    else:
+                        peaks = np.array([wwvh_peak_idx, wwv_peak_idx])
+                        properties = {'peak_heights': np.array([wwvh_peak_height, wwv_peak_height])}
+                    
+                    # Threshold check - both peaks should be above noise
+                    mean_corr = np.mean(correlation)
+                    std_corr = np.std(correlation)
+                    threshold = mean_corr + 0.5 * std_corr
+                    
+                    if wwv_peak_height < threshold or wwvh_peak_height < threshold:
+                        # Weak signal - fall back to single peak detection
+                        if wwv_peak_height >= wwvh_peak_height and wwv_peak_height >= threshold:
+                            peaks = np.array([wwv_peak_idx])
+                            properties = {'peak_heights': np.array([wwv_peak_height])}
+                        elif wwvh_peak_height >= threshold:
+                            peaks = np.array([wwvh_peak_idx])
+                            properties = {'peak_heights': np.array([wwvh_peak_height])}
+                        else:
+                            peaks = np.array([])
+                            properties = {'peak_heights': np.array([])}
+                else:
+                    # Fallback: broad search ±150ms (no geographic predictor)
+                    search_radius_samples = int(0.150 * sample_rate)
+                    search_start = max(0, zero_lag_idx - search_radius_samples)
+                    search_end = min(len(correlation), zero_lag_idx + search_radius_samples)
+                    
+                    search_region = correlation[search_start:search_end]
+                    
+                    mean_corr = np.mean(search_region)
+                    std_corr = np.std(search_region)
+                    threshold = mean_corr + 0.5 * std_corr
+                    
+                    min_peak_distance = int(0.003 * sample_rate)  # 3ms minimum
+                    
+                    peaks_local, properties = scipy_signal.find_peaks(
+                        search_region,
+                        height=threshold,
+                        distance=min_peak_distance,
+                        prominence=std_corr * 0.2
+                    )
+                    
+                    peaks = peaks_local + search_start
                 
                 # Handle both dual-peak (both stations) and single-peak (one station) scenarios
                 if len(peaks) >= 2:
@@ -2611,7 +2671,8 @@ class WWVHDiscriminator:
     def _generate_bcd_template(
         self,
         minute_timestamp: float,
-        sample_rate: int
+        sample_rate: int,
+        envelope_only: bool = False
     ) -> Optional[np.ndarray]:
         """
         Generate expected 100 Hz BCD template for a given UTC minute
@@ -2622,13 +2683,15 @@ class WWVHDiscriminator:
         Args:
             minute_timestamp: UTC timestamp of minute boundary
             sample_rate: Sample rate in Hz
+            envelope_only: If True, return envelope without 100 Hz carrier
+                          (for correlation with demodulated signals)
             
         Returns:
             60-second BCD template as numpy array, or None if generation fails
         """
         try:
             # Use the encoder instance that was created during __init__
-            template = self.bcd_encoder.encode_minute(minute_timestamp)
+            template = self.bcd_encoder.encode_minute(minute_timestamp, envelope_only=envelope_only)
             return template
             
         except Exception as e:

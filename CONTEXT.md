@@ -1,9 +1,144 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-06  
-**Version:** 3.10.0  
-**Status:** ✅ Simplified Audio, Discrimination Docs Complete
+**Last Updated:** 2025-12-07  
+**Version:** 3.11.0  
+**Status:** 🔍 Investigating RTP→DRF Pipeline Periodicity
+
+---
+
+## 🎯 NEXT SESSION: RTP TO DRF PIPELINE INVESTIGATION
+
+### Problem Statement
+Spectrograms show **vertical striping/periodicity** in the carrier power that should be smooth. The carrier from WWV/WWVH/CHU is a continuous CW signal - any periodic artifacts indicate a problem in the data pipeline.
+
+### Suspected Causes (to investigate)
+1. **RTP Packet Timing** - Irregular packet arrival causing buffer discontinuities
+2. **Buffer Boundary Effects** - 20ms blocktimes creating 50 Hz artifacts
+3. **Packet Resequencer Issues** - Gap detection/filling creating patterns
+4. **DRF Write Timing** - Write boundaries not aligned with sample timing
+5. **Decimation Artifacts** - CIC filter transients at boundaries
+6. **FFT Windowing** - Spectrogram generation edge effects
+
+### Key Pipeline Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    RTP → DRF DATA PIPELINE (Phase 1)                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  RADIOD (ka9q-radio)                                                         │
+│    │                                                                         │
+│    └─► RTP Multicast (20 kHz IQ, complex64, blocktime=20ms)                 │
+│              │                                                               │
+│              ▼                                                               │
+│  RTP RECEIVER (rtp_receiver.py)                                             │
+│    │  - UDP socket listener                                                  │
+│    │  - RTP header parsing                                                   │
+│    │  - Sequence number tracking                                             │
+│    │                                                                         │
+│    ▼                                                                         │
+│  PACKET RESEQUENCER (packet_resequencer.py)                                 │
+│    │  - Jitter buffer (configurable depth)                                   │
+│    │  - Gap detection (missing sequence numbers)                             │
+│    │  - Zero-filling for gaps                                                │
+│    │  - Sample timestamp reconstruction                                      │
+│    │                                                                         │
+│    ▼                                                                         │
+│  DIGITAL RF WRITER (raw_archive_writer.py)                                  │
+│    │  - HDF5 file management                                                 │
+│    │  - Continuous time indexing                                             │
+│    │  - GZIP compression                                                     │
+│    │  - Watchdog/heartbeat for stall detection                              │
+│    │                                                                         │
+│    ▼                                                                         │
+│  raw_archive/{CHANNEL}/ (Digital RF HDF5 files)                             │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Critical Configuration Parameters
+
+```toml
+# grape-config.toml - Phase 1 Settings
+[recorder]
+blocktime_ms = 20              # RTP block size (400 samples at 20 kHz)
+jitter_buffer_depth = 5        # Packets to buffer for reordering
+gap_threshold_samples = 400    # Gap larger than this = discontinuity
+forced_flush_interval = 60     # Seconds between forced DRF flushes
+watchdog_timeout = 120         # Seconds before declaring writer stall
+```
+
+### Key Files for Pipeline Investigation
+
+| File | Component | What to Check |
+|------|-----------|---------------|
+| `src/grape_recorder/core/rtp_receiver.py` | RTP Reception | Packet timing, sequence tracking |
+| `src/grape_recorder/core/packet_resequencer.py` | Jitter Buffer | Gap detection, zero-fill logic |
+| `src/grape_recorder/core/digital_rf_writer.py` | DRF Writer | Write boundaries, flush timing |
+| `src/grape_recorder/grape/raw_archive_writer.py` | Archive Coordinator | Sample timestamp handling |
+| `scripts/generate_spectrograms_from_10hz.py` | Spectrogram Gen | FFT windowing, time binning |
+| `config/grape-config.toml` | Configuration | Blocktime, jitter depth |
+
+### Diagnostic Commands
+
+```bash
+# 1. Check RTP packet statistics
+journalctl -u grape-core-recorder --since "5 minutes ago" | grep -i "gap\|loss\|reset"
+
+# 2. Examine raw archive continuity
+python3 -c "
+import digital_rf
+dr = digital_rf.DigitalRFReader('/tmp/grape-test/raw_archive/WWV_10_MHz')
+bounds = dr.get_bounds()
+gaps = dr.get_gaps()
+print(f'Bounds: {bounds}')
+print(f'Gaps: {len(gaps)} discontinuities')
+for g in gaps[:10]: print(f'  {g}')
+"
+
+# 3. Check for zero-filled samples
+python3 -c "
+import numpy as np
+import digital_rf
+dr = digital_rf.DigitalRFReader('/tmp/grape-test/raw_archive/WWV_10_MHz')
+bounds = dr.get_bounds()
+data = dr.read(bounds[0], bounds[0] + 20000)  # 1 second
+zeros = np.sum(data == 0)
+print(f'Zero samples in first second: {zeros}/{len(data)} ({100*zeros/len(data):.2f}%)')
+"
+
+# 4. Analyze power periodicity
+python3 -c "
+import numpy as np
+import digital_rf
+dr = digital_rf.DigitalRFReader('/tmp/grape-test/raw_archive/WWV_10_MHz')
+bounds = dr.get_bounds()
+# Read 10 seconds
+data = dr.read(bounds[0], bounds[0] + 200000)
+power = np.abs(data)**2
+# Compute autocorrelation
+from numpy.fft import fft, ifft
+f = fft(power - np.mean(power))
+acf = ifft(f * np.conj(f)).real
+acf = acf[:len(acf)//2] / acf[0]
+# Find peaks (periodicity)
+peaks = np.where((acf[1:-1] > acf[:-2]) & (acf[1:-1] > acf[2:]))[0] + 1
+print('Autocorrelation peaks (samples):')
+for p in peaks[:10]: print(f'  {p} samples = {p/20000*1000:.2f} ms')
+"
+```
+
+### Expected Periodicity Sources
+
+| Period | Samples (20 kHz) | Likely Cause |
+|--------|------------------|--------------|
+| 20 ms | 400 | Blocktime (RTP packet size) |
+| 50 ms | 1000 | 5× blocktime (jitter buffer?) |
+| 100 ms | 2000 | BCD modulation (100 Hz) - EXPECTED |
+| 1000 ms | 20000 | Second markers - EXPECTED |
+
+**Note**: 100 Hz and 1 Hz periodicity are EXPECTED from WWV/WWVH BCD and second pulses. The concern is unexplained periodicity at other frequencies.
 
 ---
 
@@ -129,6 +264,73 @@ python -m grape_recorder.grape.daily_drf_packager \
 | **Spectrograms** | Generated from DRF (daily) | Generated from buffer (any time) |
 | **Latency** | 24+ hours behind | ~10 minutes behind |
 | **Storage** | DRF overhead | Simple binary (6.9 MB/day/channel) |
+
+---
+
+## 🎯 SESSION COMPLETE (Dec 7): BCD Correlation & UI Fixes
+
+### 1. BCD Correlation Fix (Critical Bug)
+
+**Problem**: BCD amplitudes were tiny (0.0001-0.01), causing web UI to show no BCD data.
+
+**Root Cause**: Signal/template mismatch - the code was:
+- Demodulating the 100 Hz BCD signal (extracting envelope)
+- Correlating against a template that still had the 100 Hz carrier
+
+**Fix**: Direct 100 Hz correlation - both signal and template use the carrier:
+```python
+# wwvh_discrimination.py
+bcd_signal = np.real(bcd_100hz) if np.iscomplexobj(bcd_100hz) else bcd_100hz
+bcd_template_full = self._generate_bcd_template(minute_timestamp, sample_rate, envelope_only=False)
+```
+
+### 2. Geographic Predictor Integration for BCD
+
+With improved timing from Phase 2, we now search for BCD correlation peaks in tight ±15ms windows around expected delays instead of ±150ms:
+```python
+if self.geo_predictor and frequency_mhz:
+    expected = self.geo_predictor.calculate_expected_delays(frequency_mhz)
+    search_window_ms = 15.0  # Tight window with good timing
+```
+
+### 3. 440 Hz Station ID Filtering
+
+**Problem**: 440 Hz CSV was recording all 60 minutes/hour, cluttering charts with noise.
+
+**Fix**: Only write for minutes 1 (WWVH) and 2 (WWV):
+```python
+if minute_number not in [1, 2]:
+    return  # Skip - not a 440 Hz minute
+```
+
+### 4. Noise Floor Measurement Band
+
+**Problem**: SNR measurements showed correlated WWV/WWVH variations (common-mode).
+
+**Cause**: 750-850 Hz noise band was contaminated by BCD sidebands (700+100=800 Hz).
+
+**Fix**: Moved to 275-325 Hz (clean band below 400 Hz BCD sideband):
+```python
+noise_mask = (freqs >= 275) & (freqs <= 325)
+```
+
+### 5. Carrier.html UI Simplification
+
+Removed obsolete metrics (irrelevant with multi-broadcast fusion):
+- ❌ Time Basis (was TONE/NTP/WALL)
+- ❌ Tone Age
+
+Simplified to 4 metrics: SNR, Completeness, Packet Loss, PSWS Upload
+
+### Files Changed
+| File | Change |
+|------|--------|
+| `wwvh_discrimination.py` | BCD correlation fix, geo predictor |
+| `wwv_bcd_encoder.py` | Added `envelope_only` parameter |
+| `phase2_analytics_service.py` | 440 Hz minute filtering |
+| `audio_tone_monitor.py` | Noise floor 275-325 Hz |
+| `monitoring-server-v3.js` | BCD amplitude threshold 0.0005 |
+| `carrier.html` | Simplified metrics panel |
 
 ---
 
@@ -686,6 +888,15 @@ python3 -c "from src.grape_recorder.grape import SpectrogramGenerator; print('OK
 
 ## 📋 SESSION HISTORY
 
+### Dec 7, 2025 - BCD Correlation & UI Fixes (v3.11.0)
+- ✅ **BCD Correlation Fixed**: Direct 100 Hz correlation (not envelope vs carrier mismatch)
+- ✅ **Geo Predictor for BCD**: ±15ms targeted search instead of ±150ms blind search
+- ✅ **440 Hz Filtering**: Only record minutes 1 & 2 (when 440 Hz is transmitted)
+- ✅ **Noise Floor Band**: Moved to 275-325 Hz (was 750-850 Hz, contaminated by BCD)
+- ✅ **Carrier.html Simplified**: Removed Time Basis, Tone Age (irrelevant with fusion)
+- ✅ **BCD Threshold**: Lowered from 0.01 to 0.0005 in web UI
+- 🔍 **Identified**: Spectrogram periodicity issue for next session investigation
+
 ### Dec 6, 2025 - Audio Simplification & Discrimination Docs
 - ✅ **Simplified Audio**: Replaced radiod RTP/multicast with direct IQ AM demod
 - ✅ **Audio Buffer**: New `audio_buffer.py` writes 8 kHz PCM circular buffer
@@ -773,7 +984,11 @@ Previously, all channels showed same status (overall core running state). Now ea
 
 ---
 
-## 🏁 QUICK START FOR NEXT SESSION (Phase 3 Focus)
+## 🏁 QUICK START FOR NEXT SESSION (RTP→DRF Pipeline Investigation)
+
+### Problem: Spectrogram Periodicity
+
+The spectrograms show vertical striping that indicates periodic amplitude variations in what should be a smooth carrier. This needs investigation.
 
 ```bash
 cd /home/wsprdaemon/grape-recorder
@@ -781,56 +996,100 @@ cd /home/wsprdaemon/grape-recorder
 # 1. Verify services running
 ./scripts/grape-all.sh -status
 
-# 2. Start if needed
-./scripts/grape-all.sh -start
+# 2. Check for RTP gaps/issues in logs
+journalctl -u grape-core-recorder --since "1 hour ago" | grep -i "gap\|loss\|reset\|error"
 
-# 3. Check Phase 1 archive exists (source for Phase 3)
-ls -la /tmp/grape-test/raw_archive/
-
-# 4. Run Phase 3 for yesterday
-./scripts/grape-phase3.sh -yesterday
-
-# 5. Check Phase 3 output
-ls -la /tmp/grape-test/products/*/spectrograms/
-ls -la /tmp/grape-test/products/*/drf/
-
-# 6. View spectrograms in browser
-# http://localhost:3000/carrier.html (has spectrogram viewer)
-```
-
-### Key Files to Review for Phase 3
-
-```bash
-# Phase 3 engine - main entry point
-cat src/grape_recorder/grape/phase3_product_engine.py | head -100
-
-# Decimation algorithm
-cat src/grape_recorder/grape/decimation.py | head -100
-
-# Spectrogram generator
-cat src/grape_recorder/grape/spectrogram_generator.py | head -100
-
-# DRF batch writer (PSWS format)
-cat src/grape_recorder/grape/drf_batch_writer.py | head -100
-
-# Control script
-cat scripts/grape-phase3.sh
-```
-
-### Phase 3 Manual Testing
-
-```bash
+# 3. Examine raw archive continuity
 source venv/bin/activate
+python3 << 'EOF'
+import digital_rf
+import numpy as np
 
-# Test single channel spectrogram
-python -m grape_recorder.grape.spectrogram_generator \
-    --data-root /tmp/grape-test \
-    --channel "WWV 10 MHz" \
-    --date $(date -d yesterday +%Y%m%d)
+# Check for gaps in Digital RF archive
+dr = digital_rf.DigitalRFReader('/tmp/grape-test/raw_archive/WWV_10_MHz')
+bounds = dr.get_bounds()
+print(f"Time bounds: {bounds}")
 
-# Test full Phase 3 pipeline
-python -m grape_recorder.grape.phase3_product_engine \
-    --data-root /tmp/grape-test \
-    --channel "WWV 10 MHz" \
-    --date $(date -d yesterday +%Y%m%d)
+# Get gaps
+gaps = dr.get_gaps()
+print(f"Number of gaps: {len(gaps)}")
+if gaps:
+    print("First 10 gaps:")
+    for g in gaps[:10]:
+        print(f"  Start: {g[0]}, Stop: {g[1]}, Duration: {(g[1]-g[0])/20000*1000:.2f} ms")
+
+# Check for zero-filled samples (indicates gap filling)
+data = dr.read(bounds[0], bounds[0] + 200000)  # 10 seconds
+zero_mask = (data == 0)
+if np.any(zero_mask):
+    # Find runs of zeros
+    zero_runs = np.diff(np.where(np.concatenate([[False], zero_mask, [False]]))[0]).reshape(-1, 2)
+    print(f"\nFound {len(zero_runs)} zero-run blocks")
+    for run in zero_runs[:10]:
+        print(f"  Length: {run[1]} samples ({run[1]/20000*1000:.2f} ms)")
+else:
+    print("No zero samples found in first 10 seconds")
+EOF
+
+# 4. Analyze power periodicity
+python3 << 'EOF'
+import digital_rf
+import numpy as np
+from numpy.fft import fft, rfft, rfftfreq
+
+dr = digital_rf.DigitalRFReader('/tmp/grape-test/raw_archive/WWV_10_MHz')
+bounds = dr.get_bounds()
+
+# Read 60 seconds of data
+data = dr.read(bounds[0], bounds[0] + 1200000)
+power = np.abs(data.flatten())**2
+
+# Compute power spectrum of the power envelope
+# This reveals any periodicity in amplitude
+spectrum = np.abs(rfft(power - np.mean(power)))
+freqs = rfftfreq(len(power), 1/20000)
+
+# Find peaks
+from scipy.signal import find_peaks
+peaks, _ = find_peaks(spectrum, height=np.max(spectrum)*0.1, distance=10)
+
+print("Periodicity in power envelope (top 10 peaks):")
+for i, p in enumerate(peaks[:10]):
+    print(f"  {freqs[p]:.2f} Hz (period: {1000/freqs[p] if freqs[p] > 0 else 0:.2f} ms)")
+EOF
 ```
+
+### Key Files for Pipeline Investigation
+
+| File | Purpose | Focus Areas |
+|------|---------|-------------|
+| `src/grape_recorder/core/rtp_receiver.py` | RTP packet reception | Timing, sequence tracking |
+| `src/grape_recorder/core/packet_resequencer.py` | Jitter buffer | Gap detection, zero-fill |
+| `src/grape_recorder/core/digital_rf_writer.py` | HDF5 writer | Write timing, flush logic |
+| `src/grape_recorder/grape/raw_archive_writer.py` | Coordinator | Sample timestamp handling |
+| `config/grape-config.toml` | Settings | blocktime_ms, jitter depth |
+
+### Investigation Workflow
+
+```bash
+# Step 1: Check RTP receiver for packet timing
+head -100 src/grape_recorder/core/rtp_receiver.py
+
+# Step 2: Check packet resequencer for gap handling
+head -150 src/grape_recorder/core/packet_resequencer.py
+
+# Step 3: Check DRF writer for write boundaries
+head -200 src/grape_recorder/core/digital_rf_writer.py
+
+# Step 4: Check config for timing parameters
+cat config/grape-config.toml | grep -A20 "\[recorder\]"
+```
+
+### Expected vs Problematic Periodicity
+
+| Period | Samples | Expected? | Source |
+|--------|---------|-----------|--------|
+| 10 ms | 200 | **NO** | Unknown - investigate |
+| 20 ms | 400 | Maybe | Blocktime artifact |
+| 100 ms | 2000 | YES | 100 Hz BCD modulation |
+| 1000 ms | 20000 | YES | Second tick markers |

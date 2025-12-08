@@ -151,8 +151,9 @@ class AudioToneMonitor:
             for name, freq in self.tone_freqs.items():
                 all_powers[name].append(self._measure_tone_power(fft_power, freqs, freq))
             
-            # Calculate noise floor (750-850 Hz band - clear of tones and BCD harmonics)
-            noise_mask = (freqs >= 750) & (freqs <= 850)
+            # Calculate noise floor (275-325 Hz band - clear of tones and BCD sidebands)
+            # Previously 750-850 Hz but that has BCD harmonic contamination (700+100=800)
+            noise_mask = (freqs >= 275) & (freqs <= 325)
             if np.any(noise_mask):
                 all_noise_floors.append(np.median(fft_power[noise_mask]))
         

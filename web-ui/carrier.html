@@ -703,32 +703,6 @@
       const hasCritical = ch.alerts.some(a => a.severity === 'critical');
       const cardClass = hasCritical ? 'has-critical' : (hasWarning ? 'has-warning' : '');
       
-      let timingClass = 'timing-wall';
-      let timingLabel = ch.timing_quality;
-      if (ch.timing_quality === 'GPS_LOCKED' || ch.timing_quality === 'TONE_LOCKED') {
-        timingClass = 'timing-tone';
-        timingLabel = 'TONE';
-      } else if (ch.timing_quality === 'INTERPOLATED') {
-        timingClass = 'timing-ntp';  // Orange/yellow
-        timingLabel = 'INTERP';
-      } else if (ch.timing_quality === 'NTP_SYNCED') {
-        timingClass = 'timing-ntp';
-        timingLabel = 'NTP';
-      } else if (ch.timing_quality === 'WALL_CLOCK') {
-        timingClass = 'timing-wall';
-        timingLabel = 'WALL';
-      }
-      
-      let uploadClass = 'upload-current';
-      let uploadText = '✅ Current';
-      if (ch.upload_status === 'delayed') {
-        uploadClass = 'upload-delayed';
-        uploadText = '⏳ Delayed';
-      } else if (ch.upload_status === 'stalled') {
-        uploadClass = 'upload-stalled';
-        uploadText = '❌ Stalled';
-      }
-      
       const completenessClass = ch.completeness_pct >= 95 ? 'status-good' : (ch.completeness_pct >= 90 ? 'status-warning' : 'status-critical');
       const channelTypeIcon = ch.channel_type === 'carrier' ? '📡' : '📶';
       const channelTypeLabel = ch.channel_type === 'carrier' ? 'Native Carrier' : 'Wide (Decimated)';
@@ -740,7 +714,7 @@
             <strong>${ch.source_type || channelTypeLabel}</strong> • ${ch.sample_rate || 'N/A'}
           </div>
           
-          <div class="metrics" style="grid-template-columns: repeat(6, 1fr); margin-bottom: 15px;">
+          <div class="metrics" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 15px;">
             <div class="metric" title="Signal-to-noise ratio of carrier detection">
               <div class="metric-label">SNR (dB)</div>
               <div class="metric-value">${ch.snr_db !== null ? ch.snr_db.toFixed(1) : 'N/A'}</div>
@@ -753,17 +727,9 @@
               <div class="metric-label">Packet Loss</div>
               <div class="metric-value">${ch.packet_loss_pct !== null ? ch.packet_loss_pct.toFixed(1) + '%' : 'N/A'}</div>
             </div>
-            <div class="metric" title="TONE=locked to WWV/CHU tone, INTERP=aged tone ref, NTP=network time, WALL=fallback">
-              <div class="metric-label">Time Basis</div>
-              <div class="metric-value"><span class="timing-badge ${timingClass}">${timingLabel}</span></div>
-            </div>
-            <div class="metric" title="DRF upload status to wsprdaemon">
-              <div class="metric-label">Upload</div>
-              <div class="metric-value ${uploadClass}">${uploadText}</div>
-            </div>
-            <div class="metric" title="Time since last tone detection">
-              <div class="metric-label">Tone Age</div>
-              <div class="metric-value">${ch.time_snap_age_minutes !== null ? ch.time_snap_age_minutes + ' min' : 'N/A'}</div>
+            <div class="metric" title="PSWS upload status for current day">
+              <div class="metric-label">PSWS Upload</div>
+              <div class="metric-value">${ch.psws_upload_status || '⏳ Pending'}</div>
             </div>
           </div>
           
