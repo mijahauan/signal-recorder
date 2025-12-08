@@ -74,6 +74,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 import math
 
+# Issue 4.1 Fix (2025-12-07): Import coordinates from single source of truth
+from .wwv_constants import (
+    WWV_LAT, WWV_LON, WWVH_LAT, WWVH_LON, CHU_LAT, CHU_LON
+)
+
 logger = logging.getLogger(__name__)
 
 # Physical constants
@@ -87,10 +92,11 @@ F1_LAYER_HEIGHT_KM = 200.0  # Daytime, merges with F2 at night
 F2_LAYER_HEIGHT_KM = 300.0  # Primary HF reflection layer
 
 # Transmitter locations (latitude, longitude in degrees)
+# Issue 4.1 Fix: Now imported from wwv_constants.py (NIST/NRC verified)
 STATION_LOCATIONS = {
-    'WWV': (40.6781, -105.0469),   # Fort Collins, Colorado
-    'WWVH': (21.9886, -159.7642),  # Kekaha, Kauai, Hawaii
-    'CHU': (45.2975, -75.7536),    # Ottawa, Canada
+    'WWV': (WWV_LAT, WWV_LON),     # Fort Collins, Colorado - NIST verified
+    'WWVH': (WWVH_LAT, WWVH_LON),  # Kekaha, Kauai, Hawaii - NIST verified
+    'CHU': (CHU_LAT, CHU_LON),     # Ottawa, Canada - NRC verified
 }
 
 # Ionospheric group delay coefficient (TEC-dependent)

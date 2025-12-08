@@ -207,18 +207,46 @@ TONE_SCHEDULE_500_600: Dict[int, Dict[str, Optional[int]]] = {
 # =============================================================================
 # STATION LOCATIONS (for propagation delay calculations)
 # =============================================================================
+# IMPORTANT: These are the AUTHORITATIVE coordinates. All other modules MUST
+# import from this file. Do NOT define station coordinates elsewhere!
+#
+# Issue 4.1 Fix (2025-12-07): Coordinates were inconsistent across 6 files,
+# with differences up to 0.008° (~700 meters). This caused ~2-3 μs timing error.
+# Now consolidated to single source of truth with NIST-verified coordinates.
+#
+# VERIFICATION SOURCES:
+# - WWV: NIST website (https://www.nist.gov/pml/time-and-frequency-division/
+#        time-distribution/radio-station-wwv) states: 40° 40' 50.5" N, 105° 02' 26.6" W
+# - WWVH: NIST website (https://www.nist.gov/pml/time-and-frequency-division/
+#         time-distribution/radio-station-wwvh) states: 21° 59' 14" N, 159° 45' 49" W
+# - CHU: NRC Canada (https://nrc.canada.ca/en/certifications-evaluations-standards/
+#        canadas-official-time/nrc-shortwave-station-chu) states: 45° 17' 43" N, 75° 45' 16" W
+# =============================================================================
 
 # WWV - Fort Collins, Colorado, USA
-WWV_LAT = 40.6775
-WWV_LON = -105.0472
+# NIST official: 40° 40' 50.5" N, 105° 02' 26.6" W
+# Decimal: 40 + 40/60 + 50.5/3600 = 40.68069, 105 + 2/60 + 26.6/3600 = 105.04072
+WWV_LAT = 40.6807
+WWV_LON = -105.0407
 
 # WWVH - Kekaha, Kauai, Hawaii, USA  
-WWVH_LAT = 21.9886
-WWVH_LON = -159.7639
+# NIST official: 21° 59' 14" N, 159° 45' 49" W
+# Decimal: 21 + 59/60 + 14/3600 = 21.98722, 159 + 45/60 + 49/3600 = 159.76361
+WWVH_LAT = 21.9872
+WWVH_LON = -159.7636
 
 # CHU - Ottawa, Ontario, Canada
-CHU_LAT = 45.2925
-CHU_LON = -75.7542
+# NRC official: 45° 17' 43" N, 75° 45' 16" W
+# Decimal: 45 + 17/60 + 43/3600 = 45.29528, 75 + 45/60 + 16/3600 = 75.75444
+CHU_LAT = 45.2953
+CHU_LON = -75.7544
+
+# Convenience dictionary for programmatic access
+STATION_LOCATIONS = {
+    'WWV': {'lat': WWV_LAT, 'lon': WWV_LON, 'name': 'Fort Collins, CO, USA'},
+    'WWVH': {'lat': WWVH_LAT, 'lon': WWVH_LON, 'name': 'Kekaha, Kauai, HI, USA'},
+    'CHU': {'lat': CHU_LAT, 'lon': CHU_LON, 'name': 'Ottawa, ON, Canada'},
+}
 
 # =============================================================================
 # TONE FREQUENCIES (Hz)

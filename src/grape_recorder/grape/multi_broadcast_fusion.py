@@ -149,14 +149,34 @@ class BroadcastMeasurement:
 
 
 @dataclass
-class StationCalibration:
-    """Per-station calibration offset learned from data."""
-    station: str
+class BroadcastCalibration:
+    """
+    Per-broadcast calibration offset learned from data.
+    
+    Issue 3.2 Fix: Calibration is now per-broadcast (station+frequency) rather
+    than per-station. This accounts for frequency-dependent ionospheric delays:
+    - Different frequencies have different ionospheric delays (1/f²)
+    - Same-frequency broadcasts share ionospheric conditions (correlated errors)
+    
+    Issue 4.3 Fix: No more hardcoded defaults. Initial offset is 0 with high
+    uncertainty, and the system learns from data using ground truth validation.
+    """
+    station: str              # WWV, WWVH, CHU
+    frequency_mhz: float      # Broadcast frequency (key for correlation)
     offset_ms: float          # Calibration offset to apply
     uncertainty_ms: float     # Uncertainty in offset
-    n_samples: int           # Number of samples used
-    last_updated: float      # Unix time of last update
-    reference_station: str   # Station used as reference (CHU)
+    n_samples: int            # Number of samples used
+    last_updated: float       # Unix time of last update
+    reference_station: str    # Station used as reference (CHU)
+    
+    @property
+    def broadcast_key(self) -> str:
+        """Unique key for this broadcast (station_frequency)."""
+        return f"{self.station}_{self.frequency_mhz:.2f}"
+
+
+# Legacy alias for backwards compatibility
+StationCalibration = BroadcastCalibration
 
 
 @dataclass 
@@ -194,14 +214,14 @@ class MultiBroadcastFusion:
     since CHU FSK provides exact 500ms boundary alignment.
     """
     
-    # Station-specific expected timing errors (learned calibration)
-    # These represent the systematic offset between our detection
-    # and true UTC(NIST) for each station's tone characteristics
-    DEFAULT_CALIBRATION = {
-        'WWV': 2.5,    # WWV tones detected ~2.5ms late
-        'WWVH': 2.5,   # WWVH similar to WWV
-        'CHU': 1.0,    # CHU has smaller offset (500ms tone)
-    }
+    # Issue 4.3 Fix: No more hardcoded defaults
+    # Calibration starts at 0 with high uncertainty and learns from data.
+    # Per-broadcast calibration (Issue 3.2) accounts for frequency-dependent delays.
+    #
+    # The old hardcoded values were:
+    #   'WWV': 2.5, 'WWVH': 2.5, 'CHU': 1.0
+    # These are now replaced by learned values from ground truth validation.
+    DEFAULT_CALIBRATION = {}  # Empty - all calibration is learned
     
     def __init__(
         self,
@@ -260,21 +280,32 @@ class MultiBroadcastFusion:
         return sorted(channels)
     
     def _load_calibration(self):
-        """Load calibration from file or use defaults."""
+        """
+        Load per-broadcast calibration from file.
+        
+        Issue 3.2 Fix: Calibration is now keyed by broadcast (station_frequency)
+        rather than just station, to account for frequency-dependent delays.
+        """
         if self.calibration_file.exists():
             try:
                 with open(self.calibration_file) as f:
                     data = json.load(f)
-                for station, cal_data in data.items():
-                    self.calibration[station] = StationCalibration(
+                for broadcast_key, cal_data in data.items():
+                    # Parse station and frequency from key (e.g., "WWV_10.00")
+                    parts = broadcast_key.rsplit('_', 1)
+                    station = parts[0] if len(parts) > 1 else broadcast_key
+                    freq = float(parts[1]) if len(parts) > 1 else 0.0
+                    
+                    self.calibration[broadcast_key] = BroadcastCalibration(
                         station=station,
+                        frequency_mhz=cal_data.get('frequency_mhz', freq),
                         offset_ms=cal_data['offset_ms'],
                         uncertainty_ms=cal_data['uncertainty_ms'],
                         n_samples=cal_data['n_samples'],
                         last_updated=cal_data['last_updated'],
                         reference_station=cal_data.get('reference_station', 'CHU')
                     )
-                logger.info(f"Loaded calibration from {self.calibration_file}")
+                logger.info(f"Loaded {len(self.calibration)} broadcast calibrations from {self.calibration_file}")
             except Exception as e:
                 logger.warning(f"Could not load calibration: {e}")
                 self._init_default_calibration()
@@ -282,25 +313,27 @@ class MultiBroadcastFusion:
             self._init_default_calibration()
     
     def _init_default_calibration(self):
-        """Initialize with default calibration values."""
-        now = time.time()
-        for station, offset in self.DEFAULT_CALIBRATION.items():
-            self.calibration[station] = StationCalibration(
-                station=station,
-                offset_ms=offset,
-                uncertainty_ms=1.0,  # High uncertainty until learned
-                n_samples=0,
-                last_updated=now,
-                reference_station=self.reference_station
-            )
-        logger.info("Using default calibration offsets")
+        """
+        Initialize with zero calibration (Issue 4.3 fix).
+        
+        Instead of hardcoded guesses, we start with zero offset and high
+        uncertainty. The system learns proper calibration from:
+        1. Ground truth validation (GPS PPS, silent minutes)
+        2. CHU FSK verified timing
+        3. Cross-validation between broadcasts
+        """
+        # No default offsets - all calibration is learned from data
+        # The calibration dict will be populated as measurements arrive
+        logger.info("Calibration initialized - will learn from data (no hardcoded defaults)")
     
     def _save_calibration(self):
-        """Persist calibration to file."""
+        """Persist per-broadcast calibration to file."""
         self.calibration_file.parent.mkdir(parents=True, exist_ok=True)
         data = {}
-        for station, cal in self.calibration.items():
-            data[station] = {
+        for broadcast_key, cal in self.calibration.items():
+            data[broadcast_key] = {
+                'station': cal.station,
+                'frequency_mhz': cal.frequency_mhz,
                 'offset_ms': cal.offset_ms,
                 'uncertainty_ms': cal.uncertainty_ms,
                 'n_samples': cal.n_samples,

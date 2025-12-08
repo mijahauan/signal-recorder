@@ -392,11 +392,16 @@ class Phase2Result:
     d_clock_ms: float
     utc_time: float                 # Calculated UTC = system_time - d_clock
     
-    # Quality summary
-    quality_grade: str = 'C'        # 'A', 'B', 'C', 'D', 'X'
+    # Quality metrics (Issue 6.2 Fix: replaced arbitrary grades with uncertainty)
+    uncertainty_ms: float = 10.0    # Estimated timing uncertainty in ms
+    confidence: float = 0.0         # 0-1 confidence score
+    
+    # Deprecated: quality_grade removed per Issue 6.2
+    # Old grades (A/B/C/D/X) had no statistical basis and are replaced by
+    # uncertainty_ms which has physical meaning (expected error bounds).
     
     # Processing metadata
-    processing_version: str = '2.0.0'
+    processing_version: str = '2.1.0'  # Version bump for grade removal
     processed_at: Optional[float] = None
 
 
@@ -1292,49 +1297,81 @@ class Phase2TemporalEngine:
         
         return min(uncertainty, 100.0)  # Cap at 100ms
     
-    def _determine_quality_grade(
+    def _estimate_uncertainty(
         self,
         solution: TransmissionTimeSolution,
         channel: ChannelCharacterization
-    ) -> str:
-        """Determine overall quality grade based on all metrics."""
-        # Count quality indicators
+    ) -> Tuple[float, float]:
+        """
+        Estimate timing uncertainty based on all available metrics.
+        
+        Issue 6.2 Fix: Replaces arbitrary letter grades (A/B/C/D) with
+        a physically meaningful uncertainty estimate in milliseconds.
+        
+        Returns:
+            (uncertainty_ms, confidence): Tuple of uncertainty and confidence
+        """
+        # Base uncertainty from propagation model
+        base_uncertainty = 5.0  # ms, typical ionospheric timing uncertainty
+        
+        # Factors that reduce uncertainty
         has_ground_truth = channel.ground_truth_station is not None
         has_test_signal = channel.test_signal_detected
         has_chu_fsk = channel.chu_fsk_detected and channel.chu_fsk_time_verified
         agreement_count = len(channel.cross_validation_agreements)
         disagreement_count = len(channel.cross_validation_disagreements)
         
-        if solution.utc_verified and solution.confidence > 0.8:
-            if has_ground_truth:
-                return 'A'  # Excellent: verified with ground truth
-            elif has_chu_fsk:
-                return 'A'  # Excellent: CHU FSK time verified
-            elif has_test_signal and agreement_count >= 2:
-                return 'A'  # Excellent: test signal + multi-method agreement
-            elif agreement_count >= 3:
-                return 'A'  # Excellent: multi-method agreement
-            else:
-                return 'B'  # Good: verified but fewer confirmations
-        elif solution.confidence > 0.6:
-            if has_chu_fsk:
-                return 'A'  # CHU FSK time verified = excellent
-            elif has_test_signal and disagreement_count == 0:
-                return 'A'  # Test signal with no disagreements = excellent
-            elif disagreement_count == 0:
-                return 'B'  # Good: high confidence, no disagreements
-            else:
-                return 'C'  # Fair: some disagreements
-        elif solution.confidence > 0.3:
-            if has_chu_fsk:
-                return 'A'  # CHU FSK time verified even with moderate confidence
-            elif has_test_signal:
-                return 'B'  # Test signal boosts moderate confidence to Good
-            return 'C'  # Fair: moderate confidence
-        else:
-            if has_chu_fsk:
-                return 'B'  # CHU FSK provides verification even with low confidence
-            return 'D'  # Poor: low confidence
+        # Start with solution's confidence
+        confidence = solution.confidence
+        uncertainty = base_uncertainty
+        
+        # CHU FSK provides verified timing (lowest uncertainty)
+        if has_chu_fsk:
+            uncertainty = 0.1  # 100 μs - FSK provides precise timing
+            confidence = max(confidence, 0.95)
+        
+        # Ground truth minutes (silent minutes) provide known station
+        elif has_ground_truth:
+            uncertainty = 1.0  # 1 ms - known station eliminates ambiguity
+            confidence = max(confidence, 0.9)
+        
+        # Test signal provides high SNR measurement
+        elif has_test_signal:
+            uncertainty = 2.0  # 2 ms
+            confidence = max(confidence, 0.8)
+        
+        # Multiple method agreement reduces uncertainty
+        elif agreement_count >= 3:
+            uncertainty = 2.0
+            confidence = max(confidence, 0.75)
+        
+        elif agreement_count >= 2:
+            uncertainty = 3.0
+            confidence = max(confidence, 0.6)
+        
+        # Disagreements increase uncertainty
+        if disagreement_count > 0:
+            uncertainty *= (1 + 0.5 * disagreement_count)
+            confidence *= 0.8
+        
+        # Low SNR increases uncertainty
+        if channel.snr_db is not None and channel.snr_db < 10:
+            uncertainty *= 2.0
+            confidence *= 0.7
+        
+        # Multipath increases uncertainty
+        if channel.delay_spread_ms is not None and channel.delay_spread_ms > 1.0:
+            uncertainty += channel.delay_spread_ms
+        
+        # Low solution confidence increases uncertainty
+        if solution.confidence < 0.5:
+            uncertainty *= (2.0 - solution.confidence)
+        
+        # Cap values
+        uncertainty = min(uncertainty, 50.0)  # Max 50 ms
+        confidence = max(0.0, min(1.0, confidence))
+        
+        return uncertainty, confidence
     
     def process_minute(
         self,
@@ -1398,8 +1435,8 @@ class Phase2TemporalEngine:
             # Calculate final UTC time
             utc_time = system_time - (solution.d_clock_ms / 1000.0)
             
-            # Determine quality grade
-            quality_grade = self._determine_quality_grade(solution, channel)
+            # Estimate uncertainty (Issue 6.2 fix: replaced arbitrary grades)
+            uncertainty_ms, confidence = self._estimate_uncertainty(solution, channel)
             
             # Assemble complete result
             result = Phase2Result(
@@ -1411,8 +1448,9 @@ class Phase2TemporalEngine:
                 solution=solution,
                 d_clock_ms=solution.d_clock_ms,
                 utc_time=utc_time,
-                quality_grade=quality_grade,
-                processing_version='2.0.0',
+                uncertainty_ms=uncertainty_ms,
+                confidence=confidence,
+                processing_version='2.1.0',
                 processed_at=datetime.now(tz=timezone.utc).timestamp()
             )
             
@@ -1423,7 +1461,7 @@ class Phase2TemporalEngine:
             
             logger.info(
                 f"Phase 2 complete: D_clock={solution.d_clock_ms:+.2f}ms, "
-                f"grade={quality_grade}, station={solution.station}"
+                f"uncertainty={uncertainty_ms:.1f}ms, station={solution.station}"
             )
             
             return result
@@ -1443,7 +1481,8 @@ class Phase2TemporalEngine:
                 'frequency_mhz': self.frequency_mhz,
                 'receiver_grid': self.receiver_grid,
                 'last_d_clock_ms': self.last_result.d_clock_ms if self.last_result else None,
-                'last_quality_grade': self.last_result.quality_grade if self.last_result else None
+                'last_uncertainty_ms': self.last_result.uncertainty_ms if self.last_result else None,
+                'last_confidence': self.last_result.confidence if self.last_result else None
             }
 
 

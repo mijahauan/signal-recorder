@@ -217,16 +217,33 @@ Deviations indicate either:
 ================================================================================
 REVISION HISTORY
 ================================================================================
+2025-12-07: Issue 1.3 FIX - Proper 1/f² ionospheric delay model (replaces linear)
+2025-12-07: Issue 1.2 FIX - Dynamic ionospheric model with IRI-2016 integration
 2025-12-07: Added comprehensive theoretical documentation
 2025-11-15: Added multi-station solver for correlated UTC estimation
 2025-10-20: Initial implementation with single-station mode disambiguation
 """
 
-import math
 import logging
-from typing import Optional, List, Dict, Tuple, NamedTuple
+import math
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
+
+import numpy as np
+
+# Import the dynamic ionospheric model (Issue 1.2 fix) and delay calculator (Issue 1.3 fix)
+from .ionospheric_model import (
+    IonosphericModel,
+    LayerHeights,
+    IonosphericModelTier,
+    IonosphericDelayCalculator,
+    IonosphericDelayResult,
+    DEFAULT_E_LAYER_HEIGHT_KM,
+    DEFAULT_F1_LAYER_HEIGHT_KM,
+    DEFAULT_F2_LAYER_HEIGHT_KM
+)
 
 logger = logging.getLogger(__name__)
 
@@ -244,39 +261,38 @@ EARTH_RADIUS_KM = 6371.0
 # =============================================================================
 # IONOSPHERIC LAYER HEIGHTS (km)
 # =============================================================================
-# These are typical values; actual heights vary with:
-#   - Time of day (layers rise at night, fall during day)
-#   - Solar activity (higher solar flux → denser ionosphere)
-#   - Season (summer vs winter hemisphere)
-#   - Latitude (equatorial vs polar)
+# IMPORTANT: These constants are now FALLBACKS only.
+#
+# Issue 1.2 Fix (2025-12-07):
+# The original implementation used these FIXED values, ignoring the significant
+# variation of hmF2 (200-400 km) with time, solar activity, and location.
+# 
+# The new IonosphericModel class provides dynamic heights via:
+#   TIER 1: IRI-2016 (International Reference Ionosphere) when available
+#   TIER 2: Parametric model capturing diurnal/seasonal/solar variations
+#   TIER 3: These static fallbacks as last resort
+#
+# Additionally, the F2_NIGHT_HEIGHT_KM constant was defined but NEVER USED
+# in the original code - a bug that is now fixed.
 #
 # Reference: ITU-R P.1239-3 "ITU-R Reference Ionospheric Characteristics"
 # =============================================================================
-E_LAYER_HEIGHT_KM = 110.0    # E-layer: 90-130 km, daytime only
-F1_LAYER_HEIGHT_KM = 200.0   # F1-layer: 150-200 km, daytime only, merges with F2 at night
-F2_LAYER_HEIGHT_KM = 300.0   # F2-layer: 250-400 km, primary HF reflector (day)
-F2_NIGHT_HEIGHT_KM = 350.0   # F2-layer at night: rises as ionization decays
+E_LAYER_HEIGHT_KM = DEFAULT_E_LAYER_HEIGHT_KM     # E-layer: 90-130 km, daytime only
+F1_LAYER_HEIGHT_KM = DEFAULT_F1_LAYER_HEIGHT_KM   # F1-layer: 150-200 km
+F2_LAYER_HEIGHT_KM = DEFAULT_F2_LAYER_HEIGHT_KM   # F2-layer: 250-400 km (FALLBACK)
+F2_NIGHT_HEIGHT_KM = 350.0   # F2-layer at night (now used via IonosphericModel)
 
 # =============================================================================
 # TIME SIGNAL STATION LOCATIONS (WGS84 coordinates)
 # =============================================================================
-# WWV: Fort Collins, Colorado, USA
-#   - Frequencies: 2.5, 5, 10, 15, 20, 25 MHz
-#   - Reference: NIST SP 250-67
+# Issue 4.1 Fix (2025-12-07): Coordinates now imported from wwv_constants.py
+# (single source of truth). Previous values were inconsistent across files.
 #
-# WWVH: Kekaha, Kauai, Hawaii, USA
-#   - Frequencies: 2.5, 5, 10, 15 MHz
-#   - Reference: NIST SP 250-67
-#
-# CHU: Ottawa, Ontario, Canada
-#   - Frequencies: 3.330, 7.850, 14.670 MHz
-#   - Reference: NRC Canada
+# WWV: Fort Collins, Colorado, USA - NIST verified coordinates
+# WWVH: Kekaha, Kauai, Hawaii, USA - NIST verified coordinates  
+# CHU: Ottawa, Ontario, Canada - NRC verified coordinates
 # =============================================================================
-STATIONS = {
-    'WWV': {'lat': 40.6781, 'lon': -105.0469, 'name': 'Fort Collins, CO'},
-    'WWVH': {'lat': 21.9869, 'lon': -159.7644, 'name': 'Kauai, HI'},
-    'CHU': {'lat': 45.2950, 'lon': -75.7564, 'name': 'Ottawa, ON'},
-}
+from .wwv_constants import STATION_LOCATIONS as STATIONS
 
 # =============================================================================
 # IONOSPHERIC DELAY FACTOR (frequency-dependent)
@@ -368,6 +384,16 @@ class TransmissionTimeSolver:
     This turns a passive receiver into a primary time standard by
     back-calculating when the signal was actually transmitted at
     WWV/WWVH/CHU, recovering UTC(NIST) with ~1ms accuracy.
+    
+    Issue 1.2 Fix (2025-12-07):
+    ---------------------------
+    Now uses dynamic ionospheric layer heights via IonosphericModel:
+    - TIER 1: IRI-2016 when available (best accuracy, ~20-30 km)
+    - TIER 2: Parametric model (captures diurnal/seasonal variation)
+    - TIER 3: Static fallback (original fixed constants)
+    
+    The model also learns calibration offsets from actual measurements
+    to track ionospheric "weather" vs "climate".
     """
     
     def __init__(
@@ -375,7 +401,8 @@ class TransmissionTimeSolver:
         receiver_lat: float,
         receiver_lon: float,
         sample_rate: int = 20000,
-        f_layer_height_km: float = F2_LAYER_HEIGHT_KM
+        f_layer_height_km: float = F2_LAYER_HEIGHT_KM,
+        enable_dynamic_ionosphere: bool = True
     ):
         """
         Initialize solver with receiver location.
@@ -384,12 +411,34 @@ class TransmissionTimeSolver:
             receiver_lat: Receiver latitude (degrees, WGS84)
             receiver_lon: Receiver longitude (degrees, WGS84)
             sample_rate: Audio sample rate (Hz), used for RTP conversion
-            f_layer_height_km: Assumed F-layer height (can vary with time)
+            f_layer_height_km: DEPRECATED - Static F-layer height fallback (km).
+                              Now only used if enable_dynamic_ionosphere=False.
+            enable_dynamic_ionosphere: Use IonosphericModel for dynamic heights.
+                                      Set False to revert to original fixed-height behavior.
         """
         self.receiver_lat = receiver_lat
         self.receiver_lon = receiver_lon
         self.sample_rate = sample_rate
-        self.f_layer_height_km = f_layer_height_km
+        self.f_layer_height_km = f_layer_height_km  # Fallback value
+        self.enable_dynamic_ionosphere = enable_dynamic_ionosphere
+        
+        # Initialize the dynamic ionospheric model (Issue 1.2 fix)
+        if enable_dynamic_ionosphere:
+            self.iono_model = IonosphericModel(
+                enable_iri=True,
+                enable_calibration=True,
+                calibration_window_hours=24.0
+            )
+            # Initialize ionospheric delay calculator (Issue 1.3 fix)
+            self.delay_calculator = IonosphericDelayCalculator(iono_model=self.iono_model)
+            logger.info("Dynamic ionospheric model enabled (IRI-2016 + calibration + 1/f² delay)")
+        else:
+            self.iono_model = None
+            self.delay_calculator = None
+            logger.info(f"Using static F-layer height: {f_layer_height_km} km (and linear delay model)")
+        
+        # Track the last layer heights used (for logging/debugging)
+        self._last_layer_heights: Optional[LayerHeights] = None
         
         # Pre-calculate distances to each station
         self.station_distances = {}
@@ -503,45 +552,110 @@ class TransmissionTimeSolver:
         
         return total_path, elevation_deg
     
+    def _get_layer_heights(
+        self,
+        timestamp: Optional[datetime] = None,
+        station_lat: Optional[float] = None,
+        station_lon: Optional[float] = None
+    ) -> Tuple[float, float, float]:
+        """
+        Get ionospheric layer heights for the current conditions.
+        
+        Issue 1.2 Fix: Uses IonosphericModel when enabled, otherwise
+        falls back to static constants.
+        
+        For propagation calculations, we use the layer height at the
+        midpoint between transmitter and receiver (approximation).
+        
+        Args:
+            timestamp: UTC time for height calculation
+            station_lat: Transmitter latitude (for midpoint calculation)
+            station_lon: Transmitter longitude (for midpoint calculation)
+            
+        Returns:
+            Tuple of (hmE, hmF1, hmF2) layer heights in km
+        """
+        if self.iono_model is None:
+            # Original behavior: use fixed constants
+            return (E_LAYER_HEIGHT_KM, F1_LAYER_HEIGHT_KM, self.f_layer_height_km)
+        
+        # Calculate midpoint for ionospheric height lookup
+        if station_lat is not None and station_lon is not None:
+            mid_lat = (self.receiver_lat + station_lat) / 2
+            mid_lon = (self.receiver_lon + station_lon) / 2
+        else:
+            mid_lat = self.receiver_lat
+            mid_lon = self.receiver_lon
+        
+        # Get dynamic heights from ionospheric model
+        heights = self.iono_model.get_layer_heights(
+            timestamp=timestamp,
+            latitude=mid_lat,
+            longitude=mid_lon
+        )
+        
+        # Store for later reference (debugging, calibration)
+        self._last_layer_heights = heights
+        
+        logger.debug(f"Layer heights via {heights.tier.value}: "
+                    f"hmF2={heights.hmF2:.1f}±{heights.hmF2_uncertainty_km:.0f} km, "
+                    f"hmF1={heights.hmF1:.1f} km, hmE={heights.hmE:.1f} km")
+        
+        return (heights.hmE, heights.hmF1, heights.hmF2)
+    
     def _calculate_mode_delay(
         self,
         mode: PropagationMode,
         ground_distance_km: float,
-        frequency_mhz: float
+        frequency_mhz: float,
+        timestamp: Optional[datetime] = None,
+        station_lat: Optional[float] = None,
+        station_lon: Optional[float] = None
     ) -> Optional[ModeCandidate]:
         """
         Calculate propagation delay for a specific mode.
         
         Returns ModeCandidate with all timing details, or None if mode
         is physically implausible for this path.
+        
+        Issue 1.2 Fix (2025-12-07):
+        Now uses dynamic layer heights from IonosphericModel when available,
+        capturing diurnal, seasonal, and solar activity variations.
         """
-        # Determine layer height and hop count
+        # Get current layer heights (dynamic if model enabled, static otherwise)
+        hmE, hmF1, hmF2 = self._get_layer_heights(
+            timestamp=timestamp,
+            station_lat=station_lat,
+            station_lon=station_lon
+        )
+        
+        # Determine layer height and hop count for this mode
         if mode == PropagationMode.GROUND_WAVE:
             if ground_distance_km > 200:  # Ground wave limited range
                 return None
             layer_height = 0
             n_hops = 0
         elif mode == PropagationMode.ONE_HOP_E:
-            layer_height = E_LAYER_HEIGHT_KM
+            layer_height = hmE  # Dynamic E-layer height
             n_hops = 1
             # E-layer only works for shorter paths
             if ground_distance_km > 2500:
                 return None
         elif mode == PropagationMode.ONE_HOP_F:
-            layer_height = self.f_layer_height_km
+            layer_height = hmF2  # Dynamic F2-layer height
             n_hops = 1
             # Check if single hop can reach (max ~4000 km)
             if ground_distance_km > 4000:
                 return None
         elif mode == PropagationMode.TWO_HOP_F:
-            layer_height = self.f_layer_height_km
+            layer_height = hmF2  # Dynamic F2-layer height
             n_hops = 2
         elif mode == PropagationMode.THREE_HOP_F:
-            layer_height = self.f_layer_height_km
+            layer_height = hmF2  # Dynamic F2-layer height
             n_hops = 3
         elif mode == PropagationMode.MIXED_EF:
-            # Approximate as 1.5 hops at intermediate height
-            layer_height = (E_LAYER_HEIGHT_KM + self.f_layer_height_km) / 2
+            # Approximate as 1.5 hops at intermediate height (E + F2)
+            layer_height = (hmE + hmF2) / 2
             n_hops = 2
         else:
             return None
@@ -562,10 +676,43 @@ class TransmissionTimeSolver:
         # Geometric delay (speed of light)
         geometric_delay_ms = (path_length_km / SPEED_OF_LIGHT_KM_S) * 1000
         
-        # Ionospheric delay (frequency-dependent, more delay at lower frequencies)
-        iono_factor = IONO_DELAY_FACTOR.get(frequency_mhz, 1.0)
-        # Approximate ionospheric delay: ~0.1-0.3 ms per hop for HF
-        iono_delay_ms = n_hops * 0.15 * iono_factor
+        # =================================================================
+        # IONOSPHERIC DELAY (Issue 1.3 Fix - 2025-12-07)
+        # =================================================================
+        # OLD CODE (linear approximation - WRONG):
+        #     iono_factor = IONO_DELAY_FACTOR.get(frequency_mhz, 1.0)
+        #     iono_delay_ms = n_hops * 0.15 * iono_factor
+        #
+        # NEW: Use proper 1/f² physics via IonosphericDelayCalculator
+        #     τ_iono = 40.3 × TEC / (c × f²)
+        #
+        # The 1/f² relationship means 2.5 MHz has 16× more delay than 10 MHz,
+        # not the 1.5× that the old linear model assumed.
+        # =================================================================
+        
+        if self.delay_calculator is not None and n_hops > 0:
+            # Use physically correct 1/f² model
+            # Calculate midpoint latitude/longitude for TEC lookup
+            if station_lat is not None and station_lon is not None:
+                mid_lat = (self.receiver_lat + station_lat) / 2
+                mid_lon = (self.receiver_lon + station_lon) / 2
+            else:
+                mid_lat = self.receiver_lat
+                mid_lon = self.receiver_lon
+            
+            delay_result = self.delay_calculator.calculate_delay(
+                frequency_mhz=frequency_mhz,
+                n_hops=n_hops,
+                elevation_deg=elevation_deg,
+                timestamp=timestamp,
+                latitude=mid_lat,
+                longitude=mid_lon
+            )
+            iono_delay_ms = delay_result.delay_ms
+        else:
+            # Fallback to linear model if delay calculator not available
+            iono_factor = IONO_DELAY_FACTOR.get(frequency_mhz, 1.0)
+            iono_delay_ms = n_hops * 0.15 * iono_factor
         
         total_delay_ms = geometric_delay_ms + iono_delay_ms
         
@@ -749,7 +896,8 @@ class TransmissionTimeSolver:
         delay_spread_ms: float = 0.0,
         doppler_std_hz: float = 0.0,
         fss_db: Optional[float] = None,
-        expected_second_rtp: Optional[int] = None
+        expected_second_rtp: Optional[int] = None,
+        timestamp: Optional[datetime] = None
     ) -> SolverResult:
         """
         Solve for transmission time by identifying propagation mode.
@@ -762,6 +910,7 @@ class TransmissionTimeSolver:
             doppler_std_hz: Doppler standard deviation (path stability)
             fss_db: Frequency Selectivity Strength (D-layer indicator)
             expected_second_rtp: RTP timestamp of expected second boundary
+            timestamp: UTC datetime of observation (for dynamic ionosphere model)
             
         Returns:
             SolverResult with mode identification and back-calculated time
@@ -771,12 +920,26 @@ class TransmissionTimeSolver:
         
         ground_distance = self.station_distances[station]
         
-        # Calculate all plausible mode candidates
+        # Get station coordinates for ionospheric model (Issue 1.2 fix)
+        station_info = STATIONS.get(station, {})
+        station_lat = station_info.get('lat')
+        station_lon = station_info.get('lon')
+        
+        # Use current time if not provided
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc)
+        
+        # Calculate all plausible mode candidates with dynamic layer heights
         candidates = []
         for mode in PropagationMode:
             if mode == PropagationMode.UNKNOWN:
                 continue
-            candidate = self._calculate_mode_delay(mode, ground_distance, frequency_mhz)
+            candidate = self._calculate_mode_delay(
+                mode, ground_distance, frequency_mhz,
+                timestamp=timestamp,
+                station_lat=station_lat,
+                station_lon=station_lon
+            )
             if candidate:
                 candidates.append(candidate)
         
@@ -855,6 +1018,22 @@ class TransmissionTimeSolver:
         # Apply penalties
         delay_spread_penalty = 1.0 if delay_spread_ms < 0.5 else 0.8
         doppler_penalty = 1.0 if doppler_std_hz < 0.2 else 0.8
+        
+        # Update calibration if we have a confident solution (Issue 1.2 fix)
+        # This allows the ionospheric model to learn from actual measurements
+        if self.iono_model is not None and utc_verified and confidence > 0.7:
+            self.iono_model.update_calibration(
+                latitude=self.receiver_lat,
+                longitude=self.receiver_lon,
+                timestamp=timestamp,
+                observed_delay_ms=observed_delay_ms,
+                predicted_delay_ms=best_candidate.total_delay_ms,
+                ground_distance_km=ground_distance,
+                n_hops=best_candidate.n_hops,
+                confidence=confidence
+            )
+            logger.debug(f"Calibration updated: observed={observed_delay_ms:.2f}ms, "
+                        f"predicted={best_candidate.total_delay_ms:.2f}ms")
         
         return SolverResult(
             arrival_rtp=arrival_rtp,

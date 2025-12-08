@@ -74,6 +74,9 @@ from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
+# Issue 4.1 Fix (2025-12-07): Import coordinates from single source of truth
+from .wwv_constants import STATION_LOCATIONS
+
 logger = logging.getLogger(__name__)
 
 # Physical constants
@@ -85,12 +88,8 @@ E_LAYER_HEIGHT_KM = 110.0
 F2_LAYER_HEIGHT_KM = 300.0
 F2_NIGHT_HEIGHT_KM = 350.0
 
-# Station locations
-STATIONS = {
-    'WWV': {'lat': 40.6781, 'lon': -105.0469, 'name': 'Fort Collins, CO'},
-    'WWVH': {'lat': 21.9869, 'lon': -159.7644, 'name': 'Kauai, HI'},
-    'CHU': {'lat': 45.2950, 'lon': -75.7564, 'name': 'Ottawa, ON'},
-}
+# Station locations - Issue 4.1 Fix: Now imported from wwv_constants.py
+STATIONS = STATION_LOCATIONS  # NIST/NRC verified coordinates
 
 
 class PropagationMode(Enum):

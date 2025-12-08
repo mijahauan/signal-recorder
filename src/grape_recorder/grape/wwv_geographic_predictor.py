@@ -152,6 +152,9 @@ from collections import deque
 import json
 from pathlib import Path
 
+# Issue 4.1 Fix (2025-12-07): Import coordinates from single source of truth
+from .wwv_constants import WWV_LAT, WWV_LON, WWVH_LAT, WWVH_LON
+
 logger = logging.getLogger(__name__)
 
 
@@ -159,8 +162,9 @@ class WWVGeographicPredictor:
     """Predicts WWV/WWVH time-of-arrival based on geographic locations"""
     
     # Transmitter coordinates (lat, lon in degrees)
-    WWV_LOCATION = (40.6779, -105.0392)   # Fort Collins, Colorado
-    WWVH_LOCATION = (22.0534, -159.7619)  # Kekaha, Kauai, Hawaii
+    # Issue 4.1 Fix: Now imported from wwv_constants.py (NIST verified)
+    WWV_LOCATION = (WWV_LAT, WWV_LON)     # Fort Collins, Colorado - NIST verified
+    WWVH_LOCATION = (WWVH_LAT, WWVH_LON)  # Kekaha, Kauai, Hawaii - NIST verified
     
     # Speed of light
     C_LIGHT_KM_PER_MS = 299.792458  # km/ms

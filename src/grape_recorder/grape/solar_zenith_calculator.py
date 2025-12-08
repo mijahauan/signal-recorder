@@ -2,13 +2,13 @@
 Solar Zenith Angle Calculator for WWV/WWVH/CHU Path Midpoints
 
 Calculates solar elevation angles at the midpoint of the propagation path
-between a receiver location and time signal transmitters:
-- WWV: Fort Collins, Colorado (40.6779°N, 105.0392°W)
-- WWVH: Kekaha, Kauai, Hawaii (22.0534°N, 159.7619°W)  
-- CHU: Ottawa, Canada (45°17′41.3″N, 75°45′28.3″W)
+between a receiver location and time signal transmitters.
 
 Solar elevation at the path midpoint correlates with D-layer absorption
 and propagation conditions on HF time signal frequencies.
+
+Issue 4.1 Fix (2025-12-07): Station coordinates now imported from wwv_constants.py
+(single source of truth with NIST/NRC verified values).
 
 Usage:
     python -m grape_recorder.solar_zenith_calculator --date 20251127 --grid EM38ww
@@ -20,10 +20,13 @@ import argparse
 from datetime import datetime, timedelta
 from typing import Tuple, List, Dict
 
-# Transmitter coordinates (lat, lon in degrees)
-WWV_LOCATION = (40.6779, -105.0392)   # Fort Collins, Colorado
-WWVH_LOCATION = (22.0534, -159.7619)  # Kekaha, Kauai, Hawaii
-CHU_LOCATION = (45.2948, -75.7579)    # Ottawa, Canada (45°17′41.3″N 75°45′28.3″W)
+# Import transmitter coordinates from single source of truth
+from .wwv_constants import WWV_LAT, WWV_LON, WWVH_LAT, WWVH_LON, CHU_LAT, CHU_LON
+
+# Transmitter coordinates (lat, lon in degrees) - from wwv_constants.py
+WWV_LOCATION = (WWV_LAT, WWV_LON)     # Fort Collins, Colorado - NIST verified
+WWVH_LOCATION = (WWVH_LAT, WWVH_LON)  # Kekaha, Kauai, Hawaii - NIST verified
+CHU_LOCATION = (CHU_LAT, CHU_LON)     # Ottawa, Canada - NRC verified
 
 
 def grid_to_latlon(grid: str) -> Tuple[float, float]:

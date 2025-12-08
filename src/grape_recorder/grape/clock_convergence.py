@@ -64,29 +64,62 @@ STATE DESCRIPTIONS:
     REACQUIRE  - Persistent anomalies, resetting statistics
 
 ================================================================================
-STATISTICAL MODEL
+STATISTICAL MODEL - KALMAN FILTER (Issue 3.1 Fix - 2025-12-07)
 ================================================================================
-WELFORD'S ONLINE ALGORITHM for numerically stable running statistics:
 
-    count += 1
-    delta = x - mean
-    mean += delta / count
-    delta2 = x - mean
-    M2 += delta * delta2
+VULNERABILITY ADDRESSED:
+------------------------
+The original implementation used Welford's algorithm, which assumes the underlying
+value is STATIONARY (constant). But D_clock is affected by:
+- Temperature-induced crystal oscillator drift (~1 ppm/°C)
+- Ionospheric diurnal variation (systematic bias shift)
+
+This caused the "locked" D_clock value to become stale as conditions changed.
+
+SOLUTION: KALMAN FILTER with offset+drift state model
+-----------------------------------------------------
+The Kalman filter tracks both the clock offset AND its rate of change:
+
+    STATE: x = [D_clock (ms), D_clock_rate (ms/min)]
     
-    variance = M2 / count
-    std_dev = √variance
-    uncertainty = std_dev / √count  (standard error of the mean)
+    STATE TRANSITION (constant velocity model):
+        x_k = F × x_{k-1} + process_noise
+        F = [[1, Δt],
+             [0,  1]]
+        
+    MEASUREMENT MODEL:
+        z = H × x + measurement_noise
+        H = [1, 0]  (we only measure D_clock, not rate directly)
+
+PROCESS NOISE (Q matrix):
+    Based on oscillator stability specification:
+    - GPSDO: ~10⁻¹¹ Allan deviation → very small process noise
+    - TCXO:  ~10⁻⁶ Allan deviation → moderate process noise
+    
+    Q = [[σ_offset², σ_offset×σ_rate],
+         [σ_offset×σ_rate, σ_rate²]]
+
+MEASUREMENT NOISE (R scalar):
+    Based on propagation mode uncertainty:
+    - High SNR, stable path: R ~ (0.1 ms)²
+    - Low SNR, multipath: R ~ (2.0 ms)²
+
+ADVANTAGE OVER WELFORD:
+    Welford's treats all deviations as "noise" to average out.
+    Kalman filter distinguishes between:
+    - Slow drift (updates state estimate)
+    - Random noise (filtered out)
+    - Sudden jumps (detected as anomalies via innovation)
 
 LOCK CRITERION:
-    uncertainty < lock_threshold_ms (default: 1.0 ms)
-    AND
-    count ≥ min_samples (default: 30)
+    P[0,0] < lock_threshold² (state uncertainty converged)
+    AND count ≥ min_samples
 
 ANOMALY DETECTION:
-    residual = measurement - reference
-    anomaly_sigma = |residual| / std_dev
-    is_anomaly = anomaly_sigma > k_sigma (default: 3.0)
+    innovation = measurement - H × x_predicted
+    S = H × P × H' + R  (innovation covariance)
+    normalized_innovation = |innovation| / √S
+    is_anomaly = normalized_innovation > k_sigma
 
 ================================================================================
 OUTPUT: CONVERGENCE RESULT
@@ -131,6 +164,7 @@ USAGE
 ================================================================================
 REVISION HISTORY
 ================================================================================
+2025-12-07: Issue 3.1 FIX - Replaced Welford's algorithm with Kalman filter
 2025-12-07: Added comprehensive documentation
 2025-12-01: Added state persistence
 2025-11-15: Initial "Set, Monitor, Intervention" implementation
@@ -145,7 +179,224 @@ import math
 import logging
 from pathlib import Path
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# KALMAN FILTER FOR CLOCK TRACKING (Issue 3.1 Fix)
+# =============================================================================
+
+class KalmanClockTracker:
+    """
+    Kalman filter for tracking clock offset with drift.
+    
+    This replaces Welford's algorithm to properly handle non-stationary
+    clock behavior (temperature drift, ionospheric variations).
+    
+    State vector: [offset_ms, drift_rate_ms_per_min]
+    
+    The filter uses a constant-velocity model where:
+    - offset(t+dt) = offset(t) + drift_rate * dt
+    - drift_rate(t+dt) = drift_rate(t) + noise
+    
+    This allows the filter to track slow drift while filtering out
+    random measurement noise.
+    """
+    
+    def __init__(
+        self,
+        initial_offset_ms: float = 0.0,
+        initial_uncertainty_ms: float = 100.0,
+        process_noise_offset_ms: float = 0.01,
+        process_noise_drift_ms_per_min: float = 0.001,
+        measurement_noise_ms: float = 1.0
+    ):
+        """
+        Initialize Kalman filter.
+        
+        Args:
+            initial_offset_ms: Initial guess for clock offset
+            initial_uncertainty_ms: Initial uncertainty (large = uninformed prior)
+            process_noise_offset_ms: Process noise for offset (oscillator noise)
+            process_noise_drift_ms_per_min: Process noise for drift rate
+            measurement_noise_ms: Measurement noise (propagation uncertainty)
+        """
+        # State vector: [offset, drift_rate]
+        self.x = np.array([initial_offset_ms, 0.0])
+        
+        # State covariance matrix (initially very uncertain)
+        self.P = np.array([
+            [initial_uncertainty_ms**2, 0.0],
+            [0.0, (initial_uncertainty_ms / 10)**2]  # Drift uncertainty
+        ])
+        
+        # Process noise parameters
+        self.q_offset = process_noise_offset_ms**2
+        self.q_drift = process_noise_drift_ms_per_min**2
+        
+        # Measurement noise
+        self.R = measurement_noise_ms**2
+        
+        # Measurement matrix: we only observe offset, not drift
+        self.H = np.array([[1.0, 0.0]])
+        
+        # Tracking
+        self.count = 0
+        self.last_timestamp: Optional[float] = None
+        self.innovation_history: List[float] = []
+    
+    @property
+    def offset_ms(self) -> float:
+        """Current offset estimate."""
+        return float(self.x[0])
+    
+    @property
+    def drift_rate_ms_per_min(self) -> float:
+        """Current drift rate estimate (ms/minute)."""
+        return float(self.x[1])
+    
+    @property
+    def uncertainty_ms(self) -> float:
+        """Current offset uncertainty (1-sigma)."""
+        return float(np.sqrt(self.P[0, 0]))
+    
+    @property
+    def drift_uncertainty_ms_per_min(self) -> float:
+        """Current drift rate uncertainty (1-sigma)."""
+        return float(np.sqrt(self.P[1, 1]))
+    
+    def predict(self, dt_minutes: float = 1.0) -> None:
+        """
+        Prediction step: project state forward in time.
+        
+        Uses constant-velocity model:
+            offset(t+dt) = offset(t) + drift * dt
+            drift(t+dt) = drift(t)
+        
+        Args:
+            dt_minutes: Time step in minutes (typically 1.0 for per-minute updates)
+        """
+        # State transition matrix
+        F = np.array([
+            [1.0, dt_minutes],
+            [0.0, 1.0]
+        ])
+        
+        # Process noise covariance (scaled by dt)
+        # Using continuous white noise acceleration model
+        Q = np.array([
+            [self.q_offset + self.q_drift * dt_minutes**2 / 3, self.q_drift * dt_minutes / 2],
+            [self.q_drift * dt_minutes / 2, self.q_drift]
+        ]) * dt_minutes
+        
+        # Predict state and covariance
+        self.x = F @ self.x
+        self.P = F @ self.P @ F.T + Q
+    
+    def update(
+        self,
+        measurement_ms: float,
+        timestamp: Optional[float] = None,
+        measurement_noise_ms: Optional[float] = None
+    ) -> Tuple[float, float, bool]:
+        """
+        Update step: incorporate new measurement.
+        
+        Args:
+            measurement_ms: Measured clock offset
+            timestamp: Unix timestamp (for dt calculation)
+            measurement_noise_ms: Override measurement noise for this update
+            
+        Returns:
+            (innovation, normalized_innovation, is_outlier)
+        """
+        # Calculate time delta for prediction
+        if timestamp is not None and self.last_timestamp is not None:
+            dt_minutes = (timestamp - self.last_timestamp) / 60.0
+            dt_minutes = max(0.1, min(60.0, dt_minutes))  # Clamp to reasonable range
+        else:
+            dt_minutes = 1.0  # Assume 1 minute between updates
+        
+        if self.last_timestamp is not None:
+            self.predict(dt_minutes)
+        
+        self.last_timestamp = timestamp
+        self.count += 1
+        
+        # Measurement noise (allow per-measurement override)
+        R = (measurement_noise_ms**2) if measurement_noise_ms else self.R
+        
+        # Innovation (measurement residual)
+        z = np.array([measurement_ms])
+        y = z - self.H @ self.x  # Innovation
+        innovation = float(y[0])
+        
+        # Innovation covariance
+        S = self.H @ self.P @ self.H.T + R
+        S_scalar = float(S[0, 0])
+        
+        # Normalized innovation for outlier detection
+        normalized_innovation = abs(innovation) / np.sqrt(S_scalar) if S_scalar > 0 else 0.0
+        
+        # Track innovation history
+        self.innovation_history.append(innovation)
+        if len(self.innovation_history) > 60:
+            self.innovation_history.pop(0)
+        
+        # Check for outlier (don't update if extreme outlier)
+        is_outlier = normalized_innovation > 5.0  # 5-sigma outlier
+        
+        if not is_outlier:
+            # Kalman gain
+            K = self.P @ self.H.T / S_scalar
+            
+            # Update state
+            self.x = self.x + K.flatten() * innovation
+            
+            # Update covariance (Joseph form for numerical stability)
+            I_KH = np.eye(2) - K @ self.H
+            self.P = I_KH @ self.P @ I_KH.T + (K @ R @ K.T).reshape(2, 2) if np.isscalar(R) else I_KH @ self.P @ I_KH.T + K @ np.array([[R]]) @ K.T
+        
+        return innovation, normalized_innovation, is_outlier
+    
+    def get_std_dev(self) -> float:
+        """
+        Get standard deviation of recent innovations.
+        
+        This is useful for anomaly detection and quality assessment.
+        """
+        if len(self.innovation_history) < 5:
+            return float('inf')
+        return float(np.std(self.innovation_history))
+    
+    def to_dict(self) -> dict:
+        """Serialize state for persistence."""
+        return {
+            'x': self.x.tolist(),
+            'P': self.P.tolist(),
+            'q_offset': self.q_offset,
+            'q_drift': self.q_drift,
+            'R': self.R,
+            'count': self.count,
+            'last_timestamp': self.last_timestamp,
+            'innovation_history': self.innovation_history[-10:]  # Keep last 10
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'KalmanClockTracker':
+        """Deserialize from dictionary."""
+        tracker = cls()
+        tracker.x = np.array(data.get('x', [0.0, 0.0]))
+        tracker.P = np.array(data.get('P', [[100.0, 0.0], [0.0, 10.0]]))
+        tracker.q_offset = data.get('q_offset', 0.0001)
+        tracker.q_drift = data.get('q_drift', 0.000001)
+        tracker.R = data.get('R', 1.0)
+        tracker.count = data.get('count', 0)
+        tracker.last_timestamp = data.get('last_timestamp')
+        tracker.innovation_history = data.get('innovation_history', [])
+        return tracker
 
 
 class ConvergenceState(Enum):
@@ -159,14 +410,28 @@ class ConvergenceState(Enum):
 
 @dataclass
 class StationAccumulator:
-    """Running statistics for a single station's clock offset measurements."""
+    """
+    Running statistics for a single station's clock offset measurements.
+    
+    Issue 3.1 Fix (2025-12-07): Now uses Kalman filter instead of Welford's
+    algorithm to properly track clock offset + drift in non-stationary conditions.
+    
+    The Kalman filter tracks:
+    - D_clock offset (ms)
+    - D_clock drift rate (ms/minute)
+    
+    This allows the model to adapt to slow drift while filtering out noise.
+    """
     station: str
     frequency_mhz: float
     
-    # Running statistics (Welford's online algorithm)
+    # Kalman filter tracker (replaces Welford's algorithm)
+    kalman: Optional[KalmanClockTracker] = field(default=None)
+    
+    # Legacy fields for backwards compatibility (now derived from Kalman)
     count: int = 0
     mean_ms: float = 0.0
-    m2: float = 0.0  # Sum of squared differences from mean
+    m2: float = 0.0  # Kept for API compatibility
     
     # Lock state
     state: ConvergenceState = field(default=ConvergenceState.ACQUIRING)
@@ -182,32 +447,70 @@ class StationAccumulator:
     consecutive_anomalies: int = 0
     total_anomalies: int = 0
     
+    # Last innovation from Kalman filter (for anomaly detection)
+    last_innovation: float = 0.0
+    last_normalized_innovation: float = 0.0
+    
+    def __post_init__(self):
+        """Initialize Kalman filter if not provided."""
+        if self.kalman is None:
+            self.kalman = KalmanClockTracker(
+                initial_offset_ms=0.0,
+                initial_uncertainty_ms=100.0,
+                process_noise_offset_ms=0.01,      # GPSDO: very stable
+                process_noise_drift_ms_per_min=0.001,  # Slow drift allowed
+                measurement_noise_ms=1.0           # Propagation uncertainty
+            )
+    
     @property
     def variance(self) -> float:
-        """Population variance of measurements."""
-        if self.count < 2:
+        """Variance from Kalman innovation history (for compatibility)."""
+        if self.kalman is None or len(self.kalman.innovation_history) < 2:
             return float('inf')
-        return self.m2 / self.count
+        return float(np.var(self.kalman.innovation_history))
     
     @property
     def std_dev(self) -> float:
-        """Standard deviation of measurements."""
-        return math.sqrt(self.variance) if self.variance != float('inf') else float('inf')
+        """Standard deviation from Kalman filter."""
+        if self.kalman is None:
+            return float('inf')
+        return self.kalman.get_std_dev()
     
     @property
     def uncertainty_ms(self) -> float:
-        """Standard error of the mean: σ/√N."""
-        if self.count < 2:
+        """State uncertainty from Kalman filter (replaces σ/√N)."""
+        if self.kalman is None:
             return float('inf')
-        return self.std_dev / math.sqrt(self.count)
+        return self.kalman.uncertainty_ms
     
-    def update(self, measurement_ms: float) -> None:
-        """Add a new measurement using Welford's online algorithm."""
-        self.count += 1
-        delta = measurement_ms - self.mean_ms
-        self.mean_ms += delta / self.count
-        delta2 = measurement_ms - self.mean_ms
-        self.m2 += delta * delta2
+    @property
+    def drift_rate_ms_per_min(self) -> float:
+        """Estimated clock drift rate (ms/minute)."""
+        if self.kalman is None:
+            return 0.0
+        return self.kalman.drift_rate_ms_per_min
+    
+    def update(self, measurement_ms: float, timestamp: Optional[float] = None) -> None:
+        """
+        Add a new measurement using Kalman filter.
+        
+        Issue 3.1 Fix: Replaces Welford's algorithm with Kalman filter
+        to properly track non-stationary clock behavior.
+        """
+        if self.kalman is None:
+            self.__post_init__()
+        
+        # Kalman filter update
+        innovation, norm_innov, is_outlier = self.kalman.update(
+            measurement_ms, timestamp=timestamp
+        )
+        
+        self.last_innovation = innovation
+        self.last_normalized_innovation = norm_innov
+        
+        # Update legacy fields for API compatibility
+        self.count = self.kalman.count
+        self.mean_ms = self.kalman.offset_ms
         
         # Track recent history
         self.last_measurements.append(measurement_ms)
@@ -226,17 +529,24 @@ class StationAccumulator:
             'locked_mean_ms': self.locked_mean_ms,
             'locked_uncertainty_ms': self.locked_uncertainty_ms,
             'lock_timestamp': self.lock_timestamp,
-            'last_measurements': self.last_measurements[-10:],  # Save last 10
+            'last_measurements': self.last_measurements[-10:],
             'consecutive_anomalies': self.consecutive_anomalies,
-            'total_anomalies': self.total_anomalies
+            'total_anomalies': self.total_anomalies,
+            # Kalman filter state
+            'kalman': self.kalman.to_dict() if self.kalman else None
         }
     
     @classmethod
     def from_dict(cls, data: dict) -> 'StationAccumulator':
         """Deserialize from dictionary."""
+        # Load Kalman filter if present
+        kalman_data = data.get('kalman')
+        kalman = KalmanClockTracker.from_dict(kalman_data) if kalman_data else None
+        
         acc = cls(
             station=data['station'],
             frequency_mhz=data['frequency_mhz'],
+            kalman=kalman,
             count=data.get('count', 0),
             mean_ms=data.get('mean_ms', 0.0),
             m2=data.get('m2', 0.0),
@@ -370,22 +680,27 @@ class ClockConvergenceModel:
         """
         acc = self._get_or_create_accumulator(station, frequency_mhz)
         
-        # Add measurement
-        acc.update(d_clock_ms)
+        # Add measurement using Kalman filter (Issue 3.1 fix)
+        acc.update(d_clock_ms, timestamp=timestamp)
         
         # Calculate residual from current estimate
+        # Issue 3.1: For Kalman filter, use the innovation (predicted vs actual)
         if acc.state == ConvergenceState.LOCKED and acc.locked_mean_ms is not None:
+            # When locked, residual is relative to locked value
             reference = acc.locked_mean_ms
+            residual_ms = d_clock_ms - reference
         else:
+            # During convergence, use Kalman innovation as residual
             reference = acc.mean_ms
+            residual_ms = acc.last_innovation  # From Kalman filter
         
-        residual_ms = d_clock_ms - reference
-        
-        # Anomaly detection (only meaningful after some data)
+        # Anomaly detection using Kalman filter's normalized innovation
+        # Issue 3.1: This is statistically more robust than std_dev-based detection
         is_anomaly = False
         anomaly_sigma = None
-        if acc.count > 10 and acc.std_dev > 0:
-            anomaly_sigma = abs(residual_ms) / acc.std_dev
+        if acc.count > 10:
+            # Use normalized innovation from Kalman filter
+            anomaly_sigma = acc.last_normalized_innovation
             is_anomaly = anomaly_sigma > self.anomaly_sigma
         
         # Update anomaly tracking
