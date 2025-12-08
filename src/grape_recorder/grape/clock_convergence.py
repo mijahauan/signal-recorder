@@ -2,33 +2,138 @@
 """
 Clock Convergence Model - "Set, Monitor, Intervention" Architecture
 
-This module implements a convergence-to-lock model for clock offset estimation
-with a GPSDO-disciplined receiver. The key insight is that with a stable local
-clock, the systematic offset from expected geographic delay should converge
-over time, and once locked, we monitor for subtle deviations rather than
-constantly recalculating.
+================================================================================
+PURPOSE
+================================================================================
+Implement a convergence-to-lock model for D_clock estimation that:
+    1. Converges to a stable clock offset estimate
+    2. Monitors for ionospheric propagation events (scientific data!)
+    3. Re-acquires only when persistent anomalies indicate actual change
 
-States:
-=======
-    ACQUIRING  - Insufficient data, building initial estimate
-    CONVERGING - Accumulating measurements, uncertainty shrinking
-    LOCKED     - High confidence estimate, now monitoring for deviations
-    HOLDOVER   - Lock lost, using last good estimate
-    REACQUIRE  - Anomaly detected, rebuilding estimate
+This is designed for GPSDO-disciplined receivers where the local clock is
+a secondary standard with sub-ppm stability.
 
-Architecture:
-=============
-    ┌─────────────────────────────────────────────────────────┐
-    │                Per-Station Convergence                   │
-    ├─────────────────────────────────────────────────────────┤
-    │  Accumulator: Running mean, variance, sample count       │
-    │  Uncertainty: σ/√N (shrinks with each measurement)      │
-    │  Lock Criterion: uncertainty < threshold AND N > min    │
-    │  Anomaly Detection: |residual| > k*σ                    │
-    └─────────────────────────────────────────────────────────┘
+================================================================================
+PHILOSOPHY: "SET, MONITOR, INTERVENTION"
+================================================================================
+Traditional approach: Constantly recalculate D_clock each minute
+    Problem: Propagation variations appear as "noise" in the clock estimate
 
-Once locked, minute-to-minute variations are RESIDUALS that reveal real
-ionospheric propagation effects, not clock uncertainty.
+Our approach: Once clock is characterized, variations ARE the science
+    1. SET: Converge to locked D_clock estimate (first 30 minutes)
+    2. MONITOR: Track residuals as ionospheric propagation data
+    3. INTERVENTION: Re-acquire only if physics violated
+
+KEY INSIGHT:
+    With a GPSDO (10⁻⁹ stability), the clock doesn't drift measurably in hours.
+    Minute-to-minute D_clock variations are therefore NOT clock error—they
+    are IONOSPHERIC PROPAGATION EFFECTS that we want to measure!
+
+================================================================================
+STATE MACHINE
+================================================================================
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                                                                         │
+    │   ┌──────────────┐                                                      │
+    │   │  ACQUIRING   │ ──────────────────────────┐                          │
+    │   │   N < 10     │                           │                          │
+    │   └──────┬───────┘                           │                          │
+    │          │ N ≥ 10                            │                          │
+    │          ▼                                   │                          │
+    │   ┌──────────────┐                           │                          │
+    │   │  CONVERGING  │ ◄─────────────────────────┘                          │
+    │   │  σ/√N > th   │                                                      │
+    │   └──────┬───────┘                                                      │
+    │          │ σ/√N < th AND N ≥ 30                                         │
+    │          ▼                                                              │
+    │   ┌──────────────┐      5 consecutive       ┌──────────────┐            │
+    │   │    LOCKED    │ ──── anomalies ─────────►│  REACQUIRE   │            │
+    │   │  monitoring  │                          │   reset      │            │
+    │   └──────────────┘                          └──────┬───────┘            │
+    │          ▲                                         │                    │
+    │          │                                         │                    │
+    │          └─────────────────────────────────────────┘                    │
+    │                         start over                                      │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+STATE DESCRIPTIONS:
+    ACQUIRING  - First 10 measurements, building initial statistics
+    CONVERGING - Uncertainty shrinking toward lock threshold
+    LOCKED     - High confidence, now treating variations as propagation data
+    HOLDOVER   - (Future) Lock lost but using last good estimate
+    REACQUIRE  - Persistent anomalies, resetting statistics
+
+================================================================================
+STATISTICAL MODEL
+================================================================================
+WELFORD'S ONLINE ALGORITHM for numerically stable running statistics:
+
+    count += 1
+    delta = x - mean
+    mean += delta / count
+    delta2 = x - mean
+    M2 += delta * delta2
+    
+    variance = M2 / count
+    std_dev = √variance
+    uncertainty = std_dev / √count  (standard error of the mean)
+
+LOCK CRITERION:
+    uncertainty < lock_threshold_ms (default: 1.0 ms)
+    AND
+    count ≥ min_samples (default: 30)
+
+ANOMALY DETECTION:
+    residual = measurement - reference
+    anomaly_sigma = |residual| / std_dev
+    is_anomaly = anomaly_sigma > k_sigma (default: 3.0)
+
+================================================================================
+OUTPUT: CONVERGENCE RESULT
+================================================================================
+Each measurement produces:
+    - d_clock_ms: Best estimate (locked or running mean)
+    - uncertainty_ms: Current uncertainty
+    - residual_ms: Deviation from estimate (THE PROPAGATION SCIENCE!)
+    - is_locked: True when locked
+    - is_anomaly: True if residual exceeds threshold
+    - convergence_progress: 0.0 to 1.0
+
+WHEN LOCKED:
+    residual_ms contains the ionospheric delay variation from mean.
+    These residuals are the PRIMARY SCIENTIFIC OUTPUT for space weather!
+
+================================================================================
+USAGE
+================================================================================
+    model = ClockConvergenceModel(
+        lock_uncertainty_ms=1.0,    # Lock when uncertainty < 1ms
+        min_samples_for_lock=30,    # Need 30 minutes of data
+        anomaly_sigma=3.0,          # 3σ for anomaly detection
+        state_file=Path('/data/state/convergence.json')
+    )
+    
+    # Process each minute's measurement
+    result = model.process_measurement(
+        station='WWV',
+        frequency_mhz=10.0,
+        d_clock_ms=15.234,
+        timestamp=time.time()
+    )
+    
+    if result.is_locked:
+        # Use residual for space weather science!
+        ionospheric_variation_ms = result.residual_ms
+    else:
+        # Still converging, use d_clock_ms for timing
+        print(f"Converging: {result.convergence_progress:.0%}")
+
+================================================================================
+REVISION HISTORY
+================================================================================
+2025-12-07: Added comprehensive documentation
+2025-12-01: Added state persistence
+2025-11-15: Initial "Set, Monitor, Intervention" implementation
 """
 
 from dataclasses import dataclass, field

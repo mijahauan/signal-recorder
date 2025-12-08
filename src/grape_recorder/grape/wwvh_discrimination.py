@@ -1,16 +1,205 @@
 #!/usr/bin/env python3
 """
-WWV/WWVH Discrimination Module
+WWV/WWVH Station Discrimination - Multi-Method Weighted Voting
 
-Improves discrimination between WWV and WWVH on shared frequencies (2.5, 5, 10, 15 MHz)
-by combining multiple signal characteristics:
+================================================================================
+PURPOSE
+================================================================================
+Distinguish between WWV (Fort Collins, CO) and WWVH (Kauai, HI) signals on
+shared frequencies where both stations broadcast simultaneously.
 
-1. Frequency-domain: Relative power of 1000 Hz (WWV) vs 1200 Hz (WWVH) tones
-2. Time-domain: Arrival time difference (differential propagation delay)
-3. 440 Hz tone analysis: Detection in minute 1 (WWVH) and minute 2 (WWV)
+SHARED FREQUENCIES: 2.5, 5, 10, 15 MHz
+    - Both stations transmit identical time codes
+    - Both use similar modulation formats
+    - Signals arrive superimposed at the receiver
+    - Without discrimination, timing is ambiguous
 
-This module processes tone detection results and additional signal analysis
-to provide confident discrimination between the two stations.
+This is Goal #2 of Phase 2 analytics: establish the best possible distinction
+between WWV and WWVH on shared frequencies.
+
+================================================================================
+THE DISCRIMINATION CHALLENGE
+================================================================================
+WWV and WWVH are intentionally similar for redundancy, making discrimination
+difficult. Key differences we can exploit:
+
+┌────────────────────┬──────────────────────┬──────────────────────┐
+│ Characteristic     │ WWV (Colorado)       │ WWVH (Hawaii)        │
+├────────────────────┼──────────────────────┼──────────────────────┤
+│ Timing Tone        │ 1000 Hz, 0.8s        │ 1200 Hz, 0.8s        │
+│ Voice Announcement │ Male voice           │ Female voice         │
+│ 440 Hz Tone        │ Minute 2             │ Minute 1             │
+│ 500/600 Hz Tone    │ Minutes 1,16,17,19   │ Minutes 2,43-51      │
+│ Test Signal        │ Minute 8             │ Minute 44            │
+│ BCD Phase          │ Leading edge         │ Lagging edge         │
+│ Propagation Delay  │ Path-dependent       │ Path-dependent       │
+└────────────────────┴──────────────────────┴──────────────────────┘
+
+REFERENCE: NIST Special Publication 250-67 (2009). "NIST Time and Frequency
+           Radio Stations: WWV, WWVH, and WWVB."
+
+================================================================================
+MULTI-METHOD DISCRIMINATION APPROACH
+================================================================================
+No single method provides reliable discrimination under all conditions.
+We use WEIGHTED VOTING across multiple independent methods:
+
+METHOD 1: 1000/1200 Hz Tone Power Ratio
+-----------------------------------------
+    power_ratio_db = P_1000Hz - P_1200Hz
+    - Positive → WWV dominant
+    - Negative → WWVH dominant
+    - |ratio| < 3 dB → Balanced (both present)
+
+    Weight: 10.0 (standard minutes), reduced when other methods available
+
+METHOD 2: Differential Propagation Delay
+-----------------------------------------
+    Δτ = τ_WWV - τ_WWVH
+    
+    WWV and WWVH have different geographic locations, so their signals
+    arrive at different times. This difference is receiver-location dependent.
+    
+    Weight: Used for cross-validation, not direct voting
+
+METHOD 3: 440 Hz Tone (Minutes 1 & 2 only)
+------------------------------------------
+    - Minute 1: WWVH broadcasts 440 Hz
+    - Minute 2: WWV broadcasts 440 Hz
+    
+    Detection provides DEFINITIVE identification during these minutes.
+    
+    Weight: 10.0 (highest in minutes 1/2)
+
+METHOD 4: 500/600 Hz Ground Truth Tones
+----------------------------------------
+    During exclusive broadcast minutes, only one station transmits:
+    - WWV-only: Minutes 1, 16, 17, 19 (500/600 Hz, WWVH silent)
+    - WWVH-only: Minutes 2, 43-51 (500/600 Hz, WWV silent)
+    
+    This provides 14 GROUND TRUTH minutes per hour!
+    
+    Weight: 15.0 (highest confidence - scheduled exclusivity)
+
+METHOD 5: BCD Time Code Correlation
+------------------------------------
+    Binary Coded Decimal (BCD) time code is 100 Hz amplitude modulation.
+    WWV and WWVH encode identical time but with timing offset.
+    Cross-correlation reveals amplitude ratio.
+    
+    Weight: 8.0-10.0 (varies by minute)
+
+METHOD 6: Test Signal Analysis (Minutes 8 & 44)
+-----------------------------------------------
+    Scientific modulation test provides rich channel characterization:
+    - Multi-tone detection (1-5 kHz)
+    - Chirp delay spread measurement
+    - Frequency Selectivity Score (FSS)
+    - High-precision ToA from single-cycle bursts
+    
+    Minute 8: WWV only (WWVH silent)
+    Minute 44: WWVH only (WWV silent)
+    
+    Weight: 15.0 (highest - scheduled exclusivity with channel metrics)
+
+METHOD 7: Doppler Stability
+---------------------------
+    Lower Doppler standard deviation indicates cleaner ionospheric path.
+    The more stable signal is likely the dominant one.
+    
+    Weight: 2.0 (confirmatory only - avoids feedback loops)
+
+METHOD 8: Harmonic Power Ratio
+------------------------------
+    Receiver nonlinearity generates harmonics proportional to fundamental:
+    - 500 Hz → 1000 Hz (WWV marker contribution)
+    - 600 Hz → 1200 Hz (WWVH marker contribution)
+    
+    Weight: 1.5 (confirmatory only)
+
+================================================================================
+WEIGHTED VOTING ALGORITHM
+================================================================================
+Each method contributes a vote with method-specific weight. The weights are
+adjusted based on minute number to favor the most reliable methods:
+
+    score_WWV = Σ(w_i × vote_WWV_i)
+    score_WWVH = Σ(w_i × vote_WWVH_i)
+    
+    norm_WWV = score_WWV / Σ(w_i)
+    norm_WWVH = score_WWVH / Σ(w_i)
+    
+    DECISION:
+    - |norm_WWV - norm_WWVH| < 0.15 → BALANCED
+    - norm_WWV > norm_WWVH → WWV dominant
+    - norm_WWVH > norm_WWV → WWVH dominant
+    
+    CONFIDENCE:
+    - margin > 0.7 → high
+    - margin > 0.4 → medium
+    - margin ≤ 0.4 → low
+
+MINUTE-SPECIFIC WEIGHT ADJUSTMENTS:
+-----------------------------------
+    Minutes 8, 44:  Test signal (15) > BCD (8) > Tick (5) > Carrier (2)
+    Minutes 1, 2:   440 Hz (10) > 500/600 Hz (10) > Tick (5) > BCD (2)
+    Minutes 16,17,19: 500/600 Hz (15) > Carrier (5) > Tick (5)
+    Minutes 43-51:  500/600 Hz (15) > Carrier (5) > Tick (5)
+    Other minutes:  Carrier (10) > Tick (5) > BCD (2)
+
+================================================================================
+INTER-METHOD CROSS-VALIDATION
+================================================================================
+Methods are cross-validated to detect anomalies:
+
+AGREEMENTS (increase confidence):
+    - TS_FSS_WWV: Test signal FSS confirms WWV path
+    - TS_FSS_WWVH: Test signal FSS confirms WWVH path
+    - TS_timing_high_precision: Low delay spread confirms accurate ToA
+    - channel_underspread_clean: L < 0.05 confirms stable channel
+
+DISAGREEMENTS (flag for investigation):
+    - TS_FSS_geographic_mismatch: FSS doesn't match expected path
+    - transient_noise_event: Noise floor changed during measurement
+    - channel_overspread: L > 1.0 indicates severely degraded channel
+
+================================================================================
+OUTPUT: DiscriminationResult
+================================================================================
+The result includes:
+    - dominant_station: 'WWV', 'WWVH', or 'BALANCED'
+    - confidence: 'high', 'medium', or 'low'
+    - power_ratio_db: 1000 Hz - 1200 Hz power difference
+    - differential_delay_ms: Propagation time difference
+    - Per-method detection flags and measurements
+    - Inter-method agreement/disagreement lists
+
+================================================================================
+USAGE
+================================================================================
+    discriminator = WWVHDiscriminator(
+        channel_name='WWV_10_MHz',
+        receiver_grid='EM38ww',
+        sample_rate=20000
+    )
+    
+    # Process detections from tone_detector
+    result = discriminator.compute_discrimination(
+        detections=tone_detections,
+        minute_timestamp=minute_boundary
+    )
+    
+    print(f"Dominant: {result.dominant_station}, Confidence: {result.confidence}")
+    print(f"Power ratio: {result.power_ratio_db:+.1f} dB")
+
+================================================================================
+REVISION HISTORY
+================================================================================
+2025-12-07: Added comprehensive theoretical documentation
+2025-12-01: Added dual-station time recovery for UTC cross-validation
+2025-11-20: Added test signal analysis for minutes 8/44
+2025-11-15: Added 500/600 Hz ground truth detection
+2025-10-20: Initial implementation with tone power ratio and BCD correlation
 """
 
 import logging
@@ -279,17 +468,60 @@ class WWVHDiscriminator:
         minute_timestamp: float
     ) -> DiscriminationResult:
         """
-        Compute discrimination from tone detection results
+        Compute base discrimination from 1000/1200 Hz tone detection results.
         
-        ALWAYS returns a result - uses noise floor when tones not detected.
-        Differential delay is only set when BOTH tones are detected.
+        This is the FIRST STAGE of discrimination, using only the timing tone
+        power ratio. The result is later enhanced by finalize_discrimination()
+        which adds weighted voting from multiple methods.
+        
+        ALGORITHM:
+        ----------
+        1. Extract WWV (1000 Hz) and WWVH (1200 Hz) detections
+        2. Calculate power ratio: P_WWV - P_WWVH (dB)
+        3. Calculate differential delay: τ_WWV - τ_WWVH (ms)
+        4. Determine initial dominant station based on power ratio
+        5. Assign confidence based on SNR and power difference
+        
+        POWER RATIO INTERPRETATION:
+        ---------------------------
+            power_ratio_db > +3 dB  → WWV dominant
+            power_ratio_db < -3 dB  → WWVH dominant
+            |power_ratio_db| ≤ 3 dB → BALANCED (both present)
+        
+        DIFFERENTIAL DELAY:
+        -------------------
+        Only computed when BOTH tones are detected. This is the propagation
+        time difference between the two signals:
+        
+            Δτ = timing_error_WWV - timing_error_WWVH
+        
+        Typical values depend on receiver location:
+            - Central US: WWV closer → Δτ negative
+            - Pacific: WWVH closer → Δτ positive
+        
+        Values outside ±1000 ms are rejected as detection errors.
+        
+        ALWAYS RETURNS A RESULT:
+        ------------------------
+        Even when no tones are detected, a result is returned with:
+            - wwv_power_db = 0.0 (noise floor)
+            - wwvh_power_db = 0.0 (noise floor)
+            - power_ratio_db = 0.0
+            - differential_delay_ms = None
+            - dominant_station = 'NONE'
+            - confidence = 'low'
+        
+        This ensures continuous time-series data for visualization.
         
         Args:
             detections: List of ToneDetectionResult objects from same minute
-            minute_timestamp: UTC timestamp of minute boundary
+                        (typically from MultiStationToneDetector.process_samples)
+            minute_timestamp: UTC timestamp of minute boundary (Unix time)
             
         Returns:
-            DiscriminationResult (never None - always records SNR/noise)
+            DiscriminationResult with base discrimination metrics.
+            This result should be passed to finalize_discrimination() for
+            weighted voting with additional methods.
         """
         wwv_det = None
         wwvh_det = None

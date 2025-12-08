@@ -1,22 +1,123 @@
 """
 Multi-Broadcast D_clock Fusion Engine
 
-Combines D_clock estimates from all 13 broadcasts (6 WWV + 4 WWVH + 3 CHU)
-to produce a high-accuracy UTC(NIST) time estimate.
+================================================================================
+PURPOSE
+================================================================================
+Combine D_clock estimates from all available broadcasts to produce a
+HIGH-ACCURACY UTC(NIST) time estimate through weighted fusion and
+auto-calibration.
 
-Key features:
-1. Quality-weighted fusion across all available broadcasts
-2. Auto-calibration using CHU FSK as ground truth reference
-3. Outlier rejection for robust estimation
-4. Convergence tracking toward UTC(NIST) = 0
+The fused D_clock should converge to 0ms, indicating perfect alignment
+with UTC(NIST).
 
-Architecture:
-- Each channel produces per-broadcast D_clock estimates
-- This engine aggregates across all channels
-- Station-specific calibration offsets are learned
-- Final D_clock_fused should converge to 0ms (UTC alignment)
+================================================================================
+BROADCAST STRUCTURE
+================================================================================
+The GRAPE system monitors up to 13 time signal broadcasts:
 
-Author: GRAPE Project
+    STATION | FREQUENCIES
+    --------|----------------------------------------------------
+    WWV     | 2.5, 5, 10, 15, 20, 25 MHz (6 broadcasts)
+    WWVH    | 2.5, 5, 10, 15 MHz (4 broadcasts, shared with WWV)
+    CHU     | 3.33, 7.85, 14.67 MHz (3 broadcasts, unique)
+
+SHARED vs UNIQUE FREQUENCIES:
+    - Shared (WWV + WWVH): 2.5, 5, 10, 15 MHz → 8 broadcasts (need discrimination)
+    - WWV-only: 20, 25 MHz → 2 broadcasts
+    - CHU-only: 3.33, 7.85, 14.67 MHz → 3 broadcasts (FSK timing reference)
+
+================================================================================
+FUSION THEORY
+================================================================================
+Each broadcast provides an independent D_clock estimate:
+
+    D_clock_i = T_arrival_i - T_propagation_i
+
+These estimates have different uncertainties based on:
+    - SNR (signal quality)
+    - Propagation mode (1-hop vs multi-hop)
+    - Discrimination confidence (shared frequencies)
+    - Quality grade from convergence model
+
+WEIGHTED FUSION:
+    D_clock_fused = Σ(w_i × D_clock_i) / Σ(w_i)
+
+Where weights w_i are computed from:
+    w_i = confidence × grade_weight × mode_weight × snr_factor
+
+GRADE WEIGHTS:    A: 1.0, B: 0.8, C: 0.5, D: 0.2
+MODE WEIGHTS:     1E: 1.0, 1F: 0.9, 2F: 0.7, 3F: 0.5, GW: 1.0
+
+================================================================================
+AUTO-CALIBRATION
+================================================================================
+Each station has a systematic offset due to:
+    - Matched filter group delay
+    - Tone rise time differences
+    - Detection threshold effects
+
+CALIBRATION MODEL:
+    calibration_offset_station = -mean(D_clock_station)
+
+This brings each station's mean D_clock to 0, which is the UTC(NIST) target.
+
+CALIBRATION UPDATE (Exponential Moving Average):
+    offset_new = α × (-mean_current) + (1-α) × offset_old
+    
+Where α = max(0.5, 20/n_samples) for fast initial convergence.
+
+CHU AS REFERENCE:
+    CHU's FSK time code provides precise 500ms boundary alignment,
+    making it the most trusted reference. However, all stations are
+    calibrated to converge to 0 (not to match CHU), since the goal
+    is UTC(NIST) alignment.
+
+================================================================================
+OUTLIER REJECTION
+================================================================================
+Uses weighted Median Absolute Deviation (MAD) for robust outlier detection:
+
+    MAD = median(|D_clock_i - weighted_median|) × 1.4826
+    
+Measurements with deviation > 3σ are rejected.
+
+This prevents ionospheric events or detection errors on one channel
+from corrupting the fused estimate.
+
+================================================================================
+OUTPUT
+================================================================================
+The fusion produces:
+    - d_clock_fused_ms: Calibrated weighted mean (should → 0)
+    - d_clock_raw_ms: Uncalibrated mean (for comparison)
+    - uncertainty_ms: Weighted standard deviation
+    - n_broadcasts: Number of broadcasts contributing
+    - quality_grade: A/B/C/D based on broadcast count and uncertainty
+
+Output is written to: phase2/fusion/fused_d_clock.csv
+
+================================================================================
+USAGE
+================================================================================
+Continuous service mode (typical):
+
+    python -m grape_recorder.grape.multi_broadcast_fusion \\
+        --data-root /data \\
+        --interval 60
+
+Programmatic usage:
+
+    fusion = MultiBroadcastFusion(data_root=Path('/data'))
+    result = fusion.fuse(lookback_minutes=10)
+    print(f"Fused D_clock: {result.d_clock_fused_ms:+.3f} ms")
+
+================================================================================
+REVISION HISTORY
+================================================================================
+2025-12-07: Added comprehensive theoretical documentation
+2025-11-20: Improved calibration to target UTC(NIST) = 0
+2025-11-01: Initial implementation with CHU reference
 """
 
 import logging

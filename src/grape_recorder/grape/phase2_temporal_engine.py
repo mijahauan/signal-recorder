@@ -2,45 +2,160 @@
 """
 Phase 2: Temporal Analysis Engine - Precision Timing Analytics
 
-This module implements the refined temporal analysis order for Phase 2,
-systematically "zeroing in" on true UTC time through a hierarchical process
-where each step benefits from the precision of the preceding one.
+================================================================================
+PURPOSE
+================================================================================
+The Phase 2 Temporal Engine is the CENTRAL ORCHESTRATOR for all timing analytics.
+It coordinates the three-step process that transforms raw IQ samples into a
+precision D_clock measurement:
 
-Architecture:
-=============
-The analysis follows a structure that prioritizes high-confidence temporal
-references to guide propagation-sensitive measurements:
+    D_clock = T_system - T_UTC(NIST)
 
-1. 🔍 FUNDAMENTAL TONE DETECTION & TIME SNAP CORRECTION (Least Precision → Anchor)
-   - Matched Filter Tone Detection (1000 Hz WWV, 1200 Hz WWVH)
-   - Establishes initial Time Snap Reference for RTP stream
-   - Provides timing_error_ms for the current minute
+This is the "System Clock Offset" - the primary output of the GRAPE system.
 
-2. ⚡ IONOSPHERIC CHANNEL CHARACTERIZATION (High Sensitivity → Confidence Scoring)
-   A. BCD Correlation & Dual-Peak Delay
-      - 100 Hz subcarrier cross-correlation
-      - Measures differential delay (Δτ) between WWV and WWVH
-   B. Doppler and Coherence
-      - Per-tick phase tracking for Doppler estimation
-      - Determines maximum coherent integration window
-   C. Station Identity & Ground Truth
-      - 500/600 Hz exclusive tone detection (14 minutes/hour)
-      - 440 Hz tone detection (minutes 1, 2)
-      - Weighted voting combiner for station ID
+================================================================================
+ARCHITECTURAL OVERVIEW
+================================================================================
+Phase 2 implements a hierarchical refinement strategy where each step narrows
+the search window for the next:
 
-3. 🎯 TRANSMISSION TIME SOLUTION (Highest Precision → D_clock)
-   - Propagation mode solving with TransmissionTimeSolver
-   - Fuses T_arrival + channel metrics + station ID
-   - Outputs final UTC offset (D_clock)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    STEP 1: TIME SNAP (±500ms → anchor)                      │
+│                                                                             │
+│   Input:  Raw IQ @ 20 kHz, system_time, rtp_timestamp                       │
+│   Method: Matched filter tone detection (1000/1200 Hz)                      │
+│   Output: timing_error_ms, anchor_station, confidence                       │
+│                                                                             │
+│   🎯 Establishes initial temporal synchronization                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│             STEP 2: CHANNEL CHARACTERIZATION (±50ms window)                 │
+│                                                                             │
+│   2A. BCD Correlation → differential_delay_ms, dual-peak timing             │
+│   2B. Doppler Estimation → doppler_std_hz, coherence_time                   │
+│   2C. Station Discrimination → dominant_station, ground_truth               │
+│   2D. Test Signal Analysis → FSS, delay_spread (minutes 8/44)               │
+│                                                                             │
+│   📡 Characterizes ionospheric channel for mode disambiguation              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                STEP 3: TRANSMISSION TIME SOLUTION (→ D_clock)               │
+│                                                                             │
+│   Input:  timing_error_ms + channel_metrics + station_ID                    │
+│   Method: TransmissionTimeSolver with mode disambiguation                   │
+│   Output: D_clock, propagation_mode, confidence, uncertainty                │
+│                                                                             │
+│   🎯 Back-calculates UTC(NIST) from observed arrival time                   │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-Critical Notes:
-===============
-- Input data is 32-bit float IQ (np.complex64) from Phase 1 Digital RF archive
+================================================================================
+DATA FLOW: THE D_CLOCK EQUATION
+================================================================================
+The fundamental equation we're solving:
+
+    T_arrival = T_emission + T_propagation + D_clock
+
+Where:
+    T_arrival = Observed tone arrival time (from Step 1)
+    T_emission = 0 (tones transmitted at exact second boundary)
+    T_propagation = HF signal propagation delay (from Step 3 mode solving)
+    D_clock = System clock offset (THE OUTPUT WE WANT)
+
+Rearranging:
+    D_clock = T_arrival - T_propagation
+
+================================================================================
+STEP 1: TIME SNAP - INITIAL SYNCHRONIZATION
+================================================================================
+The tone detector (from tone_detector.py) uses quadrature matched filtering
+to detect the 800ms timing tones:
+
+    - WWV:  1000 Hz, 0.8s duration at second 0
+    - WWVH: 1200 Hz, 0.8s duration at second 0
+    - CHU:  1000 Hz, 0.5s duration at second 0 (1.0s at hour)
+
+Output: timing_error_ms = offset from expected minute boundary
+        This is typically in the range of 5-50ms (propagation delay)
+
+SEARCH WINDOW: ±500ms (wide, to handle unknown propagation)
+
+================================================================================
+STEP 2: CHANNEL CHARACTERIZATION
+================================================================================
+With timing anchored to ±50ms, Step 2 extracts channel metrics:
+
+STEP 2A: BCD CORRELATION
+    The 100 Hz Binary Coded Decimal subcarrier provides:
+    - Differential delay between WWV and WWVH peaks
+    - Amplitude ratio for station power comparison
+    - Delay spread from correlation peak width
+
+STEP 2B: DOPPLER ESTIMATION  
+    Per-tick phase tracking measures:
+    - Doppler shift (ionospheric motion)
+    - Doppler standard deviation (channel stability)
+    - Maximum coherent integration window
+
+STEP 2C: STATION DISCRIMINATION
+    Weighted voting across multiple methods (see wwvh_discrimination.py):
+    - Ground truth tones (500/600 Hz, 440 Hz)
+    - Power ratio (1000 Hz vs 1200 Hz)
+    - BCD amplitude ratio
+    - Test signal (minutes 8/44)
+
+STEP 2D: TEST SIGNAL ANALYSIS (Minutes 8 and 44 only)
+    Scientific modulation test provides:
+    - Frequency Selectivity Score (FSS) - D-layer indicator for mode disambiguation
+    - Delay spread from chirp analysis - multipath severity
+    - High-precision ToA from single-cycle bursts
+    - Coherence time from fading analysis
+
+================================================================================
+STEP 3: TRANSMISSION TIME SOLUTION
+================================================================================
+The TransmissionTimeSolver (from transmission_time_solver.py) identifies the
+propagation mode and computes D_clock:
+
+STATION PRIORITY FOR MODE SOLVING:
+    1. Ground truth (500/600 Hz exclusive minutes)
+    2. High-confidence discrimination
+    3. Channel name (e.g., "WWV 20 MHz" is unambiguous)
+    4. Fallback to WWV
+
+MODE DISAMBIGUATION INPUTS:
+    - delay_spread_ms: High → favor multi-hop modes
+    - doppler_std_hz: High → unstable path, reduce confidence
+    - fss_db: Negative → D-layer attenuation, favor multi-hop
+
+OUTPUT:
+    - d_clock_ms: System clock offset from UTC(NIST)
+    - propagation_mode: '1F', '2F', 'GW', etc.
+    - confidence: 0-1 confidence in the solution
+    - uncertainty_ms: Estimated timing uncertainty
+
+================================================================================
+INPUT DATA REQUIREMENTS
+================================================================================
+- Data format: np.complex64 (32-bit float I + 32-bit float Q)
 - Sample rate: 20,000 Hz (full Phase 1 resolution)
-- The engine preserves Phase 1 immutability - never modifies raw archive
+- Buffer duration: 60 seconds (one complete minute)
+- Source: Phase 1 Digital RF archive (IMMUTABLE - never modified)
 
-Usage:
-------
+32-BIT FLOAT RATIONALE:
+    - 144 dB dynamic range vs 96 dB for 16-bit
+    - AGC disabled (F32 has sufficient range)
+    - Preserves weak signal information
+    - Consistent amplitude for matched filtering
+
+================================================================================
+USAGE
+================================================================================
+    from grape_recorder.grape.phase2_temporal_engine import Phase2TemporalEngine
+    
     engine = Phase2TemporalEngine(
         raw_archive_dir=Path('/data/raw_archive'),
         output_dir=Path('/data/phase2'),
@@ -51,10 +166,32 @@ Usage:
     
     # Process a minute of data
     result = engine.process_minute(
-        iq_samples=samples,      # np.complex64 array
-        system_time=timestamp,   # Unix timestamp
-        rtp_timestamp=rtp_ts     # RTP timestamp
+        iq_samples=samples,      # np.complex64 array, 60 seconds @ 20 kHz
+        system_time=timestamp,   # Unix timestamp of buffer START
+        rtp_timestamp=rtp_ts     # RTP timestamp of first sample
     )
+    
+    print(f"D_clock: {result.d_clock_ms:+.2f} ms")
+    print(f"Mode: {result.solution.propagation_mode}")
+    print(f"Grade: {result.quality_grade}")
+
+================================================================================
+OUTPUT: Phase2Result
+================================================================================
+The Phase2Result dataclass contains:
+    - time_snap: TimeSnapResult (Step 1 output)
+    - channel: ChannelCharacterization (Step 2 output)
+    - solution: TransmissionTimeSolution (Step 3 output)
+    - d_clock_ms: Final D_clock value
+    - quality_grade: 'A' (<1ms), 'B' (<2ms), 'C' (<5ms), 'D' (>5ms), 'X' (failed)
+
+================================================================================
+REVISION HISTORY
+================================================================================
+2025-12-07: Added comprehensive architectural documentation
+2025-12-01: Integrated CHU FSK decoder for Canadian time signals
+2025-11-20: Added test signal analysis for minutes 8/44
+2025-11-01: Initial three-step architecture implementation
 """
 
 import numpy as np

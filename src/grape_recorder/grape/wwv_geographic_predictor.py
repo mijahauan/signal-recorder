@@ -1,17 +1,147 @@
 """
 Geographic Time-of-Arrival Predictor for WWV/WWVH Discrimination
 
-Predicts expected propagation delays based on transmitter and receiver locations,
-enabling single-station detection when only one station is propagating.
+================================================================================
+PURPOSE
+================================================================================
+Predict expected propagation delays from geographic path geometry, enabling:
+    1. Single-peak classification when only one station is propagating
+    2. Dual-peak assignment (which peak is WWV, which is WWVH)
+    3. Cross-validation of measured delays against expected ranges
+    4. Empirical refinement through historical ToA tracking
 
-Key Features:
-- Maidenhead grid square to lat/lon conversion
-- Great circle distance calculation
-- Ionospheric propagation delay modeling (frequency-dependent)
-- Historical ToA tracking for empirical refinement
-- Confidence scoring based on measurement variance
+================================================================================
+GEOGRAPHIC PATH GEOMETRY
+================================================================================
+HF radio signals travel via ionospheric reflection, following a curved path
+that depends on transmitter/receiver locations and ionospheric conditions.
 
-Author: GRAPE Signal Recorder
+GREAT CIRCLE DISTANCE:
+    The shortest path on Earth's surface between two points. Calculated using
+    the Haversine formula:
+    
+    a = sin²(Δφ/2) + cos(φ₁) × cos(φ₂) × sin²(Δλ/2)
+    c = 2 × arcsin(√a)
+    d = R × c
+    
+    Where:
+        φ = latitude (radians)
+        λ = longitude (radians)
+        R = Earth radius (6371 km)
+
+IONOSPHERIC PATH LENGTH:
+    The actual signal path is longer due to ionospheric reflection:
+    
+    Single-hop geometry (simplified):
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                            Ionosphere                                   │
+    │                        ~~~~~~~~~~~~~~~~~~~                              │
+    │                      /                    \                             │
+    │  TX  ─────────────  /   h = layer height   \  ─────────────  RX        │
+    │     A            B                          C            D             │
+    │                                                                         │
+    │     └───────────── ground distance ──────────────┘                     │
+    └─────────────────────────────────────────────────────────────────────────┘
+    
+    Path length = 2 × √((d/2)² + h²)
+    
+    For multi-hop: path = n_hops × single_hop_path
+
+================================================================================
+PROPAGATION DELAY MODEL
+================================================================================
+The propagation delay is:
+
+    τ = L_path / c
+
+Where:
+    L_path = Total path length (km)
+    c = Speed of light (299,792.458 km/s)
+
+FREQUENCY-DEPENDENT LAYER HEIGHT:
+    Lower frequencies reflect from higher layers (more ionized):
+    
+    Frequency   │ Layer   │ Height (km)
+    ────────────┼─────────┼────────────
+    ≤ 5 MHz     │ F2      │ ~320
+    5-10 MHz    │ F2      │ ~300
+    10-15 MHz   │ F2      │ ~280
+    > 15 MHz    │ F2/F1   │ ~260
+
+================================================================================
+SINGLE-PEAK vs DUAL-PEAK CLASSIFICATION
+================================================================================
+DUAL-PEAK (both stations propagating):
+    Δτ_geo = τ_WWV - τ_WWVH
+    
+    - If Δτ_geo < 0: WWV closer → early peak = WWV, late peak = WWVH
+    - If Δτ_geo > 0: WWVH closer → early peak = WWVH, late peak = WWV
+
+SINGLE-PEAK (one station propagating):
+    Compare measured delay against expected ranges:
+    
+    - If delay ∈ [τ_WWV ± σ_WWV] AND delay ∉ [τ_WWVH ± σ_WWVH]: Station = WWV
+    - If delay ∈ [τ_WWVH ± σ_WWVH] AND delay ∉ [τ_WWV ± σ_WWV]: Station = WWVH
+    - If delay in both ranges: Ambiguous (need other discrimination)
+    - If delay in neither range: Outlier (detection error)
+
+================================================================================
+EMPIRICAL REFINEMENT
+================================================================================
+The predictor maintains a history of ToA measurements to refine predictions:
+
+    1. Initially use geometric model for expected delays
+    2. As measurements accumulate, compute empirical mean and variance
+    3. Use tighter ranges based on observed variance
+    4. Confidence score increases with more measurements
+
+This handles:
+    - Systematic model errors (layer height assumptions)
+    - Local ionospheric conditions
+    - Seasonal/diurnal variations (by tracking recent history)
+
+================================================================================
+MAIDENHEAD GRID CONVERSION
+================================================================================
+Grid squares encode location with increasing precision:
+
+    Characters │ Resolution   │ Example
+    ───────────┼──────────────┼─────────
+    2 (field)  │ 20° × 10°    │ EM
+    4 (square) │ 2° × 1°      │ EM38
+    6 (subsq)  │ 5' × 2.5'    │ EM38ww
+
+Conversion formula (for 6-char grid):
+    lon = (field[0] - 'A') × 20° - 180° + (square[2]) × 2° + (subsq[4] - 'A') × 5'
+    lat = (field[1] - 'A') × 10° - 90° + (square[3]) × 1° + (subsq[5] - 'A') × 2.5'
+
+================================================================================
+USAGE
+================================================================================
+    predictor = WWVGeographicPredictor(
+        receiver_grid='EM38ww',
+        history_file=Path('/data/state/toa_history.json')
+    )
+    
+    # Get expected delays
+    expected = predictor.calculate_expected_delays(frequency_mhz=10.0)
+    print(f"WWV expected: {expected['wwv_delay_ms']:.1f} ms")
+    print(f"WWVH expected: {expected['wwvh_delay_ms']:.1f} ms")
+    
+    # Classify a single peak
+    station = predictor.classify_single_peak(
+        peak_delay_ms=25.0,
+        peak_amplitude=0.8,
+        frequency_mhz=10.0,
+        correlation_quality=5.0
+    )
+
+================================================================================
+REVISION HISTORY
+================================================================================
+2025-12-07: Added comprehensive documentation
+2025-11-20: Added dual-peak classification
+2025-10-15: Initial implementation with Haversine formula
 """
 
 import math

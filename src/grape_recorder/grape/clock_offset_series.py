@@ -1,48 +1,131 @@
 #!/usr/bin/env python3
 """
-Phase 2: Clock Offset Series (D_clock) - Analytical Engine
+Phase 2: Clock Offset Series (D_clock) - Data Structures and Persistence
 
-This module implements the Phase 2 analytical engine that reads the
-immutable raw archive (Phase 1) and produces the Clock Offset Series.
+================================================================================
+PURPOSE
+================================================================================
+This module defines the DATA STRUCTURES and FILE I/O for the Clock Offset Series,
+which is the primary output of Phase 2 analytics.
 
-The Clock Offset Series is:
-$$D_{clock} = t_{system} - t_{UTC}$$
+The Clock Offset Series is a time-indexed collection of D_clock measurements:
+
+    D_clock = T_system - T_UTC(NIST)
 
 Where:
-- t_system is the monotonic system time from Phase 1
-- t_UTC is the true UTC time derived from WWV/WWVH/CHU radio signals
+    T_system = Monotonic system time from Phase 1 RTP timestamps
+    T_UTC(NIST) = True UTC derived from WWV/WWVH/CHU radio signals
 
-The D_clock product allows Phase 3 to apply time corrections and generate
-UTC-aligned telemetry products.
+================================================================================
+THE D_CLOCK EQUATION
+================================================================================
+The fundamental timing relationship:
 
-Key Equations:
-==============
-1. Total Delay: $D_{total} = t_{RTP} - t_{UTC\_expected}$
-2. Clock Offset: $D_{clock} = D_{total} - D_{prop}$
+    T_arrival = T_emission + T_propagation + D_clock
 
-Where D_prop is the propagation delay from the TransmissionTimeSolver.
+Rearranging to solve for D_clock:
 
-This module:
-1. Reads raw 20 kHz IQ from Phase 1 archive
-2. Detects synchronization tones (WWV, WWVH, CHU)
-3. Performs WWV/WWVH discrimination
-4. Calculates propagation delay using ionospheric modeling
-5. Produces the Clock Offset Series as a separate, versionable file
+    D_clock = T_arrival - T_emission - T_propagation
 
-Usage:
-------
+For time signal stations:
+    T_emission = 0 (tones transmitted at exact second boundary)
+
+Therefore:
+    D_clock = T_arrival - T_propagation
+
+Where:
+    T_arrival = Detected tone arrival time (from matched filter)
+    T_propagation = HF propagation delay (from TransmissionTimeSolver)
+
+================================================================================
+DATA STRUCTURES
+================================================================================
+This module defines three main data structures:
+
+1. ClockOffsetMeasurement
+   - A single D_clock measurement at one minute
+   - Contains: d_clock_ms, station, propagation_mode, confidence, etc.
+   - Quality graded: A (excellent), B (good), C (fair), D (poor), X (invalid)
+
+2. ClockOffsetSeries
+   - A time-indexed collection of measurements
+   - Provides interpolation for arbitrary query times
+   - Tracks quality summary and time bounds
+
+3. ClockOffsetSeriesWriter
+   - Persists measurements to CSV (continuous) and JSON (snapshots)
+   - Coordinates with paths module for output location
+
+================================================================================
+QUALITY GRADES
+================================================================================
+Each measurement is assigned a quality grade:
+
+    GRADE | UNCERTAINTY | DESCRIPTION
+    ------|-------------|---------------------------------------------
+      A   | < 0.5 ms    | Excellent - locked, multi-station verified
+      B   | < 2 ms      | Good - single station, high confidence
+      C   | < 5 ms      | Fair - moderate confidence
+      D   | > 5 ms      | Poor - low confidence, use with caution
+      X   | N/A         | Invalid - no valid measurement
+
+Quality grading is performed by the ClockConvergenceModel based on:
+    - Measurement uncertainty from TransmissionTimeSolver
+    - Convergence state (acquiring vs locked)
+    - Anomaly detection (propagation events)
+
+================================================================================
+FILE FORMATS
+================================================================================
+CSV (clock_offset_series.csv):
+    - Continuous append-only time series
+    - One row per minute
+    - Columns: system_time, utc_time, clock_offset_ms, station, mode, etc.
+
+JSON (clock_offset_{timestamp}.json):
+    - Periodic snapshots with full metadata
+    - Includes quality summary and measurement count
+    - Used for API responses and archival
+
+================================================================================
+RELATIONSHIP TO OTHER MODULES
+================================================================================
+    Phase2TemporalEngine → produces Phase2Result
+                         ↓
+    ClockOffsetEngine → converts to ClockOffsetMeasurement
+                      ↓
+    ClockOffsetSeriesWriter → persists to CSV/JSON
+
+The ClockOffsetEngine acts as an ADAPTER between the Phase2TemporalEngine
+(which produces Phase2Result) and the persistence layer (ClockOffsetSeriesWriter).
+
+================================================================================
+USAGE
+================================================================================
+For batch processing:
+
     engine = ClockOffsetEngine(
         raw_archive_dir=Path('/data/raw_archive'),
-        output_dir=Path('/data/clock_offset'),
+        output_dir=Path('/data/phase2/WWV_10MHz/clock_offset'),
         channel_name='WWV_10MHz',
+        frequency_hz=10e6,
         receiver_grid='EM38ww'
     )
     
-    # Process a time range
-    results = engine.process_range(start_time, end_time)
+    # Process a minute of data
+    measurement = engine.process_minute(iq_samples, system_time, rtp_timestamp)
     
-    # Get D_clock for a specific time
-    d_clock = engine.get_clock_offset(target_time)
+    # Query D_clock at a specific time
+    offset_ms, uncertainty_ms = series.get_offset_at_time(target_time)
+
+For continuous service, use Phase2AnalyticsService instead.
+
+================================================================================
+REVISION HISTORY
+================================================================================
+2025-12-07: Added comprehensive module documentation
+2025-11-15: Integrated with Phase2TemporalEngine
+2025-10-20: Initial implementation with data structures
 """
 
 import numpy as np

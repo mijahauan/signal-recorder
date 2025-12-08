@@ -1,37 +1,128 @@
 #!/usr/bin/env python3
 """
-WWV/WWVH BCD Time Code Encoder
+WWV/WWVH BCD Time Code Encoder - IRIG-H Format Generation
 
-Generates the IRIG-H time code transmitted by WWV and WWVH at 100 Hz.
-Both stations transmit the IDENTICAL BCD pattern encoding UTC time.
+================================================================================
+PURPOSE
+================================================================================
+Generate BCD (Binary Coded Decimal) time code templates for correlation-based
+detection in Phase 2 analytics. Both WWV and WWVH transmit IDENTICAL BCD
+patterns, making BCD a shared reference rather than a discriminator.
 
-IRIG-H Format (used by WWV/WWVH):
-- Frame: 60 seconds (one complete time code per minute)
-- Each second: One pulse at start
-- Pulse widths:
-  * Binary 0: 200ms (20% of second)
-  * Binary 1: 500ms (50% of second)
-  * Position marker: 800ms (80% of second)
-- Modulation: 100 Hz subcarrier, double-sideband AM
+The BCD time code is used for:
+    1. Cross-correlation timing refinement
+    2. Dual-peak delay measurement (WWV arrives before/after WWVH)
+    3. Amplitude ratio estimation for discrimination
+    4. Minute verification (decoded time matches expected)
 
-Time Code Fields (seconds within minute):
-  0: Frame marker (800ms)
-  1-8: Minute (BCD)
-  9: Position marker
-  10-17: Hour (BCD)
-  19: Position marker
-  20-29: Day of year (BCD)
-  29: Position marker
-  30-38: Year (last 2 digits, BCD)
-  39: Position marker
-  40-50: Unused/control bits
-  49: Position marker
-  51-58: Unused
-  59: Position marker
+================================================================================
+IRIG-H FORMAT SPECIFICATION
+================================================================================
+WWV and WWVH use a modified IRIG-H time code:
 
-Position markers at: 0, 9, 19, 29, 39, 49, 59
+FRAME STRUCTURE:
+    - Duration: 60 seconds (one complete code per minute)
+    - Subcarrier: 100 Hz sine wave, double-sideband AM
+    - Each second: Pulse at start, then low level
 
-Reference: NIST Special Publication 432, "NIST Time and Frequency Services"
+PULSE WIDTH ENCODING:
+    ┌─────────────┬──────────┬─────────────────────────────────┐
+    │ Symbol      │ Duration │ Description                     │
+    ├─────────────┼──────────┼─────────────────────────────────┤
+    │ Binary 0    │ 200 ms   │ 20% duty cycle, carrier ON      │
+    │ Binary 1    │ 500 ms   │ 50% duty cycle, carrier ON      │
+    │ Marker (P)  │ 800 ms   │ 80% duty cycle, position marker │
+    └─────────────┴──────────┴─────────────────────────────────┘
+
+AMPLITUDE LEVELS (from NIST SP 250-67):
+    HIGH: -6 dB relative to carrier
+    LOW:  -20 dB relative to carrier (observed, spec says -10.4 dB)
+
+================================================================================
+TIME CODE FIELD LAYOUT (60 seconds)
+================================================================================
+    Second  │ Content          │ Notes
+    ────────┼──────────────────┼────────────────────────────────────
+    0       │ P (marker)       │ Frame reference marker
+    1       │ DST flag         │ Daylight saving time status
+    2       │ DST status       │ DST at 00:00 UTC
+    3       │ Leap second      │ Leap second pending flag
+    4-7     │ Year (ones)      │ BCD, little-endian
+    8       │ Unused           │
+    9       │ P (marker)       │ Position marker
+    10-13   │ Minute (ones)    │ BCD, little-endian
+    14      │ Unused           │
+    15-17   │ Minute (tens)    │ BCD, little-endian
+    18      │ Unused           │
+    19      │ P (marker)       │ Position marker
+    20-23   │ Hour (ones)      │ BCD, little-endian, 24-hour format
+    24      │ Unused           │
+    25-26   │ Hour (tens)      │ BCD, little-endian
+    27-28   │ Unused           │
+    29      │ P (marker)       │ Position marker
+    30-33   │ Day (ones)       │ BCD, little-endian
+    34      │ Unused           │
+    35-38   │ Day (tens)       │ BCD, little-endian
+    39      │ P (marker)       │ Position marker
+    40-42   │ Day (hundreds)   │ BCD, little-endian
+    43-48   │ Unused           │
+    49      │ P (marker)       │ Position marker
+    50      │ UT1 sign         │ Positive if 0
+    51-54   │ Year (tens)      │ BCD, little-endian
+    55      │ DST status       │ DST at 24:00 UTC
+    56-58   │ UT1 magnitude    │ Correction in 0.1s units
+    59      │ P (marker)       │ Position marker
+
+POSITION MARKERS: Seconds 0, 9, 19, 29, 39, 49, 59
+
+================================================================================
+BCD ENCODING: LITTLE-ENDIAN
+================================================================================
+WWV/WWVH use LITTLE-ENDIAN BCD encoding (LSB transmitted first).
+This differs from WWVB which uses big-endian.
+
+Example: Minute 37 (0011 0111 in BCD)
+    - Ones digit (7): 0111 → transmitted as bits at seconds 10,11,12,13 = 1,1,1,0
+    - Tens digit (3): 0011 → transmitted as bits at seconds 15,16,17 = 1,1,0
+
+================================================================================
+100 Hz SUBCARRIER MODULATION
+================================================================================
+The BCD pulse envelope amplitude-modulates a 100 Hz subcarrier:
+
+    s(t) = A(t) × sin(2π × 100 × t)
+
+Where A(t) is the envelope: HIGH during pulse, LOW otherwise.
+
+This creates sidebands at carrier ± 100 Hz that can be detected
+even when the carrier is weak.
+
+================================================================================
+USAGE IN PHASE 2 ANALYTICS
+================================================================================
+    encoder = WWVBCDEncoder(sample_rate=20000)
+    
+    # Generate envelope-only template for correlation
+    template = encoder.encode_minute(minute_boundary_timestamp, envelope_only=True)
+    
+    # Cross-correlate with demodulated signal
+    correlation = np.correlate(demodulated_signal, template, mode='valid')
+    
+    # Find peaks - two peaks indicate both WWV and WWVH present
+    peaks = find_peaks(correlation)
+
+================================================================================
+REFERENCES
+================================================================================
+- NIST Special Publication 432, "NIST Time and Frequency Services"
+- NIST Special Publication 250-67, "NIST Time and Frequency Radio Stations"
+- Phil Karn (KA9Q) wwvsim.c implementation
+
+================================================================================
+REVISION HISTORY
+================================================================================
+2025-12-07: Added comprehensive documentation
+2025-11-01: Initial implementation based on wwvsim.c
 """
 
 import numpy as np

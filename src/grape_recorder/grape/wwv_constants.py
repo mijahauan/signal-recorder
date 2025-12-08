@@ -1,11 +1,110 @@
 #!/usr/bin/env python3
 """
-WWV/WWVH/CHU Shared Constants
+WWV/WWVH/CHU Shared Constants - Central Reference for Phase 2 Analytics
 
-Centralizes timing constants, frequency schedules, and configuration values
-used across the Phase 2 analytics modules.
+================================================================================
+PURPOSE
+================================================================================
+Single source of truth for all timing constants, broadcast schedules, station
+locations, and detection thresholds used across Phase 2 analytics modules.
 
-Reference: NIST Special Publication 432 (WWV and WWVH specifications)
+Centralizing these values ensures consistency and makes it easy to update
+parameters based on empirical observations or specification changes.
+
+================================================================================
+STATION SPECIFICATIONS
+================================================================================
+WWV - NIST Radio Station, Fort Collins, Colorado, USA
+    Coordinates: 40.6775°N, 105.0472°W
+    Frequencies: 2.5, 5, 10, 15, 20, 25 MHz
+    Timing Tone: 1000 Hz, 800ms duration at second 0
+    Power: 2.5 kW (2.5, 20, 25 MHz), 10 kW (5, 10, 15 MHz)
+
+WWVH - NIST Radio Station, Kekaha, Kauai, Hawaii, USA
+    Coordinates: 21.9886°N, 159.7639°W
+    Frequencies: 2.5, 5, 10, 15 MHz
+    Timing Tone: 1200 Hz, 800ms duration at second 0
+    Power: 10 kW (all frequencies)
+
+CHU - NRC Radio Station, Ottawa, Ontario, Canada
+    Coordinates: 45.2925°N, 75.7542°W
+    Frequencies: 3.33, 7.85, 14.67 MHz
+    Timing Tone: 1000 Hz, 500ms duration (1000ms at hour)
+    Special: FSK time code at seconds 31-39 (Bell 103 AFSK)
+
+================================================================================
+SHARED vs UNIQUE FREQUENCIES
+================================================================================
+SHARED (require discrimination):
+    2.5 MHz  - WWV + WWVH
+    5 MHz    - WWV + WWVH
+    10 MHz   - WWV + WWVH
+    15 MHz   - WWV + WWVH
+
+UNIQUE (no discrimination needed):
+    20 MHz   - WWV only
+    25 MHz   - WWV only
+    3.33 MHz - CHU only
+    7.85 MHz - CHU only
+    14.67 MHz - CHU only
+
+================================================================================
+GROUND TRUTH MINUTES
+================================================================================
+During certain minutes, only ONE station broadcasts 500/600 Hz tones:
+
+WWV-ONLY (4 minutes/hour):
+    Minute 1:  WWV=600 Hz, WWVH=440 Hz (WWVH 440 Hz ground truth)
+    Minute 16: WWV=500 Hz, WWVH=silent
+    Minute 17: WWV=600 Hz, WWVH=silent
+    Minute 19: WWV=600 Hz, WWVH=silent
+
+WWVH-ONLY (10 minutes/hour):
+    Minute 2:  WWV=440 Hz, WWVH=600 Hz (WWV 440 Hz ground truth)
+    Minutes 43-51: WWV=silent, WWVH=500/600 Hz alternating
+
+TEST SIGNAL MINUTES (exclusive broadcast):
+    Minute 8:  WWV only (WWVH silent)
+    Minute 44: WWVH only (WWV silent)
+
+Total: 14 ground truth minutes per hour!
+
+================================================================================
+PROPAGATION PHYSICS
+================================================================================
+Constants for ionospheric propagation modeling:
+
+SPEED OF LIGHT: 299,792.458 km/s
+EARTH RADIUS:   6,371 km (mean)
+
+IONOSPHERIC LAYERS:
+    E-layer:  110 km altitude (daytime only, MUF ~4 MHz)
+    F1-layer: 200 km altitude (daytime, merges with F2 at night)
+    F2-layer: 300 km altitude (primary HF reflection layer)
+
+IONOSPHERIC DELAY:
+    Group delay ≈ 40.3 × TEC / f² (seconds)
+    Typical: 0.1-0.5 ms per hop
+
+PLAUSIBLE PROPAGATION DELAY RANGES (continental US):
+    WWV:  2-35 ms  (Fort Collins relatively close)
+    WWVH: 12-60 ms (Hawaii much farther)
+    CHU:  3-40 ms  (Ottawa intermediate)
+
+================================================================================
+REFERENCES
+================================================================================
+- NIST Special Publication 432, "NIST Time and Frequency Services" (2012)
+- NIST Special Publication 250-67, "NIST Time and Frequency Radio Stations"
+- NRC CHU Technical Specifications
+- ITU-R P.531-14, "Ionospheric propagation data and prediction methods"
+
+================================================================================
+REVISION HISTORY
+================================================================================
+2025-12-07: Added comprehensive documentation
+2025-11-15: Added CHU FSK parameters
+2025-10-20: Initial constants extracted from analysis modules
 """
 
 from typing import Dict, Set, Optional

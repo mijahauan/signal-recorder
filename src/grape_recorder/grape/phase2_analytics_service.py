@@ -1,16 +1,136 @@
 #!/usr/bin/env python3
 """
-Phase 2 Analytics Service - Process Digital RF Archives
+Phase 2 Analytics Service - Continuous Processing of Digital RF Archives
 
-Watches for new Digital RF data from Phase 1 and processes through
-Phase 2 Temporal Analysis Engine to produce:
-1. D_clock (timing correction for UTC alignment)
-2. Station discrimination (WWV vs WWVH)
-3. Quality metrics and tone detections
-4. Status files for web-ui monitoring
+================================================================================
+PURPOSE
+================================================================================
+The Phase 2 Analytics Service is the RUNTIME WRAPPER that continuously monitors
+the Phase 1 Digital RF archive and processes new data through the Phase 2
+Temporal Analysis Engine.
 
-Input:  raw_archive/{CHANNEL}/ (20 kHz Digital RF from Phase 1)
-Output: phase2/{CHANNEL}/      (timing analysis, status JSON)
+This service runs as a systemd daemon (grape-phase2-analytics.service) and:
+    1. Polls for new minute-aligned data in the raw archive
+    2. Invokes Phase2TemporalEngine.process_minute() for each new minute
+    3. Writes results to CSV time series files
+    4. Updates status JSON for web-ui monitoring
+    5. Manages decimation buffer for Phase 3 upload
+
+================================================================================
+ARCHITECTURE: SERVICE vs ENGINE
+================================================================================
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     Phase2AnalyticsService (THIS FILE)                      │
+│                                                                             │
+│   RESPONSIBILITIES:                                                         │
+│   - Daemon lifecycle (start, stop, signal handling)                         │
+│   - Archive polling and data retrieval                                      │
+│   - CSV time series management (per-method files)                           │
+│   - Status file updates for web-ui                                          │
+│   - Clock convergence model integration                                     │
+│   - Decimation buffer for Phase 3                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                 Phase2TemporalEngine (phase2_temporal_engine.py)            │
+│                                                                             │
+│   RESPONSIBILITIES:                                                         │
+│   - Tone detection (Step 1)                                                 │
+│   - Channel characterization (Step 2)                                       │
+│   - Transmission time solution (Step 3)                                     │
+│   - D_clock computation                                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+DATA FLOW
+================================================================================
+                        Phase 1 Archive
+                              │
+    raw_archive/{CHANNEL}/    │   (Digital RF HDF5 files)
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     Phase2AnalyticsService.run()                            │
+│                                                                             │
+│   1. Poll for new minute-aligned data                                       │
+│   2. Read IQ samples from Digital RF                                        │
+│   3. Call engine.process_minute(iq_samples, system_time, rtp_timestamp)     │
+│   4. Write results to CSV files                                             │
+│   5. Update status JSON                                                     │
+│   6. Write decimated 10 Hz data to buffer                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                     Phase 2 Output Directory
+                              │
+    phase2/{CHANNEL}/         │
+    ├── clock_offset/         │   clock_offset_series.csv
+    ├── carrier_power/        │   carrier_power_{date}.csv
+    ├── tone_detections/      │   {channel}_tones_{date}.csv
+    ├── bcd_discrimination/   │   {channel}_bcd_{date}.csv
+    ├── doppler/              │   {channel}_doppler_{date}.csv
+    ├── station_id_440hz/     │   {channel}_440hz_{date}.csv
+    ├── test_signal/          │   {channel}_test_{date}.csv
+    ├── discrimination/       │   {channel}_discrimination_{date}.csv
+    ├── audio_tones/          │   {channel}_audio_{date}.csv
+    └── status/               │   analytics-service-status.json
+
+================================================================================
+CSV TIME SERIES FILES
+================================================================================
+Each discrimination method produces its own CSV for visualization:
+
+FILE                          | DESCRIPTION
+------------------------------|---------------------------------------------
+clock_offset_series.csv       | D_clock, propagation mode, quality grade
+carrier_power_{date}.csv      | Power/SNR measurements
+{channel}_tones_{date}.csv    | 1000/1200 Hz detection results
+{channel}_bcd_{date}.csv      | BCD correlation amplitudes and delays
+{channel}_doppler_{date}.csv  | Doppler shift and stability
+{channel}_440hz_{date}.csv    | 440 Hz tone and ground truth detection
+{channel}_test_{date}.csv     | Test signal analysis (minutes 8/44)
+{channel}_discrimination.csv  | Final weighted voting result
+
+================================================================================
+CLOCK CONVERGENCE MODEL
+================================================================================
+The service integrates a ClockConvergenceModel that implements:
+
+    "SET, MONITOR, INTERVENTION"
+
+1. SET (Acquisition): Collect D_clock measurements, compute running mean/std
+2. MONITOR (Lock): When uncertainty < 1ms, lock and flag anomalies
+3. INTERVENTION (Reacquire): Force reacquisition after consecutive anomalies
+
+This provides:
+    - Stable D_clock output (smooth over short-term ionospheric variations)
+    - Anomaly detection (flag propagation mode changes, ionospheric events)
+    - Quality grading based on convergence state
+
+================================================================================
+USAGE
+================================================================================
+The service is typically started via systemd:
+
+    systemctl start grape-phase2-analytics@WWV_10_MHz
+
+Or directly for testing:
+
+    python -m grape_recorder.grape.phase2_analytics_service \\
+        --archive /data/raw_archive/WWV_10_MHz \\
+        --output /data/phase2/WWV_10_MHz \\
+        --channel "WWV 10 MHz" \\
+        --frequency 10e6 \\
+        --grid EM38ww
+
+================================================================================
+REVISION HISTORY
+================================================================================
+2025-12-07: Added comprehensive service architecture documentation
+2025-12-01: Added clock convergence model integration
+2025-11-20: Added per-method CSV files for web-ui graphs
+2025-10-15: Initial implementation with Phase2TemporalEngine integration
 """
 
 import argparse

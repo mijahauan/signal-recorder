@@ -1,19 +1,181 @@
 #!/usr/bin/env python3
 """
-Multi-Station Tone Detector - Standalone Implementation
+Multi-Station Tone Detector - Precision Timing via Matched Filtering
 
-Detects WWV/WWVH/CHU time signal tones using phase-invariant quadrature
-matched filtering. Standalone implementation for reusability.
+================================================================================
+PURPOSE
+================================================================================
+Detect WWV/WWVH/CHU time signal tones to establish UTC time reference.
+This is Step 1 of Phase 2 analytics - the foundation for all timing measurements.
 
-Stations:
-- WWV (Fort Collins): 1000 Hz, 0.8s → Primary time_snap reference
-- WWVH (Hawaii): 1200 Hz, 0.8s → Propagation analysis ONLY
-- CHU (Canada): 1000 Hz, 0.5s → Alternate time_snap reference
+The detected tone arrival time (T_arrival) is the primary observable for
+computing D_clock (system time offset from UTC):
 
-Design:
-- Phase-invariant: Works with arbitrary phase shifts
-- Noise-adaptive: Threshold adjusts to local noise floor
-- Station-aware: Sets use_for_time_snap correctly for each station
+    D_clock = T_system - T_UTC(NIST)
+            = T_arrival - T_propagation - T_emission
+
+Where T_emission = 0 (tones transmitted at exact second boundary).
+
+================================================================================
+THEORY: MATCHED FILTERING
+================================================================================
+Matched filtering is the optimal linear filter for detecting a known signal
+in additive white Gaussian noise (AWGN). It maximizes the output SNR.
+
+For a known signal s(t) in noise n(t):
+    x(t) = s(t - τ) + n(t)
+
+The matched filter impulse response is:
+    h(t) = s(-t)  (time-reversed signal)
+
+The filter output y(t) = x(t) * h(t) peaks at the delay τ, with:
+    SNR_out = 2E/N₀
+
+Where:
+    E = ∫|s(t)|² dt  (signal energy)
+    N₀ = noise spectral density
+
+REFERENCE: Turin, G.L. (1960). "An introduction to matched filters."
+           IRE Transactions on Information Theory, 6(3), 311-329.
+
+================================================================================
+THEORY: PHASE-INVARIANT (QUADRATURE) DETECTION
+================================================================================
+HF propagation introduces unknown phase shifts. To detect tones regardless
+of phase, we use quadrature matched filtering:
+
+    Template_I(t) = sin(2πf₀t) · w(t)   (in-phase)
+    Template_Q(t) = cos(2πf₀t) · w(t)   (quadrature)
+
+Where w(t) is a window function (Tukey α=0.1 for smooth edges).
+
+Correlation outputs:
+    R_I = ∫ x(t) · Template_I(t - τ) dt
+    R_Q = ∫ x(t) · Template_Q(t - τ) dt
+
+Phase-invariant envelope:
+    R(τ) = √(R_I² + R_Q²)
+
+This envelope peaks at the tone arrival time regardless of carrier phase.
+
+REFERENCE: Proakis, J.G. & Salehi, M. (2008). "Digital Communications,"
+           5th ed., McGraw-Hill. Section 5.1.4.
+
+================================================================================
+THEORY: SUB-SAMPLE TIMING PRECISION
+================================================================================
+Integer sample detection limits timing resolution to ±1/(2·fs). For 20 kHz:
+    Resolution = 1/20000 = 50 μs = 0.05 ms
+
+Parabolic (quadratic) interpolation improves this by ~10x:
+    Given peak at sample k with neighbors y[k-1], y[k], y[k+1]:
+    
+    δ = (y[k-1] - y[k+1]) / (2 · (y[k-1] - 2·y[k] + y[k+1]))
+    
+    Refined peak position: k + δ  (where |δ| ≤ 0.5)
+    Refined peak value: y[k] - (y[k-1] - y[k+1]) · δ / 4
+
+This achieves ~5 μs timing precision at 20 kHz sample rate.
+
+REFERENCE: Smith, J.O. (2011). "Spectral Audio Signal Processing,"
+           W3K Publishing. Chapter on Sinusoidal Peak Interpolation.
+           https://ccrma.stanford.edu/~jos/sasp/
+
+================================================================================
+SIGNAL PROCESSING CHAIN
+================================================================================
+1. INPUT: Complex IQ samples at sample_rate (typically 20 kHz)
+   - Format: np.complex64 from Phase 1 Digital RF archive
+   - Duration: 60 seconds (full minute buffer)
+
+2. AM DEMODULATION: Extract envelope (magnitude)
+   - magnitude[n] = |IQ[n]| = √(I[n]² + Q[n]²)
+   - The timing tone is AM modulated on the carrier
+
+3. AC COUPLING: Remove DC offset
+   - audio[n] = magnitude[n] - mean(magnitude)
+   - Ensures zero-mean signal for correlation
+
+4. MATCHED FILTER CORRELATION:
+   - Quadrature templates at tone frequency (1000 or 1200 Hz)
+   - Template duration matches tone (0.8s WWV/WWVH, 0.5s CHU)
+   - Unit-energy normalization for proper SNR calculation
+
+5. ENVELOPE DETECTION:
+   - R(τ) = √(R_sin² + R_cos²)
+   - Phase-invariant detection
+
+6. PEAK DETECTION:
+   - Search within ±500ms of expected minute boundary
+   - Noise-adaptive threshold (10th percentile + 3σ)
+   - Sub-sample interpolation for precise timing
+
+7. OUTPUT: ToneDetectionResult with:
+   - timing_error_ms: Offset from minute boundary (= T_arrival - T_expected)
+   - snr_db: Signal-to-noise ratio in decibels
+   - confidence: Detection quality metric (0-1)
+
+================================================================================
+STATION CHARACTERISTICS
+================================================================================
+┌─────────┬────────────┬──────────┬─────────────────────────────────────────┐
+│ Station │ Tone (Hz)  │ Duration │ Notes                                   │
+├─────────┼────────────┼──────────┼─────────────────────────────────────────┤
+│ WWV     │ 1000       │ 0.8s     │ Fort Collins, CO. 2.5-25 MHz            │
+│ WWVH    │ 1200       │ 0.8s     │ Kauai, HI. 2.5, 5, 10, 15 MHz only      │
+│ CHU     │ 1000       │ 0.5s     │ Ottawa, Canada. 3.33, 7.85, 14.67 MHz   │
+│         │            │ 1.0s     │ (1.0s at top of hour only)              │
+└─────────┴────────────┴──────────┴─────────────────────────────────────────┘
+
+All tones transmitted at exact second boundary (T_emission = 0).
+
+REFERENCE: NIST Special Publication 250-67 (2009). "NIST Time and Frequency
+           Radio Stations: WWV, WWVH, and WWVB."
+           https://www.nist.gov/pml/time-and-frequency-division/time-services
+
+================================================================================
+PROPAGATION DELAY BOUNDS
+================================================================================
+Timing errors outside physical propagation bounds indicate false detections:
+
+    T_arrival = T_emission + T_propagation
+              = 0 + (path_length / c)
+
+Typical delays (receiver in central US):
+    WWV:  5-30 ms  (1500-9000 km path via ionosphere)
+    WWVH: 15-50 ms (4500-15000 km path via ionosphere)
+    CHU:  3-25 ms  (1000-7500 km path via ionosphere)
+
+Detections outside these bounds are rejected as interference.
+
+================================================================================
+USAGE
+================================================================================
+    detector = MultiStationToneDetector(
+        channel_name='WWV_10_MHz',
+        sample_rate=20000
+    )
+    
+    # Process 60-second IQ buffer
+    detections = detector.process_samples(
+        timestamp=buffer_mid_time,     # Unix timestamp at buffer midpoint
+        samples=iq_samples,            # np.complex64 array
+        rtp_timestamp=rtp_ts,          # For provenance tracking
+        original_sample_rate=20000
+    )
+    
+    if detections:
+        for det in detections:
+            print(f"{det.station.value}: timing_error={det.timing_error_ms:+.2f}ms, "
+                  f"SNR={det.snr_db:.1f}dB")
+
+================================================================================
+REVISION HISTORY
+================================================================================
+2025-12-07: Added comprehensive theoretical documentation
+2025-11-17: Improved noise floor estimation (+6-11% detection rate)
+2025-11-10: Fixed floating point precision bug in minute boundary calculation
+2025-10-15: Initial implementation with quadrature matched filtering
 """
 
 import logging
@@ -133,25 +295,66 @@ class MultiStationToneDetector(IMultiStationToneDetector):
     
     def _create_template(self, frequency_hz: float, duration_sec: float) -> dict:
         """
-        Create quadrature matched filter templates (sin and cos)
+        Create quadrature matched filter templates for phase-invariant detection.
+        
+        THEORY:
+        -------
+        For phase-invariant detection of a sinusoidal tone, we create a
+        quadrature pair of templates:
+        
+            Template_I(t) = sin(2πf₀t) · w(t)   (in-phase)
+            Template_Q(t) = cos(2πf₀t) · w(t)   (quadrature)
+        
+        Where:
+            f₀ = tone frequency (Hz)
+            w(t) = Tukey window with α=0.1 (smooth 5% edges)
+        
+        The Tukey window reduces spectral leakage while preserving most of
+        the signal energy. At α=0.1, only 10% of the signal is tapered.
+        
+        NORMALIZATION:
+        -------------
+        Templates are normalized to unit energy (||template|| = 1) so that
+        the correlation output directly represents the signal energy at that
+        delay, independent of template duration.
+        
+        For a unit-energy template matched filter:
+            SNR_out = 2 · E_signal / N₀
+        
+        Where E_signal is the received signal energy.
         
         Args:
-            frequency_hz: Tone frequency (1000 or 1200 Hz)
-            duration_sec: Tone duration (0.5 or 0.8 seconds)
+            frequency_hz: Tone frequency in Hz (1000 for WWV/CHU, 1200 for WWVH)
+            duration_sec: Tone duration in seconds (0.8 for WWV/WWVH, 0.5 for CHU)
             
         Returns:
-            dict with 'sin', 'cos', 'frequency', 'duration'
+            dict containing:
+                'sin': In-phase template (unit energy)
+                'cos': Quadrature template (unit energy)
+                'frequency': Tone frequency (Hz)
+                'duration': Tone duration (seconds)
+        
+        Note:
+            Template length = duration_sec × sample_rate samples
+            At 20 kHz: 0.8s → 16000 samples, 0.5s → 10000 samples
         """
-        t = np.arange(0, duration_sec, 1/self.sample_rate)
+        # Generate time vector
+        n_samples = int(duration_sec * self.sample_rate)
+        t = np.arange(n_samples) / self.sample_rate
         
-        # Apply Tukey window for smooth edges
-        window = scipy_signal.windows.tukey(len(t), alpha=0.1)
+        # Tukey window: rectangular with cosine-tapered edges
+        # α = 0.1 means 5% taper on each end (90% flat)
+        # This reduces spectral leakage while preserving signal energy
+        window = scipy_signal.windows.tukey(n_samples, alpha=0.1)
         
-        # Create quadrature pair
+        # Create quadrature pair: sin and cos at tone frequency
+        # These span the 2D signal space for any phase angle
         template_sin = np.sin(2 * np.pi * frequency_hz * t) * window
         template_cos = np.cos(2 * np.pi * frequency_hz * t) * window
         
-        # Normalize to unit energy for proper matched filtering
+        # Normalize to unit energy: ||template|| = 1
+        # This ensures correlation output represents signal energy
+        # ||x|| = sqrt(sum(x^2)) = sqrt(E)
         template_sin /= np.linalg.norm(template_sin)
         template_cos /= np.linalg.norm(template_cos)
         
@@ -308,20 +511,76 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         expected_offset_ms: Optional[float] = None
     ) -> Optional[ToneDetectionResult]:
         """
-        Correlate audio signal with station template
+        Correlate audio signal with station template using quadrature matched filtering.
+        
+        ALGORITHM OVERVIEW:
+        -------------------
+        This implements the core matched filter detection with these steps:
+        
+        1. QUADRATURE CORRELATION
+           Correlate audio with both sin and cos templates:
+               R_sin[k] = Σ audio[n] × template_sin[n-k]
+               R_cos[k] = Σ audio[n] × template_cos[n-k]
+           
+           Using scipy.signal.correlate with mode='valid' (output only where
+           templates fully overlap with signal).
+        
+        2. PHASE-INVARIANT ENVELOPE
+           Combine to remove phase dependence:
+               R[k] = √(R_sin[k]² + R_cos[k]²)
+           
+           This is the magnitude of the analytic signal, invariant to the
+           carrier phase shift introduced by ionospheric propagation.
+        
+        3. PEAK DETECTION WITH SUB-SAMPLE INTERPOLATION
+           Find maximum within search window, then refine with parabolic fit:
+               δ = (y[k-1] - y[k+1]) / (2 × (y[k-1] - 2×y[k] + y[k+1]))
+           
+           Refined position: k + δ (achieves ~5 μs precision at 20 kHz)
+        
+        4. NOISE-ADAPTIVE THRESHOLD
+           Threshold computed from correlation values OUTSIDE the search window:
+               threshold = percentile_10(noise) + 3σ(noise)
+           
+           This provides robust detection in varying noise conditions.
+        
+        5. TIMING CALCULATION
+           Convert peak position to timing error relative to minute boundary:
+               T_arrival = buffer_start_time + peak_position / sample_rate
+               timing_error_ms = (T_arrival - minute_boundary) × 1000
+        
+        SEARCH WINDOW STRATEGY:
+        -----------------------
+        The search window can be progressively narrowed as timing confidence improves:
+        
+        - Pass 0 (Initial): ±500ms around minute boundary
+          Used for first detection with no prior timing information.
+          
+        - Pass 1 (Geographic): ±30-50ms around expected propagation delay
+          Uses known transmitter-receiver distance to predict arrival time.
+          
+        - Pass 2+ (Anchor-guided): ±3-10ms around previous detection
+          Once TimeSnapReference is established, subsequent searches are tight.
         
         Args:
-            search_window_ms: Search window in milliseconds
-                - None or 500: Wide search for Pass 0 (default)
-                - 30-50: Medium for Pass 1 with geographic constraint
-                - 3-10: Tight for guided search from anchor
-            expected_offset_ms: Expected offset from minute boundary
-                - None or 0: Search centered at minute boundary (Pass 0)
-                - +20: Search centered at minute_boundary + 20ms (e.g., CHU propagation)
-                - This allows narrow windows to find signals at expected arrival times
+            audio_signal: AM-demodulated, AC-coupled signal (magnitude - DC)
+            station_type: Station being detected (WWV, WWVH, or CHU)
+            template: Dict with 'sin', 'cos', 'frequency', 'duration' from _create_template
+            current_unix_time: Unix timestamp at buffer MIDPOINT
+            minute_boundary: UTC minute boundary (second 0) as Unix timestamp
+            original_sample_rate: Original sample rate if decimated (for RTP calculation)
+            buffer_rtp_start: RTP timestamp at buffer start (for provenance)
+            search_window_ms: Search window half-width in ms (default 500)
+            expected_offset_ms: Expected offset from minute boundary (default 0)
         
         Returns:
-            ToneDetectionResult if detection successful, None otherwise
+            ToneDetectionResult if detection successful (peak > threshold and
+            within propagation bounds), None otherwise.
+        
+        Note:
+            Detection is rejected if timing_error_ms falls outside the physically
+            plausible propagation delay range for the station (defined in
+            wwv_constants.PROPAGATION_BOUNDS_MS).
         """
         template_sin = template['sin']
         template_cos = template['cos']
@@ -392,38 +651,90 @@ class MultiStationToneDetector(IMultiStationToneDetector):
         peak_idx = search_start + local_peak_idx
         peak_val = correlation[peak_idx]
         
-        # Parabolic (quadratic) interpolation for sub-sample precision
-        # Uses the peak and its two neighbors to fit a parabola
+        # =====================================================================
+        # SUB-SAMPLE INTERPOLATION (Parabolic/Quadratic)
+        # =====================================================================
+        # The integer peak position limits timing resolution to ±1/(2·fs).
+        # At 20 kHz: ±25 μs = ±0.025 ms.
+        #
+        # Parabolic interpolation fits a quadratic through 3 points:
+        #   y(x) = ax² + bx + c
+        #
+        # Using the peak y[0] and neighbors y[-1], y[+1]:
+        #   a = (y[-1] + y[+1] - 2·y[0]) / 2
+        #   b = (y[+1] - y[-1]) / 2
+        #
+        # Peak of parabola at x = -b/(2a):
+        #   δ = (y[-1] - y[+1]) / (2·(y[-1] - 2·y[0] + y[+1]))
+        #
+        # This achieves ~5 μs precision (10x improvement over integer).
+        #
+        # Reference: Smith, J.O. (2011). "Spectral Audio Signal Processing,"
+        #            Chapter: Sinusoidal Peak Interpolation.
+        # =====================================================================
         sub_sample_offset = 0.0
         if 0 < peak_idx < len(correlation) - 1:
-            y_m1 = correlation[peak_idx - 1]
-            y_0 = correlation[peak_idx]
-            y_p1 = correlation[peak_idx + 1]
+            y_m1 = correlation[peak_idx - 1]  # y[-1]: sample before peak
+            y_0 = correlation[peak_idx]        # y[0]:  peak sample
+            y_p1 = correlation[peak_idx + 1]   # y[+1]: sample after peak
             
+            # Denominator is 2×a (second derivative)
+            # Small denominator indicates flat peak (low confidence interpolation)
             denominator = y_m1 - 2*y_0 + y_p1
             if abs(denominator) > 1e-10:
+                # Calculate sub-sample offset (-0.5 to +0.5 samples)
                 sub_sample_offset = 0.5 * (y_m1 - y_p1) / denominator
                 sub_sample_offset = max(-0.5, min(0.5, sub_sample_offset))
+                
+                # Interpolated peak value at refined position
                 peak_val = y_0 - 0.25 * (y_m1 - y_p1) * sub_sample_offset
         
+        # Precise peak position (integer + fractional samples)
         precise_peak_idx = peak_idx + sub_sample_offset
         
-        # Noise-adaptive threshold: Use noise from OUTSIDE the search window
+        # =====================================================================
+        # NOISE-ADAPTIVE THRESHOLD ESTIMATION
+        # =====================================================================
+        # To detect tones in varying noise conditions, we estimate the noise
+        # floor from correlation values OUTSIDE the search window (where we
+        # know no tone should be present).
+        #
+        # THRESHOLD CALCULATION:
+        #   threshold = P_10(noise) + 3σ(noise_lower_half)
+        #
+        # Where:
+        #   P_10(noise) = 10th percentile (robust to outliers)
+        #   σ(noise_lower_half) = std dev of samples below median
+        #
+        # WHY THIS WORKS:
+        # - 10th percentile captures the true noise floor even with
+        #   occasional interference spikes
+        # - Using σ of lower half excludes any signal contamination
+        # - 3σ threshold gives ~99.7% confidence (Gaussian assumption)
+        #
+        # Validated 2025-11-17: +6-11% detection improvement vs mean+2σ
+        # See scripts/compare_tone_detectors.py for multi-frequency validation
+        # =====================================================================
         noise_samples = np.concatenate([
-            correlation[:max(0, search_start - 100)],
-            correlation[min(len(correlation), search_end + 100):]
+            correlation[:max(0, search_start - 100)],    # Before search window
+            correlation[min(len(correlation), search_end + 100):]  # After search window
         ])
         
         if len(noise_samples) > 100:
-            # IMPROVED: Percentile-based noise floor (more robust than mean)
-            # Validated 2025-11-17: +6-11% detection improvement across all frequencies
-            # See scripts/compare_tone_detectors.py for multi-frequency validation
-            noise_floor_base = np.percentile(noise_samples, 10)  # 10th percentile
+            # Robust noise floor: 10th percentile (immune to outliers)
+            noise_floor_base = np.percentile(noise_samples, 10)
+            
+            # Robust σ estimate: use only samples below median
+            # This excludes any signal leakage or interference
             noise_std = np.std(noise_samples[noise_samples < np.median(noise_samples)])
-            noise_floor = noise_floor_base + 3.0 * noise_std  # 3-sigma (was 2.0)
-            noise_mean = np.mean(noise_samples)  # Still compute for SNR calculation
+            
+            # Detection threshold: base + 3σ (99.7% confidence)
+            noise_floor = noise_floor_base + 3.0 * noise_std
+            
+            # Mean still needed for SNR calculation
+            noise_mean = np.mean(noise_samples)
         else:
-            # Fallback for short buffers (use old method)
+            # Fallback for short buffers (insufficient noise samples)
             noise_mean = np.mean(correlation)
             noise_std = np.std(correlation)
             noise_floor = noise_mean + 2.0 * noise_std
