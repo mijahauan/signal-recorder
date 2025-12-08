@@ -603,15 +603,16 @@ class ClockOffsetEngine:
         channel = phase2_result.channel
         time_snap = phase2_result.time_snap
         
-        # Map quality grade
-        quality_map = {
-            'A': ClockOffsetQuality.EXCELLENT,
-            'B': ClockOffsetQuality.GOOD,
-            'C': ClockOffsetQuality.FAIR,
-            'D': ClockOffsetQuality.POOR,
-            'X': ClockOffsetQuality.INVALID
-        }
-        quality = quality_map.get(phase2_result.quality_grade, ClockOffsetQuality.FAIR)
+        # Map quality from uncertainty_ms (Issue 6.2: quality_grade removed from Phase2Result)
+        unc = phase2_result.uncertainty_ms
+        if unc < 1.0:
+            quality = ClockOffsetQuality.EXCELLENT
+        elif unc < 3.0:
+            quality = ClockOffsetQuality.GOOD
+        elif unc < 10.0:
+            quality = ClockOffsetQuality.FAIR
+        else:
+            quality = ClockOffsetQuality.POOR
         
         # Create measurement from Phase2Result
         measurement = ClockOffsetMeasurement(
@@ -647,10 +648,12 @@ class ClockOffsetEngine:
             self.writer.write_measurement(measurement)
             self.measurements_processed += 1
         
+        # Compute grade string for logging
+        grade_str = 'A' if unc < 1.0 else 'B' if unc < 3.0 else 'C' if unc < 10.0 else 'D'
         logger.info(
             f"D_clock: {solution.d_clock_ms:+.2f}ms (station={solution.station}, "
             f"mode={solution.propagation_mode}, confidence={solution.confidence:.2f}, "
-            f"grade={phase2_result.quality_grade})"
+            f"uncertainty={unc:.1f}ms, grade={grade_str})"
         )
         
         return measurement

@@ -349,13 +349,17 @@ class Phase2AnalyticsService:
             # Process through Clock Convergence Model
             # "Set, Monitor, Intervention" - converge to lock, then monitor
             # ================================================================
+            # Derive quality_grade from uncertainty_ms for convergence model
+            unc = result.uncertainty_ms
+            input_grade = 'A' if unc < 1.0 else 'B' if unc < 3.0 else 'C' if unc < 10.0 else 'D'
+            
             convergence_result = self.convergence_model.process_measurement(
                 station=station,
                 frequency_mhz=frequency_mhz,
                 d_clock_ms=result.d_clock_ms,
                 timestamp=float(minute_boundary),
                 snr_db=self.last_carrier_snr_db,
-                quality_grade=result.quality_grade
+                quality_grade=input_grade
             )
             
             # Use converged values when locked, raw values otherwise
@@ -761,6 +765,12 @@ class Phase2AnalyticsService:
             if time_snap.wwv_snr_db is not None and time_snap.wwvh_snr_db is not None:
                 power_ratio_db = time_snap.wwv_snr_db - time_snap.wwvh_snr_db
             
+            # Compute quality_grade from uncertainty_ms
+            grade = ''
+            if result:
+                unc = result.uncertainty_ms
+                grade = 'A' if unc < 1.0 else 'B' if unc < 3.0 else 'C' if unc < 10.0 else 'D'
+            
             with open(self.discrimination_csv, 'a', newline='') as f:
                 writer = csv.writer(f)
                 utc_time = datetime.fromtimestamp(minute_boundary, timezone.utc).isoformat()
@@ -773,7 +783,7 @@ class Phase2AnalyticsService:
                     round(time_snap.wwvh_snr_db, 2) if time_snap.wwvh_snr_db else '',
                     round(power_ratio_db, 2) if power_ratio_db else '',
                     channel_char.ground_truth_station or '',
-                    result.quality_grade if result else '',
+                    grade,
                     ';'.join(channel_char.cross_validation_agreements) if channel_char.cross_validation_agreements else '',
                     ';'.join(channel_char.cross_validation_disagreements) if channel_char.cross_validation_disagreements else ''
                 ])
@@ -1169,7 +1179,20 @@ class Phase2AnalyticsService:
             # Add D_clock result if available
             if self.last_result:
                 status['channels'][self.channel_name]['d_clock_ms'] = self.last_result.d_clock_ms
-                status['channels'][self.channel_name]['quality_grade'] = self.last_result.quality_grade
+                # Issue 6.2: quality_grade replaced with uncertainty_ms
+                # Compute backwards-compatible grade from uncertainty for web UI
+                unc = self.last_result.uncertainty_ms
+                if unc < 1.0:
+                    quality_grade = 'A'
+                elif unc < 3.0:
+                    quality_grade = 'B'
+                elif unc < 10.0:
+                    quality_grade = 'C'
+                else:
+                    quality_grade = 'D'
+                status['channels'][self.channel_name]['quality_grade'] = quality_grade
+                status['channels'][self.channel_name]['uncertainty_ms'] = unc
+                status['channels'][self.channel_name]['confidence'] = self.last_result.confidence
                 if self.last_result.solution:
                     sol = self.last_result.solution
                     status['channels'][self.channel_name]['station'] = sol.station
@@ -1261,6 +1284,10 @@ class Phase2AnalyticsService:
                 time_snap = result.time_snap if hasattr(result, 'time_snap') else None
                 channel_char = result.channel if hasattr(result, 'channel') else None
                 
+                # Compute quality_grade from uncertainty for logging/CSV
+                result_unc = result.uncertainty_ms
+                result_grade = 'A' if result_unc < 1.0 else 'B' if result_unc < 3.0 else 'C' if result_unc < 10.0 else 'D'
+                
                 self._write_carrier_power(
                     minute_boundary=minute_boundary,
                     power_db=self.last_carrier_power_db,
@@ -1268,7 +1295,7 @@ class Phase2AnalyticsService:
                     wwv_tone_db=time_snap.wwv_snr_db if time_snap else None,
                     wwvh_tone_db=time_snap.wwvh_snr_db if time_snap else None,
                     station=solution.station if solution else None,
-                    quality_grade=result.quality_grade
+                    quality_grade=result_grade
                 )
                 
                 # Write discrimination method CSVs
@@ -1284,7 +1311,7 @@ class Phase2AnalyticsService:
                 logger.info(
                     f"Processed minute {minute_boundary}: "
                     f"D_clock={result.d_clock_ms:+.2f}ms, "
-                    f"quality={result.quality_grade}, "
+                    f"uncertainty={result_unc:.1f}ms, "
                     f"carrier_snr={self.last_carrier_snr_db:.1f}dB"
                 )
             else:
@@ -1311,7 +1338,7 @@ class Phase2AnalyticsService:
                     d_clock_ms=result.d_clock_ms,
                     uncertainty_ms=getattr(self, 'last_convergence_result', None) and 
                                    self.last_convergence_result.uncertainty_ms or 999.0,
-                    quality_grade=result.quality_grade,
+                    quality_grade=result_grade,  # Use computed grade from uncertainty
                     gap_samples=gap_samples
                 )
             else:

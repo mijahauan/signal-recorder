@@ -173,7 +173,7 @@ USAGE
     
     print(f"D_clock: {result.d_clock_ms:+.2f} ms")
     print(f"Mode: {result.solution.propagation_mode}")
-    print(f"Grade: {result.quality_grade}")
+    print(f"Uncertainty: {result.uncertainty_ms:.1f} ms")
 
 ================================================================================
 OUTPUT: Phase2Result
@@ -183,7 +183,8 @@ The Phase2Result dataclass contains:
     - channel: ChannelCharacterization (Step 2 output)
     - solution: TransmissionTimeSolution (Step 3 output)
     - d_clock_ms: Final D_clock value
-    - quality_grade: 'A' (<1ms), 'B' (<2ms), 'C' (<5ms), 'D' (>5ms), 'X' (failed)
+    - uncertainty_ms: Timing uncertainty in milliseconds
+    - confidence: 0-1 confidence score
 
 ================================================================================
 REVISION HISTORY
