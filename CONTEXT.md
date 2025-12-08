@@ -12,40 +12,127 @@
 ### Background
 The Phase 2 Analytics critique session (Dec 7-8) implemented **16 fixes** to address methodological issues. These changes modified several APIs that the web UI depends on. The web UI needs to be updated to work with the new analytics output.
 
-### Key API Changes
+### Phase 2 Analytics Output Locations
 
-| Component | Before | After |
-|-----------|--------|-------|
-| `Phase2Result` | `quality_grade: str` (A/B/C/D) | `uncertainty_ms: float`, `confidence: float` |
-| Status JSON | `quality_grade` only | Both `quality_grade` AND `uncertainty_ms` |
-| Calibration | Per-station (`WWV`) | Per-broadcast (`WWV_10.00`) |
+Analytics writes results to these locations under `$DATA_ROOT` (typically `/tmp/grape-test`):
 
-### Backwards Compatibility Provided
-The Python backend now computes a backwards-compatible `quality_grade` from `uncertainty_ms`:
-```python
-# Derived grade for web UI
-grade = 'A' if uncertainty < 1.0 else 'B' if uncertainty < 3.0 else 'C' if uncertainty < 10.0 else 'D'
+```
+phase2/{CHANNEL}/
+├── status/
+│   └── analytics-service-status.json   # Real-time status (web UI reads this)
+├── clock_offset/
+│   └── {YYYYMMDD}/
+│       └── {channel}_clock_offset_{YYYYMMDD}.csv   # D_clock time series
+├── state/
+│   ├── channel-status.json             # Persistent channel state
+│   └── convergence_state.json          # Clock convergence model state
+├── discrimination/
+│   └── {channel}_discrimination_{YYYYMMDD}.csv
+├── carrier_power/
+│   └── {channel}_carrier_power_{YYYYMMDD}.csv
+└── decimated/
+    ├── {YYYYMMDD}.bin                  # 10 Hz IQ data (for spectrograms)
+    └── {YYYYMMDD}_meta.json            # Per-minute metadata
 ```
 
-### Files to Verify/Update
+### Key Data Structure: analytics-service-status.json
 
-**Priority 1: Status Display**
-| File | What to Check |
-|------|---------------|
-| `web-ui/components/timing-status-widget.js` | `renderDClock()` - grade display |
-| `web-ui/timing-dashboard-enhanced.html` | Grade badges, sorting |
+**This is the PRIMARY file the web UI reads for timing status.**
 
-**Priority 2: API Data Processing**
-| File | What to Check |
-|------|---------------|
-| `web-ui/utils/transmission-time-helpers.js` | `getAllPhase2Status()`, `getBestDClock()` |
-| `web-ui/utils/timing-analysis-helpers.js` | Grade → quality level mapping |
-| `web-ui/monitoring-server-v3.js` | Grade distribution counts |
+```json
+{
+  "channels": {
+    "WWV 10 MHz": {
+      "d_clock_ms": -5.823,           // D_clock value
+      "quality_grade": "B",           // Derived from uncertainty (backwards compat)
+      "uncertainty_ms": 2.1,          // NEW: Physical uncertainty
+      "confidence": 0.85,             // NEW: 0-1 confidence score
+      "station": "WWV",
+      "last_update": 1733651400,
+      "convergence": {
+        "state": "locked",
+        "is_locked": true,
+        "sample_count": 45,
+        "uncertainty_ms": 0.87,
+        "convergence_progress": 1.0,
+        "residual_ms": 0.12,
+        "is_anomaly": false
+      }
+    }
+  },
+  "service": {
+    "uptime_sec": 3600,
+    "minutes_processed": 60
+  }
+}
+```
 
-**Priority 3: Calibration (if using fusion)**
-| File | What to Check |
-|------|---------------|
-| `web-ui/monitoring-server-v3.js` | Calibration key format change |
+### Key Python Changes Made
+
+**1. `Phase2Result` dataclass** (`phase2_temporal_engine.py` line ~395)
+```python
+# BEFORE (removed)
+quality_grade: str = 'X'  # A/B/C/D/X
+
+# AFTER (added)
+uncertainty_ms: float = 999.0
+confidence: float = 0.0
+```
+
+**2. Status JSON writer** (`phase2_analytics_service.py` line ~1170)
+```python
+# Backwards compatibility: derive grade from uncertainty
+unc = self.last_result.uncertainty_ms
+if unc < 1.0:
+    quality_grade = 'A'
+elif unc < 3.0:
+    quality_grade = 'B'
+elif unc < 10.0:
+    quality_grade = 'C'
+else:
+    quality_grade = 'D'
+
+# Write BOTH to status JSON
+status['channels'][self.channel_name]['quality_grade'] = quality_grade
+status['channels'][self.channel_name]['uncertainty_ms'] = unc
+status['channels'][self.channel_name]['confidence'] = self.last_result.confidence
+```
+
+**3. Calibration keys** (`multi_broadcast_fusion.py`)
+```python
+# BEFORE: Per-station calibration
+calibration['WWV'] = StationCalibration(...)
+
+# AFTER: Per-broadcast calibration (station + frequency)
+calibration['WWV_10.00'] = BroadcastCalibration(station='WWV', frequency_mhz=10.0, ...)
+```
+
+### Web UI Files That Read Analytics Data
+
+| File | Function | What It Reads |
+|------|----------|---------------|
+| `transmission-time-helpers.js` | `getPhase2AnalyticsStatus()` | `analytics-service-status.json` |
+| `transmission-time-helpers.js` | `getAllPhase2Status()` | Aggregates all channel status |
+| `transmission-time-helpers.js` | `getBestDClock()` | Selects best D_clock reference |
+| `timing-analysis-helpers.js` | `getTimingAnalysisData()` | Maps grade → quality level |
+| `monitoring-server-v3.js` | `/api/v1/timing/phase2-status` | Serves status to browser |
+| `monitoring-server-v3.js` | `/api/v1/timing/fusion` | Returns fusion result + calibration |
+
+### Web UI Files That Display Analytics Data
+
+| File | Component | What It Shows |
+|------|-----------|---------------|
+| `timing-status-widget.js` | `renderDClock()` | Grade badge, D_clock value |
+| `timing-dashboard-enhanced.html` | Per-channel table | Grade, D_clock, uncertainty |
+| `carrier.html` | Carrier status panel | SNR, quality metrics |
+| `timing-advanced.html` | Visualization charts | Kalman funnel, constellation |
+
+### Expected Web UI Behavior After Changes
+
+1. **Grade badges** (A/B/C/D) should still work - `quality_grade` is still in status JSON
+2. **D_clock values** should display correctly - field unchanged
+3. **Uncertainty display** (OPTIONAL) - UI could show `uncertainty_ms` if desired
+4. **Fusion calibration** - Keys changed from `WWV` to `WWV_10.00`
 
 ### Verification Commands
 
@@ -53,16 +140,20 @@ grade = 'A' if uncertainty < 1.0 else 'B' if uncertainty < 3.0 else 'C' if uncer
 # 1. Check status JSON format
 cat /tmp/grape-test/phase2/WWV_10_MHz/status/analytics-service-status.json | jq '.channels'
 
-# 2. Test API endpoints
+# 2. Verify grade derivation is working
+cat /tmp/grape-test/phase2/WWV_10_MHz/status/analytics-service-status.json | \
+  jq '.channels["WWV 10 MHz"] | {grade: .quality_grade, uncertainty: .uncertainty_ms}'
+
+# 3. Test API endpoints
 curl -s http://localhost:3000/api/v1/timing/phase2-status | jq '.summary'
 curl -s http://localhost:3000/api/v1/timing/best-d-clock | jq
 
-# 3. Start web UI
-./scripts/grape-ui.sh -restart
+# 4. Check fusion calibration keys
+curl -s http://localhost:3000/api/v1/timing/fusion | jq '.calibration | keys'
 
-# 4. Open browser to timing dashboard
-# http://localhost:3000/timing-dashboard-enhanced.html
-# Verify: Grade badges show, D_clock values display correctly
+# 5. Start web UI and test
+./scripts/grape-ui.sh -restart
+# Open: http://localhost:3000/timing-dashboard-enhanced.html
 ```
 
 ### Related Documentation
