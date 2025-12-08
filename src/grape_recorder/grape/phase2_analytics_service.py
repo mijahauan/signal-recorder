@@ -910,7 +910,13 @@ class Phase2AnalyticsService:
                 iq_samples = padded
             
             system_time = float(target_minute)
-            rtp_timestamp = int(target_minute * self.sample_rate)
+            # Use actual RTP timestamp from metadata, not synthesized from Unix time
+            if json_path.exists() and 'start_rtp_timestamp' in metadata:
+                rtp_timestamp = int(metadata['start_rtp_timestamp'])
+            else:
+                # Fallback: synthesize from Unix time (less accurate)
+                rtp_timestamp = int(target_minute * self.sample_rate)
+                logger.warning(f"No RTP timestamp in metadata, using synthesized value")
             
             logger.debug(f"Read {len(iq_samples)} samples from binary for minute {target_minute}")
             return iq_samples, system_time, rtp_timestamp

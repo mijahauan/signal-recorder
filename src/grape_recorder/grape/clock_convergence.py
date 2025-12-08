@@ -357,7 +357,8 @@ class KalmanClockTracker:
             
             # Update covariance (Joseph form for numerical stability)
             I_KH = np.eye(2) - K @ self.H
-            self.P = I_KH @ self.P @ I_KH.T + (K @ R @ K.T).reshape(2, 2) if np.isscalar(R) else I_KH @ self.P @ I_KH.T + K @ np.array([[R]]) @ K.T
+            # K is 2x1, R is scalar -> K @ K.T is 2x2, then scale by R
+            self.P = I_KH @ self.P @ I_KH.T + R * (K @ K.T)
         
         return innovation, normalized_innovation, is_outlier
     
@@ -458,8 +459,8 @@ class StationAccumulator:
                 initial_offset_ms=0.0,
                 initial_uncertainty_ms=100.0,
                 process_noise_offset_ms=0.01,      # GPSDO: very stable
-                process_noise_drift_ms_per_min=0.001,  # Slow drift allowed
-                measurement_noise_ms=1.0           # Propagation uncertainty
+                process_noise_drift_ms_per_min=0.0001,  # Nearly zero - GPSDO has no drift
+                measurement_noise_ms=20.0          # Ionospheric variations ~10-30ms
             )
     
     @property
@@ -742,13 +743,22 @@ class ClockConvergenceModel:
                 )
         
         elif acc.state == ConvergenceState.REACQUIRE:
-            # Reset and start over
+            # Reset and start over - INCLUDING the Kalman filter
             acc.count = 1
             acc.mean_ms = d_clock_ms
             acc.m2 = 0.0
             acc.consecutive_anomalies = 0
             acc.locked_mean_ms = None
             acc.locked_uncertainty_ms = None
+            # Reset Kalman filter to current measurement (critical fix!)
+            acc.kalman = KalmanClockTracker(
+                initial_offset_ms=d_clock_ms,
+                initial_uncertainty_ms=100.0,
+                process_noise_offset_ms=0.01,
+                process_noise_drift_ms_per_min=0.0001,  # Nearly zero - GPSDO has no drift
+                measurement_noise_ms=20.0              # Ionospheric variations ~10-30ms
+            )
+            logger.info(f"Reset Kalman filter for {station} @ {frequency_mhz} MHz to {d_clock_ms:.2f}ms")
             acc.state = ConvergenceState.ACQUIRING
         
         # Log state transitions

@@ -302,7 +302,52 @@ inter_method_agreements, inter_method_disagreements
 
 ---
 
-## 6. Future Enhancements
+## 6. Statistical Framework and Limitations
+
+### 6.1 Detection Probability Framework
+
+Each discrimination method operates as a binary classifier with associated **Probability of Detection (Pd)** and **Probability of False Alarm (Pfa)**. The performance is SNR-dependent:
+
+| Method | Effective Bandwidth | Min SNR for Pd>0.9 | Notes |
+|--------|--------------------|--------------------|-------|
+| Timing Tone Power | ~50 Hz (matched filter) | >6 dB | Selective fading affects 800ms window |
+| BCD Correlation | ~10 Hz per tone | >10 dB | Requires multi-second integration |
+| 440 Hz Detection | ~20 Hz | >8 dB | Ground truth minute only |
+| Test Signal (sweep) | ~1200 Hz | >3 dB | Chirp correlation provides processing gain |
+| Harmonic Ratio | ~50 Hz | >12 dB | Requires clean fundamental detection |
+
+**Confidence scores (0-1) approximate detection probability**, but formal ROC characterization remains future work.
+
+### 6.2 Propagation Exceptions
+
+The geographic predictor assumes **single-hop F-layer dominance**, which fails in several scenarios:
+
+#### Skip Zone / MUF Limitations
+At 15 MHz, WWVH (~3800 km from typical US receiver) may be **stronger than WWV (~1500 km)** when:
+- MUF < 15 MHz puts WWV in skip zone
+- WWV arrives via weak two-hop sidescatter (~3000+ km path)
+- WWVH has single-hop path below MUF
+
+#### Multi-hop and Sidescatter
+The system detects propagation modes (1F, 2F, 3F) but **sidescatter paths are not modeled**. When detected ToA differs significantly from predicted, a "propagation event" is logged.
+
+#### Frequency-Dependent Assumptions
+- **2.5 MHz**: Nighttime only; often has single-station reception
+- **20/25 MHz**: Daytime only; high MUF required for both stations
+- **5/10/15 MHz**: Most likely to have dual-station interference
+
+### 6.3 Harmonic Signature Limitations
+
+The harmonic signature method relies on **transmitter PA nonlinearity**, not receiver nonlinearity. After ionospheric propagation, harmonic patterns may be distorted by:
+- Frequency-selective fading
+- Mode interference
+- Doppler spreading
+
+This method has low weight (1.5 votes) for good reason.
+
+---
+
+## 7. Future Enhancements
 
 ### 6.1 Planned Improvements
 - **Adaptive thresholds**: SNR-dependent detection thresholds

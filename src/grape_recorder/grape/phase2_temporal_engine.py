@@ -326,6 +326,9 @@ class ChannelCharacterization:
     # Narrowed search window for Step 3
     refined_search_window_ms: float = 50.0  # Tightened from 500ms to 50ms
     
+    # Carrier SNR for uncertainty estimation
+    snr_db: Optional[float] = None  # Carrier signal-to-noise ratio
+    
     # Validation
     cross_validation_agreements: List[str] = field(default_factory=list)
     cross_validation_disagreements: List[str] = field(default_factory=list)
@@ -986,6 +989,22 @@ class Phase2TemporalEngine:
         
         result.cross_validation_agreements = agreements
         result.cross_validation_disagreements = disagreements
+        
+        # Populate SNR for uncertainty estimation
+        # Use the dominant station's SNR or max of detected SNRs
+        if time_snap.wwv_snr_db is not None and time_snap.wwvh_snr_db is not None:
+            if result.dominant_station == 'WWV':
+                result.snr_db = time_snap.wwv_snr_db
+            elif result.dominant_station == 'WWVH':
+                result.snr_db = time_snap.wwvh_snr_db
+            else:
+                result.snr_db = max(time_snap.wwv_snr_db, time_snap.wwvh_snr_db)
+        elif time_snap.wwv_snr_db is not None:
+            result.snr_db = time_snap.wwv_snr_db
+        elif time_snap.wwvh_snr_db is not None:
+            result.snr_db = time_snap.wwvh_snr_db
+        elif time_snap.chu_snr_db is not None:
+            result.snr_db = time_snap.chu_snr_db
         
         return result
     

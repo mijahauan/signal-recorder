@@ -4,17 +4,164 @@ Primary Instruction:  In this context you will perform a critical review of the 
 
 # The following secondary instruction and information will guide your critique in this particular session (the instructions below will vary from session to session):
 
-## Phase 2 Analytics Critical Review Context
+---
 
-**Purpose:** Prime an AI agent to critically examine the GRAPE Recorder Phase 2 analytics implementation.
+## 🚨 NEXT PRIORITY: DATA FLOW CONTRACT ENFORCEMENT
+
+**Purpose:** Critically examine how data is written and read across the GRAPE Recorder system, identifying mismatches between producers and consumers.
 
 **Author:** Michael James Hauan (AC0G)  
 **Date:** 2025-12-08  
-**Status:** ✅ Critique Complete - 16 Issues Addressed
+**Status:** 🔴 Critical Issue - Producers and Consumers Out of Sync
 
 ---
 
-## 🎯 CRITIQUE SESSION COMPLETED
+## THE CORE PROBLEM
+
+**Too often, the parts that WRITE important info to files (analytics services) and the parts that READ them (other analytics, web-ui) change the destination or expected source of information WITHOUT notifying the rest of the system.**
+
+This leads to:
+1. **Silent failures** - Readers find empty/missing data, return nulls, UI shows blanks
+2. **Stale data** - State files persist incorrect values across restarts
+3. **Hidden coupling** - No explicit contracts between producers and consumers
+4. **Debugging hell** - Tracing where data comes from requires reading multiple files
+
+---
+
+## EXAMPLES FROM DEC 8 SESSION
+
+### Example 1: Kalman State Persistence Poisoning
+
+**Bug**: D_clock showed linear drift of ~6.5 ms/minute despite GPSDO discipline.
+
+**Root Cause Chain**:
+1. `phase2_analytics_service.py` was synthesizing RTP timestamps from Unix time instead of reading `start_rtp_timestamp` from metadata JSON
+2. This produced incorrect D_clock values that were fed to the Kalman filter
+3. The Kalman filter in `clock_convergence.py` persisted state to `convergence_state.json`
+4. When the RTP bug was fixed, the Kalman filter CONTINUED using the corrupted state from the JSON file
+5. New correct measurements were rejected as "5-sigma outliers" because the filter's prediction was 900+ ms off
+
+**Hidden Data Contract**:
+```
+PRODUCER: phase2_analytics_service.py writes convergence_state.json
+CONSUMER: phase2_analytics_service.py reads convergence_state.json on restart
+CONTRACT: State must be valid when loaded - but NO VALIDATION exists
+```
+
+**Fix Required**: State files need versioning and sanity checks before loading.
+
+### Example 2: Channel Discovery Across Data Directories
+
+**Bug**: Channels appeared in Phase 2 output but `discoverChannels()` couldn't find them.
+
+**Root Cause**: The discovery function only checked `raw_archive/` but channels may only exist in `phase2/` or `products/`.
+
+**Hidden Data Contract**:
+```
+PRODUCER: Phase 1 creates raw_archive/{CHANNEL}/
+PRODUCER: Phase 2 creates phase2/{CHANNEL}/
+CONSUMER: grape-paths.js discoverChannels() assumes raw_archive is canonical
+CONTRACT: UNDEFINED - no single source of truth for "what channels exist"
+```
+
+### Example 3: RTP Timestamp Metadata
+
+**Bug**: Timing calculations drifted because RTP timestamps weren't being used.
+
+**Root Cause**: `_read_binary_minute()` synthesized timestamps instead of reading them from the JSON metadata that sits alongside the binary data.
+
+**Hidden Data Contract**:
+```
+PRODUCER: Binary writer creates {minute}.bin + {minute}.json
+CONSUMER: _read_binary_minute() should read BOTH files
+CONTRACT: IMPLICIT - metadata fields like start_rtp_timestamp are optional
+```
+
+---
+
+## DATA FLOW INVENTORY TO AUDIT
+
+### Phase 1 → Phase 2 Data Contracts
+
+| Producer File | Output Path | Consumer File | Contract |
+|---------------|-------------|---------------|----------|
+| `raw_archive_writer.py` | `raw_archive/{CH}/` | `phase2_analytics_service.py` | DRF format |
+| `binary_minute_writer.py` | `raw_buffer/{CH}/{minute}.bin` | `phase2_analytics_service.py` | Binary IQ + JSON metadata |
+| `binary_minute_writer.py` | `raw_buffer/{CH}/{minute}.json` | `phase2_analytics_service.py` | **start_rtp_timestamp required** |
+
+### Phase 2 Internal Data Contracts
+
+| Producer File | Output Path | Consumer File | Contract |
+|---------------|-------------|---------------|----------|
+| `phase2_analytics_service.py` | `phase2/{CH}/status/analytics-service-status.json` | `monitoring-server-v3.js` | Status JSON schema |
+| `phase2_analytics_service.py` | `phase2/{CH}/status/convergence_state.json` | `phase2_analytics_service.py` | Kalman state |
+| `phase2_analytics_service.py` | `phase2/{CH}/clock_offset/*.csv` | `multi_broadcast_fusion.py` | CSV with d_clock_ms column |
+| `multi_broadcast_fusion.py` | `state/broadcast_calibration.json` | `monitoring-server-v3.js` | Calibration per station |
+| `multi_broadcast_fusion.py` | `phase2/fusion/fused_d_clock.csv` | `monitoring-server-v3.js` | Fused output CSV |
+
+### Phase 2 → Web UI Data Contracts
+
+| Producer File | Output Path | Consumer File | Contract |
+|---------------|-------------|---------------|----------|
+| `phase2_analytics_service.py` | `phase2/{CH}/status/*.json` | `transmission-time-helpers.js` | Status JSON fields |
+| `multi_broadcast_fusion.py` | `state/broadcast_calibration.json` | `timing-dashboard-enhanced.html` | Calibration keys |
+| Multiple | Various CSVs | `monitoring-server-v3.js` | Column names must match |
+
+---
+
+## CRITIQUE CHECKLIST
+
+For each data producer/consumer pair, verify:
+
+### 1. Schema Documentation
+- [ ] Is the output format documented?
+- [ ] Are required vs optional fields explicit?
+- [ ] Is there a version number for the schema?
+
+### 2. Validation on Read
+- [ ] Does the consumer validate data before using it?
+- [ ] Are there sanity checks for numeric ranges?
+- [ ] Does it fail gracefully if data is missing/corrupt?
+
+### 3. State File Hygiene
+- [ ] Is persisted state versioned?
+- [ ] Can stale state poison fresh calculations?
+- [ ] Is there a mechanism to reset corrupted state?
+
+### 4. Path Consistency
+- [ ] Are paths constructed the same way in producer and consumer?
+- [ ] Are there hardcoded paths that diverge from config?
+- [ ] Does channel name sanitization match (`WWV 10 MHz` vs `WWV_10_MHz`)?
+
+### 5. Timestamp Consistency
+- [ ] Are timestamps Unix epoch, ISO string, or other?
+- [ ] Are timezones explicit?
+- [ ] Do column names match (`system_time` vs `timestamp` vs `utc_time`)?
+
+---
+
+## SPECIFIC FILES TO AUDIT
+
+### High Priority (State Persistence)
+1. `clock_convergence.py` - Kalman state save/load
+2. `multi_broadcast_fusion.py` - Calibration state save/load
+3. `phase2_analytics_service.py` - All file writes
+
+### Medium Priority (CSV Contracts)
+4. `clock_offset_series.py` - CSV column definitions
+5. `carrier_power_writer.py` - CSV format
+6. `monitoring-server-v3.js` - CSV parsing logic
+
+### Lower Priority (Path Management)
+7. `grape-paths.js` - Path construction functions
+8. `phase2_analytics_service.py` - Output directory creation
+9. Various HTML files - Hardcoded API endpoints
+
+---
+
+## PREVIOUS SESSION: Phase 2 Analytics Critique (Dec 7-8)
+
+**Status:** ✅ Critique Complete - 16 Issues Addressed
 
 The critical review identified **17 issues**, of which **16 were fixed** and **1 was invalidated**:
 
@@ -29,7 +176,7 @@ The critical review identified **17 issues**, of which **16 were fixed** and **1
 | 2.2 | Discrimination | Medium | ✅ FIXED | Correlation between methods not modeled |
 | 2.3 | Discrimination | Low | ✅ FIXED | Binary classification loses information |
 | 3.1 | Statistics | High | ✅ FIXED | Wrong model for non-stationary data |
-| 3.2 | Statistics | Medium | ✅ FIXED | Multi-broadcast fusion assumes independence |
+| 3.2 | Statistics | Medium | ⚠️ PARTIAL | Multi-broadcast fusion (per-station, not per-broadcast) |
 | 4.1 | Bug | Medium | ✅ FIXED | Inconsistent station coordinates |
 | 4.2 | Bug | Low | ❌ INVALID | Tone duration - NIST confirms 800ms correct |
 | 4.3 | Bug | Low | ✅ FIXED | Hardcoded default calibration offsets |

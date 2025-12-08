@@ -21,7 +21,11 @@ from datetime import datetime, timedelta
 from typing import Tuple, List, Dict
 
 # Import transmitter coordinates from single source of truth
-from .wwv_constants import WWV_LAT, WWV_LON, WWVH_LAT, WWVH_LON, CHU_LAT, CHU_LON
+# Handle both module import and standalone script execution
+try:
+    from .wwv_constants import WWV_LAT, WWV_LON, WWVH_LAT, WWVH_LON, CHU_LAT, CHU_LON
+except ImportError:
+    from wwv_constants import WWV_LAT, WWV_LON, WWVH_LAT, WWVH_LON, CHU_LAT, CHU_LON
 
 # Transmitter coordinates (lat, lon in degrees) - from wwv_constants.py
 WWV_LOCATION = (WWV_LAT, WWV_LON)     # Fort Collins, Colorado - NIST verified

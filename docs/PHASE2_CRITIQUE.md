@@ -22,7 +22,7 @@ After examining the core implementation files against the theory outlined in `CR
 | 2.2 | Discrimination | Medium | **FIXED** | Correlation between methods not modeled |
 | 2.3 | Discrimination | Low | **FIXED** | Binary classification loses information |
 | 3.1 | Statistics | High | **FIXED** | Wrong model for non-stationary data |
-| 3.2 | Statistics | Medium | **FIXED** | Multi-broadcast fusion assumes independence |
+| 3.2 | Statistics | Medium | **PARTIAL** | Multi-broadcast fusion assumes independence |
 | 4.1 | Bug | Medium | **FIXED** | Inconsistent station coordinates |
 | 4.2 | Bug | Low | **INVALID** | Tone duration discrepancy (800ms vs 833ms) |
 | 4.3 | Bug | Low | **FIXED** | Hardcoded default calibration offsets |
@@ -344,34 +344,34 @@ drift_rate(t+dt) = drift_rate(t) + noise
 
 ---
 
-### 3.2 Multi-Broadcast Fusion Assumes Independence ✅ FIXED
+### 3.2 Multi-Broadcast Fusion Assumes Independence ⚠️ PARTIAL
 
 **File**: `multi_broadcast_fusion.py` lines 177-179  
 **Severity**: Medium  
-**Status**: **FIXED** (2025-12-07)
+**Status**: **PARTIAL** (2025-12-08 update)
 
 **Original Problem**: Calibration was per-station, ignoring:
 - Frequency-dependent ionospheric delays (1/f²)
 - Correlated errors on same-frequency broadcasts
 
-**Solution Implemented**: Per-broadcast calibration keyed by `{station}_{frequency}`:
+**Intended Solution**: Per-broadcast calibration keyed by `{station}_{frequency}`.
+
+**Actual Implementation**: The `BroadcastCalibration` dataclass was created, but `_update_calibration()` 
+and `_apply_calibration()` still use per-station keys (e.g., "WWV" not "WWV_10.00"):
 ```python
-@dataclass
-class BroadcastCalibration:
-    station: str              # WWV, WWVH, CHU
-    frequency_mhz: float      # Key for frequency-dependent delays
-    offset_ms: float
-    ...
-    
-    @property
-    def broadcast_key(self) -> str:
-        return f"{self.station}_{self.frequency_mhz:.2f}"
+# In _update_calibration() line 573:
+self.calibration[station] = StationCalibration(...)  # Uses station, not broadcast_key
+
+# In _apply_calibration() line 501:
+cal = self.calibration.get(m.station)  # Looks up by station, not frequency
 ```
 
-**Benefits**:
-- WWV_10.00 and WWVH_10.00 share ionospheric conditions → correlated
-- WWV_5.00 has different ionospheric delay than WWV_15.00 → separate calibration
-- Calibration file now stores per-broadcast offsets
+**Current State**:
+- Calibration is per-station (WWV, WWVH, CHU)
+- Web UI (`timing-advanced.html`) also uses per-station keys → **consistent**
+- Frequency-dependent calibration is a **future enhancement**
+
+**Note**: This is acceptable for now since per-station calibration still provides significant improvement over no calibration. Per-broadcast calibration can be added when empirical data shows frequency-dependent offsets are significant.
 
 ---
 

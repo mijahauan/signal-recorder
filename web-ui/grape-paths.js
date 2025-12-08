@@ -493,30 +493,51 @@ class GRAPEPaths {
     // ========================================================================
     
     /**
-     * Discover all channels with raw archive data (Phase 1).
+     * Discover all channels from any available data source.
+     * Checks raw_archive/ (Phase 1), phase2/ (Phase 2), and products/ (Phase 3).
      * 
      * @returns {string[]} List of channel names (human-readable format)
      */
     discoverChannels() {
-        const rawArchiveDir = this.getRawArchiveRoot();
-        
-        if (!existsSync(rawArchiveDir)) {
-            return [];
-        }
-        
-        const channels = [];
-        const entries = readdirSync(rawArchiveDir, { withFileTypes: true });
+        const channelSet = new Set();
         
         // Non-channel directories to exclude
-        const excludeDirs = ['status', 'metadata', 'state', 'logs'];
+        const excludeDirs = ['status', 'metadata', 'state', 'logs', 'fusion'];
         
-        for (const entry of entries) {
-            if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
-                channels.push(dirToChannelName(entry.name));
+        // Check raw_archive/ (Phase 1)
+        const rawArchiveDir = this.getRawArchiveRoot();
+        if (existsSync(rawArchiveDir)) {
+            const entries = readdirSync(rawArchiveDir, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
+                    channelSet.add(dirToChannelName(entry.name));
+                }
             }
         }
         
-        return channels.sort();
+        // Check phase2/ (Phase 2) - analytics data may exist without raw archive
+        const phase2Dir = this.getPhase2Root();
+        if (existsSync(phase2Dir)) {
+            const entries = readdirSync(phase2Dir, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
+                    channelSet.add(dirToChannelName(entry.name));
+                }
+            }
+        }
+        
+        // Check products/ (Phase 3)
+        const productsDir = this.getProductsRoot();
+        if (existsSync(productsDir)) {
+            const entries = readdirSync(productsDir, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
+                    channelSet.add(dirToChannelName(entry.name));
+                }
+            }
+        }
+        
+        return Array.from(channelSet).sort();
     }
     
     /**

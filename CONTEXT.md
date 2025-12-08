@@ -2,15 +2,100 @@
 
 **Author:** Michael James Hauan (AC0G)  
 **Last Updated:** 2025-12-08  
-**Version:** 3.12.0  
-**Status:** 🔧 Web UI ↔ Analytics Synchronization Required
+**Version:** 3.13.0  
+**Status:** ✅ Clock Drift Fixed, Data Flow Issues Identified
 
 ---
 
-## 🎯 NEXT SESSION: WEB UI ↔ ANALYTICS API SYNCHRONIZATION
+## ✅ SESSION COMPLETE (Dec 8 PM): CLOCK DRIFT & KALMAN FILTER FIXES
+
+### Critical Bugs Fixed
+
+#### 1. RTP Timestamp Bug (Root Cause of D_clock Drift)
+
+**Problem**: D_clock values showed linear drift of ~6.5 ms/minute across all channels.
+
+**Root Cause**: `phase2_analytics_service.py:_read_binary_minute()` was synthesizing RTP timestamps from Unix time instead of reading the actual `start_rtp_timestamp` from JSON metadata.
+
+```python
+# BEFORE (Bug)
+rtp_timestamp = int(target_minute * self.sample_rate)  # WRONG!
+
+# AFTER (Fix)
+if 'start_rtp_timestamp' in metadata:
+    rtp_timestamp = int(metadata['start_rtp_timestamp'])  # CORRECT
+```
+
+**File**: `src/grape_recorder/grape/phase2_analytics_service.py` lines 916-922
+
+#### 2. Kalman State Persistence Poisoning
+
+**Problem**: Even after fixing the RTP bug, D_clock continued to drift because the Kalman filter loaded corrupted state from `convergence_state.json`.
+
+**Root Cause**: The filter had learned a drift rate of -6.5 ms/min from the bad data, and with 5-sigma outlier rejection, it rejected all new correct measurements as "outliers".
+
+**Fixes**:
+1. Reset Kalman filter in REACQUIRE state (`clock_convergence.py` line 754)
+2. Reduced drift process noise: 0.001 → 0.0001 (GPSDO has no drift)
+3. Increased measurement noise: 1.0 → 20.0 ms (matches ionospheric variations)
+
+**Files**: `src/grape_recorder/grape/clock_convergence.py` lines 458-464, 754-760
+
+#### 3. Channel Discovery Fix
+
+**Problem**: `discoverChannels()` only checked `raw_archive/` but channels may only exist in `phase2/`.
+
+**Fix**: Updated to check all three directories: `raw_archive`, `phase2`, `products`.
+
+**File**: `web-ui/grape-paths.js` lines 495-541
+
+### Recovery Commands
+
+When D_clock shows systematic drift, use:
+
+```bash
+# Stop analytics, clear corrupted state, restart
+./scripts/grape-analytics.sh -stop
+rm -f /tmp/grape-test/phase2/*/status/convergence_state.json
+rm -f /tmp/grape-test/phase2/*/clock_offset/*.csv
+./scripts/grape-analytics.sh -start
+```
+
+### Documentation Updates
+
+1. **DISCRIMINATION_SYSTEM.md**: Added Section 6 "Statistical Framework and Limitations"
+   - Detection probability / false alarm framework
+   - SNR-dependent thresholds and bandwidths
+   - Propagation exceptions (skip zone, sidescatter)
+   - Harmonic signature limitations
+
+### Data Flow Issues Identified (Next Session Priority)
+
+The root cause of these bugs was **implicit data contracts** between producers and consumers:
+
+| Issue | Producer | Consumer | Missing Contract |
+|-------|----------|----------|------------------|
+| RTP timestamp | Binary writer | `_read_binary_minute()` | `start_rtp_timestamp` is required |
+| Kalman state | `clock_convergence.py` | Same file on restart | State validation before load |
+| Channel discovery | Phase 1, Phase 2, Phase 3 | `grape-paths.js` | Single source of truth |
+
+**See CRITIC_CONTEXT.md** for full data flow audit checklist.
+
+---
+
+## ✅ SESSION COMPLETE (Dec 8 AM): WEB UI ↔ ANALYTICS API SYNCHRONIZATION
+
+### Summary
+Verified that the web UI can correctly read all expected data from the updated Phase 2 analytics output after the Dec 7-8 critique fixes.
+
+**Key Findings:**
+- ✅ **Status JSON**: All fields present (`d_clock_ms`, `quality_grade`, `uncertainty_ms`, `confidence`, `convergence`)
+- ✅ **CSV Format**: Column names match JavaScript parser expectations  
+- ✅ **Calibration Keys**: Both Python and JavaScript use per-station keys (e.g., "WWV") consistently
+- ✅ **Backwards Compatibility**: `quality_grade` derived from `uncertainty_ms` for legacy displays
 
 ### Background
-The Phase 2 Analytics critique session (Dec 7-8) implemented **16 fixes** to address methodological issues. These changes modified several APIs that the web UI depends on. The web UI needs to be updated to work with the new analytics output.
+The Phase 2 Analytics critique session (Dec 7-8) implemented **16 fixes** to address methodological issues. These changes modified several APIs that the web UI depends on. Verification confirmed the web UI works correctly with the new analytics output.
 
 ### Phase 2 Analytics Output Locations
 
@@ -100,11 +185,11 @@ status['channels'][self.channel_name]['confidence'] = self.last_result.confidenc
 
 **3. Calibration keys** (`multi_broadcast_fusion.py`)
 ```python
-# BEFORE: Per-station calibration
-calibration['WWV'] = StationCalibration(...)
-
-# AFTER: Per-broadcast calibration (station + frequency)
-calibration['WWV_10.00'] = BroadcastCalibration(station='WWV', frequency_mhz=10.0, ...)
+# Calibration uses per-station keys (e.g., 'WWV', 'WWVH', 'CHU')
+# Note: Documentation claimed per-broadcast keys (station_frequency) but
+# implementation uses per-station for simplicity. Both Python and JavaScript
+# are consistent with this approach.
+calibration['WWV'] = StationCalibration(station='WWV', offset_ms=..., ...)
 ```
 
 ### Web UI Files That Read Analytics Data
@@ -131,8 +216,8 @@ calibration['WWV_10.00'] = BroadcastCalibration(station='WWV', frequency_mhz=10.
 
 1. **Grade badges** (A/B/C/D) should still work - `quality_grade` is still in status JSON
 2. **D_clock values** should display correctly - field unchanged
-3. **Uncertainty display** (OPTIONAL) - UI could show `uncertainty_ms` if desired
-4. **Fusion calibration** - Keys changed from `WWV` to `WWV_10.00`
+3. **Uncertainty display** - UI uses `uncertainty_ms` for Kalman funnel, convergence indicators
+4. **Fusion calibration** - Keys remain per-station (e.g., `WWV`, `WWVH`, `CHU`)
 
 ### Verification Commands
 
@@ -148,7 +233,7 @@ cat /tmp/grape-test/phase2/WWV_10_MHz/status/analytics-service-status.json | \
 curl -s http://localhost:3000/api/v1/timing/phase2-status | jq '.summary'
 curl -s http://localhost:3000/api/v1/timing/best-d-clock | jq
 
-# 4. Check fusion calibration keys
+# 4. Check fusion calibration keys (should be: WWV, WWVH, CHU)
 curl -s http://localhost:3000/api/v1/timing/fusion | jq '.calibration | keys'
 
 # 5. Start web UI and test

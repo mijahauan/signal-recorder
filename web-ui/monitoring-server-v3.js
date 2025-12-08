@@ -22,7 +22,7 @@ import { join, basename, dirname } from 'path';
 import { parse as csvParse } from 'csv-parse/sync';
 import { fileURLToPath } from 'url';
 import toml from 'toml';
-import { exec, execSync } from 'child_process';
+import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { WebSocketServer } from 'ws';
 import { GRAPEPaths, channelNameToKey } from './grape-paths.js';
@@ -2491,7 +2491,6 @@ app.get('/spectrograms/:channel/:filename', (req, res) => {
  */
 app.post('/api/v1/spectrograms/regenerate', async (req, res) => {
   try {
-    const { spawn } = require('child_process');
     const channel = req.query.channel || '';
     const date = req.query.date || new Date().toISOString().slice(0, 10).replace(/-/g, '');
     
@@ -2553,7 +2552,6 @@ function startSpectrogramAutoRegen() {
   
   const regenAll = async () => {
     try {
-      const { spawn } = require('child_process');
       const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
       const receiverGrid = config.recorder?.receiver_grid || config.recorder?.station_grid || 'EM28ww';
       

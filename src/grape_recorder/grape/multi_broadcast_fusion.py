@@ -555,8 +555,13 @@ class MultiBroadcastFusion:
             if station != self.reference_station and len(ref_history) >= 10:
                 # Weight the update: trust reference more
                 # If reference is at 0, our calibration should bring us to 0 too
+                default_cal = StationCalibration(
+                    station='', frequency_mhz=0.0, offset_ms=0.0, 
+                    uncertainty_ms=1.0, n_samples=0, last_updated=0.0,
+                    reference_station=self.reference_station
+                )
                 ref_calibrated_mean = ref_mean + self.calibration.get(
-                    self.reference_station, StationCalibration('', 0, 1, 0, 0, '')
+                    self.reference_station, default_cal
                 ).offset_ms
                 # If reference is calibrated to ~0, use that as validation
                 # Otherwise, just use our own mean
@@ -572,6 +577,7 @@ class MultiBroadcastFusion:
             
             self.calibration[station] = StationCalibration(
                 station=station,
+                frequency_mhz=0.0,  # Per-station calibration (not per-broadcast)
                 offset_ms=new_offset,
                 uncertainty_ms=np.std(station_d_clocks) if len(station_d_clocks) > 1 else 1.0,
                 n_samples=len(history),
