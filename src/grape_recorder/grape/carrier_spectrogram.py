@@ -664,11 +664,11 @@ def generate_all_channel_spectrograms(
         Dict mapping channel name to output path (or None if failed)
     """
     if channels is None:
-        # Auto-discover from phase2 directory
-        phase2_dir = Path(data_root) / 'phase2'
+        # Auto-discover from products directory (Phase 3 derived products)
+        products_dir = Path(data_root) / 'products'
         channels = []
-        if phase2_dir.exists():
-            for d in phase2_dir.iterdir():
+        if products_dir.exists():
+            for d in products_dir.iterdir():
                 if d.is_dir() and (d / 'decimated').exists():
                     channels.append(d.name.replace('_', ' '))
     
@@ -711,6 +711,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     logging.basicConfig(level=logging.INFO)
+    
+    # Handle special date keywords
+    if args.date:
+        if args.date.lower() == 'today':
+            args.date = datetime.now(timezone.utc).strftime('%Y%m%d')
+        elif args.date.lower() == 'yesterday':
+            args.date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y%m%d')
     
     if args.all_channels:
         results = generate_all_channel_spectrograms(

@@ -1,5 +1,5 @@
 [Unit]
-Description=GRAPE Spectrogram Generation - Phase 3 Product Update
+Description=GRAPE Spectrogram Generation - Daily with Solar Zenith
 Documentation=https://github.com/mijahauan/grape-recorder
 After=network.target grape-analytics.service
 
@@ -7,20 +7,21 @@ After=network.target grape-analytics.service
 Type=oneshot
 
 # User/Group - same as other grape services
-User=grape-recorder
-Group=grape-recorder
+User=wsprdaemon
+Group=wsprdaemon
 
 # Environment from file
-EnvironmentFile=/etc/grape-recorder/environment
+# EnvironmentFile=/etc/grape-recorder/environment
 
-WorkingDirectory=${GRAPE_PROJECT}
+WorkingDirectory=/home/wsprdaemon/grape-recorder
 
-# Generate spectrograms for today (rolling 6-hour view, updates every 10 min)
-# Uses carrier_spectrogram.py which is the canonical generator
-ExecStart=${GRAPE_VENV}/bin/python -m grape_recorder.grape.carrier_spectrogram \
-    --data-root ${GRAPE_DATA_ROOT} \
+# Generate daily spectrograms for today (with solar zenith + power graph)
+# Runs every 10 minutes to update as data comes in throughout the day
+ExecStart=/opt/grape-recorder/venv/bin/python -m grape_recorder.grape.carrier_spectrogram \
+    --data-root /var/lib/grape-recorder \
     --all-channels \
-    --hours 6
+    --date today \
+    --grid EM38ww
 
 StandardOutput=journal
 StandardError=journal
@@ -28,7 +29,6 @@ SyslogIdentifier=grape-spectrograms
 
 # Resource limits - spectrogram generation is memory-intensive
 MemoryMax=4G
-CPUQuota=100%
 Nice=10
 
 [Install]
