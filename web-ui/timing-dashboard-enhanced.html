@@ -1196,10 +1196,28 @@
             // Raw value (before calibration)
             const rawStr = `${f.d_clock_raw_ms >= 0 ? '+' : ''}${f.d_clock_raw_ms.toFixed(2)} ms`;
             
-            // Calibration info
-            const cal = data.calibration || {};
-            const calEntries = Object.entries(cal).map(([station, c]) => 
-                `${station}: ${c.offset_ms >= 0 ? '+' : ''}${c.offset_ms.toFixed(2)}ms`
+            // Calibration info - aggregate by station
+            const rawCal = data.calibration || {};
+            const cal = { WWV: { n_samples: 0 }, WWVH: { n_samples: 0 }, CHU: { n_samples: 0 } };
+            
+            // Aggregate calibration data by station
+            for (const [key, c] of Object.entries(rawCal)) {
+                const station = c.station;
+                if (cal[station]) {
+                    cal[station].n_samples += c.n_samples || 0;
+                    // Use weighted average for offset (by samples)
+                    if (cal[station].offset_ms === undefined) {
+                        cal[station].offset_ms = c.offset_ms;
+                        cal[station].uncertainty_ms = c.uncertainty_ms;
+                    } else {
+                        // Simple average for display
+                        cal[station].offset_ms = (cal[station].offset_ms + c.offset_ms) / 2;
+                    }
+                }
+            }
+            
+            const calEntries = Object.entries(rawCal).map(([key, c]) => 
+                `${key}: ${c.offset_ms >= 0 ? '+' : ''}${c.offset_ms.toFixed(2)}ms`
             ).join(' | ');
             
             return `
