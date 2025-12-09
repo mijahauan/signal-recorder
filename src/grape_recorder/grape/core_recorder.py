@@ -539,6 +539,11 @@ class CoreRecorder:
         # Stop RTP receiver
         self.rtp_receiver.stop()
         
+        # Shutdown async disk writer (waits for pending writes)
+        from .async_disk_writer import shutdown_async_writer
+        logger.info("Waiting for pending disk writes...")
+        shutdown_async_writer()
+        
         logger.info("Core recorder stopped")
 
 

@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 
+from .async_disk_writer import get_async_writer, AsyncDiskWriter
+
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -143,7 +145,10 @@ class BinaryArchiveWriter:
         return buffer
     
     def _flush_minute(self, buffer: MinuteBuffer) -> bool:
-        """Write completed minute buffer to disk."""
+        """Queue completed minute buffer for async disk write.
+        
+        Uses AsyncDiskWriter to prevent blocking the receive loop.
+        """
         try:
             minute_dir = self._get_minute_dir(buffer.minute_boundary)
             
@@ -151,11 +156,11 @@ class BinaryArchiveWriter:
             bin_path = minute_dir / f"{buffer.minute_boundary}.bin"
             json_path = minute_dir / f"{buffer.minute_boundary}.json"
             
-            # Write binary data (just the filled portion)
+            # Prepare data (just the filled portion)
             actual_samples = min(buffer.write_pos, SAMPLES_PER_MINUTE)
-            buffer.samples[:actual_samples].tofile(bin_path)
+            samples_to_write = buffer.samples[:actual_samples]
             
-            # Write metadata sidecar
+            # Prepare metadata
             metadata = {
                 'minute_boundary': buffer.minute_boundary,
                 'channel_name': self.config.channel_name,
@@ -173,21 +178,26 @@ class BinaryArchiveWriter:
                 'station': self.config.station_config
             }
             
-            with open(json_path, 'w') as f:
-                json.dump(metadata, f, indent=2)
+            # Queue for async write (non-blocking)
+            writer = get_async_writer()
+            success = writer.queue_write(bin_path, json_path, samples_to_write, metadata)
             
-            self.minutes_written += 1
-            logger.info(
-                f"📁 Wrote minute {buffer.minute_boundary}: "
-                f"{actual_samples}/{SAMPLES_PER_MINUTE} samples "
-                f"({metadata['completeness_pct']:.1f}%) "
-                f"[{bin_path.name}]"
-            )
+            if success:
+                self.minutes_written += 1
+                logger.info(
+                    f"📁 Queued minute {buffer.minute_boundary}: "
+                    f"{actual_samples}/{SAMPLES_PER_MINUTE} samples "
+                    f"({metadata['completeness_pct']:.1f}%) "
+                    f"[queue depth: {writer.queue_depth}]"
+                )
+            else:
+                logger.error(f"Failed to queue minute {buffer.minute_boundary} - queue full!")
+                self.write_errors += 1
             
-            return True
+            return success
             
         except Exception as e:
-            logger.error(f"Failed to write minute {buffer.minute_boundary}: {e}")
+            logger.error(f"Failed to queue minute {buffer.minute_boundary}: {e}")
             self.write_errors += 1
             return False
     
