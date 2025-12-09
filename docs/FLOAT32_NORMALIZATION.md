@@ -1,33 +1,28 @@
-# Float32 IQ Normalization for ka9q-radio
+# Float32 IQ Data from ka9q-radio
 
 ## Overview
 
-When receiving IQ data from `radiod` in float32 encoding (PT 11 or dynamic), a **32x normalization factor** must be applied to achieve amplitude levels consistent with int16 encoding.
+This document explains the amplitude difference between int16 and float32 IQ encoding from `radiod`, and the design decision to use **raw float32 data without normalization**.
 
-This document explains the empirical derivation, technical investigation, and current understanding of this calibration constant.
+## Design Decision (December 2024)
 
-## The Problem
+We use raw float32 data as-is, without applying any normalization factor. This is the scientifically correct approach for signal processing applications.
 
-After switching from int16 to float32 encoding (December 2024), carrier power measurements dropped by ~30 dB:
+## The Observed Difference
 
-| Encoding | Observed Power | Expected Power |
-|----------|----------------|----------------|
-| int16 (normalized /32768) | -24 to -40 dB | ✓ Correct |
-| float32 (raw) | -54 to -70 dB | ✗ 30 dB too low |
-| float32 (×32) | -24 to -40 dB | ✓ Correct |
+Float32 data from radiod has ~30 dB lower amplitude than int16:
 
-## Empirical Derivation
+| Encoding | Typical Amplitude | Power (dBFS) |
+|----------|-------------------|--------------|
+| int16 /32768 | ~0.063 | -24 dB |
+| float32 raw | ~0.002 | -54 dB |
 
-Direct measurement of RTP packet amplitudes:
-
+Direct measurement:
 ```
 Float32 max amplitude: 0.002
-Expected int16 normalized: 0.063 (for -24 dB signal)
-Ratio: 0.063 / 0.002 = 31.5x ≈ 32x
-dB difference: 20 × log10(31.5) = 30 dB
+Int16 normalized amplitude: 0.063 (for same signal)
+Ratio: 31.5x ≈ 30 dB
 ```
-
-The factor 32 = 2^5 suggests a bit-shift or accumulation of ~6 dB factors.
 
 ## Technical Investigation of ka9q-radio
 
@@ -108,47 +103,49 @@ The 30 dB (32x) correction appears to compensate for:
 
 The exact breakdown is not fully understood from the source code, but the empirical result matches historical int16 data.
 
+## Why Raw Float32 is Better
+
+### The "Volume Knob" Analogy
+
+The **int16 stream** is "mastered for audio" - radiod applies a gain stage (~30 dB) to ensure the signal uses a healthy portion of the 16-bit dynamic range. This is necessary for audio playback or feeding to a sound card.
+
+The **float32 stream** is "raw data" - the internal mathematical representation before the "make it loud enough for humans" stage.
+
+### Benefits of Raw Data
+
+1. **Headroom (Clipping Safety)**
+   - int16: 1.0 (32767) is a hard ceiling. A 35 dB spike clips, creating harmonics
+   - float32: Signal at 0.002 can spike 35 dB to ~0.11, still far below 1.0
+   
+2. **Linearity**
+   - The int16 gain stage may include non-linear elements (limiters, compressors)
+   - Raw float32 bypasses these, giving linear representation of the RF environment
+
+3. **SNR is preserved**
+   - Multiplying signal and noise by the same factor doesn't change their ratio
+   - Physics-based measurements (Doppler, propagation) are unaffected
+
 ## Implementation
 
-In `pipeline_recorder.py`, the normalization is applied:
+In `pipeline_recorder.py`, float32 data is used as-is:
 
 ```python
 elif payload_type == 11:
-    # float32 IQ format
+    # float32 IQ format (known)
+    # Raw float32 from radiod - no normalization applied
+    # Typical amplitude ~0.002 (-54 dBFS) for WWV signals
     samples = np.frombuffer(payload, dtype=np.float32)
-    # Normalize float32 to match int16/32768 levels
-    # radiod float32 output is ~32x smaller than int16 normalized
-    samples = samples * 32.0
-
-elif 96 <= payload_type <= 127:
-    # Dynamic payload type - auto-detect
-    if 1e-10 < max_float < 10.0:
-        # Normalize float32 to match int16/32768 levels
-        samples = samples_float * 32.0
 ```
 
-## Caveats and Limitations
+### Adjusted Thresholds
 
-The 32x factor is **empirically derived** and may change with:
+Power detection thresholds were shifted by -30 dB:
+- Signal detection: -30 dB → -60 dB
+- Reliability assessment: adjusted accordingly
 
-- **Different radiod versions** - Internal scaling may change
-- **Different ADCs/receivers** - RX-888 vs other SDRs
-- **Different gain settings** - rf_gain, rf_atten values
-- **Different presets** - IQ vs USB vs other modes
+### Visualization
 
-## Recommendations
-
-1. **Monitor for drift**: If power levels shift unexpectedly, the normalization factor may need adjustment.
-
-2. **Consider auto-calibration**: A brief int16/float32 comparison during startup could derive the factor dynamically.
-
-3. **Configuration option**: The factor could be made configurable in `grape-config.toml`:
-   ```toml
-   [recorder.channel_defaults]
-   float32_normalization = 32.0
-   ```
-
-4. **Upstream clarification**: The ka9q-radio project could document the expected float32 output scaling.
+Spectrograms use relative power (normalized to peak), so they are unaffected by the absolute amplitude change.
 
 ## References
 

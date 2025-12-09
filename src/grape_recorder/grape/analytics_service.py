@@ -32,7 +32,7 @@ from enum import Enum
 
 from .tone_detector import MultiStationToneDetector
 from .wwvh_discrimination import WWVHDiscriminator, DiscriminationResult
-from .decimation import decimate_for_upload
+from .decimation import decimate_for_upload, StatefulDecimator
 from .discrimination_csv_writers import (
     DiscriminationCSVWriters,
     ToneDetectionRecord,
@@ -436,6 +436,11 @@ class AnalyticsService:
         # Trust the sample counter, use tone detections for verification not correction
         self.gpsdo_monitor = GPSDOMonitor(sample_rate=20000)
         logger.info(f"✅ GPSDOMonitor initialized - GPSDO monitoring architecture active")
+        
+        # Stateful decimator for phase-continuous 10 Hz output
+        # Preserves filter state across minute boundaries to avoid transient artifacts
+        self.stateful_decimator = StatefulDecimator(input_rate=20000, output_rate=10)
+        logger.info(f"✅ StatefulDecimator initialized - phase-continuous decimation")
         
         # Store data_root for global status files (GPSDO status is system-wide, not per-channel)
         # output_dir is {data_root}/analytics/{CHANNEL}, so go up 2 levels
@@ -1440,15 +1445,21 @@ class AnalyticsService:
             Number of decimated samples written
         """
         try:
-            # Decimate to 10 Hz (16 kHz→10Hz or 200Hz→10Hz depending on channel type)
-            decimated_iq = decimate_for_upload(
-                archive.iq_samples,
-                input_rate=archive.sample_rate,
-                output_rate=10
-            )
+            # Use stateful decimator for phase-continuous output
+            # This preserves filter state across minute boundaries, eliminating transient artifacts
+            if archive.sample_rate == 20000:
+                # Use stateful decimator for 20 kHz input (preserves phase across minutes)
+                decimated_iq = self.stateful_decimator.process(archive.iq_samples)
+            else:
+                # Fall back to stateless decimation for other rates
+                decimated_iq = decimate_for_upload(
+                    archive.iq_samples,
+                    input_rate=archive.sample_rate,
+                    output_rate=10
+                )
             
             # Check if decimation succeeded
-            if decimated_iq is None:
+            if decimated_iq is None or len(decimated_iq) == 0:
                 logger.warning(f"Decimation skipped for {archive.file_path.name} (input too short or filter error)")
                 return 0
             

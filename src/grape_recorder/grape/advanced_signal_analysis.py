@@ -809,15 +809,16 @@ class AdvancedSignalAnalyzer:
         coherence = min(1.0, peak_magnitude / len(wwv_norm))
         
         # Reliability assessment
+        # Threshold -60 dB for raw float32 data (was -30 dB with int16 normalization)
         power_diff_db = abs(wwv_power_db - wwvh_power_db)
         is_reliable = (
-            wwv_power_db > -30 and 
-            wwvh_power_db > -30 and 
+            wwv_power_db > -60 and 
+            wwvh_power_db > -60 and 
             coherence > 0.3
         )
         
         # Determine dominant station
-        if wwv_power_db < -30 and wwvh_power_db < -30:
+        if wwv_power_db < -60 and wwvh_power_db < -60:
             dominant_station = 'NONE'
         elif power_diff_db < 3:
             dominant_station = 'BALANCED'
