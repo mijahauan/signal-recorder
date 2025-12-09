@@ -30,7 +30,11 @@ class WriteRequest:
     json_path: Path
     samples: np.ndarray  # Will be copied to prevent mutation
     metadata: dict
-    priority: int = 0  # Lower = higher priority
+    sequence: int = 0  # Unique sequence number for ordering
+    
+    def __lt__(self, other):
+        """Enable comparison for PriorityQueue."""
+        return self.sequence < other.sequence
 
 
 class AsyncDiskWriter:
@@ -59,8 +63,9 @@ class AsyncDiskWriter:
         self.max_queue_size = max_queue_size
         self.num_workers = num_workers
         
-        # Priority queue for write requests
-        self.write_queue: queue.PriorityQueue = queue.PriorityQueue(maxsize=max_queue_size)
+        # FIFO queue for write requests (order doesn't matter, just throughput)
+        self.write_queue: queue.Queue = queue.Queue(maxsize=max_queue_size)
+        self._sequence = 0  # For ordering within queue
         
         # Worker threads
         self.workers: list[threading.Thread] = []
@@ -99,7 +104,7 @@ class AsyncDiskWriter:
         # Signal workers to stop
         for _ in self.workers:
             try:
-                self.write_queue.put_nowait((999, None))  # Sentinel
+                self.write_queue.put_nowait(None)  # Sentinel
             except queue.Full:
                 pass
         
@@ -118,8 +123,7 @@ class AsyncDiskWriter:
         bin_path: Path, 
         json_path: Path, 
         samples: np.ndarray, 
-        metadata: dict,
-        priority: int = 0
+        metadata: dict
     ) -> bool:
         """
         Queue a write request (non-blocking).
@@ -129,7 +133,6 @@ class AsyncDiskWriter:
             json_path: Path for JSON metadata file
             samples: NumPy array to write (will be copied)
             metadata: Metadata dict for JSON sidecar
-            priority: Lower = higher priority (default 0)
             
         Returns:
             True if queued, False if queue full (data dropped)
@@ -141,16 +144,17 @@ class AsyncDiskWriter:
         # Copy samples to prevent mutation while queued
         samples_copy = samples.copy()
         
+        self._sequence += 1
         request = WriteRequest(
             bin_path=bin_path,
             json_path=json_path,
             samples=samples_copy,
             metadata=metadata,
-            priority=priority
+            sequence=self._sequence
         )
         
         try:
-            self.write_queue.put_nowait((priority, request))
+            self.write_queue.put_nowait(request)
             with self._stats_lock:
                 self.writes_queued += 1
             return True
@@ -164,7 +168,7 @@ class AsyncDiskWriter:
         """Worker thread main loop."""
         while self.running or not self.write_queue.empty():
             try:
-                priority, request = self.write_queue.get(timeout=0.5)
+                request = self.write_queue.get(timeout=0.5)
                 
                 if request is None:  # Sentinel
                     break
