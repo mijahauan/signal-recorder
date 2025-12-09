@@ -172,14 +172,13 @@ create_dir() {
     log_info "  Created: $dir"
 }
 
-# Data directories
+# Data directories - THREE-PHASE ARCHITECTURE
 create_dir "$DATA_ROOT"
-create_dir "$DATA_ROOT/archives"
-create_dir "$DATA_ROOT/analytics"
-create_dir "$DATA_ROOT/spectrograms"
-create_dir "$DATA_ROOT/upload"
-create_dir "$DATA_ROOT/state"
-create_dir "$DATA_ROOT/status"
+create_dir "$DATA_ROOT/raw_archive"   # Phase 1: Immutable DRF archive
+create_dir "$DATA_ROOT/phase2"        # Phase 2: Analytical engine outputs
+create_dir "$DATA_ROOT/products"      # Phase 3: Derived products (decimated, spectrograms)
+create_dir "$DATA_ROOT/state"         # Global state files
+create_dir "$DATA_ROOT/status"        # System status files
 create_dir "$LOG_DIR"
 
 # Config directory (production only)
@@ -260,6 +259,7 @@ GRAPE_LOG_DIR=$LOG_DIR
 GRAPE_CONFIG=$CONFIG_DIR/grape-config.toml
 GRAPE_VENV=$VENV_DIR
 GRAPE_WEBUI=$WEBUI_DIR
+GRAPE_PROJECT=$PROJECT_DIR
 GRAPE_LOG_LEVEL=INFO
 
 # These are read from config but can be overridden:
@@ -279,6 +279,7 @@ GRAPE_LOG_DIR=$LOG_DIR
 GRAPE_CONFIG=$CONFIG_DIR/grape-config.toml
 GRAPE_VENV=$VENV_DIR
 GRAPE_WEBUI=$WEBUI_DIR
+GRAPE_PROJECT=$PROJECT_DIR
 GRAPE_LOG_LEVEL=DEBUG
 EOF
 fi
@@ -312,92 +313,71 @@ if [[ "$MODE" == "production" ]]; then
     # Create service files with correct paths
     SYSTEMD_DIR="/etc/systemd/system"
     
-    # Core Recorder Service
-    sudo tee "$SYSTEMD_DIR/grape-recorder.service" > /dev/null << EOF
+    # Core Recorder Service (Phase 1: RTP → Digital RF)
+    sudo tee "$SYSTEMD_DIR/grape-core-recorder.service" > /dev/null << EOF
 [Unit]
-Description=GRAPE Signal Recorder
+Description=GRAPE Core Recorder - Phase 1 RTP to Digital RF Archive
 Documentation=https://github.com/mijahauan/grape-recorder
 After=network-online.target
 Wants=network-online.target
+# Wait for radiod if running on same machine
+After=ka9q-radio.service
+Wants=ka9q-radio.service
 
 [Service]
 Type=simple
 User=$INSTALL_USER
 Group=$INSTALL_USER
 EnvironmentFile=$CONFIG_DIR/environment
-WorkingDirectory=$DATA_ROOT
+WorkingDirectory=$PROJECT_DIR
 
-ExecStart=$VENV_DIR/bin/python -m grape_recorder.grape.core_recorder --config \${GRAPE_CONFIG}
+ExecStart=$VENV_DIR/bin/python -m grape_recorder.grape.core_recorder --config $CONFIG_DIR/grape-config.toml
 
 Restart=always
-RestartSec=30
+RestartSec=10
 StartLimitInterval=300
 StartLimitBurst=5
 
-# Resource limits
+# Resource limits - prioritize for real-time recording
+Nice=-5
 MemoryMax=2G
-CPUQuota=80%
 
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=grape-recorder
+SyslogIdentifier=grape-core-recorder
 
 [Install]
 WantedBy=multi-user.target
 EOF
     
-    # Analytics Service (template for per-channel)
-    sudo tee "$SYSTEMD_DIR/grape-analytics@.service" > /dev/null << EOF
-[Unit]
-Description=GRAPE Analytics Service - %i
-Documentation=https://github.com/mijahauan/grape-recorder
-After=grape-recorder.service
-Wants=grape-recorder.service
-
-[Service]
-Type=simple
-User=$INSTALL_USER
-Group=$INSTALL_USER
-EnvironmentFile=$CONFIG_DIR/environment
-WorkingDirectory=$DATA_ROOT
-
-ExecStart=$VENV_DIR/bin/python -m grape_recorder.grape.analytics_service --config \${GRAPE_CONFIG} --channel "%i"
-
-Restart=always
-RestartSec=30
-StartLimitInterval=300
-StartLimitBurst=5
-
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=grape-analytics-%i
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    
-    # Analytics Service (all channels)
+    # Analytics Service (Phase 2: All 9 channels + fusion)
+    # Uses grape-analytics.sh which starts all channel analyzers
     sudo tee "$SYSTEMD_DIR/grape-analytics.service" > /dev/null << EOF
 [Unit]
-Description=GRAPE Analytics Service (All Channels)
+Description=GRAPE Analytics Service - Phase 2 Timing Analysis
 Documentation=https://github.com/mijahauan/grape-recorder
-After=grape-recorder.service
-Wants=grape-recorder.service
+After=grape-core-recorder.service
+Wants=grape-core-recorder.service
 
 [Service]
-Type=simple
+Type=forking
 User=$INSTALL_USER
 Group=$INSTALL_USER
 EnvironmentFile=$CONFIG_DIR/environment
-WorkingDirectory=$DATA_ROOT
+WorkingDirectory=$PROJECT_DIR
 
-ExecStart=$VENV_DIR/bin/python -m grape_recorder.grape.analytics_service --config \${GRAPE_CONFIG}
+# Use the shell script that starts all 9 channel analyzers + fusion
+ExecStart=$PROJECT_DIR/scripts/grape-analytics.sh -start $CONFIG_DIR/grape-config.toml
+ExecStop=$PROJECT_DIR/scripts/grape-analytics.sh -stop
 
-Restart=always
+# Type=forking since script backgrounds processes
+RemainAfterExit=yes
+
+Restart=on-failure
 RestartSec=30
 StartLimitInterval=300
-StartLimitBurst=5
+StartLimitBurst=3
 
 StandardOutput=journal
 StandardError=journal
@@ -408,38 +388,93 @@ WantedBy=multi-user.target
 EOF
 
     # Web UI Service
-    sudo tee "$SYSTEMD_DIR/grape-webui.service" > /dev/null << EOF
+    sudo tee "$SYSTEMD_DIR/grape-web-ui.service" > /dev/null << EOF
 [Unit]
-Description=GRAPE Web UI
+Description=GRAPE Recorder Web UI
 Documentation=https://github.com/mijahauan/grape-recorder
-After=network-online.target
+After=network-online.target grape-core-recorder.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=$INSTALL_USER
 Group=$INSTALL_USER
 EnvironmentFile=$CONFIG_DIR/environment
+
+# Node.js production settings
+Environment="NODE_ENV=production"
+Environment="PORT=3000"
+
 WorkingDirectory=$WEBUI_DIR
 
 ExecStart=/usr/bin/node monitoring-server-v3.js
 
-Restart=always
+Restart=on-failure
 RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Resource limits
+MemoryMax=512M
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=grape-webui
+SyslogIdentifier=grape-web-ui
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Daily Upload Service
-    sudo tee "$SYSTEMD_DIR/grape-upload.service" > /dev/null << EOF
+    # Spectrogram Generation Service (Phase 3: every 10 minutes)
+    sudo tee "$SYSTEMD_DIR/grape-spectrograms.service" > /dev/null << EOF
+[Unit]
+Description=GRAPE Spectrogram Generation - Phase 3 Product Update
+Documentation=https://github.com/mijahauan/grape-recorder
+After=network.target grape-analytics.service
+
+[Service]
+Type=oneshot
+User=$INSTALL_USER
+Group=$INSTALL_USER
+EnvironmentFile=$CONFIG_DIR/environment
+WorkingDirectory=$PROJECT_DIR
+
+# Generate rolling 6-hour spectrograms for all channels
+ExecStart=$VENV_DIR/bin/python -m grape_recorder.grape.carrier_spectrogram --data-root $DATA_ROOT --all-channels --hours 6
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=grape-spectrograms
+MemoryMax=4G
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Spectrogram Generation Timer (every 10 minutes)
+    sudo tee "$SYSTEMD_DIR/grape-spectrograms.timer" > /dev/null << EOF
+[Unit]
+Description=GRAPE Spectrogram Generation Timer (every 10 minutes)
+Documentation=https://github.com/mijahauan/grape-recorder
+
+[Timer]
+# Run every 10 minutes, offset by 2 minutes after minute boundary
+OnCalendar=*:02,12,22,32,42,52
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    # Daily Upload Service (Phase 3: PSWS upload)
+    sudo tee "$SYSTEMD_DIR/grape-daily-upload.service" > /dev/null << EOF
 [Unit]
 Description=GRAPE Daily DRF Upload to PSWS
 Documentation=https://github.com/mijahauan/grape-recorder
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
@@ -450,21 +485,23 @@ EnvironmentFile=$CONFIG_DIR/environment
 ExecStart=$PROJECT_DIR/scripts/daily-drf-upload.sh
 
 TimeoutStartSec=3600
+TimeoutStopSec=60
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=grape-upload
+SyslogIdentifier=grape-daily-upload
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
     # Daily Upload Timer
-    sudo tee "$SYSTEMD_DIR/grape-upload.timer" > /dev/null << EOF
+    sudo tee "$SYSTEMD_DIR/grape-daily-upload.timer" > /dev/null << EOF
 [Unit]
 Description=GRAPE Daily Upload Timer
 Documentation=https://github.com/mijahauan/grape-recorder
 
 [Timer]
+# Run at 00:30 UTC daily
 OnCalendar=*-*-* 00:30:00 UTC
 Persistent=true
 RandomizedDelaySec=300
@@ -477,19 +514,19 @@ EOF
     sudo systemctl daemon-reload
     
     log_info "  Installed systemd services:"
-    log_info "    - grape-recorder.service"
-    log_info "    - grape-analytics.service"
-    log_info "    - grape-analytics@.service (template)"
-    log_info "    - grape-webui.service"
-    log_info "    - grape-upload.service"
-    log_info "    - grape-upload.timer"
+    log_info "    - grape-core-recorder.service  (Phase 1: RTP → DRF, continuous)"
+    log_info "    - grape-analytics.service      (Phase 2: Timing analysis, continuous)"
+    log_info "    - grape-web-ui.service         (Web monitoring UI, continuous)"
+    log_info "    - grape-spectrograms.timer     (Phase 3: Spectrograms, every 10 min)"
+    log_info "    - grape-daily-upload.timer     (Phase 3: PSWS upload, daily 00:30 UTC)"
     
     # Enable services
     log_step "Enabling services for auto-start..."
-    sudo systemctl enable grape-recorder.service
+    sudo systemctl enable grape-core-recorder.service
     sudo systemctl enable grape-analytics.service
-    sudo systemctl enable grape-webui.service
-    sudo systemctl enable grape-upload.timer
+    sudo systemctl enable grape-web-ui.service
+    sudo systemctl enable grape-spectrograms.timer
+    sudo systemctl enable grape-daily-upload.timer
     
     log_info "  Services enabled (will start on boot)"
 
@@ -523,19 +560,21 @@ if [[ "$MODE" == "production" ]]; then
     echo "1. Edit configuration:"
     echo "   sudo nano $CONFIG_DIR/grape-config.toml"
     echo ""
-    echo "2. Set your station info (callsign, grid_square, etc.)"
+    echo "2. Set your station info (callsign, grid_square, lat/lon, etc.)"
     echo ""
-    echo "3. Start services:"
-    echo "   sudo systemctl start grape-recorder"
-    echo "   sudo systemctl start grape-analytics"
-    echo "   sudo systemctl start grape-webui"
+    echo "3. Start continuous services:"
+    echo "   sudo systemctl start grape-core-recorder   # Phase 1: RTP → DRF"
+    echo "   sudo systemctl start grape-analytics       # Phase 2: Timing analysis"
+    echo "   sudo systemctl start grape-web-ui          # Web monitoring UI"
     echo ""
-    echo "4. Enable daily uploads (after SSH key setup):"
-    echo "   sudo systemctl start grape-upload.timer"
+    echo "4. Start periodic timers:"
+    echo "   sudo systemctl start grape-spectrograms.timer     # Every 10 min"
+    echo "   sudo systemctl start grape-daily-upload.timer     # Daily 00:30 UTC"
     echo ""
     echo "5. Check status:"
-    echo "   sudo systemctl status grape-recorder"
-    echo "   journalctl -u grape-recorder -f"
+    echo "   sudo systemctl status grape-core-recorder grape-analytics grape-web-ui"
+    echo "   sudo systemctl list-timers grape-*"
+    echo "   journalctl -u grape-core-recorder -f"
     echo ""
     echo "Web UI: http://localhost:3000"
 else

@@ -279,14 +279,15 @@
             <option value="">Loading...</option>
           </select>
         </div>
-        <button id="btn-refresh" class="btn btn-primary">🔄 Refresh</button>
+        <button id="btn-refresh" class="btn btn-primary" title="Refresh data from server">🔄 Refresh</button>
+        <button id="btn-regenerate" class="btn btn-secondary" title="Regenerate spectrograms (takes ~30s)">📊 Regenerate</button>
         <div class="control-group" style="margin-left: auto;">
           <label>Auto-refresh:</label>
           <input type="checkbox" id="auto-refresh" checked>
-          <span style="font-size: 12px; color: var(--text-muted);">(30s)</span>
+          <span id="refresh-countdown" style="font-size: 12px; color: var(--text-muted);">(10:00)</span>
         </div>
         <div style="font-size: 12px; color: var(--text-muted);">
-          Last updated: <span id="last-update">--</span>
+          Updated: <span id="last-update">--</span>
         </div>
       </div>
     </div>
@@ -421,17 +422,38 @@
       renderSelectedChannel();
     });
     
+    // Simple refresh - just reload data from server
     document.getElementById('btn-refresh').addEventListener('click', async () => {
       const btn = document.getElementById('btn-refresh');
+      const originalText = btn.textContent;
+      btn.textContent = '⏳ Loading...';
+      btn.disabled = true;
+      
+      try {
+        await fetchData();
+        resetCountdown();
+      } catch (err) {
+        console.error('Refresh error:', err);
+      } finally {
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }
+    });
+    
+    // Regenerate - trigger server-side spectrogram regeneration
+    document.getElementById('btn-regenerate').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-regenerate');
       const originalText = btn.textContent;
       btn.textContent = '⏳ Regenerating...';
       btn.disabled = true;
       
       try {
-        // Trigger spectrogram regeneration
+        // Trigger spectrogram regeneration on server
         await fetch(`/api/v1/spectrograms/regenerate?date=${currentDate}`, { method: 'POST' });
-        // Then refresh data
+        // Wait a moment for generation to complete, then refresh
+        await new Promise(resolve => setTimeout(resolve, 2000));
         await fetchData();
+        resetCountdown();
       } catch (err) {
         console.error('Regeneration error:', err);
       } finally {
@@ -751,9 +773,43 @@
     }
     
     
+    // Auto-refresh configuration: 10 minutes to match spectrogram generation timer
+    const AUTO_REFRESH_INTERVAL_MS = 10 * 60 * 1000;  // 10 minutes
+    let countdownSeconds = AUTO_REFRESH_INTERVAL_MS / 1000;
+    let countdownInterval = null;
+    
+    function updateCountdownDisplay() {
+      const minutes = Math.floor(countdownSeconds / 60);
+      const seconds = countdownSeconds % 60;
+      const display = `(${minutes}:${seconds.toString().padStart(2, '0')})`;
+      document.getElementById('refresh-countdown').textContent = display;
+    }
+    
+    function resetCountdown() {
+      countdownSeconds = AUTO_REFRESH_INTERVAL_MS / 1000;
+      updateCountdownDisplay();
+    }
+    
     function startAutoRefresh() {
       if (autoRefreshInterval) return;
-      autoRefreshInterval = setInterval(fetchData, 30000);
+      
+      // Main refresh interval
+      autoRefreshInterval = setInterval(async () => {
+        await fetchData();
+        resetCountdown();
+      }, AUTO_REFRESH_INTERVAL_MS);
+      
+      // Countdown display interval (every second)
+      if (!countdownInterval) {
+        countdownInterval = setInterval(() => {
+          if (countdownSeconds > 0) {
+            countdownSeconds--;
+            updateCountdownDisplay();
+          }
+        }, 1000);
+      }
+      
+      resetCountdown();
     }
     
     function stopAutoRefresh() {
@@ -761,6 +817,11 @@
         clearInterval(autoRefreshInterval);
         autoRefreshInterval = null;
       }
+      if (countdownInterval) {
+        clearInterval(countdownInterval);
+        countdownInterval = null;
+      }
+      document.getElementById('refresh-countdown').textContent = '(paused)';
     }
     
     // Initial load

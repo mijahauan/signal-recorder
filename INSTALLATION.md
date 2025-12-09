@@ -218,7 +218,7 @@ pip install -e .
 ```
 
 This installs:
-- `ka9q-python` - Interface to ka9q-radio (from https://github.com/mijahauan/ka9q-python.git)
+- `ka9q` - Interface to ka9q-radio (PyPI package)
 - `digital_rf>=2.6.0` - Digital RF format support (HamSCI PSWS compatible)
 - `scipy>=1.10.0` - Signal processing (decimation)
 - `numpy>=1.24.0` - Array operations
@@ -430,6 +430,16 @@ Open `http://<hostname>:3000` in your browser to see:
 
 Production mode provides 24/7 operation with systemd services, automatic restart, and daily uploads.
 
+### Test vs Production Mode
+
+| Aspect | Test Mode | Production Mode |
+|--------|-----------|-----------------|
+| **Data Root** | `/tmp/grape-test` | `/var/lib/grape-recorder` |
+| **Config** | `project/config/grape-config.toml` | `/etc/grape-recorder/grape-config.toml` |
+| **Logs** | `/tmp/grape-test/logs/` | `/var/log/grape-recorder/` |
+| **Startup** | Manual via scripts | Automatic via systemd |
+| **Recovery** | Manual restart | Auto-restart on failure |
+
 ### Quick Production Install
 
 ```bash
@@ -439,37 +449,66 @@ sudo ./scripts/install.sh --mode production --user $USER
 # Edit configuration
 sudo nano /etc/grape-recorder/grape-config.toml
 
-# Start services
-sudo systemctl start grape-recorder grape-analytics grape-webui
+# Start continuous services (three-phase architecture)
+sudo systemctl start grape-core-recorder   # Phase 1: RTP → DRF
+sudo systemctl start grape-analytics       # Phase 2: Timing analysis
+sudo systemctl start grape-web-ui          # Web monitoring UI
 
-# Enable auto-start on boot
-sudo systemctl enable grape-recorder grape-analytics grape-webui
+# Start periodic timers (Phase 3 products)
+sudo systemctl start grape-spectrograms.timer     # Every 10 minutes
+sudo systemctl start grape-daily-upload.timer     # Daily 00:30 UTC
 
-# Enable daily uploads (after SSH key setup)
-sudo systemctl enable --now grape-upload.timer
+# All services are enabled on install (auto-start on boot)
+# To check timer status:
+sudo systemctl list-timers grape-*
 ```
 
 ### Production Directory Structure (FHS-Compliant)
 
 | Path | Purpose |
 |------|---------|
-| `/var/lib/grape-recorder/` | Data (archives, analytics) |
+| `/var/lib/grape-recorder/` | Data root (three-phase architecture) |
+| `/var/lib/grape-recorder/raw_archive/` | Phase 1: Immutable DRF archive |
+| `/var/lib/grape-recorder/phase2/` | Phase 2: Timing analysis outputs |
+| `/var/lib/grape-recorder/products/` | Phase 3: Decimated data, spectrograms |
 | `/var/log/grape-recorder/` | Application logs |
-| `/etc/grape-recorder/` | Configuration |
-| `/opt/grape-recorder/` | Venv and Web UI |
+| `/etc/grape-recorder/` | Configuration files |
+| `/etc/grape-recorder/environment` | Environment variables for all services |
+| `/opt/grape-recorder/` | Python venv and Web UI |
+
+### Systemd Services
+
+**Continuous Services** (run 24/7):
+
+| Service | Description | Phase |
+|---------|-------------|-------|
+| `grape-core-recorder.service` | RTP → Digital RF archive | Phase 1 |
+| `grape-analytics.service` | Timing analysis (all 9 channels + fusion) | Phase 2 |
+| `grape-web-ui.service` | Web monitoring UI | UI |
+
+**Periodic Timers** (Phase 3 products):
+
+| Timer | Interval | Description |
+|-------|----------|-------------|
+| `grape-spectrograms.timer` | Every 10 min | Rolling 6-hour spectrograms (all channels) |
+| `grape-daily-upload.timer` | Daily 00:30 UTC | Package 10 Hz DRF + upload to PSWS |
 
 ### Service Management
 
 ```bash
 # Check status
-sudo systemctl status grape-recorder grape-analytics grape-webui
+sudo systemctl status grape-core-recorder grape-analytics grape-web-ui
 
 # View logs
-journalctl -u grape-recorder -f
-journalctl -u grape-analytics -f
+journalctl -u grape-core-recorder -f   # Phase 1 logs
+journalctl -u grape-analytics -f       # Phase 2 logs
+journalctl -u grape-web-ui -f          # Web UI logs
 
 # Restart after config change
-sudo systemctl restart grape-recorder grape-analytics
+sudo systemctl restart grape-core-recorder grape-analytics
+
+# Stop all services
+sudo systemctl stop grape-core-recorder grape-analytics grape-web-ui
 ```
 
 ### Transitioning from Test Mode
@@ -490,10 +529,24 @@ sudo cp config/grape-config.toml /etc/grape-recorder/
 sudo sed -i 's/mode = "test"/mode = "production"/' /etc/grape-recorder/grape-config.toml
 
 # Start production services
-sudo systemctl start grape-recorder grape-analytics grape-webui
+sudo systemctl start grape-core-recorder grape-analytics grape-web-ui
 ```
 
-**Full production deployment guide:** See [docs/PRODUCTION.md](docs/PRODUCTION.md)
+### Switching Between Modes
+
+The mode is controlled by `recorder.mode` in `grape-config.toml`:
+
+```toml
+[recorder]
+mode = "test"           # or "production"
+test_data_root = "/tmp/grape-test"
+production_data_root = "/var/lib/grape-recorder"
+```
+
+All paths are automatically determined by the mode:
+- Python code reads mode via `paths.py` → `load_paths_from_config()`
+- Shell scripts read mode via `common.sh` → `get_data_root()`
+- Systemd services read from `/etc/grape-recorder/environment`
 
 ---
 

@@ -27,7 +27,7 @@ mode = "test"
 
 # Data root paths by mode
 test_data_root = "/tmp/grape-test"
-production_data_root = "/var/lib/signal-recorder"
+production_data_root = "/var/lib/grape-recorder"
 
 # Directory structure - THREE-PHASE PIPELINE:
 # CRITICAL: All code MUST use centralized GRAPEPaths API:

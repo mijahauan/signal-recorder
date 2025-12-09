@@ -2,14 +2,21 @@
 
 **Author:** Michael James Hauan (AC0G)  
 **Last Updated:** 2025-12-08  
-**Version:** 3.14.0  
-**Next Session Focus:** Production Installation Preparation
+**Version:** 3.16.0  
+**Next Session Focus:** Monitor Production Stability
 
 ---
 
-## 🎯 NEXT SESSION: PRODUCTION INSTALLATION
+## 🎯 NEXT SESSION: MONITOR PRODUCTION STABILITY
 
-The next session should prepare for moving from test mode (`/tmp/grape-test`) to production (`/var/lib/grape-recorder` or similar). Key areas to address:
+Production mode is now running on bee1. Focus areas for next session:
+
+1. **Verify data flow** - Check `/var/lib/grape-recorder/phase2/` for D_clock outputs
+2. **Monitor spectrograms** - Timer runs every 10 min, check `products/*/spectrograms/`
+3. **Test daily upload** - First PSWS upload at 00:30 UTC (Dec 9)
+4. **Web UI stability** - Monitor http://bee1:3000
+
+Key architecture is in place:
 
 ### Pre-Installation Checklist
 
@@ -21,7 +28,8 @@ The next session should prepare for moving from test mode (`/tmp/grape-test`) to
 | **Decimation** | ✅ Fixed | `StatefulDecimator` eliminates boundary artifacts |
 | **Spectrogram Gen** | ✅ Canonical | `carrier_spectrogram.py` is the one to use |
 | **Daily Upload** | ⚠️ Test | `daily-drf-upload.sh` exists but needs PSWS testing |
-| **Systemd Services** | ⚠️ Review | `systemd/*.service` files exist but need path updates |
+| **Systemd Services** | ✅ Updated | All use `EnvironmentFile=`, three-phase naming |
+| **Install Script** | ✅ Updated | `scripts/install.sh` supports test/production modes |
 | **Web UI** | ✅ Working | `grape-ui.sh`, port 3000 |
 
 ### Key Configuration Files
@@ -48,15 +56,22 @@ latitude = 38.xxxx
 longitude = -90.xxxx
 ```
 
-### Systemd Services to Configure
+### Systemd Services
 
-| Service | Purpose | Timer |
-|---------|---------|-------|
-| `grape-core-recorder.service` | Phase 1: RTP → DRF raw archive | Continuous |
-| `grape-radiod-monitor.service` | Monitor radiod status | Continuous |
-| `grape-analytics.service` | Phase 2: Analytics + decimation | Continuous |
-| `grape-daily-upload.service` | Phase 3: DRF packaging + SFTP | Daily 00:15 UTC |
-| `grape-web-ui.service` | Web monitoring UI | Continuous |
+**Continuous Services** (run 24/7):
+
+| Service | Purpose |
+|---------|---------|
+| `grape-core-recorder.service` | Phase 1: RTP → DRF raw archive |
+| `grape-analytics.service` | Phase 2: Timing analysis (9 channels + fusion) |
+| `grape-web-ui.service` | Web monitoring UI |
+
+**Periodic Timers** (Phase 3 products):
+
+| Timer | Interval | Purpose |
+|-------|----------|---------|
+| `grape-spectrograms.timer` | Every 10 min | Regenerate spectrograms |
+| `grape-daily-upload.timer` | Daily 00:30 UTC | Package 10 Hz DRF + PSWS upload |
 
 ### PSWS Upload Configuration
 
@@ -245,6 +260,8 @@ export GRAPE_LOG_DIR=/tmp/grape-test/logs
 
 | Date | Focus | Key Changes |
 |------|-------|-------------|
+| Dec 8 Night | Production Deployed | Systemd services running, matplotlib added, docs updated |
+| Dec 8 Eve | Production Mode | TEST/PRODUCTION architecture, install.sh, systemd services |
 | Dec 8 PM | Phase 3 Fixes | StatefulDecimator, path consolidation, spectrogram canonical |
 | Dec 8 AM | Clock Drift | RTP timestamp bug, Kalman state reset, channel discovery |
 | Dec 7 PM | Phase 2 Critique | 16 methodology fixes, uncertainty replaces grades |
@@ -256,12 +273,40 @@ export GRAPE_LOG_DIR=/tmp/grape-test/logs
 
 ## NEXT SESSION PRIORITIES
 
-1. **Review `INSTALLATION.md`** - Ensure production paths and systemd are correct
-2. **Test `daily-drf-upload.sh`** - Verify DRF packaging and SFTP to PSWS
-3. **Create production config** - Clone grape-config.toml with production paths
-4. **Systemd path audit** - Ensure all services reference correct paths
-5. **Storage quota** - Configure cleanup for production disk space
-6. **Backup strategy** - Decide what to preserve, what to rotate
+1. **Monitor Production** - Verify Phase 2 outputs in `/var/lib/grape-recorder/phase2/`
+2. **Check Spectrograms** - Timer runs every 10 min, verify PNG generation
+3. **Daily Upload Test** - First PSWS upload scheduled for 00:30 UTC (Dec 9)
+4. **Storage Quota** - Configure cleanup for production disk space
+5. **Backup Strategy** - Decide what to preserve, what to rotate
+
+### Completed This Session (Dec 8 Night)
+
+- ✅ Deployed production mode with systemd services on bee1
+- ✅ Fixed systemd service paths (hardcoded instead of env vars for WorkingDirectory)
+- ✅ Added matplotlib and pandas to `setup.py` install_requires
+- ✅ Updated `ka9q` dependency to use PyPI instead of git URL
+- ✅ Updated carrier.html with 10-minute auto-refresh and regenerate button
+- ✅ Updated timing-methodology.html for production (systemd commands, fusion service)
+- ✅ Updated discrimination-methodology.html (8 methods, correct weights)
+- ✅ Fixed web-ui service to use `monitoring-server-v3.js`
+
+### Completed Dec 8 Evening
+
+- ✅ Renamed `signal-recorder` → `grape-recorder` in all paths
+- ✅ Updated `grape-config.toml` with correct production path
+- ✅ Created `config/environment.template` with full documentation
+- ✅ Updated all systemd services to use `EnvironmentFile=`
+- ✅ Updated `scripts/install.sh` with three-phase directory structure
+- ✅ Updated `INSTALLATION.md` with mode switching guide
+
+### Key Architecture Changes
+
+| Component | Before | After |
+|-----------|--------|-------|
+| Production data root | `/var/lib/signal-recorder` | `/var/lib/grape-recorder` |
+| Systemd paths | Hardcoded | Via `EnvironmentFile=/etc/grape-recorder/environment` |
+| Service names | `grape-recorder` | `grape-core-recorder` (Phase 1) |
+| Install directories | Legacy `archives/`, `analytics/` | Three-phase: `raw_archive/`, `phase2/`, `products/` |
 
 ---
 

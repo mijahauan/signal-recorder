@@ -38,7 +38,9 @@ setup(
         "soundfile>=0.12.0",
         "digital_rf>=2.6.0",
         "zeroconf>=0.132.0",  # For mDNS discovery
-        "ka9q @ git+https://github.com/mijahauan/ka9q-python.git@v3.2.0",  # ka9q-radio control library
+        "ka9q>=3.2.0",  # ka9q-radio control library (PyPI)
+        "matplotlib>=3.7.0",  # For spectrogram generation
+        "pandas>=2.0.0",  # For timing analysis
     ],
     extras_require={
         "dev": [

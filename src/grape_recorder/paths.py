@@ -601,7 +601,7 @@ def load_paths_from_config(config_path: Optional[str | Path] = None) -> GRAPEPat
     mode = config.get('recorder', {}).get('mode', 'test')
     
     if mode == 'production':
-        data_root = config.get('recorder', {}).get('production_data_root', '/var/lib/signal-recorder')
+        data_root = config.get('recorder', {}).get('production_data_root', '/var/lib/grape-recorder')
     else:
         data_root = config.get('recorder', {}).get('test_data_root', '/tmp/grape-test')
     

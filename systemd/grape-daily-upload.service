@@ -1,25 +1,21 @@
 [Unit]
 Description=GRAPE Daily DRF Upload to PSWS
-Documentation=https://github.com/wsprdaemon/signal-recorder
+Documentation=https://github.com/mijahauan/grape-recorder
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=wsprdaemon
-Group=wsprdaemon
 
-# Script location - update PROJECT_ROOT if moved
-ExecStart=/home/wsprdaemon/grape-recorder/scripts/daily-drf-upload.sh
+# User/Group - same as other grape services
+User=grape-recorder
+Group=grape-recorder
 
-# Environment - switch to production when ready
-Environment=GRAPE_DATA_ROOT=/tmp/grape-test
-Environment=GRAPE_CONFIG=/home/wsprdaemon/grape-recorder/config/grape-config.toml
-Environment=GRAPE_VENV=/home/wsprdaemon/grape-recorder/venv
-Environment=GRAPE_LOG_DIR=/tmp/grape-test/logs
+# Environment from file (set by install.sh)
+EnvironmentFile=/etc/grape-recorder/environment
 
-# Production settings (uncomment when ready):
-# Environment=GRAPE_DATA_ROOT=/var/lib/signal-recorder
+# Daily upload script
+ExecStart=${GRAPE_PROJECT}/scripts/daily-drf-upload.sh
 
 # Timeouts - allow plenty of time for upload
 TimeoutStartSec=3600

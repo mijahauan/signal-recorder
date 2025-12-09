@@ -20,7 +20,7 @@ digital_rf>=2.6.0
 zeroconf>=0.132.0
 
 # ka9q-radio control library (general-purpose radiod interface)
-ka9q @ git+https://github.com/mijahauan/ka9q-python.git@v3.2.0
+ka9q>=3.2.0
 
 # WWV Timing Analysis & Visualization (optional, for plot_wwv_timing.py)
 pandas>=2.0.0
@@ -29,5 +29,3 @@ matplotlib>=3.7.0
 # IRI-2016 Ionospheric Model (optional, for improved propagation modeling)
 # Requires: sudo apt install gfortran (before pip install)
 iri2016>=1.11.1
-
-ka9q-radio>=3.1.0

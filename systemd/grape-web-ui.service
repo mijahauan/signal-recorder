@@ -1,0 +1,61 @@
+[Unit]
+Description=GRAPE Recorder Web UI
+Documentation=https://github.com/mijahauan/grape-recorder
+After=network-online.target grape-core-recorder.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# User/Group - same as other grape services
+User=grape-recorder
+Group=grape-recorder
+
+# Environment from file
+EnvironmentFile=/etc/grape-recorder/environment
+
+# Node.js production settings
+Environment="NODE_ENV=production"
+Environment="PORT=3000"
+
+# Working directory
+WorkingDirectory=${GRAPE_WEBUI}
+
+# Start command - simple-server.js reads GRAPE_DATA_ROOT from environment
+ExecStart=/usr/bin/node simple-server.js
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=25%
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+# Paths - read-only access to data, read-write for web-ui data dir
+ReadWritePaths=/var/lib/grape-recorder /var/log/grape-recorder ${GRAPE_WEBUI}/data
+ReadOnlyPaths=/etc/grape-recorder
+
+# Network - bind to port 3000
+PrivateNetwork=false
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=grape-web-ui
+
+# Process management
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

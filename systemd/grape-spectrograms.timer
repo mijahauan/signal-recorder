@@ -1,12 +1,13 @@
 [Unit]
-Description=GRAPE Daily Spectrogram Generation Timer
-After=network.target
+Description=GRAPE Spectrogram Generation Timer (every 10 minutes)
+Documentation=https://github.com/mijahauan/grape-recorder
 
 [Timer]
-# Run at 00:15 UTC daily
-OnCalendar=*-*-* 00:15:00 UTC
+# Run every 10 minutes to keep spectrograms fresh
+# Offset by 2 minutes to run after minute boundaries (when new data is available)
+OnCalendar=*:02,12,22,32,42,52
 Persistent=true
-RandomizedDelaySec=300
+RandomizedDelaySec=30
 
 [Install]
 WantedBy=timers.target

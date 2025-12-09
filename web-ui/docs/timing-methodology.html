@@ -314,14 +314,18 @@
             <li><strong>Propagation Mode Confidence</strong>: Higher confidence = higher weight</li>
         </ul>
         
-        <h3>Running the Fusion Service</h3>
-        <pre><code>python -m grape_recorder.grape.multi_broadcast_fusion \
-    --data-root /tmp/grape-test \
-    --interval 60</code></pre>
+        <h3>Fusion Service</h3>
         <p>
-            The fusion service runs every 60 seconds, reading Phase 2 results from all channels 
-            and producing a fused D_clock estimate stored in <code>phase2/fusion/fused_d_clock.csv</code>.
+            The fusion service is <strong>started automatically</strong> as part of the 
+            <code>grape-analytics</code> systemd service. It runs every 60 seconds, reading 
+            Phase 2 results from all channels and producing a fused D_clock estimate stored 
+            in <code>phase2/fusion/fused_d_clock.csv</code>.
         </p>
+        <pre><code># Check fusion status
+journalctl -u grape-analytics | grep -i fusion
+
+# View fusion output
+tail -f $GRAPE_DATA_ROOT/phase2/fusion/fused_d_clock.csv</code></pre>
         
         <h2 id="kalman-funnel">Clock Stability Convergence</h2>
         <p>
@@ -513,17 +517,23 @@
         </ul>
         
         <div class="info-box">
-            <h4>Service Management</h4>
+            <h4>Service Management (Production Mode)</h4>
             <p>To restart the timing services after configuration changes:</p>
-            <pre><code># Restart Phase 2 Analytics (per-channel processing)
+            <pre><code># Restart Phase 2 Analytics (includes all 9 channels + fusion service)
 sudo systemctl restart grape-analytics
 
-# Restart Fusion Service (multi-broadcast combination)  
-pkill -f multi_broadcast_fusion
-python -m grape_recorder.grape.multi_broadcast_fusion --data-root /tmp/grape-test --interval 60 &
+# Restart Phase 1 Core Recorder (RTP → Digital RF)
+sudo systemctl restart grape-core-recorder
 
 # Restart Web UI (for display changes)
-sudo systemctl restart grape-web-ui</code></pre>
+sudo systemctl restart grape-web-ui
+
+# View service logs
+journalctl -u grape-analytics -f
+journalctl -u grape-core-recorder -f
+
+# Check all GRAPE services
+sudo systemctl status grape-core-recorder grape-analytics grape-web-ui</code></pre>
         </div>
     </div>
     

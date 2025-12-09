@@ -1,37 +1,65 @@
 [Unit]
-Description=GRAPE Core Recorder - RTP to NPZ Archive Service
-Documentation=https://github.com/yourusername/signal-recorder
+Description=GRAPE Core Recorder - Phase 1 RTP to Digital RF Archive
+Documentation=https://github.com/mijahauan/grape-recorder
 After=network-online.target
 Wants=network-online.target
+# Wait for radiod if running on same machine
+After=ka9q-radio.service
+Wants=ka9q-radio.service
 
 [Service]
 Type=simple
-User=mjh
-Group=mjh
-WorkingDirectory=/home/mjh/git/signal-recorder
 
-# Core recorder with test configuration
-ExecStart=/home/mjh/git/signal-recorder/venv/bin/python3 -m grape_recorder.grape.core_recorder \
-    --config /home/mjh/git/signal-recorder/config/grape-config.toml \
-    --data-root /tmp/grape-test
+# User/Group - set during installation
+# For production: create dedicated user or use existing user
+User=grape-recorder
+Group=grape-recorder
 
-# Restart policy
+# Environment from file (set by install.sh)
+EnvironmentFile=/etc/grape-recorder/environment
+
+# Working directory
+WorkingDirectory=${GRAPE_PROJECT}
+
+# Core recorder reads mode from config to determine paths
+ExecStart=${GRAPE_VENV}/bin/python3 -m grape_recorder.grape.core_recorder \
+    --config ${GRAPE_CONFIG}
+
+# Restart policy - always restart in production
 Restart=always
 RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
 
-# Logging
+# Logging to journal (viewable via journalctl -u grape-core-recorder)
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=grape-core-recorder
 
-# Resource limits
+# Resource limits - prioritize for real-time recording
 Nice=-5
 CPUSchedulingPolicy=fifo
 CPUSchedulingPriority=50
 
+# Memory limit (adjust based on channel count)
+MemoryMax=2G
+
 # Security hardening
 NoNewPrivileges=true
 PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=read-only
+
+# Paths we need write access to
+ReadWritePaths=/var/lib/grape-recorder /var/log/grape-recorder
+ReadOnlyPaths=/etc/grape-recorder
+
+# Network access for RTP multicast
+PrivateNetwork=false
+
+# Capabilities for multicast reception
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_RAW CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
