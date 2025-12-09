@@ -123,14 +123,23 @@ class BinaryArchiveWriter:
         """
         minute_boundary = (int(rtp_derived_time) // 60) * 60
         
+        # Calculate where in the minute we're starting
+        # If first sample arrives 0.1s into the minute, write_pos = 2000 (at 20kHz)
+        offset_in_minute = rtp_derived_time - minute_boundary
+        write_pos = int(offset_in_minute * self.config.sample_rate)
+        write_pos = max(0, min(write_pos, SAMPLES_PER_MINUTE - 1))
+        
         buffer = MinuteBuffer(
             minute_boundary=minute_boundary,
             samples=np.zeros(SAMPLES_PER_MINUTE, dtype=np.complex64),
-            write_pos=0,
+            write_pos=write_pos,
             start_rtp=rtp_timestamp
         )
         
-        logger.debug(f"Started new minute buffer: {minute_boundary}")
+        if write_pos > 0:
+            logger.debug(f"Started minute buffer {minute_boundary} at offset {write_pos} samples ({offset_in_minute:.3f}s)")
+        else:
+            logger.debug(f"Started new minute buffer: {minute_boundary}")
         return buffer
     
     def _flush_minute(self, buffer: MinuteBuffer) -> bool:
