@@ -2,7 +2,7 @@
 
 **Author:** Michael James Hauan (AC0G)  
 **Status:** CANONICAL - This is the single source of truth for all file paths  
-**Last Updated:** 2025-12-02  
+**Last Updated:** 2025-12-09  
 **Enforcement:** ALL code MUST use `src/grape_recorder/paths.py` GRAPEPaths API
 
 ---
@@ -36,10 +36,10 @@ sudo ./scripts/install.sh --mode production --user $USER
 
 ```
 /tmp/grape-test/                    # GRAPE_DATA_ROOT
-├── archives/                       # Raw 20 kHz NPZ
-├── analytics/                      # Derived products
-├── spectrograms/                   # Web UI images
-├── upload/                         # PSWS staging
+├── raw_archive/                    # Phase 1: Immutable DRF archive (20 kHz)
+├── raw_buffer/                     # Phase 1: Real-time minute buffers
+├── phase2/                         # Phase 2: Analytical outputs
+├── products/                       # Phase 3: Derived products (decimated, spectrograms)
 ├── state/                          # Service state
 ├── status/                         # Health status
 └── logs/                           # Application logs
@@ -52,10 +52,10 @@ config/environment                  # Environment variables
 
 ```
 /var/lib/grape-recorder/            # GRAPE_DATA_ROOT - Application data
-├── archives/                       # Raw 20 kHz NPZ
-├── analytics/                      # Derived products
-├── spectrograms/                   # Web UI images
-├── upload/                         # PSWS staging
+├── raw_archive/                    # Phase 1: Immutable DRF archive (20 kHz)
+├── raw_buffer/                     # Phase 1: Real-time minute buffers
+├── phase2/                         # Phase 2: Analytical outputs (D_clock, discrimination)
+├── products/                       # Phase 3: Derived products (decimated, spectrograms)
 ├── state/                          # Service state
 └── status/                         # Health status
 
@@ -97,123 +97,71 @@ GRAPE_CONFIG=/etc/grape-recorder/grape-config.toml
 
 ---
 
-## Complete Directory Tree
+## Complete Directory Tree (Three-Phase Architecture)
 
 ```
 ${data_root}/
 │
-├── archives/                              # Raw IQ archives (20 kHz NPZ)
-│   └── {CHANNEL}/                         # e.g., WWV_5_MHz, CHU_3_33_MHz
-│       └── YYYYMMDDTHHMMSSZ_{FREQ}_iq.npz
-│           # Example: 20251119T120000Z_5000000_iq.npz
-│           # Fields:
-│           #   iq (complex64)           - Gap-filled IQ samples
-│           #   rtp_timestamp            - RTP timestamp of first sample
-│           #   sample_rate              - 20000 Hz (config-driven)
-│           #   time_snap_rtp/utc/source - Timing anchor reference
-│           #   tone_power_1000/1200_hz_db - Tone powers for discrimination
-│           #   ntp_wall_clock_time      - Wall clock at minute boundary
-│           #   gaps_filled/gaps_count   - Gap statistics
-│           #   packets_received/expected - Packet statistics
+├── raw_archive/                           # PHASE 1: Immutable Raw Archive (DRF)
+│   └── {CHANNEL}/                         # e.g., WWV_10_MHz, CHU_7.85_MHz
+│       └── {YYYYMMDD}/                    # Daily subdirectories
+│           ├── {YYYY-MM-DDTHH}/           # Hourly HDF5 files
+│           │   └── rf@{timestamp}.h5      # 20 kHz complex64 IQ
+│           ├── drf_properties.h5          # Digital RF properties
+│           └── metadata/                  # Per-minute provenance
 │
-├── analytics/                             # Per-channel analytics products
-│   └── {CHANNEL}/                         # e.g., WWV_5_MHz
-│       │
-│       ├── decimated/                     # 10 Hz NPZ (pre-DRF)
-│       │   └── YYYYMMDDTHHMMSSZ_{FREQ}_iq_10hz.npz
-│       │       # Fields: iq (complex64), sample_rate, unix_timestamp
-│       │
-│       ├── digital_rf/                    # Digital RF format
-│       │   └── {YYYYMMDD}/
-│       │       └── {CALL}_{GRID}/
-│       │           └── {RECEIVER}/
-│       │               └── {OBS}/
-│       │                   └── {CHANNEL}/
-│       │                       └── rf@{TIMESTAMP}.h5
-│       │
-│       ├── tone_detections/               # Method 2: 1000/1200 Hz timing tones
-│       │   └── {CHANNEL}_tones_YYYYMMDD.csv
-│       │       # Columns: timestamp_utc, station, frequency_hz, 
-│       │       #          duration_sec, timing_error_ms, snr_db,
-│       │       #          tone_power_db, confidence
-│       │       # One row per detected tone
-│       │
-│       ├── tick_windows/                  # Method 3: 5ms tick analysis
-│       │   └── {CHANNEL}_ticks_YYYYMMDD.csv
-│       │       # Columns: timestamp_utc, window_second,
-│       │       #          coherent_wwv_snr_db, coherent_wwvh_snr_db,
-│       │       #          incoherent_wwv_snr_db, incoherent_wwvh_snr_db,
-│       │       #          coherence_quality_wwv, coherence_quality_wwvh,
-│       │       #          integration_method, wwv_snr_db, wwvh_snr_db,
-│       │       #          ratio_db, tick_count
-│       │       # One row per 10-second window (6 per minute)
-│       │
-│       ├── station_id_440hz/              # Method 4: 440 Hz station ID
-│       │   └── {CHANNEL}_440hz_YYYYMMDD.csv
-│       │       # Columns: timestamp_utc, minute_number,
-│       │       #          wwv_detected, wwvh_detected,
-│       │       #          wwv_power_db, wwvh_power_db
-│       │       # One row per detection (minutes 1 & 2 only)
-│       │
-│       ├── bcd_discrimination/            # Method 1 (PRIMARY): 100 Hz BCD
-│       │   └── {CHANNEL}_bcd_YYYYMMDD.csv
-│       │       # Columns: timestamp_utc, window_start_sec,
-│       │       #          wwv_amplitude, wwvh_amplitude,
-│       │       #          differential_delay_ms, correlation_quality,
-│       │       #          amplitude_ratio_db
-│       │       # One row per 3-second window (15+ per minute)
-│       │
-│       ├── test_signals/                  # Test signal detection (min :08/:44)
-│       │   └── {CHANNEL}_testsig_YYYYMMDD.csv
-│       │       # Columns: timestamp_utc, minute_number, detected,
-│       │       #          station, confidence, toa_offset_ms
-│       │       # One row per detection opportunity (2 per hour)
-│       │
-│       ├── doppler/                       # Per-tick Doppler estimates
-│       │   └── {CHANNEL}_doppler_YYYYMMDD.csv
-│       │       # Columns: timestamp_utc, wwv_doppler_hz, wwvh_doppler_hz
-│       │
-│       ├── timing_metrics/                # Time_snap quality tracking
-│       │   └── {CHANNEL}_timing_YYYYMMDD.csv
-│       │
-│       ├── discrimination/                # Final weighted voting
-│       │   └── {CHANNEL}_discrimination_YYYYMMDD.csv
-│       │       # Columns: timestamp_utc, minute_timestamp, minute_number,
-│       │       #          wwv_detected, wwvh_detected,
-│       │       #          wwv_snr_db, wwvh_snr_db, power_ratio_db,
-│       │       #          differential_delay_ms,
-│       │       #          tone_440hz_wwv_detected, tone_440hz_wwv_power_db,
-│       │       #          tone_440hz_wwvh_detected, tone_440hz_wwvh_power_db,
-│       │       #          dominant_station, confidence,
-│       │       #          tick_windows_10sec (JSON),
-│       │       #          bcd_wwv_amplitude, bcd_wwvh_amplitude,
-│       │       #          bcd_differential_delay_ms, bcd_correlation_quality,
-│       │       #          bcd_windows (JSON)
-│       │       # One row per minute
-│       │
-│       ├── quality/                       # Signal quality metrics
-│       │   └── {CHANNEL}_quality_YYYYMMDD.csv
-│       │       # Columns: timestamp, rms_power, peak_power, mean_power,
-│       │       #          noise_floor, dynamic_range, clip_count
-│       │
-│       ├── logs/                          # Processing logs
-│       │   └── analytics_YYYYMMDD.log
-│       │
-│       └── status/                        # Runtime status files
-│           └── current_status.json
+├── raw_buffer/                            # PHASE 1: Real-time minute buffers
+│   └── {CHANNEL}/                         # Binary IQ + JSON metadata
+│       ├── {minute}.bin                   # 1,200,000 complex64 samples
+│       └── {minute}.json                  # RTP timestamp, gaps, timing
 │
-├── spectrograms/                          # Generated spectrogram images
-│   └── {YYYYMMDD}/
-│       └── {CHANNEL}_YYYYMMDD_{TYPE}_spectrogram.png
-│           # TYPE: decimated, raw, etc.
+├── phase2/                                # PHASE 2: Analytical Engine Outputs
+│   └── {CHANNEL}/                         # e.g., WWV_10_MHz
+│       │
+│       ├── clock_offset/                  # D_clock time series
+│       │   └── {YYYYMMDD}.csv             # minute, d_clock_ms, uncertainty_ms, station
+│       │
+│       ├── carrier_analysis/              # Amplitude, phase, Doppler
+│       │   └── {YYYYMMDD}.csv             # Carrier metrics
+│       │
+│       ├── discrimination/                # WWV/WWVH voting results
+│       │   └── {YYYYMMDD}.csv             # Per-minute discrimination
+│       │
+│       ├── bcd_correlation/               # 100 Hz BCD time code
+│       │   └── {YYYYMMDD}.csv             # Dual-peak detection
+│       │
+│       ├── tone_detections/               # 1000/1200 Hz timing tones
+│       │   └── {YYYYMMDD}.csv             # SNR, timing
+│       │
+│       ├── ground_truth/                  # 440/500/600 Hz station ID
+│       │   └── {YYYYMMDD}.csv             # Exclusive minute detections
+│       │
+│       ├── state/                         # Processing state
+│       │   ├── convergence_state.json     # Kalman filter state
+│       │   └── channel-status.json        # Runtime status
+│       │
+│       └── status/                        # Analytics status
+│           └── analytics-service-status.json
 │
-├── state/                                 # Service state persistence
-│   ├── analytics-{channel_key}.json       # Per-channel analytics state
-│   │   # channel_key: wwv5, wwv10, chu3.33, etc.
+├── products/                              # PHASE 3: Derived Products
+│   └── {CHANNEL}/
+│       │
+│       ├── decimated/                     # 10 Hz carrier data
+│       │   └── {YYYYMMDD}.bin             # Daily binary file
+│       │
+│       └── spectrograms/                  # Generated images
+│           └── {YYYYMMDD}_spectrogram.png # Daily spectrogram with power + solar zenith
+│
+├── state/                                 # Global state persistence
+│   ├── broadcast_calibration.json         # Multi-broadcast fusion calibration
 │   └── core-recorder-status.json          # Core recorder state
 │
-└── status/                                # System-wide status
-    └── analytics-service-status.json      # Analytics service health
+├── status/                                # System-wide status
+│   └── gpsdo_status.json                  # GPSDO monitor state
+│
+└── logs/                                  # Application logs
+    ├── core-recorder.log
+    └── analytics.log
 ```
 
 ---

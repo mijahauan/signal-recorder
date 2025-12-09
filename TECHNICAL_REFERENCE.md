@@ -3,7 +3,7 @@
 **Quick reference for developers working on the GRAPE Signal Recorder.**
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** December 5, 2025
+**Last Updated:** December 9, 2025
 
 ---
 
@@ -15,13 +15,13 @@
 - **CHU (3):** 3.33, 7.85, 14.67 MHz
 
 **Data products generated**:
-1. **20 kHz NPZ archives** - Complete scientific record with embedded metadata
-2. **10 Hz decimated NPZ** - For Digital RF conversion
-3. **Discrimination CSVs** - Per-method analysis (BCD, tones, ticks, 440Hz, test signals)
-4. **Digital RF HDF5** - Wsprdaemon-compatible format for PSWS upload
-5. **Timing metrics** - Time_snap quality, NTP drift tracking
+1. **20 kHz DRF archives** - Phase 1 immutable raw archive (`raw_archive/{CHANNEL}/`)
+2. **Phase 2 analytics** - D_clock, discrimination, carrier analysis (`phase2/{CHANNEL}/`)
+3. **10 Hz decimated data** - Phase 3 carrier time series (`products/{CHANNEL}/decimated/`)
+4. **Spectrograms** - Phase 3 visualization with solar zenith (`products/{CHANNEL}/spectrograms/`)
+5. **Timing metrics** - D_clock convergence, propagation mode identification
 
-**Goal**: Archive raw 20 kHz IQ, generate 10 Hz Digital RF with metadata for PSWS upload, provide WWV/WWVH discrimination on 4 shared frequencies.
+**Goal**: Archive raw 20 kHz IQ (Phase 1), perform timing analysis (Phase 2), generate derived products (Phase 3) for PSWS upload, provide WWV/WWVH discrimination on 4 shared frequencies.
 
 ---
 
@@ -706,27 +706,25 @@ sudo systemctl enable --now grape-upload.timer
 
 ---
 
-## Data Flow
+## Data Flow (Three-Phase Architecture)
 
 ```
 ka9q-radio (radiod)
     ↓ RTP multicast (mDNS discovery via ka9q-python)
-Core Recorder (grape_recorder.py)
-    ↓ 20 kHz NPZ archives with embedded metadata
-    ↓ {data_root}/archives/{channel}/
-Analytics Service (per channel)
-    ├→ Discrimination CSVs: analytics/{channel}/bcd_discrimination/
-    ├→ Discrimination CSVs: analytics/{channel}/tone_detections/
-    ├→ Discrimination CSVs: analytics/{channel}/tick_windows/
-    ├→ Discrimination CSVs: analytics/{channel}/station_id_440hz/
-    ├→ Discrimination CSVs: analytics/{channel}/test_signals/
-    ├→ Doppler CSVs: analytics/{channel}/doppler/
-    ├→ Timing metrics: analytics/{channel}/timing_metrics/
-    ├→ Decimated NPZ: analytics/{channel}/decimated/
-    └→ Final voting: analytics/{channel}/discrimination/
-DRF Batch Writer
-    ├→ Digital RF HDF5: digital_rf/{date}/{station}/
-    └→ SFTP upload to PSWS with trigger directories
+PHASE 1: Core Recorder (core_recorder.py)
+    ↓ 20 kHz DRF archive
+    ↓ {data_root}/raw_archive/{channel}/
+    ↓ {data_root}/raw_buffer/{channel}/ (binary minute buffers)
+PHASE 2: Analytics Service (per channel)
+    ├→ D_clock: phase2/{channel}/clock_offset/
+    ├→ Discrimination: phase2/{channel}/discrimination/
+    ├→ BCD correlation: phase2/{channel}/bcd_correlation/
+    ├→ Carrier analysis: phase2/{channel}/carrier_analysis/
+    └→ State: phase2/{channel}/state/
+PHASE 3: Derived Products
+    ├→ Decimated 10 Hz: products/{channel}/decimated/
+    ├→ Spectrograms: products/{channel}/spectrograms/
+    └→ SFTP upload to PSWS
 ```
 
 ---

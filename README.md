@@ -91,9 +91,9 @@ journalctl -u grape-recorder -f    # View logs
 **Three-service design** built on a **generic recording infrastructure**:
 
 ```
-ka9q-radio (RTP multicast) → Core Recorder → Analytics → DRF Writer/Upload
-                              20kHz NPZ      10Hz NPZ   Digital RF HDF5
-                              archives/      analytics/ → PSWS sftp
+ka9q-radio (RTP multicast) → Core Recorder → Analytics → Products/Upload
+                              20kHz DRF      D_clock    10Hz decimated
+                              raw_archive/   phase2/    products/ → PSWS sftp
 ```
 
 ### Generic Recording Infrastructure (New in V3)

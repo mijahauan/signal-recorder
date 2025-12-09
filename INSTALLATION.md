@@ -1,7 +1,7 @@
 # GRAPE Signal Recorder - Installation Guide
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** December 2, 2025
+**Last Updated:** December 9, 2025
 
 Complete setup guide for installing and configuring the GRAPE signal recorder.
 
@@ -196,8 +196,8 @@ sudo systemctl start radiod@rx888
 
 ```bash
 cd ~
-git clone https://github.com/mijahauan/signal-recorder.git
-cd signal-recorder
+git clone https://github.com/mijahauan/grape-recorder.git
+cd grape-recorder
 ```
 
 ### 2. Create Python Virtual Environment
@@ -238,10 +238,10 @@ python3 -c "from ka9q import discover_channels; print('ka9q-python OK')"
 
 **Test mode** (default): Data is stored in `/tmp/grape-test/` - no setup required.
 
-**Production mode**: When ready for permanent operation, data goes to `/var/lib/signal-recorder/`. This requires:
+**Production mode**: When ready for permanent operation, data goes to `/var/lib/grape-recorder/`. This requires:
 ```bash
-sudo mkdir -p /var/lib/signal-recorder
-sudo chown -R $USER:$USER /var/lib/signal-recorder
+sudo mkdir -p /var/lib/grape-recorder
+sudo chown -R $USER:$USER /var/lib/grape-recorder
 ```
 
 The mode is controlled by `recorder.mode` in `grape-config.toml`.
@@ -490,7 +490,7 @@ sudo systemctl list-timers grape-*
 
 | Timer | Interval | Description |
 |-------|----------|-------------|
-| `grape-spectrograms.timer` | Every 10 min | Rolling 6-hour spectrograms (all channels) |
+| `grape-spectrograms.timer` | Every 10 min | Daily spectrograms with solar zenith (all channels) |
 | `grape-daily-upload.timer` | Daily 00:30 UTC | Package 10 Hz DRF + upload to PSWS |
 
 ### Service Management

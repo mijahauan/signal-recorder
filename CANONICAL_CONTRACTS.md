@@ -3,7 +3,7 @@
 **Author:** Michael James Hauan (AC0G)  
 **Status:** MANDATORY - All code must follow these contracts  
 **Created:** 2025-11-20  
-**Updated:** 2025-12-02  
+**Updated:** 2025-12-09  
 **Purpose:** Single source of truth for project standards and references
 
 ---
@@ -29,12 +29,12 @@ Canonical contracts are the **authoritative references** that all GRAPE code mus
 **Example:**
 ```python
 # ✅ CORRECT
-from signal_recorder.paths import GRAPEPaths
+from grape_recorder.paths import GRAPEPaths
 paths = GRAPEPaths(data_root)
-csv_file = paths.get_discrimination_dir(channel) / f"{channel_dir}_discrimination_{date}.csv"
+csv_file = paths.get_phase2_dir(channel) / "discrimination" / f"{date}.csv"
 
 # ❌ WRONG
-csv_file = Path(data_root) / 'analytics' / channel_dir / 'discrimination' / f"{channel_dir}_discrimination_{date}_12-15.csv"
+csv_file = Path(data_root) / 'analytics' / channel_dir / 'discrimination' / f"{channel_dir}_discrimination_{date}.csv"
 ```
 
 ### 2. API Reference Contract
@@ -75,7 +75,7 @@ def detect_timing_tones(
 - Independent discrimination methods
 
 ### 4. SegmentWriter Protocol Contract
-**File:** `src/signal_recorder/recording_session.py`  
+**File:** `src/grape_recorder/core/recording_session.py`  
 **Purpose:** HOW applications implement storage
 
 **Protocol Definition:**
@@ -101,7 +101,7 @@ class SegmentWriter(Protocol):
         ...
 ```
 
-**Example Implementation:** `GrapeNPZWriter` in `grape_npz_writer.py`
+**Example Implementation:** See `src/grape_recorder/grape/` modules
 
 **When to Implement:**
 - Creating a new output format (WAV, Digital RF, HDF5, etc.)
