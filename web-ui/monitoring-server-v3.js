@@ -2564,7 +2564,7 @@ app.post('/api/v1/spectrograms/regenerate', async (req, res) => {
     
     // Build Python command
     const pythonScript = `
-from src.grape_recorder.grape.carrier_spectrogram import generate_all_channel_spectrograms, CarrierSpectrogramGenerator
+from grape_recorder.grape.carrier_spectrogram import generate_all_channel_spectrograms, CarrierSpectrogramGenerator
 from pathlib import Path
 import json
 
@@ -2621,7 +2621,7 @@ function startSpectrogramAutoRegen() {
       const receiverGrid = config.recorder?.receiver_grid || config.recorder?.station_grid || 'EM28ww';
       
       const pythonScript = `
-from src.grape_recorder.grape.carrier_spectrogram import generate_all_channel_spectrograms
+from grape_recorder.grape.carrier_spectrogram import generate_all_channel_spectrograms
 from pathlib import Path
 generate_all_channel_spectrograms(Path('${dataRoot}'), '${receiverGrid}', '${date}')
 print('Spectrograms regenerated')

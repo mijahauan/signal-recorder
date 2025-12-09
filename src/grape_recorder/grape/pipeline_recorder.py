@@ -83,6 +83,12 @@ class PipelineRecorderConfig:
     blocktime_ms: float = 20.0  # ka9q-radio default is 20ms = 400 samples @ 20kHz
     max_gap_seconds: float = 60.0
     
+    # Encoding type: "float32" or "int16" - affects samples per packet calculation
+    # Float32: 8 bytes/sample, Int16: 4 bytes/sample
+    # MTU ~1500 bytes - 12 byte RTP header = ~1440 bytes payload
+    # Float32: 1440/8 = 180 samples, Int16: 1440/4 = 360 samples
+    encoding: str = "float32"
+    
     # Phase 1 settings
     raw_archive_compression: str = 'gzip'
     raw_archive_file_duration_sec: int = 3600
@@ -98,8 +104,20 @@ class PipelineRecorderConfig:
     
     @property
     def samples_per_packet(self) -> int:
-        """Calculate samples per RTP packet"""
-        return int(self.sample_rate * self.blocktime_ms / 1000)
+        """Calculate samples per RTP packet based on encoding type.
+        
+        Float32 encoding uses 8 bytes per IQ sample, int16 uses 4 bytes.
+        With typical MTU ~1500 and RTP header 12 bytes, payload is ~1440 bytes.
+        """
+        # MTU-based calculation for typical ethernet
+        mtu_payload = 1440  # bytes (1500 MTU - 12 RTP header - 48 UDP/IP overhead margin)
+        
+        if self.encoding.lower() in ('float32', 'float', 'f32'):
+            bytes_per_sample = 8  # float32 I + float32 Q
+        else:
+            bytes_per_sample = 4  # int16 I + int16 Q
+        
+        return mtu_payload // bytes_per_sample
     
     @property
     def max_gap_samples(self) -> int:
@@ -335,20 +353,23 @@ class PipelineRecorder:
                 
             elif 96 <= payload_type <= 127:
                 # Dynamic payload type - auto-detect format
-                # Try int16 first (more common, 4 bytes per IQ sample)
-                if len(payload) % 4 == 0:
-                    samples_int16 = np.frombuffer(payload, dtype=np.int16)
-                    max_val = np.max(np.abs(samples_int16))
-                    # If values look like int16 audio (100-40000 range), use int16
-                    if 100 < max_val < 40000:
+                # Try float32 first (8 bytes per IQ sample) - more reliable detection
+                if len(payload) % 8 == 0:
+                    samples_float = np.frombuffer(payload, dtype=np.float32)
+                    max_float = np.nanmax(np.abs(samples_float))
+                    # Float32 audio has small values (typically < 1.0)
+                    # Int16 misinterpreted as float32 gives huge/tiny/nan values
+                    if 1e-10 < max_float < 10.0:
+                        samples = samples_float
+                    elif len(payload) % 4 == 0:
+                        # Fallback to int16
+                        samples_int16 = np.frombuffer(payload, dtype=np.int16)
                         samples = samples_int16.astype(np.float32) / 32768.0
-                    elif len(payload) % 8 == 0:
-                        # Try float32
-                        samples = np.frombuffer(payload, dtype=np.float32)
                     else:
-                        samples = samples_int16.astype(np.float32) / 32768.0
-                elif len(payload) % 8 == 0:
-                    samples = np.frombuffer(payload, dtype=np.float32)
+                        samples = samples_float  # Use float32 anyway
+                elif len(payload) % 4 == 0:
+                    samples_int16 = np.frombuffer(payload, dtype=np.int16)
+                    samples = samples_int16.astype(np.float32) / 32768.0
                 else:
                     return None
             else:
