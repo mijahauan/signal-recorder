@@ -50,52 +50,6 @@
       font-weight: 500;
     }
     
-    .summary-banner {
-      background: var(--surface);
-      border: 1px solid var(--surface-border);
-      padding: var(--spacing-lg);
-      border-radius: var(--radius-lg);
-      margin-bottom: var(--spacing-lg);
-    }
-    
-    .summary-banner h2 {
-      font-size: 16px;
-      margin-bottom: var(--spacing-md);
-      color: var(--accent-light);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    
-    .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: var(--spacing-md);
-    }
-    
-    .summary-item {
-      padding: var(--spacing-md);
-      background: rgba(15, 23, 42, 0.4);
-      border-radius: var(--radius-md);
-      border: 1px solid var(--surface-border);
-    }
-    
-    .summary-label {
-      font-size: 11px;
-      color: var(--accent-light);
-      margin-bottom: var(--spacing-xs);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    
-    .summary-value {
-      font-size: 20px;
-      font-weight: 600;
-      color: var(--text-primary);
-    }
-    
-    .status-good { color: var(--success); }
-    .status-warning { color: var(--warning); }
-    .status-critical { color: var(--error); }
     
     .alerts {
       margin-top: var(--spacing-md);
@@ -292,7 +246,6 @@
       </div>
     </div>
   
-    <div id="summary-banner"></div>
     <div id="channel-detail"></div>
     <div id="loading" class="loading">Loading...</div>
   </div>
@@ -418,7 +371,6 @@
     // Channel selection
     document.getElementById('channel-picker').addEventListener('change', async (e) => {
       currentChannel = e.target.value;
-      await renderChannelQuality();  // Update quality metrics for new channel
       renderSelectedChannel();
     });
     
@@ -476,7 +428,6 @@
         const data = await response.json();
         allChannels = data.channels;
         populateChannelPicker(allChannels);
-        await renderChannelQuality();
         renderSelectedChannel();
         document.getElementById('last-update').textContent = UTCTime.now() + ' UTC';
         document.getElementById('loading').style.display = 'none';
@@ -514,192 +465,6 @@
       return null;
     }
     
-    // Render channel-specific quality metrics with gap information
-    async function renderChannelQuality() {
-      const ch = allChannels.find(c => c.name === currentChannel);
-      if (!ch) {
-        document.getElementById('summary-banner').innerHTML = '';
-        return;
-      }
-      
-      // Fetch gap data for this channel
-      await fetchChannelGaps();
-      
-      // Determine coverage status
-      const coverage = channelGapData?.completeness_pct ?? 100;
-      let coverageClass = 'status-good';
-      let coverageIcon = '✅';
-      if (coverage < 90) {
-        coverageClass = 'status-critical';
-        coverageIcon = '❌';
-      } else if (coverage < 98) {
-        coverageClass = 'status-warning';
-        coverageIcon = '⚠️';
-      }
-      
-      const totalGaps = channelGapData?.total_gaps ?? 0;
-      const totalGapMinutes = channelGapData?.total_gap_minutes ?? 0;
-      const longestGap = channelGapData?.longest_gap_minutes ?? 0;
-      const gaps = channelGapData?.gaps ?? [];
-      
-      // Format date for display
-      const formattedDate = currentDate.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
-      
-      let html = `
-        <div class="summary-banner">
-          <h2>📊 ${ch.name} Quality - ${formattedDate}</h2>
-          <div class="summary-grid">
-            <div class="summary-item">
-              <div class="summary-label">Data Coverage</div>
-              <div class="summary-value ${coverageClass}">${coverageIcon} ${coverage.toFixed(1)}%</div>
-            </div>
-            <div class="summary-item">
-              <div class="summary-label">Gap Events</div>
-              <div class="summary-value">${totalGaps.toLocaleString()}</div>
-            </div>
-            <div class="summary-item">
-              <div class="summary-label">Total Gap Time</div>
-              <div class="summary-value">${formatGapDuration(totalGapMinutes)}</div>
-            </div>
-            <div class="summary-item">
-              <div class="summary-label">Longest Gap</div>
-              <div class="summary-value">${formatGapDuration(longestGap)}</div>
-            </div>
-          </div>
-      `;
-      
-      // Show significant gaps (>= 5 minutes) that explain black bars in spectrogram
-      const significantGaps = gaps.filter(g => g.duration_minutes >= 5).slice(0, 20);
-      
-      if (significantGaps.length > 0) {
-        html += `
-          <div class="gap-timeline">
-            <div style="font-size: 12px; color: var(--accent-light); margin-bottom: var(--spacing-sm); text-transform: uppercase;">
-              Significant Gaps (≥5 min) - explains black bars in spectrogram
-            </div>
-        `;
-        
-        significantGaps.forEach(gap => {
-          const time = UTCTime.formatTime(gap.start_time).substring(0, 5);  // HH:MM
-          const severityClass = gap.severity === 'high' ? 'high' : (gap.severity === 'medium' ? 'medium' : 'low');
-          html += `
-            <div class="gap-item">
-              <span class="gap-time">${time} UTC</span>
-              <span class="gap-duration ${severityClass}">${formatGapDuration(gap.duration_minutes)}</span>
-            </div>
-          `;
-        });
-        
-        const allSignificant = gaps.filter(g => g.duration_minutes >= 5);
-        if (allSignificant.length > 20) {
-          html += `<div class="gap-item" style="color: var(--text-muted);">... and ${allSignificant.length - 20} more</div>`;
-        }
-        
-        html += '</div>';
-      } else if (totalGaps === 0 && coverage >= 99) {
-        html += `<div class="no-gaps">✅ No data gaps detected for this date</div>`;
-      } else if (significantGaps.length === 0 && gaps.length > 0) {
-        html += `<div class="no-gaps">✅ All gaps are minor (<5 minutes)</div>`;
-      }
-      
-      // Add RTP-level gap analysis (network packet loss)
-      const rtpChannel = rtpGapData?.channels?.find(c => c.channel === currentChannel);
-      if (rtpChannel) {
-        const rtpCompleteness = rtpChannel.completeness_pct ?? 100;
-        const rtpGapEvents = rtpChannel.total_gap_events ?? 0;
-        const rtpDurationMs = rtpChannel.total_duration_ms ?? 0;
-        const rtpAvgGap = rtpChannel.avg_gap_samples ?? 0;
-        const rtpLargestGap = rtpChannel.largest_gap_samples ?? 0;
-        
-        // Determine RTP status
-        let rtpStatusClass = 'status-good';
-        let rtpIcon = '✅';
-        if (rtpCompleteness < 99) {
-          rtpStatusClass = 'status-critical';
-          rtpIcon = '❌';
-        } else if (rtpCompleteness < 99.9) {
-          rtpStatusClass = 'status-warning';
-          rtpIcon = '⚠️';
-        }
-        
-        html += `
-          <div class="rtp-gap-section" style="margin-top: var(--spacing-md); padding-top: var(--spacing-md); border-top: 1px solid var(--border);">
-            <div style="font-size: 12px; color: var(--accent-light); margin-bottom: var(--spacing-sm); text-transform: uppercase;">
-              🔌 RTP Network Quality (packet loss → zero-filled samples)
-            </div>
-            <div class="summary-grid">
-              <div class="summary-item">
-                <div class="summary-label">RTP Completeness</div>
-                <div class="summary-value ${rtpStatusClass}">${rtpIcon} ${rtpCompleteness.toFixed(2)}%</div>
-              </div>
-              <div class="summary-item">
-                <div class="summary-label">Gap Events</div>
-                <div class="summary-value">${rtpGapEvents.toLocaleString()}</div>
-              </div>
-              <div class="summary-item">
-                <div class="summary-label">Total Lost</div>
-                <div class="summary-value">${formatRtpDuration(rtpDurationMs)}</div>
-              </div>
-              <div class="summary-item">
-                <div class="summary-label">Avg Gap</div>
-                <div class="summary-value">${formatSamples(rtpAvgGap)}</div>
-              </div>
-            </div>
-        `;
-        
-        // Show recent RTP gaps if any
-        const recentGaps = rtpChannel.recent_gaps || [];
-        if (recentGaps.length > 0) {
-          html += `
-            <div class="gap-timeline" style="margin-top: var(--spacing-sm);">
-              <div style="font-size: 11px; color: var(--text-muted); margin-bottom: var(--spacing-xs);">
-                Recent packet loss events (samples zero-filled):
-              </div>
-          `;
-          recentGaps.slice(0, 5).forEach(gap => {
-            const time = gap.file_timestamp.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$4:$5:$6');
-            html += `
-              <div class="gap-item">
-                <span class="gap-time">${time} UTC</span>
-                <span class="gap-duration low">${gap.samples_filled.toLocaleString()} samples (${gap.duration_ms}ms)</span>
-              </div>
-            `;
-          });
-          if (recentGaps.length > 5) {
-            html += `<div class="gap-item" style="color: var(--text-muted);">... and ${recentGaps.length - 5} more in recent files</div>`;
-          }
-          html += '</div>';
-        } else if (rtpGapEvents === 0) {
-          html += `<div class="no-gaps" style="margin-top: var(--spacing-sm);">✅ No RTP packet loss detected</div>`;
-        }
-        
-        html += '</div>';
-      }
-      
-      html += '</div>';
-      document.getElementById('summary-banner').innerHTML = html;
-    }
-    
-    // Format RTP duration (milliseconds)
-    function formatRtpDuration(ms) {
-      if (ms < 1000) {
-        return `${ms.toFixed(0)}ms`;
-      } else if (ms < 60000) {
-        return `${(ms / 1000).toFixed(1)}s`;
-      } else {
-        const mins = Math.floor(ms / 60000);
-        const secs = Math.round((ms % 60000) / 1000);
-        return `${mins}m ${secs}s`;
-      }
-    }
-    
-    // Format sample count
-    function formatSamples(samples) {
-      if (samples === 0) return '0';
-      if (samples < 1000) return `${samples}`;
-      if (samples < 1000000) return `${(samples / 1000).toFixed(1)}k`;
-      return `${(samples / 1000000).toFixed(2)}M`;
-    }
     
     // Format gap duration for display
     function formatGapDuration(minutes) {

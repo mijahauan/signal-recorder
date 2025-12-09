@@ -312,26 +312,51 @@ class PipelineRecorder:
             logger.error(f"{self.config.description}: Packet processing error: {e}", exc_info=True)
     
     def _decode_payload(self, payload_type: int, payload: bytes) -> Optional[np.ndarray]:
-        """Decode RTP payload to complex IQ samples."""
+        """Decode RTP payload to complex IQ samples.
+        
+        Handles:
+        - PT 97, 120: int16 IQ (ka9q standard)
+        - PT 11: float32 IQ (ka9q float mode)
+        - PT 96-127 (dynamic): Auto-detect based on payload size and values
+        """
         try:
             if payload_type in (120, 97):
-                # int16 IQ format
+                # int16 IQ format (known)
                 if len(payload) % 4 != 0:
                     return None
                 samples_int16 = np.frombuffer(payload, dtype=np.int16)
                 samples = samples_int16.astype(np.float32) / 32768.0
                 
             elif payload_type == 11:
-                # float32 IQ format
+                # float32 IQ format (known)
                 if len(payload) % 8 != 0:
                     return None
                 samples = np.frombuffer(payload, dtype=np.float32)
                 
-            else:
-                # Unknown - try float32
-                if len(payload) % 8 != 0:
+            elif 96 <= payload_type <= 127:
+                # Dynamic payload type - auto-detect format
+                # Try int16 first (more common, 4 bytes per IQ sample)
+                if len(payload) % 4 == 0:
+                    samples_int16 = np.frombuffer(payload, dtype=np.int16)
+                    max_val = np.max(np.abs(samples_int16))
+                    # If values look like int16 audio (100-40000 range), use int16
+                    if 100 < max_val < 40000:
+                        samples = samples_int16.astype(np.float32) / 32768.0
+                    elif len(payload) % 8 == 0:
+                        # Try float32
+                        samples = np.frombuffer(payload, dtype=np.float32)
+                    else:
+                        samples = samples_int16.astype(np.float32) / 32768.0
+                elif len(payload) % 8 == 0:
+                    samples = np.frombuffer(payload, dtype=np.float32)
+                else:
                     return None
-                samples = np.frombuffer(payload, dtype=np.float32)
+            else:
+                # Unknown payload type - try int16 as default
+                if len(payload) % 4 != 0:
+                    return None
+                samples_int16 = np.frombuffer(payload, dtype=np.int16)
+                samples = samples_int16.astype(np.float32) / 32768.0
             
             # Convert interleaved I/Q to complex
             i_samples = samples[0::2]
