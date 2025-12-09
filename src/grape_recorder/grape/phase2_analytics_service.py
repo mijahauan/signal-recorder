@@ -1213,12 +1213,12 @@ class Phase2AnalyticsService:
                 conv = self.last_convergence_result
                 status['channels'][self.channel_name]['convergence'] = {
                     'state': conv.state.value,
-                    'is_locked': conv.is_locked,
-                    'sample_count': conv.sample_count,
-                    'uncertainty_ms': conv.uncertainty_ms if conv.uncertainty_ms != float('inf') else None,
-                    'convergence_progress': conv.convergence_progress,
-                    'residual_ms': conv.residual_ms,
-                    'is_anomaly': conv.is_anomaly
+                    'is_locked': bool(conv.is_locked),  # Convert numpy bool to Python bool
+                    'sample_count': int(conv.sample_count),
+                    'uncertainty_ms': float(conv.uncertainty_ms) if conv.uncertainty_ms != float('inf') else None,
+                    'convergence_progress': float(conv.convergence_progress),
+                    'residual_ms': float(conv.residual_ms) if conv.residual_ms is not None else None,
+                    'is_anomaly': bool(conv.is_anomaly)  # Convert numpy bool to Python bool
                 }
                 # Also expose uncertainty at channel level for consensus weighting
                 status['channels'][self.channel_name]['uncertainty_ms'] = (

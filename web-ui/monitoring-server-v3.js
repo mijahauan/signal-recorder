@@ -153,14 +153,27 @@ async function getRadiodStatus(paths) {
     const radiodStatusFile = join(paths.getStateDir(), 'radiod-status.json');
     
     if (!fs.existsSync(radiodStatusFile)) {
-      // Fallback: try to detect radiod process directly
+      // Fallback: try to detect radiod process directly with uptime
       try {
-        const result = execSync('pgrep -x radiod', { encoding: 'utf8' }).trim();
-        const running = result.length > 0;
+        // Get PID and calculate uptime from process start time
+        const pid = execSync('pgrep -x radiod', { encoding: 'utf8' }).trim();
+        const running = pid.length > 0;
+        
+        let uptime_seconds = 0;
+        if (running) {
+          try {
+            // Get process start time and calculate uptime
+            const etimes = execSync(`ps -o etimes= -p ${pid.split('\n')[0]}`, { encoding: 'utf8' }).trim();
+            uptime_seconds = parseInt(etimes, 10) || 0;
+          } catch (e) {
+            // Fallback if ps fails
+          }
+        }
+        
         return {
           running,
           method: 'pgrep_fallback',
-          uptime_seconds: 0,
+          uptime_seconds,
           health: running ? 'unknown' : 'critical'
         };
       } catch (e) {
@@ -293,7 +306,8 @@ async function getAnalyticsServiceStatus(paths) {
           const statusTimestamp = new Date(status.timestamp).getTime() / 1000;
           const age = Date.now() / 1000 - statusTimestamp;
           
-          if (age < 120) { // Consider active if updated within 2 minutes
+          // Consider active if updated within 5 minutes (analytics only writes when processing data)
+          if (age < 300) {
             channelsProcessing++;
             
             if (statusTimestamp > newestTimestamp) {
@@ -313,7 +327,7 @@ async function getAnalyticsServiceStatus(paths) {
     }
     
     const age = newestTimestamp > 0 ? (Date.now() / 1000 - newestTimestamp) : Infinity;
-    const running = channelsProcessing > 0 && age < 120;
+    const running = channelsProcessing > 0 && age < 300;
     
     return {
       running,
