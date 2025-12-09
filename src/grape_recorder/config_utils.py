@@ -3,10 +3,30 @@ Configuration utilities for standardized path management
 
 Provides centralized path resolution with backward compatibility
 and support for environment variable expansion.
+
+DEPRECATION NOTICE (Issue 2.3 - 2025-12-08):
+    PathResolver is DEPRECATED. Use GRAPEPaths from grape_recorder.paths instead.
+    
+    PathResolver has issues:
+    - Uses different path structure than GRAPEPaths (adds /data suffix)
+    - Has separate development_mode flag that can conflict with config mode
+    - Not synchronized with web-ui JavaScript paths
+    
+    Migration:
+        # Old (deprecated):
+        from grape_recorder.config_utils import PathResolver
+        resolver = PathResolver(config)
+        data_dir = resolver.get_data_root()
+        
+        # New (preferred):
+        from grape_recorder.paths import get_paths
+        paths = get_paths(config_path='config/grape-config.toml')
+        data_dir = paths.data_root
 """
 
 import os
 import logging
+import warnings
 from pathlib import Path
 from typing import Dict, Optional
 from string import Template
@@ -56,7 +76,16 @@ class PathResolver:
         Args:
             config: Parsed TOML configuration
             development_mode: Use development paths instead of system paths
+        
+        .. deprecated:: 2025-12-08
+            Use :class:`grape_recorder.paths.GRAPEPaths` instead.
         """
+        warnings.warn(
+            "PathResolver is deprecated. Use GRAPEPaths from grape_recorder.paths instead. "
+            "See config_utils.py module docstring for migration guide.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         self.config = config
         self.development_mode = development_mode
         self._resolved_paths = {}

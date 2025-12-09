@@ -6,13 +6,33 @@ Primary Instruction:  In this context you will perform a critical review of the 
 
 ---
 
-## 🚨 NEXT PRIORITY: DATA FLOW CONTRACT ENFORCEMENT
+## ✅ COMPLETED: DATA FLOW CONTRACT ENFORCEMENT
 
 **Purpose:** Critically examine how data is written and read across the GRAPE Recorder system, identifying mismatches between producers and consumers.
 
 **Author:** Michael James Hauan (AC0G)  
 **Date:** 2025-12-08  
-**Status:** 🔴 Critical Issue - Producers and Consumers Out of Sync
+**Status:** ✅ Complete - 10 Issues Identified and Fixed
+
+### Summary (Session 2025-12-08)
+
+| ID | Severity | Status | Description |
+|----|----------|--------|-------------|
+| 1.1 | HIGH | ✅ FIXED | Calibration per-station vs per-broadcast key mismatch |
+| 1.2 | HIGH | ✅ FIXED | State file version not validated on load |
+| 1.3 | HIGH | ✅ FIXED | Kalman state loaded without sanity checks |
+| 2.1 | MEDIUM | ✅ FIXED | CSV column vs API field name documented |
+| 2.2 | MEDIUM | ✅ FIXED | Python discover_channels() now checks all phases |
+| 2.3 | MEDIUM | ✅ FIXED | PathResolver deprecated with warning |
+| 2.4 | MEDIUM | ✅ FIXED | Mode coordination documented, reset script added |
+| 2.5 | MEDIUM | ✅ FIXED | Storage quota implications documented |
+| 3.1 | LOW | ✅ FIXED | Centralized version module created |
+| 3.2 | LOW | ✅ FIXED | Standardized UTC timestamps |
+
+### New Files Created
+- `src/grape_recorder/version.py` - Centralized version and timestamp utilities
+- `docs/STATE_FILES.md` - State file documentation and reset procedures
+- `scripts/reset-state.sh` - Safe state reset script
 
 ---
 
@@ -209,74 +229,243 @@ The critical review identified **17 issues**, of which **16 were fixed** and **1
 
 ---
 
-## NEXT PRIORITY: WEB UI ↔ ANALYTICS SYNCHRONIZATION
+## 🚨 NEXT PRIORITY: PHASE 3 PIPELINE IMPLEMENTATION
 
-The critique fixes changed several APIs that the web UI depends on. The next session should focus on:
+**Purpose:** Implement the Phase 3 derived products pipeline - decimation, spectrograms, power graphs, and GRAPE/PSWS upload.
 
-### 1. API Contract Changes
+**Author:** Michael James Hauan (AC0G)  
+**Date:** 2025-12-08 (Next Session)  
+**Status:** 🔴 Not Started
 
-| Component | Old API | New API |
-|-----------|---------|---------|
-| `Phase2Result` | `quality_grade: str` | `uncertainty_ms: float`, `confidence: float` |
-| `BroadcastCalibration` | Per-station | Per-broadcast (`station_frequency`) |
-| Status JSON | `quality_grade` only | Both `uncertainty_ms` AND `quality_grade` |
+---
 
-### 2. Files Requiring Web UI Updates
+### PHASE 3 OVERVIEW
 
-**Backend (Python) - Already Fixed:**
-- `phase2_temporal_engine.py` - Changed `Phase2Result` dataclass
-- `phase2_analytics_service.py` - Status JSON now includes both metrics
-- `clock_offset_series.py` - Derives grade from uncertainty
+Phase 3 produces derived products from Phase 2 analytical data:
 
-**Frontend (JavaScript) - May Need Updates:**
-| File | What to Check |
-|------|---------------|
-| `timing-status-widget.js` | `renderDClock()` uses `quality_grade` |
-| `timing-analysis-helpers.js` | Maps grade → quality level |
-| `transmission-time-helpers.js` | `getAllPhase2Status()`, `getBestDClock()` |
-| `timing-dashboard-enhanced.html` | Grade display, sorting by grade |
-| `monitoring-server-v3.js` | Grade distribution counts |
-
-### 3. Recommended Verification Steps
-
-```bash
-# 1. Verify analytics service writes correct status JSON
-cat /tmp/grape-test/phase2/WWV_10_MHz/status/analytics-service-status.json | jq '.channels["WWV 10 MHz"]'
-# Should show: d_clock_ms, quality_grade, uncertainty_ms, confidence
-
-# 2. Test API endpoints
-curl -s http://localhost:3000/api/v1/timing/phase2-status | jq '.channels'
-curl -s http://localhost:3000/api/v1/timing/best-d-clock | jq
-
-# 3. Check web UI rendering
-# Navigate to /timing-dashboard-enhanced.html
-# - Grade badges should show A/B/C/D
-# - D_clock values should be displayed
-# - Uncertainty values should be shown (if UI updated)
-
-# 4. Test fusion endpoint
-curl -s http://localhost:3000/api/v1/timing/fusion | jq '.calibration'
-# Calibration keys should be station_frequency format (e.g., "WWV_10.00")
+```
+Phase 2 Output (20 kHz IQ)
+    ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    PHASE 3 PIPELINE                         │
+├─────────────────────────────────────────────────────────────┤
+│  1. Decimation: 20 kHz → 10 Hz (carrier amplitude/phase)    │
+│  2. Spectrogram: Daily carrier frequency/amplitude plot      │
+│  3. Power Graphs: Carrier power with solar zenith overlay   │
+│  4. Digital RF Product: 24-hour UTC day archive (HamSCI)    │
+│  5. Upload: GRAPE/PSWS data repository submission           │
+└─────────────────────────────────────────────────────────────┘
+    ↓
+products/{CHANNEL}/
+├── decimated/YYYYMMDD.bin         # 10 Hz carrier data
+├── spectrograms/YYYYMMDD.png      # Daily spectrogram
+├── power/YYYYMMDD_power.png       # Power graph + solar zenith
+└── drf/YYYYMMDD/                  # Digital RF for upload
 ```
 
-### 4. Optional Web UI Enhancements
+---
 
-Consider updating UI to show uncertainty instead of (or alongside) grades:
+### COMPONENT 1: DECIMATION (20 kHz → 10 Hz)
 
-```javascript
-// timing-status-widget.js - Enhanced renderDClock
-renderDClock(dClock) {
-    // Show both grade (for quick glance) and uncertainty (for detail)
-    const uncertaintyStr = dClock.uncertainty_ms 
-        ? `± ${dClock.uncertainty_ms.toFixed(1)} ms` 
-        : '';
-    
-    return `
-        <div>Grade: ${dClock.quality_grade}</div>
-        <div>Uncertainty: ${uncertaintyStr}</div>
-    `;
-}
+**Goal:** Extract carrier amplitude and phase at 10 Hz for efficient storage and analysis.
+
+**Input:**
+- `raw_archive/{CHANNEL}/` - 20 kHz complex IQ from Phase 1
+
+**Output:**
+- `products/{CHANNEL}/decimated/YYYYMMDD.bin` - 10 Hz carrier data
+
+**Implementation Notes:**
+- Use scipy.signal.decimate or polyphase filter
+- Extract carrier: mix to baseband, lowpass filter, decimate
+- Output format: binary float32 (amplitude, phase) pairs
+- File size: ~7 MB/day/channel (10 Hz × 86400 sec × 8 bytes)
+
+**Existing Code to Review:**
+| File | Status | Notes |
+|------|--------|-------|
+| `archive/legacy-grape-modules/decimator.py` | ⚠️ Legacy | May have useful algorithms |
+| `scripts/analyze_decimation_quality.py` | ✅ Active | Quality analysis script |
+
+---
+
+### COMPONENT 2: CARRIER SPECTROGRAM
+
+**Goal:** Generate daily spectrogram showing carrier frequency/amplitude variations.
+
+**Input:**
+- `products/{CHANNEL}/decimated/YYYYMMDD.bin` - 10 Hz carrier data
+
+**Output:**
+- `products/{CHANNEL}/spectrograms/YYYYMMDD_spectrogram.png`
+
+**Implementation Notes:**
+- X-axis: UTC time (00:00 - 24:00)
+- Y-axis: Frequency offset from carrier (±0.5 Hz typical)
+- Color: Signal amplitude (dB)
+- Show ionospheric Doppler shifts, propagation mode changes
+
+**Existing Code to Review:**
+| File | Status | Notes |
+|------|--------|-------|
+| `scripts/generate_spectrograms.py` | ⚠️ Archive | Check for reuse |
+| `scripts/auto-generate-spectrograms.sh` | ✅ Active | Automation script |
+| `docs/features/AUTOMATIC_SPECTROGRAM_GENERATION.md` | ✅ Reference | Design doc |
+
+---
+
+### COMPONENT 3: POWER GRAPHS WITH SOLAR ZENITH OVERLAY
+
+**Goal:** Visualize carrier power alongside solar zenith angle for ionospheric correlation.
+
+**Input:**
+- `products/{CHANNEL}/decimated/YYYYMMDD.bin` - 10 Hz carrier data
+- Station coordinates from `grape-config.toml`
+- Transmitter coordinates (WWV: 40.68°N, 105.04°W)
+
+**Output:**
+- `products/{CHANNEL}/power/YYYYMMDD_power.png`
+
+**Implementation Notes:**
+- Primary Y-axis: Carrier power (dB)
+- Secondary Y-axis: Solar zenith angle (degrees)
+- Solar zenith calculation: `from astropy.coordinates import get_sun, AltAz`
+- Show sunrise/sunset transitions, D-layer absorption effects
+
+**Solar Zenith Calculation:**
+```python
+from astropy.time import Time
+from astropy.coordinates import EarthLocation, AltAz, get_sun
+
+def solar_zenith(lat, lon, utc_time):
+    """Calculate solar zenith angle at given location and time."""
+    loc = EarthLocation(lat=lat, lon=lon)
+    t = Time(utc_time)
+    altaz = get_sun(t).transform_to(AltAz(obstime=t, location=loc))
+    return 90.0 - altaz.alt.deg  # zenith = 90 - altitude
 ```
+
+**Dependencies to Add:**
+- `astropy` - Solar position calculations
+
+---
+
+### COMPONENT 4: DIGITAL RF PRODUCT (24-HOUR UTC DAY)
+
+**Goal:** Package 24-hour UTC day of data in Digital RF format for HamSCI PSWS compatibility.
+
+**Input:**
+- `raw_archive/{CHANNEL}/` - 20 kHz complex IQ
+
+**Output:**
+- `products/{CHANNEL}/drf/YYYYMMDD/` - Digital RF directory structure
+
+**Implementation Notes:**
+- Digital RF format: HDF5 files with specific structure
+- Time boundary: 00:00:00 UTC to 23:59:59 UTC
+- Metadata: Station info, receiver config, GPSDO status
+- Use existing `digital_rf` library
+
+**Existing Code to Review:**
+| File | Status | Notes |
+|------|--------|-------|
+| `src/grape_recorder/core/drf_writer.py` | ✅ Active | Real-time DRF writer |
+| `archive/legacy-grape-modules/core_npz_writer.py` | ⚠️ Legacy | NPZ alternative |
+
+---
+
+### COMPONENT 5: GRAPE/PSWS UPLOAD
+
+**Goal:** Upload completed daily products to the GRAPE data repository.
+
+**Input:**
+- `products/{CHANNEL}/drf/YYYYMMDD/` - Digital RF package
+- `products/{CHANNEL}/spectrograms/YYYYMMDD.png`
+
+**Destination:**
+- GRAPE/PSWS data repository (TBD - endpoint configuration)
+
+**Implementation Notes:**
+- Upload after 00:00 UTC (previous day complete)
+- Verify file integrity before upload (checksums)
+- Track upload state to prevent duplicates
+- Retry logic for network failures
+
+**Existing Code to Review:**
+| File | Status | Notes |
+|------|--------|-------|
+| `wsprdaemon/upload-client-utils.sh` | ✅ Active | Upload utilities |
+| `systemd/grape-daily-upload.service` | ✅ Active | Systemd timer |
+| `systemd/grape-daily-upload.timer` | ✅ Active | Daily trigger |
+
+**Configuration to Check:**
+| File | Setting | Purpose |
+|------|---------|---------|
+| `grape-config.toml` | `[uploader]` section | Upload credentials/endpoint |
+| `config/environment` | `GRAPE_UPLOAD_*` | Environment variables |
+
+---
+
+### DATA CONTRACTS FOR PHASE 3
+
+| Producer | Output Path | Consumer | Contract |
+|----------|-------------|----------|----------|
+| Decimator | `products/{CH}/decimated/YYYYMMDD.bin` | Spectrogram Generator | Binary float32 pairs |
+| Decimator | `products/{CH}/decimated/YYYYMMDD.json` | Uploader | Metadata (sample rate, start time) |
+| Spectrogram Gen | `products/{CH}/spectrograms/YYYYMMDD.png` | Web UI, Uploader | PNG image |
+| Power Graph Gen | `products/{CH}/power/YYYYMMDD_power.png` | Web UI | PNG with solar overlay |
+| DRF Packager | `products/{CH}/drf/YYYYMMDD/` | Uploader | Digital RF structure |
+| Uploader | `products/{CH}/upload_state.json` | Uploader | Prevents re-upload |
+
+---
+
+### CRITIQUE CHECKLIST FOR PHASE 3
+
+#### 1. Decimation Quality
+- [ ] Does the filter preserve carrier phase information?
+- [ ] Is anti-aliasing sufficient (stopband attenuation > 60 dB)?
+- [ ] Are edge effects handled at day boundaries?
+
+#### 2. Spectrogram Accuracy
+- [ ] Is time axis aligned to UTC?
+- [ ] Does frequency axis match actual carrier offset range?
+- [ ] Are colormaps appropriate for the data range?
+
+#### 3. Solar Zenith Calculation
+- [ ] Are coordinates correct for both receiver AND transmitter?
+- [ ] Is the calculation for the MIDPOINT of the propagation path?
+- [ ] Are time zones handled correctly (UTC throughout)?
+
+#### 4. Digital RF Compliance
+- [ ] Does output match HamSCI PSWS format specification?
+- [ ] Are all required metadata fields present?
+- [ ] Is the file structure compatible with existing tools?
+
+#### 5. Upload Robustness
+- [ ] Is there retry logic for transient failures?
+- [ ] Are credentials stored securely (not in code)?
+- [ ] Is upload state persisted across service restarts?
+
+---
+
+### FILES TO CREATE/MODIFY
+
+**New Files:**
+| File | Purpose |
+|------|---------|
+| `src/grape_recorder/grape/decimator.py` | 20 kHz → 10 Hz decimation |
+| `src/grape_recorder/grape/spectrogram_generator.py` | Daily spectrogram creation |
+| `src/grape_recorder/grape/power_graph_generator.py` | Power + solar zenith plots |
+| `src/grape_recorder/grape/drf_packager.py` | 24-hour DRF packaging |
+| `src/grape_recorder/grape/uploader.py` | GRAPE repository upload |
+| `src/grape_recorder/grape/phase3_pipeline.py` | Pipeline orchestration |
+
+**Files to Update:**
+| File | Change |
+|------|--------|
+| `requirements.txt` | Add `astropy` for solar calculations |
+| `systemd/grape-daily-upload.service` | Update for new pipeline |
+| `grape-config.toml` | Add Phase 3 configuration section |
 
 ---
 

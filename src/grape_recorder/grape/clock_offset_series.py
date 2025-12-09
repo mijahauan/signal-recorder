@@ -80,7 +80,25 @@ FILE FORMATS
 CSV (clock_offset_series.csv):
     - Continuous append-only time series
     - One row per minute
-    - Columns: system_time, utc_time, clock_offset_ms, station, mode, etc.
+    - Primary columns:
+        system_time          - Unix epoch seconds (float)
+        utc_time             - Calculated UTC time (float)
+        minute_boundary_utc  - Minute boundary this relates to (float)
+        clock_offset_ms      - D_clock value in milliseconds (PRIMARY OUTPUT)
+        station              - WWV, WWVH, CHU, or COMBINED
+        frequency_mhz        - Carrier frequency
+        propagation_delay_ms - Calculated propagation delay
+        propagation_mode     - 1F, 2F, GW, etc.
+        n_hops               - Number of ionospheric hops
+        confidence           - 0-1 confidence score
+        uncertainty_ms       - Estimated uncertainty
+        quality_grade        - A, B, C, D, or X
+        snr_db               - Signal-to-noise ratio
+    
+    NAMING CONVENTION NOTE (Issue 2.1 - 2025-12-08):
+        The CSV column is named 'clock_offset_ms' for historical consistency.
+        API responses rename this to 'd_clock_ms' for clarity.
+        Both refer to the same value: D_clock = T_system - T_UTC(NIST)
 
 JSON (clock_offset_{timestamp}.json):
     - Periodic snapshots with full metadata

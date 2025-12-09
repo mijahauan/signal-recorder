@@ -183,6 +183,76 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# STATE FILE VERSION AND VALIDATION (Issues 1.2, 1.3 Fix - 2025-12-08)
+# =============================================================================
+
+# Import centralized version and timestamp utilities (Issues 3.1, 3.2 Fix)
+try:
+    from ..version import STATE_FILE_VERSION, utc_isoformat
+except ImportError:
+    # Fallback for standalone testing
+    STATE_FILE_VERSION = 2
+    from datetime import datetime, timezone
+    def utc_isoformat() -> str:
+        return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+# Sanity thresholds for loaded Kalman state
+MAX_REASONABLE_DRIFT_MS_PER_MIN = 0.1  # GPSDO drift < 0.01 PPM = 0.012 ms/min at 20kHz
+MAX_REASONABLE_OFFSET_MS = 1000.0  # D_clock should be < 100ms typically
+MAX_STATE_AGE_HOURS = 24  # Don't trust state older than 24 hours
+
+
+def validate_kalman_state(kalman: 'KalmanClockTracker', timestamp: Optional[float] = None) -> Tuple[bool, str]:
+    """
+    Validate that loaded Kalman state is physically reasonable.
+    
+    Issue 1.3 Fix (2025-12-08): Prevents corrupted state from poisoning
+    fresh measurements. The Dec 8 bug was caused by a drift_rate of
+    -6.56 ms/min persisted to state file, which caused all new measurements
+    to be rejected as 5-sigma outliers.
+    
+    Args:
+        kalman: KalmanClockTracker instance to validate
+        timestamp: Optional ISO timestamp of when state was saved
+        
+    Returns:
+        (is_valid, reason) tuple
+    """
+    if kalman is None:
+        return True, "No Kalman state to validate"
+    
+    # Check drift rate is physically possible for GPSDO
+    drift_rate = kalman.drift_rate_ms_per_min
+    if abs(drift_rate) > MAX_REASONABLE_DRIFT_MS_PER_MIN:
+        return False, f"Drift rate {drift_rate:.3f} ms/min exceeds GPSDO limit {MAX_REASONABLE_DRIFT_MS_PER_MIN}"
+    
+    # Check offset is in reasonable range
+    offset = kalman.offset_ms
+    if abs(offset) > MAX_REASONABLE_OFFSET_MS:
+        return False, f"Offset {offset:.1f} ms exceeds reasonable limit {MAX_REASONABLE_OFFSET_MS}"
+    
+    # Check covariance matrix is positive definite
+    try:
+        eigenvalues = np.linalg.eigvals(kalman.P)
+        if np.min(eigenvalues) < -1e-10:  # Allow small numerical errors
+            return False, f"Covariance matrix not positive definite (min eigenvalue: {np.min(eigenvalues):.2e})"
+    except np.linalg.LinAlgError:
+        return False, "Covariance matrix decomposition failed"
+    
+    # Check state age if timestamp provided
+    if timestamp is not None:
+        try:
+            from datetime import datetime, timezone
+            state_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+            age_hours = (datetime.now(timezone.utc) - state_time).total_seconds() / 3600
+            if age_hours > MAX_STATE_AGE_HOURS:
+                return False, f"State is {age_hours:.1f} hours old (limit: {MAX_STATE_AGE_HOURS})"
+        except (ValueError, TypeError):
+            pass  # Ignore timestamp parsing errors
+    
+    return True, "State validated"
+
 
 # =============================================================================
 # KALMAN FILTER FOR CLOCK TRACKING (Issue 3.1 Fix)
@@ -856,13 +926,18 @@ class ClockConvergenceModel:
         }
     
     def _save_state(self) -> None:
-        """Persist state to file."""
+        """
+        Persist state to file.
+        
+        Issue 1.2 Fix (2025-12-08): Now uses STATE_FILE_VERSION constant
+        and UTC timestamp for proper version tracking and age validation.
+        """
         if not self.state_file:
             return
         
         state = {
-            'version': 1,
-            'timestamp': datetime.now().isoformat(),
+            'version': STATE_FILE_VERSION,
+            'timestamp': utc_isoformat(),  # Issue 3.2: Use centralized UTC timestamp
             'accumulators': {
                 key: acc.to_dict() 
                 for key, acc in self.accumulators.items()
@@ -877,7 +952,13 @@ class ClockConvergenceModel:
             logger.warning(f"Failed to save convergence state: {e}")
     
     def _load_state(self) -> None:
-        """Load state from file."""
+        """
+        Load state from file with version validation and sanity checks.
+        
+        Issue 1.2 Fix (2025-12-08): Validates state file version before loading.
+        Issue 1.3 Fix (2025-12-08): Validates Kalman filter state is physically
+        reasonable before using it. Corrupted state is discarded.
+        """
         if not self.state_file or not self.state_file.exists():
             return
         
@@ -885,9 +966,50 @@ class ClockConvergenceModel:
             with open(self.state_file, 'r') as f:
                 state = json.load(f)
             
-            for key, data in state.get('accumulators', {}).items():
-                self.accumulators[key] = StationAccumulator.from_dict(data)
+            # Issue 1.2: Version validation
+            file_version = state.get('version', 0)
+            if file_version < STATE_FILE_VERSION:
+                logger.warning(
+                    f"State file version {file_version} < current {STATE_FILE_VERSION}, "
+                    "discarding stale state and starting fresh"
+                )
+                return
             
-            logger.info(f"Loaded convergence state: {len(self.accumulators)} stations")
+            timestamp = state.get('timestamp')
+            loaded_count = 0
+            rejected_count = 0
+            
+            for key, data in state.get('accumulators', {}).items():
+                acc = StationAccumulator.from_dict(data)
+                
+                # Issue 1.3: Validate Kalman state is physically reasonable
+                if acc.kalman is not None:
+                    is_valid, reason = validate_kalman_state(acc.kalman, timestamp)
+                    if not is_valid:
+                        logger.warning(
+                            f"Rejecting corrupted Kalman state for {key}: {reason}. "
+                            "Starting fresh for this station."
+                        )
+                        # Reset the Kalman filter but keep legacy stats
+                        acc.kalman = None
+                        acc.state = ConvergenceState.ACQUIRING
+                        acc.locked_mean_ms = None
+                        acc.locked_uncertainty_ms = None
+                        rejected_count += 1
+                    else:
+                        loaded_count += 1
+                
+                self.accumulators[key] = acc
+            
+            if rejected_count > 0:
+                logger.warning(
+                    f"Loaded {loaded_count} valid, rejected {rejected_count} corrupted "
+                    f"Kalman states from {self.state_file}"
+                )
+            else:
+                logger.info(f"Loaded convergence state: {len(self.accumulators)} stations (all valid)")
+                
+        except json.JSONDecodeError as e:
+            logger.warning(f"Corrupted state file {self.state_file}: {e}. Starting fresh.")
         except Exception as e:
             logger.warning(f"Failed to load convergence state: {e}")

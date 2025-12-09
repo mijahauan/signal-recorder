@@ -4,8 +4,13 @@ GRAPE Path Specification - Three-Phase Pipeline Architecture
 This module provides the canonical path structure for all GRAPE data.
 ALL producers and consumers MUST use these functions to avoid path mismatches.
 
-SYNC VERSION: 2025-12-04-v2-three-phase
+SYNC VERSION: 2025-12-08-v3-discovery-fix
 Must stay synchronized with web-ui/grape-paths.js
+
+Change History:
+  2025-12-08-v3: Issue 2.2 fix - discover_channels() now checks all phases
+  2025-12-04-v2: Three-phase architecture paths
+  2025-11-01-v1: Initial implementation
 
 Three-Phase Architecture:
 
@@ -483,31 +488,52 @@ class GRAPEPaths:
     # Discovery Methods
     # ========================================================================
     
+    # Directories that are not channels (exclude from discovery)
+    _EXCLUDE_DIRS = {'status', 'metadata', 'state', 'logs', 'fusion', 'upload'}
+    
     def discover_channels(self) -> list[str]:
-        """Discover all channels with raw archive data.
+        """Discover all channels from any available data source.
+        
+        Issue 2.2 Fix (2025-12-08): Now checks all three phases (raw_archive,
+        phase2, products) to find channels. Previously only checked raw_archive,
+        which missed channels that had Phase 2/3 data but no raw archive
+        (e.g., after storage quota cleanup).
+        
+        This now matches the JavaScript implementation in grape-paths.js.
         
         Returns:
             List of channel names (human-readable format)
         """
-        # Check new Phase 1 location first
+        channels = set()
+        
+        # Check Phase 1: raw_archive/
         raw_dir = self.get_raw_archive_root()
         if raw_dir.exists():
-            channels = []
             for channel_dir in raw_dir.iterdir():
-                if channel_dir.is_dir():
-                    channels.append(dir_to_channel_name(channel_dir.name))
-            if channels:
-                return sorted(channels)
+                if channel_dir.is_dir() and channel_dir.name not in self._EXCLUDE_DIRS:
+                    channels.add(dir_to_channel_name(channel_dir.name))
         
-        # Fall back to legacy archives directory
-        archives_dir = self.data_root / 'archives'
-        if not archives_dir.exists():
-            return []
+        # Check Phase 2: phase2/
+        phase2_dir = self.get_phase2_root()
+        if phase2_dir.exists():
+            for channel_dir in phase2_dir.iterdir():
+                if channel_dir.is_dir() and channel_dir.name not in self._EXCLUDE_DIRS:
+                    channels.add(dir_to_channel_name(channel_dir.name))
         
-        channels = []
-        for channel_dir in archives_dir.iterdir():
-            if channel_dir.is_dir():
-                channels.append(dir_to_channel_name(channel_dir.name))
+        # Check Phase 3: products/
+        products_dir = self.get_products_root()
+        if products_dir.exists():
+            for channel_dir in products_dir.iterdir():
+                if channel_dir.is_dir() and channel_dir.name not in self._EXCLUDE_DIRS:
+                    channels.add(dir_to_channel_name(channel_dir.name))
+        
+        # Fall back to legacy archives directory if nothing found
+        if not channels:
+            archives_dir = self.data_root / 'archives'
+            if archives_dir.exists():
+                for channel_dir in archives_dir.iterdir():
+                    if channel_dir.is_dir() and channel_dir.name not in self._EXCLUDE_DIRS:
+                        channels.add(dir_to_channel_name(channel_dir.name))
         
         return sorted(channels)
     
@@ -523,7 +549,24 @@ class GRAPEPaths:
         
         channels = []
         for channel_dir in phase2_dir.iterdir():
-            if channel_dir.is_dir():
+            if channel_dir.is_dir() and channel_dir.name not in self._EXCLUDE_DIRS:
+                channels.append(dir_to_channel_name(channel_dir.name))
+        
+        return sorted(channels)
+    
+    def discover_products_channels(self) -> list[str]:
+        """Discover channels with Phase 3 derived products.
+        
+        Returns:
+            List of channel names with Phase 3 products
+        """
+        products_dir = self.get_products_root()
+        if not products_dir.exists():
+            return []
+        
+        channels = []
+        for channel_dir in products_dir.iterdir():
+            if channel_dir.is_dir() and channel_dir.name not in self._EXCLUDE_DIRS:
                 channels.append(dir_to_channel_name(channel_dir.name))
         
         return sorted(channels)

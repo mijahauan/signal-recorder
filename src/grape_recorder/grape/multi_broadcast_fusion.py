@@ -487,23 +487,38 @@ class MultiBroadcastFusion:
         
         return filtered_m, filtered_w, n_rejected
     
+    def _get_broadcast_key(self, station: str, frequency_mhz: float) -> str:
+        """Generate consistent broadcast key for calibration lookups."""
+        return f"{station}_{frequency_mhz:.2f}"
+    
     def _apply_calibration(
         self,
         measurements: List[BroadcastMeasurement]
     ) -> List[float]:
         """
-        Apply per-station calibration offsets.
+        Apply per-broadcast calibration offsets.
+        
+        Issue 1.1 Fix (2025-12-08): Now correctly uses per-broadcast keys
+        (station_frequency) instead of per-station keys. This properly accounts
+        for frequency-dependent ionospheric delays (1/f²).
         
         Returns calibrated D_clock values.
         """
         calibrated = []
         for m in measurements:
-            cal = self.calibration.get(m.station)
+            # Use per-broadcast key for frequency-dependent calibration
+            broadcast_key = self._get_broadcast_key(m.station, m.frequency_mhz)
+            cal = self.calibration.get(broadcast_key)
             if cal:
-                # Subtract the systematic offset
+                # Apply the calibration offset
                 calibrated.append(m.d_clock_ms + cal.offset_ms)
             else:
-                calibrated.append(m.d_clock_ms)
+                # Fall back to station-level calibration for backwards compatibility
+                station_cal = self.calibration.get(m.station)
+                if station_cal:
+                    calibrated.append(m.d_clock_ms + station_cal.offset_ms)
+                else:
+                    calibrated.append(m.d_clock_ms)
         return calibrated
     
     def _update_calibration(
@@ -511,75 +526,55 @@ class MultiBroadcastFusion:
         measurements: List[BroadcastMeasurement]
     ):
         """
-        Update calibration offsets based on reference station.
+        Update calibration offsets per-broadcast.
+        
+        Issue 1.1 Fix (2025-12-08): Now calibrates per-broadcast (station+frequency)
+        instead of per-station. This accounts for frequency-dependent ionospheric
+        delays which follow 1/f² relationship.
         
         Uses CHU as reference (assumed most accurate due to FSK).
-        Other stations are calibrated to match CHU.
+        All broadcasts are calibrated to converge to UTC(NIST) = 0.
         """
         if not self.auto_calibrate:
             return
         
-        # Add to history
+        # Add to history keyed by broadcast (station + frequency)
         for m in measurements:
-            history = self.measurement_history[m.station]
+            broadcast_key = self._get_broadcast_key(m.station, m.frequency_mhz)
+            history = self.measurement_history[broadcast_key]
             history.append(m)
             if len(history) > self.history_max_size:
-                self.measurement_history[m.station] = history[-self.history_max_size:]
+                self.measurement_history[broadcast_key] = history[-self.history_max_size:]
         
-        # Get reference station measurements
-        ref_history = self.measurement_history.get(self.reference_station, [])
-        if len(ref_history) < 10:
-            return  # Need enough reference data
-        
-        # Calculate reference station mean D_clock
-        ref_d_clocks = [m.d_clock_ms for m in ref_history[-30:]]
-        ref_mean = np.mean(ref_d_clocks)
-        
-        # Update calibration for ALL stations to converge to UTC(NIST) = 0
-        # Reference station (CHU) is trusted most, others are cross-validated
-        for station in ['WWV', 'WWVH', 'CHU']:
-            history = self.measurement_history.get(station, [])
+        # Update calibration for each broadcast individually
+        for broadcast_key, history in self.measurement_history.items():
             if len(history) < 10:
                 continue
             
-            station_d_clocks = [m.d_clock_ms for m in history[-30:]]
-            station_mean = np.mean(station_d_clocks)
+            # Get recent measurements for this broadcast
+            recent = history[-30:]
+            broadcast_d_clocks = [m.d_clock_ms for m in recent]
+            broadcast_mean = np.mean(broadcast_d_clocks)
             
-            # ALL stations: offset should bring their mean to 0
-            # This means: calibrated = raw + offset = 0
-            # Therefore: offset = -raw_mean
-            new_offset = -station_mean
+            # Extract station and frequency from the history
+            station = recent[0].station
+            frequency_mhz = recent[0].frequency_mhz
             
-            # For non-reference stations, we can cross-validate against reference
-            # but the goal is still to reach 0
-            if station != self.reference_station and len(ref_history) >= 10:
-                # Weight the update: trust reference more
-                # If reference is at 0, our calibration should bring us to 0 too
-                default_cal = StationCalibration(
-                    station='', frequency_mhz=0.0, offset_ms=0.0, 
-                    uncertainty_ms=1.0, n_samples=0, last_updated=0.0,
-                    reference_station=self.reference_station
-                )
-                ref_calibrated_mean = ref_mean + self.calibration.get(
-                    self.reference_station, default_cal
-                ).offset_ms
-                # If reference is calibrated to ~0, use that as validation
-                # Otherwise, just use our own mean
-                pass  # For now, just use -station_mean
+            # Offset should bring mean to 0 (UTC(NIST) alignment)
+            new_offset = -broadcast_mean
             
             # Exponential moving average for smooth updates
-            old_cal = self.calibration.get(station)
+            old_cal = self.calibration.get(broadcast_key)
             if old_cal and old_cal.n_samples > 0:
-                # Faster adaptation: alpha stays at 0.5 for quick convergence
-                # This means 50% new, 50% old - converges in ~10 updates
+                # Faster adaptation initially, slower as samples accumulate
                 alpha = max(0.5, 20.0 / old_cal.n_samples)
                 new_offset = alpha * new_offset + (1 - alpha) * old_cal.offset_ms
             
-            self.calibration[station] = StationCalibration(
+            self.calibration[broadcast_key] = BroadcastCalibration(
                 station=station,
-                frequency_mhz=0.0,  # Per-station calibration (not per-broadcast)
+                frequency_mhz=frequency_mhz,
                 offset_ms=new_offset,
-                uncertainty_ms=np.std(station_d_clocks) if len(station_d_clocks) > 1 else 1.0,
+                uncertainty_ms=np.std(broadcast_d_clocks) if len(broadcast_d_clocks) > 1 else 1.0,
                 n_samples=len(history),
                 last_updated=time.time(),
                 reference_station=self.reference_station

@@ -4,7 +4,12 @@
  * Centralized path management for GRAPE data structures.
  * MUST stay synchronized with Python implementation in src/grape_recorder/paths.py
  * 
- * SYNC VERSION: 2025-12-04-v2-three-phase
+ * SYNC VERSION: 2025-12-08-v3-discovery-fix
+ * 
+ * Change History:
+ *   2025-12-08-v3: Issue 2.2 fix - Python discover_channels() now matches JS
+ *   2025-12-04-v2: Three-phase architecture paths
+ *   2025-11-01-v1: Initial implementation
  * 
  * Three-Phase Architecture:
  *   data_root/
@@ -502,14 +507,20 @@ class GRAPEPaths {
         const channelSet = new Set();
         
         // Non-channel directories to exclude
-        const excludeDirs = ['status', 'metadata', 'state', 'logs', 'fusion'];
+        const excludeDirs = ['status', 'metadata', 'state', 'logs', 'fusion', 'upload'];
+        
+        // Valid channel name pattern: must start with WWV or CHU
+        // This filters out stray directories like "2", "8", "E", "M", "w"
+        const isValidChannelDir = (name) => {
+            return name.startsWith('WWV') || name.startsWith('CHU');
+        };
         
         // Check raw_archive/ (Phase 1)
         const rawArchiveDir = this.getRawArchiveRoot();
         if (existsSync(rawArchiveDir)) {
             const entries = readdirSync(rawArchiveDir, { withFileTypes: true });
             for (const entry of entries) {
-                if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
+                if (entry.isDirectory() && !excludeDirs.includes(entry.name) && isValidChannelDir(entry.name)) {
                     channelSet.add(dirToChannelName(entry.name));
                 }
             }
@@ -520,7 +531,7 @@ class GRAPEPaths {
         if (existsSync(phase2Dir)) {
             const entries = readdirSync(phase2Dir, { withFileTypes: true });
             for (const entry of entries) {
-                if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
+                if (entry.isDirectory() && !excludeDirs.includes(entry.name) && isValidChannelDir(entry.name)) {
                     channelSet.add(dirToChannelName(entry.name));
                 }
             }
@@ -531,7 +542,7 @@ class GRAPEPaths {
         if (existsSync(productsDir)) {
             const entries = readdirSync(productsDir, { withFileTypes: true });
             for (const entry of entries) {
-                if (entry.isDirectory() && !excludeDirs.includes(entry.name)) {
+                if (entry.isDirectory() && !excludeDirs.includes(entry.name) && isValidChannelDir(entry.name)) {
                     channelSet.add(dirToChannelName(entry.name));
                 }
             }
@@ -552,11 +563,15 @@ class GRAPEPaths {
             return [];
         }
         
+        const excludeDirs = ['status', 'metadata', 'state', 'logs', 'fusion', 'upload'];
         const channels = [];
         const entries = readdirSync(phase2Dir, { withFileTypes: true });
         
         for (const entry of entries) {
-            if (entry.isDirectory()) {
+            // Valid channel names must start with WWV or CHU
+            if (entry.isDirectory() && 
+                !excludeDirs.includes(entry.name) &&
+                (entry.name.startsWith('WWV') || entry.name.startsWith('CHU'))) {
                 channels.push(dirToChannelName(entry.name));
             }
         }
