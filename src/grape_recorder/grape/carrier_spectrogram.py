@@ -330,9 +330,22 @@ class CarrierSpectrogramGenerator:
         f = np.fft.fftshift(f)
         Sxx = np.fft.fftshift(Sxx, axes=0)
         
-        # Convert to dB (relative to peak)
+        # Convert to dB (absolute dBFS)
         Sxx_db = 20 * np.log10(np.abs(Sxx) + 1e-10)
-        Sxx_db -= np.max(Sxx_db)  # Normalize to peak
+        
+        # Scientific standard: percentile-based normalization for float32 data
+        valid_data = Sxx_db[np.isfinite(Sxx_db)]
+        if len(valid_data) > 0:
+            vmin_auto = np.percentile(valid_data, 2)
+            vmax_auto = np.percentile(valid_data, 98)
+            # Ensure at least 20 dB dynamic range
+            if vmax_auto - vmin_auto < 20:
+                median_db = np.median(valid_data)
+                vmin_auto = median_db - 15
+                vmax_auto = median_db + 15
+        else:
+            vmin_auto = -80
+            vmax_auto = -20
         
         # Create time axis
         duration_hours = len(iq_data) / SAMPLE_RATE / 3600
@@ -343,8 +356,8 @@ class CarrierSpectrogramGenerator:
             t_hours, f, Sxx_db,
             shading='auto',
             cmap=self.config.cmap,
-            vmin=self.config.vmin_db,
-            vmax=self.config.vmax_db
+            vmin=vmin_auto,
+            vmax=vmax_auto
         )
         
         # Mark gaps if configured
@@ -356,7 +369,7 @@ class CarrierSpectrogramGenerator:
         ax.set_title(title)
         ax.set_ylim(-5, 5)  # ±5 Hz around carrier
         
-        plt.colorbar(im, ax=ax, label='Power (dB rel. peak)')
+        plt.colorbar(im, ax=ax, label='Power (dBFS)')
         
         # Add timestamp
         timestamp_str = datetime.now(tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
@@ -537,10 +550,21 @@ class CarrierSpectrogramGenerator:
             if not column_valid[t_idx]:
                 Sxx_db[:, t_idx] = np.nan
         
-        # Normalize to peak of valid data
+        # Scientific standard: Use percentile-based normalization for float32 data
+        # This maximizes contrast while ignoring outliers
         if np.any(~np.isnan(Sxx_db)):
-            peak_db = np.nanmax(Sxx_db)
-            Sxx_db = Sxx_db - peak_db  # Now ranges from ~-60 to 0
+            valid_data = Sxx_db[~np.isnan(Sxx_db)]
+            # Use 2nd and 98th percentiles for robust scaling
+            vmin_auto = np.percentile(valid_data, 2)
+            vmax_auto = np.percentile(valid_data, 98)
+            # Ensure at least 20 dB dynamic range for visibility
+            if vmax_auto - vmin_auto < 20:
+                median_db = np.median(valid_data)
+                vmin_auto = median_db - 15
+                vmax_auto = median_db + 15
+        else:
+            vmin_auto = -80
+            vmax_auto = -20
         
         t_hours = t / 3600
         
@@ -552,8 +576,8 @@ class CarrierSpectrogramGenerator:
             t_hours, f, Sxx_db,
             shading='auto',
             cmap=cmap,
-            vmin=self.config.vmin_db,
-            vmax=self.config.vmax_db
+            vmin=vmin_auto,
+            vmax=vmax_auto
         )
         
         # Note: gaps are already shown as gray (NaN). Don't overlay red bands.
@@ -572,7 +596,7 @@ class CarrierSpectrogramGenerator:
         ax_spec.set_xticks(hour_ticks)
         
         # Colorbar in dedicated axes (doesn't steal space from spectrogram)
-        plt.colorbar(im, cax=ax_cbar, label='Power (dB rel. peak)')
+        plt.colorbar(im, cax=ax_cbar, label='Power (dBFS)')
         
         # Quality legend in corner
         if self.config.show_quality:
