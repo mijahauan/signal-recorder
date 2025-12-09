@@ -2582,7 +2582,7 @@ else:
     print(json.dumps({'status': 'ok', 'count': len(results), 'paths': [str(p) for p in results]}))
 `;
     
-    const python = spawn('python3', ['-c', pythonScript], {
+    const python = spawn(PYTHON_CMD, ['-c', pythonScript], {
       cwd: join(__dirname, '..'),
       env: { ...process.env, PYTHONPATH: join(__dirname, '..') }
     });
@@ -2627,7 +2627,7 @@ generate_all_channel_spectrograms(Path('${dataRoot}'), '${receiverGrid}', '${dat
 print('Spectrograms regenerated')
 `;
       
-      const python = spawn('python3', ['-c', pythonScript], {
+      const python = spawn(PYTHON_CMD, ['-c', pythonScript], {
         cwd: join(__dirname, '..'),
         env: { ...process.env, PYTHONPATH: join(__dirname, '..') }
       });
