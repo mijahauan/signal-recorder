@@ -350,6 +350,9 @@ class PipelineRecorder:
                 if len(payload) % 8 != 0:
                     return None
                 samples = np.frombuffer(payload, dtype=np.float32)
+                # Normalize float32 to match int16/32768 levels
+                # radiod float32 output is ~32x smaller than int16 normalized
+                samples = samples * 32.0
                 
             elif 96 <= payload_type <= 127:
                 # Dynamic payload type - auto-detect format
@@ -360,13 +363,14 @@ class PipelineRecorder:
                     # Float32 audio has small values (typically < 1.0)
                     # Int16 misinterpreted as float32 gives huge/tiny/nan values
                     if 1e-10 < max_float < 10.0:
-                        samples = samples_float
+                        # Normalize float32 to match int16/32768 levels
+                        samples = samples_float * 32.0
                     elif len(payload) % 4 == 0:
                         # Fallback to int16
                         samples_int16 = np.frombuffer(payload, dtype=np.int16)
                         samples = samples_int16.astype(np.float32) / 32768.0
                     else:
-                        samples = samples_float  # Use float32 anyway
+                        samples = samples_float * 32.0  # Use float32 anyway
                 elif len(payload) % 4 == 0:
                     samples_int16 = np.frombuffer(payload, dtype=np.int16)
                     samples = samples_int16.astype(np.float32) / 32768.0
