@@ -1351,6 +1351,57 @@ app.get('/api/v1/system/storage', async (req, res) => {
 });
 
 /**
+ * GET /api/v1/system/chrony
+ * Chrony NTP tracking status for comparison with GRAPE timing
+ */
+app.get('/api/v1/system/chrony', async (req, res) => {
+  try {
+    const result = execSync('chronyc tracking', { encoding: 'utf8', timeout: 5000 });
+    const lines = result.split('\n');
+    const data = {};
+    
+    for (const line of lines) {
+      const match = line.match(/^(.+?)\s*:\s*(.+)$/);
+      if (match) {
+        const key = match[1].trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+        let value = match[2].trim();
+        
+        // Parse specific numeric values
+        if (key === 'system_time') {
+          const m = value.match(/([+-]?\d+\.?\d*)\s+seconds?\s+(fast|slow)/i);
+          if (m) {
+            const seconds = parseFloat(m[1]);
+            const sign = m[2].toLowerCase() === 'slow' ? -1 : 1;
+            data.system_time_ms = sign * seconds * 1000;
+          }
+        } else if (key === 'last_offset') {
+          const m = value.match(/([+-]?\d+\.?\d*)\s+seconds?/i);
+          if (m) data.last_offset_ms = parseFloat(m[1]) * 1000;
+        } else if (key === 'rms_offset') {
+          const m = value.match(/([+-]?\d+\.?\d*)\s+seconds?/i);
+          if (m) data.rms_offset_ms = parseFloat(m[1]) * 1000;
+        } else if (key === 'reference_id') {
+          const m = value.match(/\(([^)]+)\)/);
+          data.reference_id = value.split(' ')[0];
+          data.reference_name = m ? m[1] : value;
+        } else if (key === 'stratum') {
+          data.stratum = parseInt(value, 10);
+        } else if (key === 'ref_time__utc_') {
+          data.ref_time = value;
+        }
+        
+        data[key] = value;
+      }
+    }
+    
+    data.available = true;
+    res.json(data);
+  } catch (err) {
+    res.json({ available: false, error: err.message });
+  }
+});
+
+/**
  * GET /api/v1/gaps?date=YYYYMMDD&channel=all
  * Gap analysis data - reads from NPZ files to find data gaps
  */

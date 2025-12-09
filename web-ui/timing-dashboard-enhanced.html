@@ -860,13 +860,14 @@
         
         async function loadDashboard() {
             try {
-                // Load data for fusion panel and broadcast table
-                const [phase2Status, fusionData] = await Promise.all([
+                // Load data for fusion panel, broadcast table, and chrony comparison
+                const [phase2Status, fusionData, chronyData] = await Promise.all([
                     fetch('/api/v1/timing/phase2-status').then(r => r.json()).catch(() => ({ available: false })),
-                    fetch('/api/v1/timing/fusion').then(r => r.json()).catch(() => ({ status: 'no_data' }))
+                    fetch('/api/v1/timing/fusion').then(r => r.json()).catch(() => ({ status: 'no_data' })),
+                    fetch('/api/v1/system/chrony').then(r => r.json()).catch(() => ({ available: false }))
                 ]);
                 
-                renderDashboard(phase2Status, fusionData);
+                renderDashboard(phase2Status, fusionData, chronyData);
                 startCountdown();
                 
             } catch (error) {
@@ -881,7 +882,7 @@
             }
         }
         
-        function renderDashboard(phase2Status, fusionData) {
+        function renderDashboard(phase2Status, fusionData, chronyData) {
             const container = document.getElementById('dashboard-content');
             
             // Extract channel names for chart dropdowns from phase2 status
@@ -894,10 +895,12 @@
             // Store phase2 data globally for chart loading
             window.phase2ChannelStatus = phase2Status;
             window.fusionData = fusionData;
+            window.chronyData = chronyData;
             
             // Phase 2 D_clock focused layout - zeroing in on UTC(NIST)
             container.innerHTML = `
                 ${renderFusionPanel(fusionData)}
+                ${renderChronyComparison(chronyData, fusionData)}
                 ${renderBroadcastTable(phase2Status)}
                 ${renderDClockChartPlaceholder()}
             `;
@@ -1255,6 +1258,79 @@
                     
                     <div style="margin-top: 12px; font-size: 12px; color: #6ee7b7; text-align: center;">
                         Fusing <strong>${f.n_broadcasts}</strong> of 13 possible broadcasts • Calibration learned from ${Object.values(cal).reduce((sum, c) => sum + (c.n_samples || 0), 0)} samples
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Chrony NTP comparison panel
+        function renderChronyComparison(chronyData, fusionData) {
+            if (!chronyData || !chronyData.available) {
+                return `
+                    <div style="background: #1e293b; border-radius: 10px; padding: 15px; margin-bottom: 20px; 
+                                border: 1px solid #334155; opacity: 0.6;">
+                        <div style="font-size: 14px; color: #94a3b8;">
+                            ⏱️ System NTP Reference (chrony): Unavailable
+                        </div>
+                    </div>
+                `;
+            }
+            
+            const lastOffset = chronyData.last_offset_ms;
+            const rmsOffset = chronyData.rms_offset_ms;
+            const refName = chronyData.reference_name || chronyData.reference_id || 'unknown';
+            const stratum = chronyData.stratum || '?';
+            
+            // Format the offset
+            const offsetStr = lastOffset !== undefined 
+                ? `${lastOffset >= 0 ? '+' : ''}${lastOffset.toFixed(3)} ms`
+                : '—';
+            const rmsStr = rmsOffset !== undefined 
+                ? `±${rmsOffset.toFixed(3)} ms`
+                : '—';
+            
+            // Get GRAPE fusion offset for comparison
+            let grapeOffset = '—';
+            let deltaStr = '—';
+            if (fusionData && fusionData.status === 'active' && fusionData.latest) {
+                const grapeMs = fusionData.latest.d_clock_fused_ms;
+                grapeOffset = `${grapeMs >= 0 ? '+' : ''}${grapeMs.toFixed(3)} ms`;
+                if (lastOffset !== undefined) {
+                    const delta = grapeMs - lastOffset;
+                    deltaStr = `${delta >= 0 ? '+' : ''}${delta.toFixed(3)} ms`;
+                }
+            }
+            
+            return `
+                <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-radius: 10px; 
+                            padding: 15px 20px; margin-bottom: 20px; border: 1px solid #475569;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span style="font-size: 18px;">⏱️</span>
+                            <div>
+                                <div style="font-size: 14px; font-weight: 600; color: #fff;">System NTP Reference</div>
+                                <div style="font-size: 12px; color: #94a3b8;">chrony → ${refName} (stratum ${stratum})</div>
+                            </div>
+                        </div>
+                        
+                        <div style="display: flex; gap: 30px; text-align: center;">
+                            <div>
+                                <div style="font-size: 20px; font-weight: 600; color: #60a5fa; font-family: monospace;">${offsetStr}</div>
+                                <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">Last Sample</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 20px; font-weight: 600; color: #94a3b8; font-family: monospace;">${rmsStr}</div>
+                                <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">RMS Range</div>
+                            </div>
+                            <div style="border-left: 1px solid #334155; padding-left: 20px;">
+                                <div style="font-size: 20px; font-weight: 600; color: #10b981; font-family: monospace;">${grapeOffset}</div>
+                                <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">GRAPE Fusion</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 20px; font-weight: 600; color: #f59e0b; font-family: monospace;">${deltaStr}</div>
+                                <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">Δ (GRAPE−NTP)</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             `;
