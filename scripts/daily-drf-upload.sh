@@ -109,20 +109,17 @@ else
     log "INFO" "Extended metadata: disabled (wsprdaemon-compatible only)"
 fi
 
-# Run multi-subchannel DRF batch writer
+# Run Daily DRF Packager (reads from products/{CHANNEL}/decimated/)
 log "INFO" "Creating multi-subchannel DRF dataset..."
 START_TIME=$(date +%s)
 
-python -m grape_recorder.drf_batch_writer \
-    --analytics-root "$DATA_ROOT/analytics" \
-    --output-dir "$OUTPUT_DIR" \
+python -m grape_recorder.grape.daily_drf_packager \
+    --data-root "$DATA_ROOT" \
     --date "$YESTERDAY" \
     --callsign "$CALLSIGN" \
-    --grid-square "$GRID_SQUARE" \
+    --grid "$GRID_SQUARE" \
     --receiver-name "$RECEIVER_NAME" \
     --psws-station-id "$PSWS_STATION_ID" \
-    --psws-instrument-id "$PSWS_INSTRUMENT_ID" \
-    $EXTENDED_FLAG \
     --log-level INFO 2>&1 | tee -a "$LOG_FILE"
 
 DRF_STATUS=${PIPESTATUS[0]}

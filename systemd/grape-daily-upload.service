@@ -9,17 +9,17 @@ Type=oneshot
 User=wsprdaemon
 Group=wsprdaemon
 
-# Script location
-ExecStart=/home/wsprdaemon/signal-recorder/scripts/daily-drf-upload.sh
+# Script location - update PROJECT_ROOT if moved
+ExecStart=/home/wsprdaemon/grape-recorder/scripts/daily-drf-upload.sh
 
 # Environment - switch to production when ready
-Environment=DATA_ROOT=/tmp/grape-test
-Environment=CONFIG_FILE=/home/wsprdaemon/signal-recorder/config/grape-config.toml
-Environment=VENV_PATH=/home/wsprdaemon/signal-recorder/venv
-Environment=LOG_FILE=/tmp/grape-test/logs/daily-upload.log
+Environment=GRAPE_DATA_ROOT=/tmp/grape-test
+Environment=GRAPE_CONFIG=/home/wsprdaemon/grape-recorder/config/grape-config.toml
+Environment=GRAPE_VENV=/home/wsprdaemon/grape-recorder/venv
+Environment=GRAPE_LOG_DIR=/tmp/grape-test/logs
 
 # Production settings (uncomment when ready):
-# Environment=DATA_ROOT=/var/lib/signal-recorder
+# Environment=GRAPE_DATA_ROOT=/var/lib/signal-recorder
 
 # Timeouts - allow plenty of time for upload
 TimeoutStartSec=3600

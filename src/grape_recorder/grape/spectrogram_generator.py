@@ -1,36 +1,44 @@
 #!/usr/bin/env python3
 """
-Spectrogram Generator for Three-Phase Pipeline
+DEPRECATED: Use carrier_spectrogram.py instead
+==============================================
 
-Generates spectrograms from Phase 3 decimated 10 Hz DRF data.
+This module is deprecated and will be removed in a future version.
+Use CarrierSpectrogramGenerator from carrier_spectrogram.py for:
+- Solar zenith overlay support (path midpoint calculation)
+- Quality grade visualization
+- Gap highlighting
+- Rolling spectrograms
+- Correct Phase 3 path structure
 
-Input:  products/{CHANNEL}/decimated/ (10 Hz Digital RF from Phase 3)
-Output: products/{CHANNEL}/spectrograms/{YYYYMMDD}/ (PNG images)
-
-Spectrogram Types:
-==================
-1. **Daily Overview**: 24-hour spectrogram showing full day
-2. **Hourly Detail**: Individual hour spectrograms for closer inspection
-3. **Power Profile**: Combined power + spectrogram chart
-
-Usage:
-------
+Migration:
+----------
+    # OLD (deprecated):
     from grape_recorder.grape.spectrogram_generator import SpectrogramGenerator
+    gen = SpectrogramGenerator(data_root, channel_name)
+    gen.generate_day('20251204')
     
-    gen = SpectrogramGenerator(
-        data_root=Path('/tmp/grape-test'),
-        channel_name='WWV 10 MHz'
-    )
-    
-    # Generate spectrograms for a day
-    gen.generate_day('2025-12-04')
-    
-    # Or from command line:
-    python -m grape_recorder.grape.spectrogram_generator \\
+    # NEW (recommended):
+    from grape_recorder.grape.carrier_spectrogram import CarrierSpectrogramGenerator
+    gen = CarrierSpectrogramGenerator(data_root, channel_name, receiver_grid='EM38ww')
+    gen.generate_daily('20251204')
+
+Command Line:
+    # NEW (recommended):
+    python -m grape_recorder.grape.carrier_spectrogram \\
         --data-root /tmp/grape-test \\
         --channel "WWV 10 MHz" \\
-        --date 2025-12-04
+        --date 20251204 \\
+        --grid EM38ww
+
+Deprecated: 2025-12-08 (Phase 3 consolidation)
 """
+import warnings
+warnings.warn(
+    "spectrogram_generator.py is deprecated. Use carrier_spectrogram.py instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 import numpy as np
 import logging

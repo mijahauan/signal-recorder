@@ -253,11 +253,11 @@ class Phase2AnalyticsService:
         from .decimated_buffer import DecimatedBuffer
         self.decimated_buffer = DecimatedBuffer(self.output_dir.parent.parent, channel_name)
         
-        # Initialize decimation filter
-        from .decimation import get_decimator, is_rate_supported
+        # Initialize stateful decimation filter (preserves state across minute boundaries)
+        from .decimation import StatefulDecimator, is_rate_supported
         if is_rate_supported(sample_rate):
-            self.decimator = get_decimator(sample_rate, 10)
-            logger.info(f"  Decimation: {sample_rate} Hz → 10 Hz enabled")
+            self.decimator = StatefulDecimator(sample_rate, 10)
+            logger.info(f"  Decimation: {sample_rate} Hz → 10 Hz enabled (stateful)")
         else:
             self.decimator = None
             logger.warning(f"  Decimation: {sample_rate} Hz not supported")
@@ -1102,8 +1102,8 @@ class Phase2AnalyticsService:
             return False
         
         try:
-            # Apply high-quality decimation filter: 20kHz → 10Hz
-            decimated_iq = self.decimator(iq_samples)
+            # Apply high-quality decimation filter: 20kHz → 10Hz (stateful)
+            decimated_iq = self.decimator.process(iq_samples)
             
             if decimated_iq is None or len(decimated_iq) == 0:
                 logger.warning(f"Decimation produced no output for minute {minute_boundary}")

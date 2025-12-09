@@ -329,24 +329,24 @@ products/{CHANNEL}/
 **Implementation Notes:**
 - Primary Y-axis: Carrier power (dB)
 - Secondary Y-axis: Solar zenith angle (degrees)
-- Solar zenith calculation: `from astropy.coordinates import get_sun, AltAz`
+- Solar zenith calculation: Uses NOAA algorithms via `solar_zenith_calculator.py`
+- Calculates at **path midpoint** (halfway between receiver and transmitter)
 - Show sunrise/sunset transitions, D-layer absorption effects
 
-**Solar Zenith Calculation:**
+**Solar Zenith Calculation (Already Implemented):**
 ```python
-from astropy.time import Time
-from astropy.coordinates import EarthLocation, AltAz, get_sun
+from grape_recorder.grape.solar_zenith_calculator import (
+    calculate_solar_zenith_for_day,
+    calculate_midpoint,
+    solar_position
+)
 
-def solar_zenith(lat, lon, utc_time):
-    """Calculate solar zenith angle at given location and time."""
-    loc = EarthLocation(lat=lat, lon=lon)
-    t = Time(utc_time)
-    altaz = get_sun(t).transform_to(AltAz(obstime=t, location=loc))
-    return 90.0 - altaz.alt.deg  # zenith = 90 - altitude
+# Get solar elevation at path midpoints for all stations
+solar_data = calculate_solar_zenith_for_day(date_str, receiver_grid)
+# Returns: wwv_solar_elevation, wwvh_solar_elevation, chu_solar_elevation arrays
 ```
 
-**Dependencies to Add:**
-- `astropy` - Solar position calculations
+**Dependencies:** None required (uses pure Python NOAA algorithms)
 
 ---
 

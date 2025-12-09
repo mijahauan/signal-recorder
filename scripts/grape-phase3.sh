@@ -87,15 +87,16 @@ yesterday)
         echo "✅ Phase 3 decimation complete for $TARGET_DATE"
         echo "📦 Output: $DATA_ROOT/products/{CHANNEL}/decimated/"
         
-        # Generate spectrograms from decimated data
+        # Generate spectrograms from decimated data (using CarrierSpectrogramGenerator)
         echo ""
         echo "📊 Generating spectrograms..."
         for channel in WWV_2.5_MHz WWV_5_MHz WWV_10_MHz WWV_15_MHz WWV_20_MHz WWV_25_MHz CHU_3.33_MHz CHU_7.85_MHz CHU_14.67_MHz; do
             channel_name="${channel//_/ }"
-            $PYTHON -m grape_recorder.grape.spectrogram_generator \
+            $PYTHON -m grape_recorder.grape.carrier_spectrogram \
                 --data-root "$DATA_ROOT" \
                 --channel "$channel_name" \
-                --date "$TARGET_DATE" 2>/dev/null && \
+                --date "$TARGET_DATE" \
+                --grid "$GRID" 2>/dev/null && \
             echo "   ✅ $channel_name" || echo "   ⭕ $channel_name (no data)"
         done
         echo "📊 Spectrograms: $DATA_ROOT/products/{CHANNEL}/spectrograms/"

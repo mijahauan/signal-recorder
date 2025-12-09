@@ -654,6 +654,147 @@ def decimate_for_upload_simple(iq_samples: np.ndarray, input_rate: int = 20000,
         return None
 
 
+class StatefulDecimator:
+    """
+    Stateful decimator that preserves filter state across calls.
+    
+    This eliminates the ~1 second filter transients at minute boundaries
+    that cause visible artifacts in spectrograms.
+    
+    Usage:
+        decimator = StatefulDecimator(input_rate=20000, output_rate=10)
+        
+        # Process minute by minute - state is preserved
+        for minute_samples in minute_chunks:
+            decimated = decimator.process(minute_samples)
+            # No transient artifacts at boundaries!
+        
+        # Reset state for new channel/session
+        decimator.reset()
+    """
+    
+    def __init__(self, input_rate: int = 20000, output_rate: int = 10):
+        """
+        Initialize stateful decimator.
+        
+        Args:
+            input_rate: Input sample rate (Hz) - 20000 or 16000
+            output_rate: Output sample rate (Hz) - must be 10
+        """
+        if output_rate != OUTPUT_RATE:
+            raise ValueError(f"Output rate must be {OUTPUT_RATE} Hz")
+        
+        if input_rate not in SUPPORTED_INPUT_RATES:
+            raise ValueError(f"Unsupported input rate: {input_rate} Hz")
+        
+        self.input_rate = input_rate
+        self.output_rate = output_rate
+        
+        rate_config = SUPPORTED_INPUT_RATES[input_rate]
+        self.cic_decimation = rate_config['cic_decimation']
+        
+        # Design filters once
+        self.cic_params = _design_cic_filter(self.cic_decimation, order=4)
+        
+        # CIC boxcar coefficients
+        R = self.cic_params['decimation_factor']
+        self.cic_b = np.ones(R) / R
+        self.cic_a = [1.0]
+        self.cic_order = self.cic_params['order']
+        
+        self.comp_taps = _design_compensation_fir(
+            sample_rate=400,
+            passband_width=5.0,
+            cic_order=4,
+            cic_decimation=self.cic_decimation,
+            num_taps=63
+        )
+        
+        self.final_taps = _design_final_fir(
+            sample_rate=400,
+            cutoff=5.0,
+            transition_width=1.0,
+            stopband_attenuation_db=90
+        )
+        
+        # Initialize filter states
+        self.reset()
+        
+        logger.info(f"StatefulDecimator initialized: {input_rate} → {output_rate} Hz")
+    
+    def reset(self):
+        """Reset all filter states (call at session/channel boundaries)."""
+        # CIC: N cascaded stages, each needs state
+        R = self.cic_params['decimation_factor']
+        self.cic_zi = [signal.lfilter_zi(self.cic_b, self.cic_a) * 0 
+                      for _ in range(self.cic_order)]
+        
+        # Compensation FIR state
+        self.comp_zi = signal.lfilter_zi(self.comp_taps, [1.0]) * 0
+        
+        # Final FIR state
+        self.final_zi = signal.lfilter_zi(self.final_taps, [1.0]) * 0
+        
+        # Track samples for decimation phase alignment
+        self.cic_sample_count = 0
+        self.final_sample_count = 0
+        
+        logger.debug("Decimator state reset")
+    
+    def process(self, iq_samples: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Process samples with preserved filter state.
+        
+        Args:
+            iq_samples: Complex IQ samples at input_rate
+            
+        Returns:
+            Decimated samples at output_rate
+        """
+        if len(iq_samples) == 0:
+            return np.array([], dtype=np.complex64)
+        
+        try:
+            # STAGE 1: CIC Filter with state preservation
+            R = self.cic_params['decimation_factor']
+            filtered = iq_samples
+            
+            for i in range(self.cic_order):
+                filtered, self.cic_zi[i] = signal.lfilter(
+                    self.cic_b, self.cic_a, filtered, zi=self.cic_zi[i]
+                )
+            
+            # Decimate with phase alignment
+            # Account for samples from previous calls
+            start_offset = (R - (self.cic_sample_count % R)) % R
+            self.cic_sample_count += len(filtered)
+            iq_400hz = filtered[start_offset::R]
+            
+            if len(iq_400hz) == 0:
+                return np.array([], dtype=np.complex64)
+            
+            # STAGE 2: Compensation FIR with state
+            iq_400hz_flat, self.comp_zi = signal.lfilter(
+                self.comp_taps, [1.0], iq_400hz, zi=self.comp_zi
+            )
+            
+            # STAGE 3: Final FIR + decimation with state
+            iq_filtered, self.final_zi = signal.lfilter(
+                self.final_taps, [1.0], iq_400hz_flat, zi=self.final_zi
+            )
+            
+            # Decimate by 40 with phase alignment
+            start_offset = (40 - (self.final_sample_count % 40)) % 40
+            self.final_sample_count += len(iq_filtered)
+            iq_10hz = iq_filtered[start_offset::40]
+            
+            return iq_10hz.astype(np.complex64)
+            
+        except Exception as e:
+            logger.error(f"Stateful decimation failed: {e}")
+            return None
+
+
 # Module configuration - easy to swap implementations
 DECIMATION_FUNCTION = decimate_for_upload  # Use optimized version
 # DECIMATION_FUNCTION = decimate_for_upload_simple  # Uncomment for simple fallback

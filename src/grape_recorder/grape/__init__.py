@@ -54,7 +54,7 @@ from .wwv_test_signal import WWVTestSignalDetector
 from .discrimination_csv_writers import DiscriminationCSVWriters
 
 # Decimation
-from .decimation import decimate_for_upload, get_decimator
+from .decimation import decimate_for_upload, get_decimator, StatefulDecimator
 
 # DRF output
 from .drf_batch_writer import DRFBatchWriter
@@ -176,13 +176,6 @@ from .sliding_window_monitor import (
     SignalQuality
 )
 
-# Spectrogram Generation (from Phase 3 decimated data)
-from .spectrogram_generator import (
-    SpectrogramGenerator,
-    SpectrogramConfig,
-    generate_spectrograms_for_day
-)
-
 # Decimated Binary Buffer (stores 10 Hz IQ with timing metadata)
 from .decimated_buffer import (
     DecimatedBuffer,
@@ -191,11 +184,20 @@ from .decimated_buffer import (
     get_decimated_buffer
 )
 
-# Carrier Spectrogram Generator (from decimated buffer)
+# Spectrogram Generation - CarrierSpectrogramGenerator is the CANONICAL implementation
+# Supports solar zenith overlays, quality grades, gap visualization, rolling spectrograms
 from .carrier_spectrogram import (
     CarrierSpectrogramGenerator,
     SpectrogramConfig as CarrierSpectrogramConfig,
     generate_all_channel_spectrograms
+)
+
+# DEPRECATED: SpectrogramGenerator - use CarrierSpectrogramGenerator instead
+# Kept for backward compatibility but will be removed in future version
+from .spectrogram_generator import (
+    SpectrogramGenerator,  # DEPRECATED
+    SpectrogramConfig,     # DEPRECATED - use CarrierSpectrogramConfig
+    generate_spectrograms_for_day  # DEPRECATED
 )
 
 # Daily DRF Packager (for PSWS upload)
@@ -218,6 +220,7 @@ __all__ = [
     # Decimation
     "decimate_for_upload",
     "get_decimator",
+    "StatefulDecimator",
     # DRF
     "DRFBatchWriter",
     # Supporting

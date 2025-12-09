@@ -11,7 +11,7 @@ Format:
 Data file:   {YYYYMMDD}.bin  - Raw complex64, 600 samples/minute × 1440 minutes
 Metadata:    {YYYYMMDD}_meta.json - Per-minute timing and gap info
 
-Storage location: phase2/{CHANNEL}/decimated/
+Storage location: products/{CHANNEL}/decimated/  (Phase 3 derived products)
 
 Usage:
 ------
@@ -133,8 +133,8 @@ class DecimatedBuffer:
         self.channel_name = channel_name
         self.channel_dir = channel_name.replace(' ', '_')
         
-        # Storage location: phase2/{CHANNEL}/decimated/
-        self.buffer_dir = self.data_root / 'phase2' / self.channel_dir / 'decimated'
+        # Storage location: products/{CHANNEL}/decimated/ (Phase 3 derived products)
+        self.buffer_dir = self.data_root / 'products' / self.channel_dir / 'decimated'
         self.buffer_dir.mkdir(parents=True, exist_ok=True)
         
         logger.debug(f"DecimatedBuffer initialized: {self.buffer_dir}")
