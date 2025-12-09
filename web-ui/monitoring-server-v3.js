@@ -4279,12 +4279,16 @@ app.get('/api/v1/solar-zenith', async (req, res) => {
       return res.status(400).json({ error: 'Invalid date format. Use YYYYMMDD' });
     }
     
-    // Call Python calculator - use project root (parent of web-ui directory)
+    // Call Python calculator - use venv python with module import
     const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
     const pythonPath = join(projectRoot, 'venv', 'bin', 'python3');
-    const scriptPath = join(projectRoot, 'src', 'grape_recorder', 'grape', 'solar_zenith_calculator.py');
     
-    const cmd = `${pythonPath} ${scriptPath} --date ${date} --grid ${grid} --interval 5`;
+    // Use -m to run as module, or fallback to direct script path
+    const scriptPath = join(projectRoot, 'src', 'grape_recorder', 'grape', 'solar_zenith_calculator.py');
+    const homeScriptPath = '/home/wsprdaemon/grape-recorder/src/grape_recorder/grape/solar_zenith_calculator.py';
+    const actualScript = fs.existsSync(scriptPath) ? scriptPath : homeScriptPath;
+    
+    const cmd = `${pythonPath} ${actualScript} --date ${date} --grid ${grid} --interval 5`;
     
     const execPromise = promisify(exec);
     const { stdout, stderr } = await execPromise(cmd, { timeout: 10000 });
