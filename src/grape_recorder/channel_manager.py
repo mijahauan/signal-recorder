@@ -174,14 +174,21 @@ class ChannelManager:
                 ssrc=ssrc
             )
             
-            logger.info(f"Channel creation complete (SSRC={allocated_ssrc}), setting encoding...")
+            logger.info(f"Channel creation complete (SSRC={allocated_ssrc}), configuring via tune()...")
             
-            # Set output encoding (must be done after channel creation)
+            # Use tune() to set encoding and verify sample_rate
+            # tune() is more reliable than set_output_encoding() for ensuring parameters stick
             try:
-                self.control.set_output_encoding(allocated_ssrc, encoding_value)
-                logger.info(f"Set encoding to {encoding} (value={encoding_value})")
-            except Exception as enc_err:
-                logger.warning(f"Failed to set encoding: {enc_err}")
+                result = self.control.tune(
+                    ssrc=allocated_ssrc,
+                    sample_rate=sample_rate,
+                    encoding=encoding_value,
+                    agc_enable=(agc == 1),
+                    gain=gain
+                )
+                logger.info(f"tune() result: rate={result.get('sample_rate')}, enc={result.get('encoding')}")
+            except Exception as tune_err:
+                logger.warning(f"tune() failed: {tune_err}")
             
             # Wait for radiod to process
             time.sleep(0.5)
