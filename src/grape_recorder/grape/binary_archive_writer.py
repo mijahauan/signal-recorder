@@ -243,30 +243,40 @@ class BinaryArchiveWriter:
                 # Start new minute
                 self.current_buffer = self._start_new_minute(sample_unix_time, rtp_timestamp)
             
-            # Write to buffer
-            buffer = self.current_buffer
-            samples_to_write = min(len(samples), buffer.samples_remaining)
+            # Write samples - handle overflow across minute boundaries
+            samples_offset = 0
+            total_written = 0
             
-            if samples_to_write > 0:
-                buffer.samples[buffer.write_pos:buffer.write_pos + samples_to_write] = samples[:samples_to_write]
-                buffer.write_pos += samples_to_write
-                self.samples_written += samples_to_write
+            while samples_offset < len(samples):
+                buffer = self.current_buffer
+                samples_to_write = min(len(samples) - samples_offset, buffer.samples_remaining)
+                
+                if samples_to_write > 0:
+                    buffer.samples[buffer.write_pos:buffer.write_pos + samples_to_write] = \
+                        samples[samples_offset:samples_offset + samples_to_write]
+                    buffer.write_pos += samples_to_write
+                    self.samples_written += samples_to_write
+                    samples_offset += samples_to_write
+                    total_written += samples_to_write
+                
+                # Check if minute is complete - start new buffer for overflow
+                if buffer.is_complete:
+                    self._flush_minute(buffer)
+                    # Calculate RTP timestamp for overflow samples
+                    overflow_rtp = rtp_timestamp + samples_offset
+                    overflow_unix = self._rtp_to_unix_time(overflow_rtp)
+                    self.current_buffer = self._start_new_minute(overflow_unix, overflow_rtp)
             
             # Track gaps
             if gap_samples > 0:
-                buffer.gap_count += 1
-                buffer.gap_samples += gap_samples
+                self.current_buffer.gap_count += 1
+                self.current_buffer.gap_samples += gap_samples
                 self.total_gaps += 1
             
             # Update time reference
-            self.last_rtp_timestamp = rtp_timestamp
+            self.last_rtp_timestamp = rtp_timestamp + len(samples)
             
-            # Check if minute is complete
-            if buffer.is_complete:
-                self._flush_minute(buffer)
-                self.current_buffer = None
-            
-            return samples_to_write
+            return total_written
     
     def flush(self):
         """Flush any pending data to disk."""
