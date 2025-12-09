@@ -9,6 +9,7 @@ import time
 import subprocess
 from typing import List, Dict, Optional
 from ka9q import discover_channels, ChannelInfo, RadiodControl
+from ka9q.types import Encoding
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ class ChannelManager:
     def create_channel(self, frequency_hz: float, preset: str = "iq", 
                       sample_rate: Optional[int] = None, agc: int = 0, gain: float = 0.0,
                       destination: Optional[str] = None, ssrc: Optional[int] = None,
-                      description: str = "") -> Optional[int]:
+                      description: str = "", encoding: str = "float") -> Optional[int]:
         """
         Create a new channel in radiod
         
@@ -129,6 +130,7 @@ class ChannelManager:
             destination: RTP destination (mDNS or IP:port), e.g. "time-station-data.local"
             ssrc: Optional SSRC. If None, auto-allocated by ka9q-python
             description: Human-readable description (for logging)
+            encoding: Output encoding - "float" (F32) or "int16" (S16LE). Default: "float"
         
         Returns:
             SSRC of created channel, or None if failed
@@ -143,10 +145,19 @@ class ChannelManager:
                 if not resolved_dest:
                     logger.warning(f"Could not resolve destination '{destination}' - channel may use default")
             
+            # Map encoding string to ka9q Encoding type
+            encoding_map = {
+                "float": Encoding.F32,
+                "f32": Encoding.F32,
+                "int16": Encoding.S16LE,
+                "s16le": Encoding.S16LE,
+            }
+            encoding_value = encoding_map.get(encoding.lower(), Encoding.F32)
+            
             logger.info(
                 f"Creating channel: freq={frequency_hz/1e6:.3f} MHz, "
                 f"preset={preset}, rate={sample_rate}Hz, "
-                f"agc={agc}, gain={gain}dB, "
+                f"agc={agc}, gain={gain}dB, encoding={encoding}, "
                 f"destination={destination} -> {resolved_dest}, "
                 f"description='{description}'"
             )
@@ -163,7 +174,14 @@ class ChannelManager:
                 ssrc=ssrc
             )
             
-            logger.info(f"Channel creation complete (SSRC={allocated_ssrc}), waiting 0.5s...")
+            logger.info(f"Channel creation complete (SSRC={allocated_ssrc}), setting encoding...")
+            
+            # Set output encoding (must be done after channel creation)
+            try:
+                self.control.set_output_encoding(allocated_ssrc, encoding_value)
+                logger.info(f"Set encoding to {encoding} (value={encoding_value})")
+            except Exception as enc_err:
+                logger.warning(f"Failed to set encoding: {enc_err}")
             
             # Wait for radiod to process
             time.sleep(0.5)
@@ -172,7 +190,7 @@ class ChannelManager:
             
             # Verify the channel was created
             if self.control.verify_channel(allocated_ssrc, frequency_hz):
-                logger.info(f"✓ Channel {allocated_ssrc} ({frequency_hz/1e6:.3f} MHz) created successfully")
+                logger.info(f"✓ Channel {allocated_ssrc} ({frequency_hz/1e6:.3f} MHz) created with {encoding} encoding")
                 return allocated_ssrc
             else:
                 logger.warning(f"✗ Channel {allocated_ssrc} verification failed")
@@ -267,7 +285,8 @@ class ChannelManager:
                 sample_rate=channel_spec.get('sample_rate', 16000),
                 agc=channel_spec.get('agc', 0),
                 gain=channel_spec.get('gain', 0.0),
-                description=channel_spec.get('description', '')
+                description=channel_spec.get('description', ''),
+                encoding=channel_spec.get('encoding', 'float')
             ):
                 create_success += 1
         
@@ -277,20 +296,17 @@ class ChannelManager:
             ssrc = channel_spec['ssrc']
             logger.info(f"Updating channel {ssrc}")
             
-            # Update channel using create_channel (new ka9q-python API)
-            # Note: create_channel updates if channel already exists
+            # Update channel using our create_channel which handles encoding
             try:
-                self.control.create_channel(
+                if self.create_channel(
                     ssrc=ssrc,
                     frequency_hz=channel_spec['frequency_hz'],
                     preset=channel_spec.get('preset', 'iq'),
                     sample_rate=channel_spec.get('sample_rate', 16000),
-                    agc_enable=channel_spec.get('agc', 0),
-                    gain=channel_spec.get('gain', 0.0)
-                )
-                time.sleep(0.5)
-                
-                if self.control.verify_channel(ssrc, channel_spec['frequency_hz']):
+                    agc=channel_spec.get('agc', 0),
+                    gain=channel_spec.get('gain', 0.0),
+                    encoding=channel_spec.get('encoding', 'float')
+                ):
                     logger.info(f"✓ Channel {ssrc} updated successfully")
                     update_success += 1
                 else:
@@ -365,6 +381,7 @@ class ChannelManager:
             sample_rate = ch_spec.get('sample_rate', defaults.get('sample_rate', 20000))
             agc = ch_spec.get('agc', defaults.get('agc', 0))
             gain = ch_spec.get('gain', defaults.get('gain', 0.0))
+            encoding = ch_spec.get('encoding', defaults.get('encoding', 'float'))
             
             # Check if channel exists at this frequency
             if freq_hz in existing_by_freq:
@@ -400,7 +417,8 @@ class ChannelManager:
                         gain=gain,
                         destination=destination,
                         ssrc=existing_ssrc,  # Keep existing SSRC
-                        description=description
+                        description=description,
+                        encoding=encoding
                     )
                     if allocated:
                         freq_to_ssrc[freq_hz] = allocated
@@ -416,7 +434,8 @@ class ChannelManager:
                     gain=gain,
                     destination=destination,
                     ssrc=None,  # Auto-allocate
-                    description=description
+                    description=description,
+                    encoding=encoding
                 )
                 if allocated:
                     freq_to_ssrc[freq_hz] = allocated

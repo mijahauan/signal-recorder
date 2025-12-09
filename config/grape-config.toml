@@ -82,6 +82,9 @@ preset = "iq"
 sample_rate = 20000
 agc = 0
 gain = 0
+# Output encoding: "float" (F32, 144 dB dynamic range) or "int16" (S16LE, 96 dB)
+# Float32 is preferred for scientific applications
+encoding = "float"
 
 # Channel definitions - SSRC auto-allocated by ka9q-python
 # Only frequency_hz and description required; defaults applied automatically
