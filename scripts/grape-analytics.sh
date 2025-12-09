@@ -79,8 +79,8 @@ start)
         
         # Phase 2 reads from raw_archive (Phase 1 output)
         # and writes timing analysis to phase2/
-        # Run at lower priority (nice 10) so core recorder gets CPU first
-        nohup nice -n 10 $PYTHON -m grape_recorder.grape.phase2_analytics_service \
+        # Run at lower priority (nice 10) on cores 8-15 to not interfere with radiod/recorder
+        nohup taskset -c 8-15 nice -n 10 $PYTHON -m grape_recorder.grape.phase2_analytics_service \
           --archive-dir "$DATA_ROOT/raw_archive/$channel_dir" \
           --output-dir "$DATA_ROOT/phase2/$channel_dir" \
           --channel-name "WWV ${freq_mhz} MHz" \
@@ -104,8 +104,8 @@ start)
         freq_hz=${CHU_FREQS[$freq_mhz]}
         channel_dir="CHU_${freq_mhz}_MHz"
         
-        # Run at lower priority (nice 10) so core recorder gets CPU first
-        nohup nice -n 10 $PYTHON -m grape_recorder.grape.phase2_analytics_service \
+        # Run at lower priority (nice 10) on cores 8-15 to not interfere with radiod/recorder
+        nohup taskset -c 8-15 nice -n 10 $PYTHON -m grape_recorder.grape.phase2_analytics_service \
           --archive-dir "$DATA_ROOT/raw_archive/$channel_dir" \
           --output-dir "$DATA_ROOT/phase2/$channel_dir" \
           --channel-name "CHU ${freq_mhz} MHz" \
