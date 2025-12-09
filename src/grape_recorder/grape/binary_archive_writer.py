@@ -91,9 +91,12 @@ class BinaryArchiveWriter:
         self.total_gaps = 0
         self.write_errors = 0
         
-        # Time reference
-        self.system_time_ref: Optional[float] = None
+        # Time reference - RTP is primary after initialization
+        # We establish a one-time mapping from RTP timestamp to Unix time at startup,
+        # then derive all minute boundaries from RTP timestamps to avoid wall clock jitter
+        self.rtp_to_unix_offset: Optional[float] = None  # unix_time = rtp_timestamp / sample_rate + offset
         self.last_rtp_timestamp: Optional[int] = None
+        self.cumulative_samples: int = 0  # Total samples processed
         
         logger.info(f"BinaryArchiveWriter initialized for {config.channel_name}")
         logger.info(f"  Output: {self.archive_dir}")
@@ -111,9 +114,14 @@ class BinaryArchiveWriter:
         day_dir.mkdir(parents=True, exist_ok=True)
         return day_dir
     
-    def _start_new_minute(self, system_time: float, rtp_timestamp: int) -> MinuteBuffer:
-        """Start a new minute buffer."""
-        minute_boundary = (int(system_time) // 60) * 60
+    def _start_new_minute(self, rtp_derived_time: float, rtp_timestamp: int) -> MinuteBuffer:
+        """Start a new minute buffer.
+        
+        Args:
+            rtp_derived_time: Unix time derived from RTP timestamp (GPSDO-disciplined)
+            rtp_timestamp: Raw RTP timestamp for metadata
+        """
+        minute_boundary = (int(rtp_derived_time) // 60) * 60
         
         buffer = MinuteBuffer(
             minute_boundary=minute_boundary,
@@ -174,6 +182,18 @@ class BinaryArchiveWriter:
             self.write_errors += 1
             return False
     
+    def _rtp_to_unix_time(self, rtp_timestamp: int) -> float:
+        """
+        Convert RTP timestamp to Unix time using established reference.
+        
+        After initialization, this derives time from RTP (GPSDO-disciplined)
+        rather than wall clock, avoiding NTP-induced jitter.
+        """
+        if self.rtp_to_unix_offset is None:
+            # Not initialized yet - return 0 (will use system_time fallback)
+            return 0.0
+        return rtp_timestamp / self.config.sample_rate + self.rtp_to_unix_offset
+    
     def write_samples(
         self,
         samples: np.ndarray,
@@ -187,33 +207,41 @@ class BinaryArchiveWriter:
         Args:
             samples: Complex64 IQ samples
             rtp_timestamp: RTP timestamp of first sample
-            system_time: System wall clock time (uses current if None)
+            system_time: System wall clock time (only used for initial sync)
             gap_samples: Number of gap samples (for statistics)
             
         Returns:
             Number of samples written
         """
         with self._lock:
-            if system_time is None:
-                system_time = time.time()
+            # Establish RTP-to-Unix reference on first call
+            # This is the ONLY time we use system_time - thereafter RTP is primary
+            if self.rtp_to_unix_offset is None:
+                if system_time is None:
+                    system_time = time.time()
+                # offset = unix_time - (rtp_timestamp / sample_rate)
+                self.rtp_to_unix_offset = system_time - (rtp_timestamp / self.config.sample_rate)
+                logger.info(f"RTP-to-Unix reference established: offset={self.rtp_to_unix_offset:.3f}s")
             
             # Ensure complex64
             if samples.dtype != np.complex64:
                 samples = samples.astype(np.complex64)
             
-            # Determine which minute this belongs to
-            sample_minute = (int(system_time) // 60) * 60
+            # Determine which minute this belongs to FROM RTP TIMESTAMP (GPSDO-disciplined)
+            # This avoids wall clock jitter from NTP/chrony adjustments
+            sample_unix_time = self._rtp_to_unix_time(rtp_timestamp)
+            sample_minute = (int(sample_unix_time) // 60) * 60
             
             # Start new buffer if needed
             if self.current_buffer is None:
-                self.current_buffer = self._start_new_minute(system_time, rtp_timestamp)
+                self.current_buffer = self._start_new_minute(sample_unix_time, rtp_timestamp)
             
             # Check if we've crossed into a new minute
             if sample_minute > self.current_buffer.minute_boundary:
                 # Flush current minute
                 self._flush_minute(self.current_buffer)
                 # Start new minute
-                self.current_buffer = self._start_new_minute(system_time, rtp_timestamp)
+                self.current_buffer = self._start_new_minute(sample_unix_time, rtp_timestamp)
             
             # Write to buffer
             buffer = self.current_buffer
