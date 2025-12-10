@@ -1,22 +1,99 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-08  
-**Version:** 3.16.0  
-**Next Session Focus:** Monitor Production Stability
+**Last Updated:** 2025-12-10  
+**Version:** 3.17.0  
+**Next Session Focus:** REFACTOR into time-manager + grape-recorder
 
 ---
 
-## 🎯 NEXT SESSION: MONITOR PRODUCTION STABILITY
+## 🎯 NEXT SESSION: REFACTOR INTO TWO APPLICATIONS
 
-Production mode is now running on bee1. Focus areas for next session:
+The owner intends to split this application into two separate components:
 
-1. **Verify data flow** - Check `/var/lib/grape-recorder/phase2/` for D_clock outputs
-2. **Monitor spectrograms** - Timer runs every 10 min, check `products/*/spectrograms/`
-3. **Test daily upload** - First PSWS upload at 00:30 UTC (Dec 9)
-4. **Web UI stability** - Monitor http://bee1:3000
+### 1. **time-manager** (New Application)
+A general-purpose precision timing application that:
+- Receives RTP streams from ka9q-radio (radiod)
+- Extracts timing information from standard time broadcasts (WWV/WWVH/CHU)
+- Computes D_clock (clock offset) using multiple methods
+- Provides a timing API/service for other applications
+- Could be used by ANY application needing precision time sync
 
-Key architecture is in place:
+### 2. **grape-recorder** (Refactored)
+A GRAPE-specific science data recorder that:
+- Uses time-manager for timing
+- Records IQ data with accurate timestamps
+- Generates spectrograms and science products
+- Uploads to PSWS network
+- Focused on HamSCI GRAPE experiment requirements
+
+### Why This Refactoring?
+- **Separation of concerns**: Timing logic is reusable beyond GRAPE
+- **Cleaner architecture**: Each app has single responsibility
+- **Easier testing**: Timing can be tested independently
+- **Broader utility**: time-manager useful for other SDR applications
+
+---
+
+## CURRENT SYSTEM STATUS (Dec 10, 2025)
+
+**All systems operational on bee1:**
+
+| Service | Status | Processes |
+|---------|--------|-----------|
+| grape-core-recorder | ✅ active | 1 |
+| grape-analytics | ✅ active | 9 |
+| Data pipeline | ✅ flowing | All 3 phases |
+
+**Data freshness:** Raw ~3s, Decimated ~100s (all channels)
+
+---
+
+## CRITICAL FIXES APPLIED (Dec 9-10, 2025)
+
+### 1. Path Coordination (ROOT CAUSE OF MANY BUGS)
+
+**Problem:** Different modules constructed paths independently, causing mismatches.
+
+**Fix:** Enforced centralized path management via `paths.py`:
+- `channel_name_to_dir()`: "WWV 2.5 MHz" → "WWV_2.5_MHz" (dots PRESERVED)
+- `dir_to_channel_name()`: reverse conversion
+- `GRAPEPaths` class: full path resolution
+
+**14 files refactored** to use `paths.py` exclusively. Zero manual path constructions remain.
+
+**Key file:** `src/grape_recorder/paths.py`
+
+### 2. Systemd Service Fixes
+
+| Issue | Fix |
+|-------|-----|
+| `User=grape-recorder` | Changed to `User=wsprdaemon` |
+| `Type=simple` for analytics | Changed to `Type=oneshot` + `RemainAfterExit=yes` |
+| `ProtectHome=read-only` | Disabled (matplotlib needs ~/.config) |
+| `${GRAPE_PROJECT}` variables | Hardcoded paths in `/etc/systemd/system/` |
+
+### 3. Raw Buffer vs Raw Archive
+
+**Current architecture:**
+- Phase 1 writes to `raw_buffer/` (binary files, minute-aligned)
+- Phase 2 reads from `raw_buffer/` (not `raw_archive/`)
+- `raw_archive/` intended for Digital RF format (not currently used)
+
+**Data flow:**
+```
+radiod (RTP) → core_recorder → raw_buffer/{CHANNEL}/{DATE}/{minute}.bin
+                                    ↓
+                            phase2_analytics_service
+                                    ↓
+                            products/{CHANNEL}/decimated/
+                                    ↓
+                            products/{CHANNEL}/spectrograms/
+```
+
+---
+
+## THREE-PHASE ARCHITECTURE
 
 ### Pre-Installation Checklist
 
@@ -39,6 +116,58 @@ config/
 ├── grape-config.toml     # Main config: station, channels, paths, uploader
 ├── core-recorder.toml    # Core recorder: ka9q connection, DRF writer
 └── environment           # Environment variables (create from .template)
+```
+
+---
+
+## PROPOSED MODULE SPLIT FOR REFACTORING
+
+### Modules → time-manager (Timing-specific)
+
+| Module | Purpose | Notes |
+|--------|---------|-------|
+| `tone_detector.py` | Detect WWV/WWVH 1000/1200 Hz tones | Core timing extraction |
+| `transmission_time_solver.py` | Compute propagation delay | Uses lat/lon, ionospheric model |
+| `clock_convergence.py` | Kalman filter for D_clock | Welford's algorithm deprecated |
+| `multi_broadcast_fusion.py` | Fuse 13 broadcasts to UTC(NIST) | Station calibration |
+| `wwvh_discrimination.py` | Distinguish WWV vs WWVH | 8 discrimination methods |
+| `wwv_bcd_encoder.py` | Decode BCD time code | 100 Hz subcarrier |
+| `wwv_tone_schedule.py` | Minute-specific tone schedule | Station ID timing |
+| `gpsdo_monitor.py` | Monitor GPSDO lock state | Set/Monitor/Intervene |
+| `utc_calibration.py` | Generate UTC calibration | From tone arrivals |
+| `phase2_temporal_engine.py` | Orchestrate timing pipeline | Process minute → D_clock |
+
+### Modules → grape-recorder (GRAPE-specific)
+
+| Module | Purpose | Notes |
+|--------|---------|-------|
+| `core_recorder.py` | RTP → binary files | Phase 1 ingestion |
+| `binary_archive_writer.py` | Write raw_buffer | Minute-aligned files |
+| `raw_archive_writer.py` | Write Digital RF | HDF5 format (future) |
+| `decimation.py` | 20 kHz → 10 Hz | StatefulDecimator |
+| `decimated_buffer.py` | Store decimated data | Binary + JSON metadata |
+| `carrier_spectrogram.py` | Generate PNG spectrograms | Phase 3 product |
+| `phase2_analytics_service.py` | Orchestrate Phase 2 | Would use time-manager API |
+| `phase3_products_service.py` | Orchestrate Phase 3 | Spectrograms, uploads |
+
+### Shared/Utility Modules
+
+| Module | Purpose | Goes To |
+|--------|---------|---------|
+| `paths.py` | Centralized path management | Both (or shared library) |
+| `wwv_constants.py` | Station coordinates, frequencies | time-manager |
+| `async_disk_writer.py` | Non-blocking disk I/O | grape-recorder |
+
+### API Interface (time-manager → grape-recorder)
+
+The time-manager should expose:
+```python
+class TimeManager:
+    def get_current_d_clock(channel: str) -> DClockResult
+    def get_station_for_frequency(freq_hz: int, minute: int) -> str
+    def get_propagation_delay(station: str, freq_hz: int) -> float
+    def get_fusion_result() -> FusionResult
+    def subscribe_to_timing_events(callback) -> None
 ```
 
 ### Production Path Structure
@@ -260,6 +389,7 @@ export GRAPE_LOG_DIR=/tmp/grape-test/logs
 
 | Date | Focus | Key Changes |
 |------|-------|-------------|
+| **Dec 9-10** | **Path Coordination Fix** | 14 files refactored to use paths.py, systemd fixes, pipeline verified |
 | Dec 8 Night | Production Deployed | Systemd services running, matplotlib added, docs updated |
 | Dec 8 Eve | Production Mode | TEST/PRODUCTION architecture, install.sh, systemd services |
 | Dec 8 PM | Phase 3 Fixes | StatefulDecimator, path consolidation, spectrogram canonical |
@@ -319,5 +449,89 @@ export GRAPE_LOG_DIR=/tmp/grape-test/logs
 | CHU (Ottawa, Canada) | 3.33, 7.85, 14.67 MHz |
 
 **Channel naming convention:**
-- Directory format: `WWV_10_MHz`, `CHU_7.85_MHz`
+- Directory format: `WWV_10_MHz`, `CHU_7.85_MHz` (dots preserved!)
 - Display format: `WWV 10 MHz`, `CHU 7.85 MHz`
+- **CRITICAL:** Use `channel_name_to_dir()` from `paths.py`, never manual string replace
+
+---
+
+## KEY TECHNICAL DETAILS FOR REFACTORING
+
+### Timing Architecture (Two-Tier)
+
+1. **Operational timing** (Phase 1): NTP + GPSDO offset (~1-10ms)
+   - Used for file boundaries and real-time operations
+   - Stable, non-disruptive
+
+2. **Scientific timing** (Phase 2): Tone-based calibration (~50µs)
+   - Generated when Kalman filter reaches Grade A
+   - Stored in `state/utc_calibration.json`
+   - Formula: `rtp_to_utc_offset = (utc_minute + prop_delay) - (tone_rtp / sample_rate)`
+
+### Multi-Broadcast Fusion
+
+**13 broadcasts from 9 frequencies:**
+- 5 unique: CHU 3.33/7.85/14.67, WWV 20/25 MHz
+- 8 shared (need discrimination): 2.5/5/10/15 MHz × (WWV + WWVH)
+
+**Fusion formula:**
+```python
+fused_d_clock = Σ(weight × (raw + calibration_offset)) / Σ(weight)
+```
+
+### Station Discrimination (8 Methods)
+
+1. BCD correlation (100 Hz subcarrier)
+2. Power ratio (WWV typically stronger for US receivers)
+3. Geographic ToA prediction
+4. 440 Hz station ID (minute 2)
+5. 500/600 Hz tone detection (29/30, 59/00 second windows)
+6. Test signal (minutes 8/44)
+7. Tick window timing
+8. Overall 1000/1200 Hz tone strength
+
+### GPSDO Monitor States
+
+- `STARTUP`: No anchor, need full search
+- `STEADY_STATE`: Projecting time, verifying with tones
+- `HOLDOVER`: Drift alarm, data flagged
+- `REANCHOR`: Discontinuity detected, must re-anchor
+
+### Important Bug Fixes to Preserve
+
+1. **Floating point precision** (tone_detector.py:249): `int((time + 0.5) / 60) * 60`
+2. **Kalman state reset** (clock_convergence.py): Reset on REACQUIRE state
+3. **RTP timestamp** (phase2_analytics_service.py): Read from metadata, don't synthesize
+4. **StatefulDecimator** (decimation.py): Preserves filter state across calls
+
+### Dependencies
+
+**External:**
+- ka9q-radio (radiod) - RTP source
+- ka9q-python - RTP/multicast handling
+- digital_rf (optional) - HDF5 format support
+- scipy, numpy, matplotlib
+
+**Internal flow:**
+```
+ka9q-radio → RTP multicast → core_recorder → raw_buffer
+                                    ↓
+                           phase2_analytics → decimated → spectrograms
+```
+
+### Station Coordinates (Precise)
+
+```python
+WWV_COORDS = (40.67805, -105.04694)   # Ft. Collins, CO
+WWVH_COORDS = (21.9914, -159.7644)    # Kauai, HI
+CHU_COORDS = (45.2958, -75.7544)      # Ottawa, Canada
+```
+
+Receiver: lat=38.918461, lon=-92.127974 (configured in grape-config.toml)
+
+### Sample Rates
+
+- Raw IQ from radiod: 20,000 Hz (complex64)
+- Decimated for spectrograms: 10 Hz
+- Tone detection: Matched filter at 20 kHz
+- File boundaries: Minute-aligned (1,200,000 samples/minute)
