@@ -618,7 +618,8 @@ class RawArchiveWriter:
         # Create output directory structure
         # output_dir is expected to be the raw_archive root (e.g., /data/raw_archive/)
         # We add only the channel name subdirectory
-        self.archive_dir = config.output_dir / config.channel_name.replace(' ', '_')
+        from grape_recorder.paths import channel_name_to_dir
+        self.archive_dir = config.output_dir / channel_name_to_dir(config.channel_name)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         
         # Metadata directory
@@ -1519,7 +1520,8 @@ class RawArchiveReader:
             raise ImportError("digital_rf required for reading raw archives")
         
         # archive_dir is expected to be the raw_archive root (e.g., /data/raw_archive/)
-        self.archive_dir = Path(archive_dir) / channel_name.replace(' ', '_')
+        from grape_recorder.paths import channel_name_to_dir
+        self.archive_dir = Path(archive_dir) / channel_name_to_dir(channel_name)
         self.channel_name = channel_name
         
         # Create DRF reader

@@ -87,8 +87,9 @@ class TimeStandardCSVWriter:
             output_dir: Directory for CSV files
             channel_name: Channel identifier (for filename)
         """
+        from grape_recorder.paths import channel_name_to_dir
         self.output_dir = Path(output_dir)
-        self.channel_name = channel_name.replace(' ', '_')
+        self.channel_name = channel_name_to_dir(channel_name)
         
         self.output_dir.mkdir(parents=True, exist_ok=True)
         

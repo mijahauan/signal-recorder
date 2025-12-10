@@ -1523,7 +1523,8 @@ class AnalyticsService:
     
     def _write_quality_metrics(self, archive: NPZArchive, quality: QualityInfo):
         """Write quality metrics to CSV file"""
-        csv_file = self.quality_dir / f"{self.channel_name.replace(' ', '_')}_quality.csv"
+        from grape_recorder.paths import channel_name_to_dir
+        csv_file = self.quality_dir / f"{channel_name_to_dir(self.channel_name)}_quality.csv"
         
         # Create CSV if it doesn't exist
         if not csv_file.exists():
@@ -1543,7 +1544,8 @@ class AnalyticsService:
         if quality.gap_count == 0:
             return
         
-        log_file = self.logs_dir / f"{self.channel_name.replace(' ', '_')}_discontinuities.log"
+        from grape_recorder.paths import channel_name_to_dir
+        log_file = self.logs_dir / f"{channel_name_to_dir(self.channel_name)}_discontinuities.log"
         
         with open(log_file, 'a') as f:
             f.write(f"\n{'='*80}\n")

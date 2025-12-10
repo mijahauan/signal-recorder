@@ -137,11 +137,12 @@ class SpectrogramGenerator:
             raise ImportError("scipy required for spectrogram generation")
         
         self.data_root = Path(data_root)
+        from grape_recorder.paths import channel_name_to_dir
         self.channel_name = channel_name
         self.config = config or SpectrogramConfig()
         
         # Channel directory name
-        self.channel_dir = channel_name.replace(' ', '_')
+        self.channel_dir = channel_name_to_dir(channel_name)
         
         # Input: Phase 3 decimated DRF
         self.decimated_dir = self.data_root / 'products' / self.channel_dir / 'decimated'

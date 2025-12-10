@@ -130,8 +130,9 @@ class ConsensusCombiner:
         
     def _read_channel_status(self, channel_name: str) -> Optional[ChannelMeasurement]:
         """Read Phase 2 status for one channel."""
+        from grape_recorder.paths import channel_name_to_dir
         # Convert channel name to directory format
-        dir_name = channel_name.replace(' ', '_')
+        dir_name = channel_name_to_dir(channel_name)
         status_file = self.phase2_dir / dir_name / 'status' / 'analytics-service-status.json'
         
         if not status_file.exists():

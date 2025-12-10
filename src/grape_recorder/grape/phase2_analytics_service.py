@@ -476,8 +476,9 @@ class Phase2AnalyticsService:
     # ========================================================================
     
     def _get_file_channel_name(self) -> str:
-        """Get filename-safe channel name (spaces and dots to underscores)."""
-        return self.channel_name.replace(' ', '_').replace('.', '_')
+        """Get filename-safe channel name."""
+        from grape_recorder.paths import channel_name_to_dir
+        return channel_name_to_dir(self.channel_name)
     
     def _init_tone_detections_csv(self):
         """Initialize tone detections CSV for today."""
@@ -1015,9 +1016,11 @@ class Phase2AnalyticsService:
     def _get_latest_binary_minute(self) -> Optional[int]:
         """Get latest minute from binary archive."""
         from datetime import datetime, timezone
+        from grape_recorder.paths import GRAPEPaths
         
-        binary_dir = self.archive_dir.parent.parent / 'raw_buffer'
-        channel_dir = binary_dir / self.channel_name.replace(' ', '_').replace('.', '_')
+        data_root = self.archive_dir.parent.parent
+        paths = GRAPEPaths(data_root)
+        channel_dir = paths.get_raw_buffer_dir(self.channel_name)
         
         if not channel_dir.exists():
             return None

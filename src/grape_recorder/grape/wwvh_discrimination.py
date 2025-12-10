@@ -406,9 +406,10 @@ class WWVHDiscriminator:
         self.geo_predictor: Optional[WWVGeographicPredictor] = None
         if receiver_grid:
             from pathlib import Path
+            from grape_recorder.paths import channel_name_to_dir
             history_file = None
             if history_dir:
-                history_file = Path(history_dir) / f"toa_history_{channel_name.replace(' ', '_')}.json"
+                history_file = Path(history_dir) / f"toa_history_{channel_name_to_dir(channel_name)}.json"
             
             self.geo_predictor = WWVGeographicPredictor(
                 receiver_grid=receiver_grid,

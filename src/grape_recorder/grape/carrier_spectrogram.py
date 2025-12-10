@@ -139,11 +139,13 @@ class CarrierSpectrogramGenerator:
         self.receiver_grid = receiver_grid
         self.config = config or SpectrogramConfig()
         
+        from grape_recorder.paths import channel_name_to_dir
+        
         # Data source
         self.buffer = DecimatedBuffer(data_root, channel_name)
         
         # Output location
-        self.channel_dir = channel_name.replace(' ', '_')
+        self.channel_dir = channel_name_to_dir(channel_name)
         self.output_dir = self.data_root / 'products' / self.channel_dir / 'spectrograms'
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -689,12 +691,13 @@ def generate_all_channel_spectrograms(
     """
     if channels is None:
         # Auto-discover from products directory (Phase 3 derived products)
+        from grape_recorder.paths import dir_to_channel_name
         products_dir = Path(data_root) / 'products'
         channels = []
         if products_dir.exists():
             for d in products_dir.iterdir():
                 if d.is_dir() and (d / 'decimated').exists():
-                    channels.append(d.name.replace('_', ' '))
+                    channels.append(dir_to_channel_name(d.name))
     
     results = {}
     for channel in channels:

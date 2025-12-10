@@ -197,7 +197,8 @@ class DiscriminationCSVWriters:
         self.disc_dir = self.paths.get_discrimination_dir(channel_name)
         
         # Channel directory name for file naming
-        self.channel_dir = channel_name.replace(' ', '_').replace('.', '_')
+        from grape_recorder.paths import channel_name_to_dir
+        self.channel_dir = channel_name_to_dir(channel_name)
         
         # Ensure directories exist
         for directory in [self.tone_dir, self.tick_dir, self.id_440_dir, 

@@ -492,8 +492,9 @@ class TimingMetricsWriter:
     
     def _write_csv(self, snapshot: TimingSnapshot):
         """Write snapshot to daily CSV file"""
+        from grape_recorder.paths import channel_name_to_dir
         date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
-        csv_path = self.output_dir / f"{self.channel_name.replace(' ', '_')}_timing_metrics_{date_str}.csv"
+        csv_path = self.output_dir / f"{channel_name_to_dir(self.channel_name)}_timing_metrics_{date_str}.csv"
         
         fieldnames = [
             'timestamp_utc', 'channel', 'source_type', 'quality', 'snr_db',
@@ -623,8 +624,9 @@ class TimingMetricsWriter:
     
     def _write_transition(self, transition: TimingTransition):
         """Append transition to daily JSON log"""
+        from grape_recorder.paths import channel_name_to_dir
         date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
-        json_path = self.output_dir / f"{self.channel_name.replace(' ', '_')}_timing_transitions_{date_str}.json"
+        json_path = self.output_dir / f"{channel_name_to_dir(self.channel_name)}_timing_transitions_{date_str}.json"
         
         # Load existing transitions
         transitions = []

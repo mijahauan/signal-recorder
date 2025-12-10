@@ -129,9 +129,10 @@ class DecimatedBuffer:
             data_root: Root data directory
             channel_name: Channel name (e.g., "WWV 10 MHz")
         """
+        from grape_recorder.paths import channel_name_to_dir
         self.data_root = Path(data_root)
         self.channel_name = channel_name
-        self.channel_dir = channel_name.replace(' ', '_')
+        self.channel_dir = channel_name_to_dir(channel_name)
         
         # Storage location: products/{CHANNEL}/decimated/ (Phase 3 derived products)
         self.buffer_dir = self.data_root / 'products' / self.channel_dir / 'decimated'

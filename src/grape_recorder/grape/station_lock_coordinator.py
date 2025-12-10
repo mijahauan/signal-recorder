@@ -191,11 +191,12 @@ class StationLockCoordinator:
             return []
         
         channels = []
+        from grape_recorder.paths import dir_to_channel_name
         for d in analytics_dir.iterdir():
             if d.is_dir() and not d.name.startswith('.'):
                 # Convert directory name back to channel name
                 # WWV_10_MHz -> WWV 10 MHz
-                channel_name = d.name.replace('_', ' ')
+                channel_name = dir_to_channel_name(d.name)
                 channels.append(channel_name)
         
         return sorted(channels)
