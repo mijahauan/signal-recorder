@@ -870,11 +870,12 @@ class Phase2AnalyticsService:
     def _read_binary_minute(self, target_minute: int):
         """Read from binary archive format."""
         from datetime import datetime, timezone
+        from grape_recorder.paths import GRAPEPaths
         
-        # Binary files are in raw_buffer directory
-        # Path: {data_root}/raw_buffer/{channel}/YYYYMMDD/{minute}.bin
-        binary_dir = self.archive_dir.parent.parent / 'raw_buffer'
-        channel_dir = binary_dir / self.channel_name.replace(' ', '_').replace('.', '_')
+        # Use centralized path management - NO manual path construction!
+        data_root = self.archive_dir.parent.parent  # raw_archive/{channel} -> data_root
+        paths = GRAPEPaths(data_root)
+        channel_dir = paths.get_raw_buffer_dir(self.channel_name)
         
         dt = datetime.fromtimestamp(target_minute, tz=timezone.utc)
         date_str = dt.strftime('%Y%m%d')

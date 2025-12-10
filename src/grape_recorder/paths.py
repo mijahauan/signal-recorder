@@ -83,15 +83,21 @@ def channel_name_to_key(channel_name: str) -> str:
 def channel_name_to_dir(channel_name: str) -> str:
     """Convert channel name to directory format.
     
+    Spaces are replaced with underscores. Dots are PRESERVED for clarity.
+    
     Args:
-        channel_name: Human-readable name (e.g., "WWV 10 MHz")
+        channel_name: Human-readable name (e.g., "WWV 10 MHz", "CHU 3.33 MHz")
     
     Returns:
-        Directory format: "WWV_10_MHz", "CHU_3.33_MHz", etc.
+        Directory format: "WWV_10_MHz", "CHU_3.33_MHz", "WWV_2.5_MHz"
     
     Examples:
         >>> channel_name_to_dir("WWV 10 MHz")
         'WWV_10_MHz'
+        >>> channel_name_to_dir("CHU 3.33 MHz")
+        'CHU_3.33_MHz'
+        >>> channel_name_to_dir("WWV 2.5 MHz")
+        'WWV_2.5_MHz'
     """
     return channel_name.replace(' ', '_')
 
@@ -136,6 +142,36 @@ class GRAPEPaths:
     
     # ========================================================================
     # PHASE 1: RAW ARCHIVE (Immutable Digital RF)
+    # ========================================================================
+    
+    # ========================================================================
+    # RAW BUFFER (Intermediate binary minute files)
+    # ========================================================================
+    
+    def get_raw_buffer_root(self) -> Path:
+        """Get raw buffer root directory.
+        
+        Returns: {data_root}/raw_buffer/
+        """
+        return self.data_root / 'raw_buffer'
+    
+    def get_raw_buffer_dir(self, channel_name: str) -> Path:
+        """Get raw buffer directory for a channel.
+        
+        Returns: {data_root}/raw_buffer/{CHANNEL}/
+        """
+        channel_dir = channel_name_to_dir(channel_name)
+        return self.get_raw_buffer_root() / channel_dir
+    
+    def get_raw_buffer_date_dir(self, channel_name: str, date: str) -> Path:
+        """Get raw buffer date directory.
+        
+        Returns: {data_root}/raw_buffer/{CHANNEL}/{YYYYMMDD}/
+        """
+        return self.get_raw_buffer_dir(channel_name) / date
+    
+    # ========================================================================
+    # PHASE 1: RAW ARCHIVE (Immutable Digital RF - for long-term storage)
     # ========================================================================
     
     def get_raw_archive_root(self) -> Path:

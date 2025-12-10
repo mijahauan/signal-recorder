@@ -106,7 +106,8 @@ class BinaryArchiveWriter:
     
     def _sanitize_channel_name(self) -> str:
         """Convert channel name to filesystem-safe format."""
-        return self.config.channel_name.replace(' ', '_').replace('.', '_')
+        from grape_recorder.paths import channel_name_to_dir
+        return channel_name_to_dir(self.config.channel_name)
     
     def _get_minute_dir(self, minute_boundary: int) -> Path:
         """Get directory for a specific minute."""
@@ -332,7 +333,8 @@ class BinaryArchiveReader:
     """
     
     def __init__(self, archive_dir: Path, channel_name: str):
-        self.archive_dir = archive_dir / channel_name.replace(' ', '_').replace('.', '_')
+        from grape_recorder.paths import channel_name_to_dir
+        self.archive_dir = archive_dir / channel_name_to_dir(channel_name)
         self.channel_name = channel_name
         self.sample_rate = 20000
     
