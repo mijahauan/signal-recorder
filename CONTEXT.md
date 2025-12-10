@@ -2,36 +2,81 @@
 
 **Author:** Michael James Hauan (AC0G)  
 **Last Updated:** 2025-12-10  
-**Version:** 3.17.0  
-**Next Session Focus:** REFACTOR into time-manager + grape-recorder
+**Version:** 4.0.0  
+**Status:** REFACTORING IN PROGRESS - time-manager + grape-recorder
 
 ---
 
-## 🎯 NEXT SESSION: REFACTOR INTO TWO APPLICATIONS
+## 🎯 TWO-APPLICATION ARCHITECTURE (In Progress)
 
-The owner intends to split this application into two separate components:
+The system is being refactored into two separate applications. **Phase A complete.**
 
-### 1. **time-manager** (New Application)
-A general-purpose precision timing application that:
+### Application 1: time-manager (Infrastructure)
+**Location:** `/home/wsprdaemon/time-manager/`  
+**Status:** Package structure created, daemon implemented
+
+A general-purpose precision timing daemon that:
 - Receives RTP streams from ka9q-radio (radiod)
-- Extracts timing information from standard time broadcasts (WWV/WWVH/CHU)
-- Computes D_clock (clock offset) using multiple methods
-- Provides a timing API/service for other applications
-- Could be used by ANY application needing precision time sync
+- Extracts UTC(NIST) from WWV/WWVH/CHU broadcasts
+- Computes D_clock via multi-broadcast fusion
+- Owns station discrimination (prerequisite for timing!)
+- Publishes to `/dev/shm/grape_timing` for consumers
+- Optionally feeds chronyd via SHM refclock
 
-### 2. **grape-recorder** (Refactored)
+**Key insight:** Discrimination is NOT a science product—it's a dependency of the clock. To recover UTC(NIST), you must know the path length. To know the path length, you must know the station. Therefore, time-manager must own the discriminator.
+
+### Application 2: grape-recorder (Science Client)
+**Location:** `/home/wsprdaemon/grape-recorder/`  
+**Status:** TimingClient created, pending integration
+
 A GRAPE-specific science data recorder that:
-- Uses time-manager for timing
-- Records IQ data with accurate timestamps
+- Consumes timing from time-manager via `TimingClient`
+- Records IQ data with corrected timestamps
 - Generates spectrograms and science products
 - Uploads to PSWS network
 - Focused on HamSCI GRAPE experiment requirements
 
-### Why This Refactoring?
-- **Separation of concerns**: Timing logic is reusable beyond GRAPE
-- **Cleaner architecture**: Each app has single responsibility
-- **Easier testing**: Timing can be tested independently
-- **Broader utility**: time-manager useful for other SDR applications
+### Why This Architecture?
+- **Reuse**: WSPR daemon, FT8 decoder can use time-manager for timing
+- **Stability**: If PSWS upload crashes, system clock stays synchronized
+- **Clean separation**: Physics/math in one box, data logging in another
+- **Chrony integration**: Entire Linux OS gets "GPS-quality" time
+
+### Key Files Created
+
+| Application | File | Purpose |
+|-------------|------|---------|
+| time-manager | `src/time_manager/main.py` | Main daemon entry point |
+| time-manager | `src/time_manager/output/shm_writer.py` | SHM output for consumers |
+| time-manager | `src/time_manager/output/chrony_shm.py` | Chrony refclock driver |
+| time-manager | `src/time_manager/interfaces/timing_result.py` | Data contract |
+| grape-recorder | `src/grape_recorder/timing_client.py` | Consumes time-manager |
+
+### Interface Contract
+
+**Shared Memory:** `/dev/shm/grape_timing`
+
+```json
+{
+  "version": "1.0.0",
+  "d_clock_ms": -1.25,
+  "d_clock_uncertainty_ms": 0.55,
+  "clock_status": "LOCKED",
+  "channels": {
+    "WWV_10_MHz": {
+      "station": "WWV",
+      "confidence": "high",
+      "propagation_mode": "1F2"
+    }
+  }
+}
+```
+
+### Next Steps
+1. Copy timing modules from grape-recorder to time-manager
+2. Test time-manager standalone
+3. Integrate TimingClient into grape-recorder
+4. Enable Chrony SHM for system clock discipline
 
 ---
 
