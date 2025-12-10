@@ -120,21 +120,31 @@ class RTPReceiver:
         # Bind to port
         self.socket.bind(('', self.port))
         
-        # Join multicast group
+        # Join multicast group on ALL interfaces to ensure we receive data
+        # regardless of which interface radiod sends on
+        joined_any = False
+        
+        # First try INADDR_ANY (receives from any interface)
         try:
-            # Try loopback first (for local radiod)
-            mreq = struct.pack("4s4s", 
-                              socket.inet_aton(self.multicast_address),
-                              socket.inet_aton('127.0.0.1'))
-            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-            logger.info(f"Joined multicast {self.multicast_address} on loopback")
-        except OSError:
-            # Fallback to any interface
             mreq = struct.pack("4sl",
                               socket.inet_aton(self.multicast_address),
                               socket.INADDR_ANY)
             self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
             logger.info(f"Joined multicast {self.multicast_address} on all interfaces")
+            joined_any = True
+        except OSError as e:
+            logger.debug(f"Could not join on all interfaces: {e}")
+        
+        # Also try loopback explicitly (some setups need this)
+        try:
+            mreq = struct.pack("4s4s", 
+                              socket.inet_aton(self.multicast_address),
+                              socket.inet_aton('127.0.0.1'))
+            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            logger.info(f"Joined multicast {self.multicast_address} on loopback")
+        except OSError as e:
+            if not joined_any:
+                logger.warning(f"Could not join multicast on any interface: {e}")
         
         # Start receiver thread
         self.running = True
