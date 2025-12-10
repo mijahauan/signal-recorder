@@ -7,11 +7,12 @@ Wants=network-online.target
 Requires=grape-core-recorder.service
 
 [Service]
-Type=simple
+Type=oneshot
+RemainAfterExit=yes
 
 # User/Group - same as core recorder
-User=grape-recorder
-Group=grape-recorder
+User=wsprdaemon
+Group=wsprdaemon
 
 # Environment from file (set by install.sh)
 EnvironmentFile=/etc/grape-recorder/environment

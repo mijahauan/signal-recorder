@@ -12,8 +12,8 @@ Type=simple
 
 # User/Group - set during installation
 # For production: create dedicated user or use existing user
-User=grape-recorder
-Group=grape-recorder
+User=wsprdaemon
+Group=wsprdaemon
 
 # Environment from file (set by install.sh)
 EnvironmentFile=/etc/grape-recorder/environment
@@ -51,8 +51,8 @@ MemoryMax=2G
 # Security hardening
 NoNewPrivileges=true
 PrivateTmp=false
-ProtectSystem=strict
-ProtectHome=read-only
+# ProtectSystem=strict  # Disabled: causes matplotlib config issues
+# ProtectHome=read-only  # Disabled: causes matplotlib config issues
 
 # Paths we need write access to
 ReadWritePaths=/var/lib/grape-recorder /var/log/grape-recorder
