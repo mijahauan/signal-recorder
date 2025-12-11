@@ -169,17 +169,11 @@ class PipelineOrchestrator:
         )
         self.raw_archive_writer = BinaryArchiveWriter(raw_config)
         
-        # Phase 2: Clock Offset Engine
-        from .clock_offset_series import ClockOffsetEngine
-        
-        self.clock_offset_engine = ClockOffsetEngine(
-            raw_archive_dir=config.raw_archive_dir,
-            output_dir=config.clock_offset_dir,
-            channel_name=config.channel_name,
-            frequency_hz=config.frequency_hz,
-            receiver_grid=config.receiver_grid,
-            sample_rate=config.sample_rate
-        )
+        # Phase 2: Timing is now handled by time-manager
+        # D_clock and station discrimination come from /dev/shm/grape_timing
+        # via TimingClient in Phase 3. No local timing analysis needed.
+        self.clock_offset_engine = None
+        logger.info("Phase 2 timing disabled - using time-manager via TimingClient")
         
         # Phase 3: Product generation is now handled separately as batch processing
         # See phase3_product_engine.py and scripts/grape-phase3.sh
@@ -273,7 +267,8 @@ class PipelineOrchestrator:
         # Flush all writers
         self._flush_current_minute()
         self.raw_archive_writer.close()
-        self.clock_offset_engine.save_series()
+        if self.clock_offset_engine:
+            self.clock_offset_engine.save_series()
         if self.product_generator:
             self.product_generator.close()
         
@@ -427,23 +422,28 @@ class PipelineOrchestrator:
                 
                 system_time, rtp_timestamp, samples = item
                 
-                # Phase 2: Generate D_clock measurement
-                try:
-                    measurement = self.clock_offset_engine.process_minute(
-                        iq_samples=samples,
-                        system_time=system_time,
-                        rtp_timestamp=rtp_timestamp
-                    )
-                    
-                    if measurement:
-                        self.stats['minutes_analyzed'] += 1
-                        logger.debug(
-                            f"D_clock: {measurement.clock_offset_ms:+.2f}ms "
-                            f"(conf={measurement.confidence:.2f})"
+                # Phase 2: Timing is handled by time-manager
+                # No local D_clock computation - just count minutes processed
+                if self.clock_offset_engine:
+                    try:
+                        measurement = self.clock_offset_engine.process_minute(
+                            iq_samples=samples,
+                            system_time=system_time,
+                            rtp_timestamp=rtp_timestamp
                         )
-                
-                except Exception as e:
-                    logger.error(f"Phase 2 analysis error: {e}", exc_info=True)
+                        
+                        if measurement:
+                            self.stats['minutes_analyzed'] += 1
+                            logger.debug(
+                                f"D_clock: {measurement.clock_offset_ms:+.2f}ms "
+                                f"(conf={measurement.confidence:.2f})"
+                            )
+                    
+                    except Exception as e:
+                        logger.error(f"Phase 2 analysis error: {e}", exc_info=True)
+                else:
+                    # Timing comes from time-manager - just track that we processed this minute
+                    self.stats['minutes_analyzed'] += 1
                 
                 # Phase 3: Generate corrected product (disabled in three-phase architecture)
                 # Phase 3 now runs as batch processing via grape-phase3.sh
@@ -477,7 +477,7 @@ class PipelineOrchestrator:
                 'products_generated': self.stats['products_generated'],
                 'queue_depth': self.analysis_queue.qsize(),
                 'phase1_stats': self.raw_archive_writer.get_stats(),
-                'phase2_stats': self.clock_offset_engine.get_stats(),
+                'phase2_stats': self.clock_offset_engine.get_stats() if self.clock_offset_engine else {'status': 'disabled (time-manager)'},
                 'phase3_stats': self.product_generator.get_stats() if self.product_generator else {'status': 'disabled'}
             }
     

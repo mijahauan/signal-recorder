@@ -79,6 +79,14 @@ import threading
 
 logger = logging.getLogger(__name__)
 
+# Import TimingClient for D_clock from time-manager
+try:
+    from ..timing_client import TimingClient, ClockStatus
+    TIMING_CLIENT_AVAILABLE = True
+except ImportError:
+    TIMING_CLIENT_AVAILABLE = False
+    logger.warning("TimingClient not available - will use CSV fallback")
+
 # Try to import Digital RF
 try:
     import digital_rf as drf
@@ -270,6 +278,18 @@ class Phase3ProductEngine:
         self.gap_analyses: List[GapAnalysis] = []
         self.timing_annotations: List[TimingAnnotation] = []
         
+        # Initialize TimingClient for real-time D_clock from time-manager
+        self.timing_client: Optional[TimingClient] = None
+        if TIMING_CLIENT_AVAILABLE:
+            try:
+                self.timing_client = TimingClient()
+                if self.timing_client.available:
+                    logger.info("  TimingClient: connected to time-manager")
+                else:
+                    logger.info("  TimingClient: time-manager not running (will use CSV fallback)")
+            except Exception as e:
+                logger.warning(f"  TimingClient init failed: {e}")
+        
         logger.info(f"Phase3ProductEngine initialized for {config.channel_name}")
         logger.info(f"  Data root: {config.data_root}")
         logger.info(f"  Decimation: {config.input_sample_rate} Hz → {config.output_sample_rate} Hz")
@@ -308,14 +328,27 @@ class Phase3ProductEngine:
     
     def load_phase2_result(self, system_time: float) -> Optional[Dict]:
         """
-        Load Phase 2 analysis result for a specific minute.
+        Load timing result for a specific minute.
+        
+        Priority:
+        1. TimingClient (real-time from time-manager SHM) - for current minute
+        2. CSV files (historical data) - for reprocessing past data
         
         Args:
             system_time: System time of the minute to load
             
         Returns:
-            Phase 2 result dict or None if not available
+            Timing result dict or None if not available
         """
+        # Try TimingClient first for recent data (within 2 minutes)
+        if self.timing_client and self.timing_client.available:
+            age = time.time() - system_time
+            if age < 120:  # Within 2 minutes - use live timing
+                result = self._load_from_timing_client()
+                if result:
+                    return result
+        
+        # Fall back to CSV for historical data
         # Calculate minute boundary
         minute_boundary = int(system_time / 60) * 60
         
@@ -336,8 +369,68 @@ class Phase3ProductEngine:
         
         return None
     
+    def _load_from_timing_client(self) -> Optional[Dict]:
+        """
+        Load timing from time-manager via TimingClient.
+        
+        Returns:
+            Timing result dict or None if not available
+        """
+        if not self.timing_client:
+            return None
+        
+        try:
+            # Get channel-specific timing if available
+            channel_timing = self.timing_client.get_channel_timing(self.config.channel_name)
+            
+            if channel_timing:
+                # Use channel-specific data
+                d_clock, uncertainty = self.timing_client.get_d_clock_with_uncertainty()
+                
+                return {
+                    'd_clock_ms': d_clock if d_clock is not None else 0.0,
+                    'uncertainty_ms': uncertainty if uncertainty is not None else 999.0,
+                    'quality_grade': self._status_to_grade(self.timing_client.get_clock_status()),
+                    'station': channel_timing.station,
+                    'propagation_mode': channel_timing.propagation_mode,
+                    'confidence': 0.9 if channel_timing.confidence == 'high' else 0.5
+                }
+            else:
+                # Use fused D_clock (global)
+                d_clock, uncertainty = self.timing_client.get_d_clock_with_uncertainty()
+                
+                if d_clock is None:
+                    return None
+                
+                return {
+                    'd_clock_ms': d_clock,
+                    'uncertainty_ms': uncertainty if uncertainty is not None else 999.0,
+                    'quality_grade': self._status_to_grade(self.timing_client.get_clock_status()),
+                    'station': 'FUSED',  # Multi-station fusion
+                    'propagation_mode': 'FUSED',
+                    'confidence': 0.8
+                }
+                
+        except Exception as e:
+            logger.warning(f"TimingClient error: {e}")
+            return None
+    
+    def _status_to_grade(self, status) -> str:
+        """Convert ClockStatus to quality grade."""
+        if not TIMING_CLIENT_AVAILABLE:
+            return 'X'
+        
+        grade_map = {
+            ClockStatus.LOCKED: 'A',
+            ClockStatus.HOLDOVER: 'B',
+            ClockStatus.ACQUIRING: 'C',
+            ClockStatus.UNLOCKED: 'D',
+            ClockStatus.UNAVAILABLE: 'X',
+        }
+        return grade_map.get(status, 'X')
+    
     def _load_phase2_from_csv(self, csv_file: Path, minute_boundary: float) -> Optional[Dict]:
-        """Load specific minute's Phase 2 result from CSV."""
+        """Load specific minute's Phase 2 result from CSV (for historical data)."""
         try:
             with open(csv_file, 'r') as f:
                 reader = csv.DictReader(f)
@@ -625,6 +718,57 @@ class Phase3ProductEngine:
             self.drf_writer = None
             self.metadata_writer = None
     
+    def _write_minute_metadata(
+        self,
+        sample_index: int,
+        gap_analysis: GapAnalysis,
+        timing_annotation: TimingAnnotation,
+        station: str,
+        d_clock_ms: float,
+        quality_grade: str
+    ):
+        """
+        Write per-minute metadata to DRF metadata file.
+        
+        This embeds gap and timing information directly in the HDF5 metadata
+        for PSWS upload compatibility.
+        """
+        if not self.metadata_writer:
+            return
+        
+        try:
+            # Build gap intervals as numpy arrays for HDF5 storage
+            gap_starts = np.array([g.start_sample for g in gap_analysis.gaps], dtype=np.int64)
+            gap_durations = np.array([g.duration_samples for g in gap_analysis.gaps], dtype=np.int64)
+            
+            minute_metadata = {
+                # Timing annotations
+                'd_clock_ms': np.float32(d_clock_ms),
+                'd_clock_uncertainty_ms': np.float32(timing_annotation.uncertainty_ms),
+                'quality_grade': quality_grade,
+                'station': station,
+                'propagation_mode': timing_annotation.propagation_mode,
+                
+                # Gap annotations
+                'gap_count': np.int32(gap_analysis.gap_count),
+                'gap_samples_total': np.int64(gap_analysis.gap_samples),
+                'completeness_pct': np.float32(gap_analysis.completeness_pct),
+                'data_quality': gap_analysis.data_quality,
+                
+                # Gap intervals (for sample-accurate gap locations)
+                'gap_start_samples': gap_starts if len(gap_starts) > 0 else np.array([], dtype=np.int64),
+                'gap_duration_samples': gap_durations if len(gap_durations) > 0 else np.array([], dtype=np.int64),
+                
+                # Source tracking
+                'system_time': np.float64(timing_annotation.system_time),
+                'utc_time': np.float64(timing_annotation.utc_time),
+            }
+            
+            self.metadata_writer.write(sample_index, minute_metadata)
+            
+        except Exception as e:
+            logger.warning(f"Failed to write minute metadata: {e}")
+    
     def process_minute(
         self,
         system_time: float,
@@ -746,6 +890,17 @@ class Phase3ProductEngine:
             
             result['samples_written'] = len(decimated)
             result['success'] = True
+            
+            # Step 10: Write per-minute metadata with gap and timing annotations
+            if self.metadata_writer:
+                self._write_minute_metadata(
+                    sample_index=calculated_index,
+                    gap_analysis=gap_analysis,
+                    timing_annotation=annotation,
+                    station=station,
+                    d_clock_ms=d_clock_ms,
+                    quality_grade=quality_grade
+                )
             
             logger.debug(
                 f"Phase 3: Wrote {len(decimated)} samples at UTC={utc_timestamp:.3f} "

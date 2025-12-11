@@ -1,9 +1,9 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-10  
-**Version:** 5.0.0  
-**Status:** ARCHITECTURE COMPLETE - time-manager separated
+**Last Updated:** 2025-12-11  
+**Version:** 5.1.0  
+**Status:** REFACTORED - RadiodStream + TimingClient integration
 
 ---
 
@@ -70,14 +70,19 @@ A precision timing daemon that:
 ### Application 2: grape-recorder (Science Client)
 **Repository:** https://github.com/mijahauan/grape-recorder  
 **Location:** `/home/wsprdaemon/grape-recorder/`  
-**Status:** Pending TimingClient integration, needs quality verification
+**Status:** ✅ TimingClient integrated, RadiodStream migration ready
 
 A GRAPE-specific science data recorder that:
+- Uses `ka9q.RadiodStream` for RTP reception (gap detection via `StreamQuality`)
 - Consumes timing from time-manager via `TimingClient`
 - Records IQ data with time and gap annotations
 - Decimates 20 kHz → 10 Hz with `StatefulDecimator`
-- Packages Digital RF for PSWS upload
+- Packages Digital RF for PSWS upload with embedded gap/timing metadata
 - Generates spectrograms for monitoring
+
+**New modules (Dec 10 refactor):**
+- `stream_recorder.py` - RadiodStream-based intake (replaces RTPReceiver)
+- Phase 3 now uses `TimingClient` for D_clock (no local timing computation)
 
 ### Why Two Applications?
 - **Reuse**: WSPR daemon, FT8 decoder can use time-manager for timing
@@ -87,23 +92,54 @@ A GRAPE-specific science data recorder that:
 
 ---
 
-## 🔄 NEXT SESSION: VERIFY GRAPE-RECORDER QUALITY
+## 🔄 CURRENT SESSION CHANGES (Dec 10, 2025)
 
-### Priority 1: Confirm Product Pipeline
+### Completed Refactoring
+
+1. **StreamRecorder** (`stream_recorder.py`) - New RadiodStream-based recorder
+   - Uses `ka9q.RadiodStream` for RTP reception
+   - Automatic gap detection via `StreamQuality`
+   - Replaces custom `RTPReceiver` + `PacketResequencer`
+
+2. **BinaryArchiveWriter** - Enhanced gap annotation
+   - Now stores detailed gap intervals in metadata JSON
+   - Each gap has: `start_sample`, `duration_samples`, `source`
+
+3. **Phase3ProductEngine** - TimingClient integration
+   - Uses `TimingClient` for real-time D_clock from time-manager
+   - Falls back to CSV for historical data reprocessing
+   - Per-minute gap/timing metadata embedded in HDF5
+
+4. **PipelineOrchestrator** - Removed local timing
+   - Local Phase 2 timing analysis disabled
+   - Timing now comes from time-manager via TimingClient
+
+### Testing Commands
 
 ```bash
-# Verify decimation output exists and is valid
-ls -la /tmp/grape-test/products/*/decimated/$(date -u +%Y%m%d).bin
-
-# Check decimated data quality (boundary transients fixed?)
-python3 -c "
-import numpy as np
+# Test StreamRecorder (new RadiodStream-based intake)
+/opt/grape-recorder/venv/bin/python -c "
+from grape_recorder.grape.stream_recorder import StreamRecorder, StreamRecorderConfig
 from pathlib import Path
-f = Path('/tmp/grape-test/products/WWV_10_MHz/decimated/$(date -u +%Y%m%d).bin')
-if f.exists():
-    iq = np.fromfile(f, dtype=np.complex64)
-    print(f'Samples: {len(iq)} ({len(iq)/600:.1f} minutes)')
-    print(f'Power: {10*np.log10(np.mean(np.abs(iq)**2)):.1f} dB')
+config = StreamRecorderConfig(
+    status_address='grape.local',
+    data_root=Path('/tmp/grape-test'),
+    station_config={'callsign': 'AC0G', 'grid_square': 'EM38ww'}
+)
+recorder = StreamRecorder(config)
+print('Discovering channels...')
+count = recorder.discover_and_init_channels()
+print(f'Found {count} channels')
+"
+
+# Test TimingClient
+/opt/grape-recorder/venv/bin/python -c "
+from grape_recorder.timing_client import TimingClient
+client = TimingClient()
+print(f'Available: {client.available}')
+if client.available:
+    print(f'D_clock: {client.get_d_clock()} ms')
+    print(f'Status: {client.get_clock_status()}')
 "
 ```
 

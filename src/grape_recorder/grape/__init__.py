@@ -3,33 +3,47 @@
 This package provides GRAPE-specific components for recording and analyzing
 WWV/WWVH/CHU time station signals for ionospheric propagation studies.
 
-Architecture:
-=============
-Three-Phase Robust Time-Aligned Data Pipeline:
+Architecture (Refactored Dec 2025):
+===================================
+Two-Application Split:
 
-Phase 1: Immutable Raw Archive (20 kHz IQ DRF)
-- Stores raw data with system time only (no UTC corrections)
-- Fixed-duration file splitting (1 hour) - NOT event-based
-- Lossless compression (Shuffle + ZSTD/gzip)
-- NEVER modified based on subsequent analysis
-- Key: RawArchiveWriter, CoreRecorder
+1. time-manager (separate repo) - Infrastructure daemon
+   - Computes D_clock via tone detection + discrimination
+   - Publishes to /dev/shm/grape_timing
+   - Feeds chronyd for system clock discipline
 
-Phase 2: Analytical Engine (Clock Offset Series)
-- Reads from Phase 1 raw archive
-- Produces D_clock = t_system - t_UTC
-- Uses tone detection, discrimination, propagation modeling
-- Output: Separate versionable CSV/JSON files
-- Key: AnalyticsService, Phase2TemporalEngine
+2. grape-recorder (this package) - Science data recorder
+   - Consumes timing from time-manager via TimingClient
+   - Records IQ data with time and gap annotations
+   - Decimates 20 kHz → 10 Hz
+   - Packages Digital RF for PSWS upload
+
+Three-Phase Data Pipeline:
+
+Phase 1: Immutable Raw Archive (20 kHz IQ)
+- Uses StreamRecorder with ka9q.RadiodStream
+- Binary files with JSON metadata sidecars
+- Gap detection via StreamQuality
+- Key: StreamRecorder, BinaryArchiveWriter
+
+Phase 2: Timing (EXTERNAL - time-manager)
+- D_clock consumed via TimingClient
+- Station discrimination handled by time-manager
 
 Phase 3: Corrected Telemetry Product (10 Hz DRF)
-- Reads Phase 1 + applies D_clock from Phase 2
-- Decimates 20 kHz → 10 Hz
+- Reads Phase 1 + applies D_clock from time-manager
+- Decimates 20 kHz → 10 Hz with StatefulDecimator
 - UTC(NIST) aligned timestamps
-- Output: PROCESSED/ALIGNED DRF for upload
-- Key: Phase3ProductEngine, SpectrogramGenerator
+- Gap annotations in HDF5 metadata + sidecar JSON
+- Key: Phase3ProductEngine
 
 Example:
     from grape_recorder.grape import create_pipeline
+    from grape_recorder.timing_client import get_time_manager_status
+    
+    # Check time-manager is running
+    status = get_time_manager_status()
+    print(f"time-manager: {status['status']}")
     
     orchestrator = create_pipeline(
         data_dir=Path('/data/grape'),
@@ -39,19 +53,14 @@ Example:
         station_config={'callsign': 'W3PM', 'grid_square': 'EM38ww'}
     )
     orchestrator.start()
-    
-    # Feed RTP data
-    orchestrator.process_samples(iq_samples, rtp_timestamp)
 """
 
-# Tone detection and timing
+# Tone detection (used by time-manager, kept for compatibility)
 from .tone_detector import ToneDetector
 
-# Analytics and discrimination
-from .analytics_service import AnalyticsService
+# WWV/WWVH discrimination (used by time-manager, kept for compatibility)
 from .wwvh_discrimination import WWVHDiscriminator
 from .wwv_test_signal import WWVTestSignalDetector
-from .discrimination_csv_writers import DiscriminationCSVWriters
 
 # Decimation
 from .decimation import decimate_for_upload, get_decimator, StatefulDecimator
@@ -67,58 +76,26 @@ from .quality_metrics import QualityMetricsTracker, MinuteQualityMetrics
 from .timing_metrics_writer import TimingMetricsWriter
 from .solar_zenith_calculator import calculate_solar_zenith_for_day
 from .gap_backfill import find_gaps, backfill_gaps
-from .core_recorder import CoreRecorder
 
-# Cross-channel coordination (Station Lock)
-from .global_station_voter import GlobalStationVoter, StationAnchor, AnchorQuality
-from .station_lock_coordinator import StationLockCoordinator, GuidedDetection, MinuteProcessingResult
-
-# Clock Convergence Model ("Set, Monitor, Intervention" for GPSDO)
-from .clock_convergence import (
-    ClockConvergenceModel,
-    ConvergenceState,
-    ConvergenceResult,
-    StationAccumulator
-)
-
-# Primary Time Standard (HF Time Transfer)
-from .propagation_mode_solver import (
-    PropagationModeSolver, 
-    PropagationMode, 
-    ModeCandidate,
-    ModeIdentificationResult,
-    EmissionTimeResult
-)
-from .primary_time_standard import (
-    PrimaryTimeStandard,
-    ChannelTimeResult,
-    StationConsensus,
-    MinuteTimeStandardResult
-)
+# Time Standard CSV Writer (for logging)
 from .time_standard_csv_writer import TimeStandardCSVWriter, TimeStandardSummaryWriter
 
-# Three-Phase Pipeline (New Architecture)
-from .pipeline_recorder import (
-    PipelineRecorder,
-    PipelineRecorderConfig,
-    PipelineRecorderState,
-    create_pipeline_recorder
+# New StreamRecorder (RadiodStream-based)
+from .stream_recorder import (
+    StreamRecorder,
+    StreamRecorderConfig,
+    ChannelStreamRecorder
 )
-from .raw_archive_writer import (
-    RawArchiveWriter,
-    RawArchiveReader,
-    RawArchiveConfig,
-    SystemTimeReference,
-    create_raw_archive_writer
+
+# Binary Archive Writer (Phase 1)
+from .binary_archive_writer import (
+    BinaryArchiveWriter,
+    BinaryArchiveConfig,
+    BinaryArchiveReader,
+    GapInterval
 )
-from .clock_offset_series import (
-    ClockOffsetEngine,
-    ClockOffsetSeries,
-    ClockOffsetMeasurement,
-    ClockOffsetQuality,
-    ClockOffsetSeriesWriter,
-    create_clock_offset_engine
-)
+
+# Pipeline components
 from .pipeline_orchestrator import (
     PipelineOrchestrator,
     PipelineConfig,
@@ -126,28 +103,12 @@ from .pipeline_orchestrator import (
     BatchReprocessor,
     create_pipeline
 )
-
-# Transmission Time Solver (UTC back-calculation)
-from .transmission_time_solver import (
-    TransmissionTimeSolver,
-    MultiStationSolver,
-    SolverResult,
-    CombinedUTCResult,
-    PropagationMode,
-    ModeCandidate as TransmissionModeCandidate,
-    create_solver_from_grid,
-    create_multi_station_solver,
-    grid_to_latlon
-)
-
-# Phase 2: Temporal Analysis Engine (Refined temporal analysis order)
-from .phase2_temporal_engine import (
-    Phase2TemporalEngine,
-    Phase2Result,
-    TimeSnapResult,
-    ChannelCharacterization,
-    TransmissionTimeSolution,
-    create_phase2_engine
+from .raw_archive_writer import (
+    RawArchiveWriter,
+    RawArchiveReader,
+    RawArchiveConfig,
+    SystemTimeReference,
+    create_raw_archive_writer
 )
 
 # Phase 3: Product Generation Engine (10 Hz Decimated DRF with Timing Annotations)
@@ -161,21 +122,6 @@ from .phase3_product_engine import (
     process_channel_day
 )
 
-# GPSDO Monitoring
-from .gpsdo_monitor import (
-    GPSDOMonitor,
-    AnchorState,
-    GPSDOMonitorState
-)
-
-# Sliding Window Monitor (10-second real-time quality tracking)
-from .sliding_window_monitor import (
-    SlidingWindowMonitor,
-    WindowMetrics,
-    MinuteSummary,
-    SignalQuality
-)
-
 # Decimated Binary Buffer (stores 10 Hz IQ with timing metadata)
 from .decimated_buffer import (
     DecimatedBuffer,
@@ -185,7 +131,6 @@ from .decimated_buffer import (
 )
 
 # Spectrogram Generation - CarrierSpectrogramGenerator is the CANONICAL implementation
-# Supports solar zenith overlays, quality grades, gap visualization, rolling spectrograms
 from .carrier_spectrogram import (
     CarrierSpectrogramGenerator,
     SpectrogramConfig as CarrierSpectrogramConfig,
@@ -193,7 +138,6 @@ from .carrier_spectrogram import (
 )
 
 # DEPRECATED: SpectrogramGenerator - use CarrierSpectrogramGenerator instead
-# Kept for backward compatibility but will be removed in future version
 from .spectrogram_generator import (
     SpectrogramGenerator,  # DEPRECATED
     SpectrogramConfig,     # DEPRECATED - use CarrierSpectrogramConfig
@@ -208,15 +152,11 @@ from .daily_drf_packager import (
 )
 
 __all__ = [
-    # Core recorder
-    "CoreRecorder",
     # Tone detection
     "ToneDetector",
-    # Analytics
-    "AnalyticsService",
+    # Discrimination
     "WWVHDiscriminator",
     "WWVTestSignalDetector",
-    "DiscriminationCSVWriters",
     # Decimation
     "decimate_for_upload",
     "get_decimator",
@@ -233,67 +173,29 @@ __all__ = [
     "calculate_solar_zenith_for_day",
     "find_gaps",
     "backfill_gaps",
-    # Cross-channel coordination
-    "GlobalStationVoter",
-    "StationAnchor",
-    "AnchorQuality",
-    "StationLockCoordinator",
-    "GuidedDetection",
-    "MinuteProcessingResult",
-    # Clock Convergence Model
-    "ClockConvergenceModel",
-    "ConvergenceState",
-    "ConvergenceResult",
-    "StationAccumulator",
-    # Primary Time Standard
-    "PropagationModeSolver",
-    "PropagationMode",
-    "ModeCandidate",
-    "ModeIdentificationResult",
-    "EmissionTimeResult",
-    "PrimaryTimeStandard",
-    "ChannelTimeResult",
-    "StationConsensus",
-    "MinuteTimeStandardResult",
+    # Time Standard CSV
     "TimeStandardCSVWriter",
     "TimeStandardSummaryWriter",
-    # Three-Phase Pipeline (New Architecture)
-    "PipelineRecorder",
-    "PipelineRecorderConfig",
-    "PipelineRecorderState",
-    "create_pipeline_recorder",
-    "RawArchiveWriter",
-    "RawArchiveReader",
-    "RawArchiveConfig",
-    "SystemTimeReference",
-    "create_raw_archive_writer",
-    "ClockOffsetEngine",
-    "ClockOffsetSeries",
-    "ClockOffsetMeasurement",
-    "ClockOffsetQuality",
-    "ClockOffsetSeriesWriter",
-    "create_clock_offset_engine",
+    # New StreamRecorder
+    "StreamRecorder",
+    "StreamRecorderConfig",
+    "ChannelStreamRecorder",
+    # Binary Archive
+    "BinaryArchiveWriter",
+    "BinaryArchiveConfig",
+    "BinaryArchiveReader",
+    "GapInterval",
+    # Pipeline
     "PipelineOrchestrator",
     "PipelineConfig",
     "PipelineState",
     "BatchReprocessor",
     "create_pipeline",
-    # Transmission Time Solver
-    "TransmissionTimeSolver",
-    "MultiStationSolver",
-    "SolverResult",
-    "CombinedUTCResult",
-    "TransmissionModeCandidate",
-    "create_solver_from_grid",
-    "create_multi_station_solver",
-    "grid_to_latlon",
-    # Phase 2: Temporal Analysis Engine
-    "Phase2TemporalEngine",
-    "Phase2Result",
-    "TimeSnapResult",
-    "ChannelCharacterization",
-    "TransmissionTimeSolution",
-    "create_phase2_engine",
+    "RawArchiveWriter",
+    "RawArchiveReader",
+    "RawArchiveConfig",
+    "SystemTimeReference",
+    "create_raw_archive_writer",
     # Phase 3: Product Generation Engine
     "Phase3ProductEngine",
     "Phase3Config",
@@ -302,15 +204,6 @@ __all__ = [
     "TimingAnnotation",
     "create_phase3_engine",
     "process_channel_day",
-    # GPSDO Monitoring
-    "GPSDOMonitor",
-    "AnchorState",
-    "GPSDOMonitorState",
-    # Sliding Window Monitor
-    "SlidingWindowMonitor",
-    "WindowMetrics",
-    "MinuteSummary",
-    "SignalQuality",
     # Decimated Binary Buffer
     "DecimatedBuffer",
     "DayMetadata",

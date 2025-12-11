@@ -401,3 +401,51 @@ def get_station(channel_name: str) -> Optional[str]:
 def get_utc_time() -> float:
     """Convenience function to get corrected UTC time."""
     return get_timing_client().get_utc_time()
+
+
+def get_time_manager_status() -> Dict[str, Any]:
+    """
+    Get comprehensive time-manager status for monitoring.
+    
+    Returns a dict suitable for status endpoints and logging:
+    - running: bool - whether time-manager SHM exists
+    - healthy: bool - whether data is fresh and usable
+    - status: str - clock status
+    - d_clock_ms: float or None
+    - age_seconds: float - how old the data is
+    - channels_active: int
+    """
+    client = get_timing_client()
+    
+    result = {
+        'running': client.available,
+        'healthy': False,
+        'status': 'UNAVAILABLE',
+        'd_clock_ms': None,
+        'uncertainty_ms': None,
+        'age_seconds': None,
+        'channels_active': 0,
+        'channels_locked': 0,
+    }
+    
+    if not client.available:
+        return result
+    
+    snapshot = client.get_snapshot()
+    if snapshot is None:
+        return result
+    
+    result['status'] = snapshot.clock_status.value
+    result['d_clock_ms'] = snapshot.d_clock_ms
+    result['uncertainty_ms'] = snapshot.d_clock_uncertainty_ms
+    result['age_seconds'] = snapshot.age_seconds
+    result['channels_active'] = snapshot.channels_active
+    result['channels_locked'] = snapshot.channels_locked
+    
+    # Consider healthy if data is fresh (< 2 minutes) and status is good
+    result['healthy'] = (
+        snapshot.age_seconds < 120.0 and
+        snapshot.clock_status in (ClockStatus.LOCKED, ClockStatus.HOLDOVER, ClockStatus.ACQUIRING)
+    )
+    
+    return result

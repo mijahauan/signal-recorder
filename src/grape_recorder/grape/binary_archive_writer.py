@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from .async_disk_writer import get_async_writer, AsyncDiskWriter
 
@@ -49,6 +50,21 @@ class BinaryArchiveConfig:
 
 
 @dataclass
+class GapInterval:
+    """A gap interval in the data stream."""
+    start_sample: int      # Sample index where gap starts (relative to minute)
+    duration_samples: int  # Number of missing samples
+    source: str = 'unknown'  # 'rtp_loss', 'late_packet', 'stream_restart'
+    
+    def to_dict(self) -> Dict:
+        return {
+            'start_sample': self.start_sample,
+            'duration_samples': self.duration_samples,
+            'source': self.source
+        }
+
+
+@dataclass
 class MinuteBuffer:
     """Buffer for accumulating one minute of samples."""
     minute_boundary: int  # Unix timestamp of minute start
@@ -57,6 +73,7 @@ class MinuteBuffer:
     gap_count: int = 0    # Number of gaps in this minute
     gap_samples: int = 0  # Total gap samples
     start_rtp: Optional[int] = None
+    gap_intervals: List['GapInterval'] = field(default_factory=list)  # Detailed gap records
     
     @property
     def is_complete(self) -> bool:
@@ -161,7 +178,7 @@ class BinaryArchiveWriter:
             actual_samples = min(buffer.write_pos, SAMPLES_PER_MINUTE)
             samples_to_write = buffer.samples[:actual_samples]
             
-            # Prepare metadata
+            # Prepare metadata with detailed gap information
             metadata = {
                 'minute_boundary': buffer.minute_boundary,
                 'channel_name': self.config.channel_name,
@@ -172,6 +189,7 @@ class BinaryArchiveWriter:
                 'completeness_pct': 100.0 * actual_samples / SAMPLES_PER_MINUTE,
                 'gap_count': buffer.gap_count,
                 'gap_samples': buffer.gap_samples,
+                'gap_intervals': [g.to_dict() for g in buffer.gap_intervals],
                 'start_rtp_timestamp': buffer.start_rtp,
                 'dtype': 'complex64',
                 'byte_order': 'little',
@@ -219,7 +237,7 @@ class BinaryArchiveWriter:
         samples: np.ndarray,
         rtp_timestamp: int,
         system_time: Optional[float] = None,
-        gap_samples: int = 0
+        gaps: Optional[List[Any]] = None
     ) -> int:
         """
         Write IQ samples to the archive.
@@ -228,7 +246,7 @@ class BinaryArchiveWriter:
             samples: Complex64 IQ samples
             rtp_timestamp: RTP timestamp of first sample
             system_time: System wall clock time (only used for initial sync)
-            gap_samples: Number of gap samples (for statistics)
+            gaps: Optional list of gap records (must have start_sample, duration_samples, source)
             
         Returns:
             Number of samples written
@@ -287,11 +305,20 @@ class BinaryArchiveWriter:
                     overflow_unix = self._rtp_to_unix_time(overflow_rtp)
                     self.current_buffer = self._start_new_minute(overflow_unix, overflow_rtp)
             
-            # Track gaps
-            if gap_samples > 0:
-                self.current_buffer.gap_count += 1
-                self.current_buffer.gap_samples += gap_samples
-                self.total_gaps += 1
+            # Track gaps with detailed interval information
+            if gaps:
+                for gap in gaps:
+                    # Convert to GapInterval if needed
+                    if hasattr(gap, 'start_sample') and hasattr(gap, 'duration_samples'):
+                        gap_interval = GapInterval(
+                            start_sample=gap.start_sample,
+                            duration_samples=gap.duration_samples,
+                            source=getattr(gap, 'source', 'unknown')
+                        )
+                        self.current_buffer.gap_intervals.append(gap_interval)
+                        self.current_buffer.gap_count += 1
+                        self.current_buffer.gap_samples += gap.duration_samples
+                        self.total_gaps += 1
             
             # Update time reference
             self.last_rtp_timestamp = rtp_timestamp + len(samples)

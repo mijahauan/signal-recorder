@@ -1,50 +1,77 @@
 """
-Signal Recorder - Generic RTP stream recording with GRAPE specialization
+GRAPE Recorder - Scientific data recorder for WWV/WWVH/CHU time signals
 
-A generic system for subscribing to and recording RTP streams from ka9q-radio,
-with specialized support for GRAPE (WWV/CHU timing signals) and WSPR.
+Records IQ data from ka9q-radio, applies timing corrections from time-manager,
+and produces scientific-quality Digital RF packages for PSWS upload.
 
-Key Features:
-- SSRC-free API: Specify frequency, mode, sample rate - SSRC handled internally
-- Automatic stream sharing: Same spec = same stream
-- Protocol-based storage: Implement SegmentWriter for any output format
-- Multi-app coordination: Discovery prevents SSRC collisions
+Architecture (Dec 2025 Refactor):
+================================
+Two-Application Split:
+1. time-manager (separate repo) - Computes D_clock, feeds chronyd
+2. grape-recorder (this package) - Records IQ data with timing annotations
+
+Three-Phase Data Pipeline:
+- Phase 1: Raw IQ recording via StreamRecorder (ka9q.RadiodStream)
+- Phase 2: Timing from time-manager via TimingClient
+- Phase 3: Decimated Digital RF with gap/timing annotations
 
 Quick Start:
-    from grape_recorder import subscribe_stream
+    from grape_recorder.grape import StreamRecorder, Phase3ProductEngine
+    from grape_recorder.timing_client import get_time_manager_status
     
-    # Get a stream (no SSRC needed!)
-    stream = subscribe_stream(
-        radiod="radiod.local",
-        frequency_hz=10.0e6,
-        preset="iq",
-        sample_rate=16000
-    )
-    
-    print(f"Receiving on {stream.multicast_address}:{stream.port}")
-
-See ARCHITECTURE.md for design details.
+    # Check time-manager is running
+    status = get_time_manager_status()
+    print(f"time-manager: {status['status']}")
 
 Copyright 2025
 """
 
-__version__ = "2.0.0"  # Major version bump: package restructuring
+__version__ = "3.0.0"  # Major refactor: RadiodStream + TimingClient
 __author__ = "GRAPE Signal Recorder Project"
 
 # =============================================================================
-# CORE INFRASTRUCTURE (application-agnostic)
-# Moved to grape_recorder/core/ package (Dec 1, 2025)
+# GRAPE APPLICATION (primary interface)
 # =============================================================================
-from .core import (
-    RTPReceiver, RTPHeader,
-    RecordingSession, SessionConfig, SessionState,
-    SegmentInfo, SessionMetrics, SegmentWriter,
-    PacketResequencer, RTPPacket, GapInfo,
+from .grape import (
+    # StreamRecorder (new RadiodStream-based intake)
+    StreamRecorder,
+    StreamRecorderConfig,
+    ChannelStreamRecorder,
+    # Phase 3 Product Engine
+    Phase3ProductEngine,
+    Phase3Config,
+    GapInfo,
+    GapAnalysis,
+    TimingAnnotation,
+    create_phase3_engine,
+    # Pipeline
+    PipelineOrchestrator,
+    PipelineConfig,
+    PipelineState,
+    create_pipeline,
+    # Decimation
+    decimate_for_upload,
+    get_decimator,
+    StatefulDecimator,
 )
 
 # =============================================================================
-# STREAM API (SSRC-free interface)
-# Moved to grape_recorder/stream/ package (Dec 1, 2025)
+# TIMING CLIENT (consumes timing from time-manager)
+# =============================================================================
+from .timing_client import (
+    TimingClient,
+    ClockStatus,
+    ChannelTiming,
+    TimingSnapshot,
+    get_timing_client,
+    get_d_clock,
+    get_station,
+    get_utc_time,
+    get_time_manager_status,
+)
+
+# =============================================================================
+# STREAM API (SSRC-free interface - still available)
 # =============================================================================
 from .stream import (
     StreamSpec, StreamRequest,
@@ -61,26 +88,6 @@ from .stream import (
     close_all,
 )
 
-# =============================================================================
-# GRAPE APPLICATION (WWV/WWVH/CHU time signals)
-# Moved to grape_recorder/grape/ package (Dec 1, 2025)
-# Now using three-phase pipeline architecture
-# =============================================================================
-from .grape import (
-    PipelineRecorder, PipelineRecorderConfig, PipelineRecorderState,
-    CoreRecorder,
-)
-
-# =============================================================================
-# WSPR APPLICATION (Weak Signal Propagation Reporter)
-# Moved to grape_recorder/wspr/ package (Dec 1, 2025)
-# =============================================================================
-from .wspr import (
-    WsprRecorder, WsprConfig, WsprState,
-    WsprWAVWriter,
-    create_wspr_recorder,
-)
-
 # Channel management (lower-level)
 from .channel_manager import ChannelManager
 from ka9q import discover_channels, ChannelInfo, RadiodControl
@@ -91,11 +98,38 @@ from ka9q import rtp_to_wallclock, parse_rtp_header
 # Re-export ka9q functions for backward compatibility
 discover_channels_via_control = discover_channels  # Legacy alias
 
-# Upload (exists but not yet integrated into daemon)
+# Upload
 from .uploader import UploadManager, SSHRsyncUpload
 
 __all__ = [
-    # === Stream API (primary interface) ===
+    # === GRAPE Application (primary) ===
+    "StreamRecorder",
+    "StreamRecorderConfig",
+    "ChannelStreamRecorder",
+    "Phase3ProductEngine",
+    "Phase3Config",
+    "GapInfo",
+    "GapAnalysis",
+    "TimingAnnotation",
+    "create_phase3_engine",
+    "PipelineOrchestrator",
+    "PipelineConfig",
+    "PipelineState",
+    "create_pipeline",
+    "decimate_for_upload",
+    "get_decimator",
+    "StatefulDecimator",
+    # === Timing Client ===
+    "TimingClient",
+    "ClockStatus",
+    "ChannelTiming",
+    "TimingSnapshot",
+    "get_timing_client",
+    "get_d_clock",
+    "get_station",
+    "get_utc_time",
+    "get_time_manager_status",
+    # === Stream API ===
     "subscribe_stream",
     "subscribe_iq",
     "subscribe_usb",
@@ -105,54 +139,28 @@ __all__ = [
     "find_stream",
     "get_manager",
     "close_all",
-    # Stream types
     "StreamSpec",
     "StreamRequest",
     "StreamHandle",
     "StreamInfo",
     "StreamManager",
-    # === Core infrastructure ===
-    "RTPReceiver",
-    "RTPHeader",
-    "RecordingSession",
-    "SessionConfig",
-    "SessionState",
-    "SegmentInfo",
-    "SessionMetrics",
-    "SegmentWriter",
-    "PacketResequencer",
-    "RTPPacket",
-    "GapInfo",
-    # === GRAPE application (three-phase pipeline) ===
-    "PipelineRecorder",
-    "PipelineRecorderConfig",
-    "PipelineRecorderState",
-    "CoreRecorder",
-    # === WSPR application ===
-    "WsprRecorder",
-    "WsprConfig",
-    "WsprState",
-    "WsprWAVWriter",
-    "create_wspr_recorder",
-    # === Lower-level (advanced use) ===
+    # === Lower-level ===
     "ChannelManager",
     "discover_channels_via_control",
     "ChannelInfo",
     "RadiodControl",
-    # Timing (from ka9q-python)
     "rtp_to_wallclock",
     "parse_rtp_header",
-    # Upload
     "UploadManager",
     "SSHRsyncUpload",
 ]
 
 # =============================================================================
-# Package structure (Dec 1, 2025):
+# Package structure (Dec 2025 Refactor):
 #   grape_recorder/
-#   ├── core/       - Application-agnostic: RTP, resequencing, sessions
+#   ├── grape/      - GRAPE app: StreamRecorder, Phase3ProductEngine
 #   ├── stream/     - Stream API: subscribe, discover, manage
-#   ├── grape/      - GRAPE app: WWV/WWVH/CHU recording & analysis
-#   └── wspr/       - WSPR app: 2-minute WAV recording
+#   ├── core/       - DEPRECATED (RTP handling now in ka9q.RadiodStream)
+#   └── timing_client.py - Consumes timing from time-manager
 # =============================================================================
 
