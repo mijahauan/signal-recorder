@@ -637,7 +637,7 @@ async function loadPathsFromConfig(configPath = null) {
     
     let dataRoot;
     if (mode === 'production') {
-        dataRoot = (config.recorder && config.recorder.production_data_root) || '/var/lib/signal-recorder';
+        dataRoot = (config.recorder && config.recorder.production_data_root) || '/var/lib/grape-recorder';
     } else {
         dataRoot = (config.recorder && config.recorder.test_data_root) || '/tmp/grape-test';
     }

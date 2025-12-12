@@ -3,14 +3,10 @@
  * 
  * Creates consistent navigation across all GRAPE web-UI pages
  * 
- * 7 Core Pages:
- * 1. Summary - Station info, processes, reception matrix, propagation paths
- * 2. Carrier - 10 Hz spectrograms, quality
- * 3. Discrimination - WWV/WWVH analysis (all methods), diurnal patterns
- * 4. Timing - D_clock fusion, UTC(NIST) alignment, 13-broadcast consensus
- * 5. Advanced Timing - Kalman, Constellation, KDE, Mode visualizations
- * 6. Gaps - Data gaps by frequency, time, SNR
- * 7. Logs - System and analytics log viewer
+ * Simplified 3-Page Structure (Dec 2025):
+ * 1. Dashboard - Data accumulation stats + spectrogram viewer
+ * 2. Logs - System log viewer
+ * 3. About - External links, station info, references
  */
 
 class GRAPENavigation {
@@ -24,13 +20,9 @@ class GRAPENavigation {
     if (!this.container) return;
     
     const pages = [
-      { id: 'summary', label: 'Summary', url: 'summary.html', icon: '📊' },
-      { id: 'carrier', label: 'Carrier Analysis', url: 'carrier.html', icon: '📡' },
-      { id: 'discrimination', label: 'Discrimination', url: 'discrimination.html', icon: '🎯' },
-      { id: 'timing', label: 'Timing Analysis', url: 'timing-dashboard-enhanced.html', icon: '⏱️' },
-      { id: 'timing-advanced', label: 'Advanced Timing', url: 'timing-advanced.html', icon: '🔬' },
-      { id: 'gaps', label: 'Gap Analysis', url: 'gaps.html', icon: '📈' },
-      { id: 'logs', label: 'Logs', url: 'logs.html', icon: '📋' }
+      { id: 'dashboard', label: 'Dashboard', url: 'dashboard.html', icon: '📊' },
+      { id: 'logs', label: 'Logs', url: 'logs.html', icon: '📋' },
+      { id: 'about', label: 'About', url: 'about.html', icon: '🔗' }
     ];
     
     const navHTML = `

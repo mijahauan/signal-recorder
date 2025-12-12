@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GRAPE Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script>
+    window.GRAPE_CURRENT_PAGE = 'dashboard';
+  </script>
+  <style>
+    /* Dashboard Layout */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 350px 1fr;
+      gap: var(--spacing-lg);
+      margin-bottom: var(--spacing-lg);
+    }
+    
+    @media (max-width: 1200px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    
+    /* Sections */
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-lg);
+      padding: var(--spacing-lg);
+    }
+    
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: var(--spacing-md);
+      color: var(--accent-light);
+      border-bottom: 1px solid var(--surface-border);
+      padding-bottom: var(--spacing-sm);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    /* Data Accumulation Panel */
+    .data-panel {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-md);
+    }
+    
+    .stat-card {
+      background: rgba(15, 23, 42, 0.4);
+      border-radius: var(--radius-md);
+      padding: var(--spacing-md);
+      border: 1px solid var(--surface-border);
+    }
+    
+    .stat-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: var(--spacing-xs);
+    }
+    
+    .stat-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    
+    .stat-value.good { color: var(--success); }
+    .stat-value.warning { color: var(--warning); }
+    .stat-value.critical { color: var(--error); }
+    
+    .stat-detail {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: var(--spacing-xs);
+    }
+    
+    /* Storage Bar */
+    .storage-bar-container {
+      width: 100%;
+      height: 24px;
+      background: rgba(15, 23, 42, 0.6);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-top: var(--spacing-sm);
+      border: 1px solid var(--surface-border);
+    }
+    
+    .storage-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--success), var(--accent));
+      transition: width 0.5s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 600;
+      font-size: 12px;
+    }
+    
+    .storage-bar.warning {
+      background: linear-gradient(90deg, var(--warning), #f97316);
+    }
+    
+    .storage-bar.critical {
+      background: linear-gradient(90deg, var(--error), #dc2626);
+    }
+    
+    /* Gap Summary */
+    .gap-list {
+      max-height: 150px;
+      overflow-y: auto;
+      margin-top: var(--spacing-sm);
+    }
+    
+    .gap-item {
+      display: flex;
+      justify-content: space-between;
+      padding: var(--spacing-xs) var(--spacing-sm);
+      background: var(--warning-light);
+      border-left: 3px solid var(--warning);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      margin-bottom: var(--spacing-xs);
+      font-size: 12px;
+    }
+    
+    .no-gaps {
+      padding: var(--spacing-md);
+      background: rgba(34, 197, 94, 0.15);
+      border-left: 3px solid var(--success);
+      border-radius: 0 var(--radius-md) var(--radius-md) 0;
+      color: var(--success);
+      font-size: 13px;
+    }
+    
+    /* Spectrogram Viewer */
+    .spectrogram-controls {
+      display: flex;
+      gap: var(--spacing-md);
+      align-items: center;
+      margin-bottom: var(--spacing-md);
+      flex-wrap: wrap;
+    }
+    
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+    }
+    
+    .control-group label {
+      font-size: 13px;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+    
+    .spectrogram-container {
+      background: rgba(15, 23, 42, 0.4);
+      border-radius: var(--radius-md);
+      padding: var(--spacing-md);
+      text-align: center;
+    }
+    
+    .spectrogram-img {
+      max-width: 100%;
+      border-radius: var(--radius-md);
+      background: #0c1222;
+    }
+    
+    .spectrogram-caption {
+      margin-top: var(--spacing-sm);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    
+    /* Channel Quick Stats */
+    .channel-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+      gap: var(--spacing-sm);
+      margin-top: var(--spacing-md);
+    }
+    
+    .channel-stat {
+      text-align: center;
+      padding: var(--spacing-sm);
+      background: rgba(15, 23, 42, 0.3);
+      border-radius: var(--radius-sm);
+    }
+    
+    .channel-stat-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+    
+    .channel-stat-value {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    
+    /* Footer */
+    .update-info {
+      text-align: center;
+      padding: var(--spacing-md);
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Navigation -->
+    <div id="grape-navigation"></div>
+    
+    <div class="dashboard-grid">
+      <!-- Left Panel: Data Accumulation -->
+      <div class="section data-panel">
+        <div class="section-title">📊 Data Accumulation</div>
+        
+        <div class="stat-card">
+          <div class="stat-label">Recording Since</div>
+          <div class="stat-value" id="oldest-date">--</div>
+          <div class="stat-detail" id="total-days">-- days of data</div>
+        </div>
+        
+        <div class="stat-card">
+          <div class="stat-label">Data Completeness</div>
+          <div class="stat-value" id="completeness">--%</div>
+          <div class="stat-detail" id="completeness-detail">-- samples recorded</div>
+        </div>
+        
+        <div class="stat-card">
+          <div class="stat-label">Storage Usage</div>
+          <div class="stat-value" id="storage-used">-- GB</div>
+          <div class="storage-bar-container">
+            <div class="storage-bar" id="storage-bar" style="width: 0%">0%</div>
+          </div>
+          <div class="stat-detail" id="storage-detail">-- of -- allocated</div>
+        </div>
+        
+        <div class="stat-card">
+          <div class="stat-label">Data Gaps (Today)</div>
+          <div class="stat-value" id="gap-count">--</div>
+          <div class="stat-detail" id="gap-duration">-- total duration</div>
+          <div id="gap-list"></div>
+        </div>
+        
+        <div class="stat-card">
+          <div class="stat-label">PSWS Upload Status</div>
+          <div class="stat-value" id="upload-status">--</div>
+          <div class="stat-detail" id="upload-detail">Last upload: --</div>
+        </div>
+      </div>
+      
+      <!-- Right Panel: Spectrogram Viewer -->
+      <div class="section">
+        <div class="section-title">📡 Spectrogram Viewer</div>
+        
+        <div class="spectrogram-controls">
+          <div class="control-group">
+            <label>Date:</label>
+            <select id="date-picker" class="select-control">
+              <option value="">Loading...</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label>Channel:</label>
+            <select id="channel-picker" class="select-control">
+              <option value="">Loading...</option>
+            </select>
+          </div>
+          <button id="btn-refresh" class="btn btn-primary">🔄 Refresh</button>
+        </div>
+        
+        <div class="spectrogram-container">
+          <img id="spectrogram-img" class="spectrogram-img" src="" alt="Spectrogram">
+          <div class="spectrogram-caption">
+            Power (top) + Spectrogram (bottom) • Solar zenith overlay • 10 Hz decimated IQ
+          </div>
+        </div>
+        
+        <div class="channel-stats" id="channel-stats">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+    </div>
+    
+    <div class="update-info">
+      Last updated: <span id="last-update">--</span> UTC | 
+      Auto-refresh: <span id="refresh-status">10 min</span>
+    </div>
+  </div>
+  
+  <script src="/utils/utc-time.js"></script>
+  <script src="/components/theme-toggle.js"></script>
+  <script src="/components/navigation.js"></script>
+  
+  <script>
+    // State
+    let currentDate = '';
+    let currentChannel = '';
+    let availableDates = [];
+    let allChannels = [];
+    let autoRefreshInterval = null;
+    
+    // Format bytes
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
+    }
+    
+    // Format duration
+    function formatDuration(seconds) {
+      if (seconds < 60) return `${Math.round(seconds)}s`;
+      if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+      const hours = Math.floor(seconds / 3600);
+      const mins = Math.floor((seconds % 3600) / 60);
+      return `${hours}h ${mins}m`;
+    }
+    
+    // Load data accumulation stats
+    async function loadDataStats() {
+      try {
+        const [summaryRes, datesRes] = await Promise.all([
+          fetch('/api/v1/summary'),
+          fetch('/api/v1/carrier/available-dates')
+        ]);
+        
+        const summary = await summaryRes.json();
+        const datesData = await datesRes.json();
+        
+        // Oldest date and total days
+        if (datesData.dates && datesData.dates.length > 0) {
+          const oldestDate = datesData.dates[datesData.dates.length - 1];
+          const newestDate = datesData.dates[0];
+          document.getElementById('oldest-date').textContent = oldestDate.formatted;
+          document.getElementById('total-days').textContent = `${datesData.dates.length} days of data`;
+          
+          // Populate date picker
+          availableDates = datesData.dates;
+          populateDatePicker();
+        }
+        
+        // Storage
+        const storage = summary.storage || {};
+        const usedGB = (storage.used_bytes || 0) / (1024 * 1024 * 1024);
+        const totalGB = (storage.total_bytes || 0) / (1024 * 1024 * 1024);
+        const usedPercent = storage.used_percent || 0;
+        
+        document.getElementById('storage-used').textContent = `${usedGB.toFixed(1)} GB`;
+        document.getElementById('storage-detail').textContent = 
+          `${formatBytes(storage.used_bytes || 0)} of ${formatBytes(storage.total_bytes || 0)}`;
+        
+        const storageBar = document.getElementById('storage-bar');
+        storageBar.style.width = `${usedPercent}%`;
+        storageBar.textContent = `${usedPercent.toFixed(0)}%`;
+        storageBar.className = 'storage-bar' + 
+          (usedPercent > 90 ? ' critical' : usedPercent > 75 ? ' warning' : '');
+        
+        // Completeness from continuity
+        const continuity = summary.continuity || {};
+        const completeness = 100 - (continuity.downtime_percentage || 0);
+        document.getElementById('completeness').textContent = `${completeness.toFixed(1)}%`;
+        document.getElementById('completeness').className = 'stat-value' +
+          (completeness >= 99 ? ' good' : completeness >= 95 ? ' warning' : ' critical');
+        
+        // Gaps
+        const gaps = continuity.gaps || [];
+        document.getElementById('gap-count').textContent = gaps.length;
+        document.getElementById('gap-duration').textContent = 
+          formatDuration(continuity.total_downtime_seconds || 0);
+        
+        const gapListEl = document.getElementById('gap-list');
+        if (gaps.length === 0) {
+          gapListEl.innerHTML = '<div class="no-gaps">✓ No gaps detected today</div>';
+        } else {
+          gapListEl.innerHTML = '<div class="gap-list">' + 
+            gaps.slice(0, 5).map(g => `
+              <div class="gap-item">
+                <span>${UTCTime.formatTime(g.start)}</span>
+                <span>${formatDuration(g.duration_seconds)}</span>
+              </div>
+            `).join('') +
+            (gaps.length > 5 ? `<div style="text-align: center; color: var(--text-muted); font-size: 11px;">+${gaps.length - 5} more</div>` : '') +
+          '</div>';
+        }
+        
+        // Upload status (placeholder - would need real endpoint)
+        document.getElementById('upload-status').textContent = 'Pending';
+        document.getElementById('upload-detail').textContent = 'Next upload: 00:30 UTC';
+        
+      } catch (err) {
+        console.error('Error loading data stats:', err);
+      }
+    }
+    
+    // Populate date picker
+    function populateDatePicker() {
+      const picker = document.getElementById('date-picker');
+      picker.innerHTML = '';
+      
+      availableDates.forEach(d => {
+        const option = document.createElement('option');
+        option.value = d.date;
+        option.textContent = d.formatted;
+        picker.appendChild(option);
+      });
+      
+      if (availableDates.length > 0) {
+        picker.value = availableDates[0].date;
+        currentDate = availableDates[0].date;
+      }
+    }
+    
+    // Load channels for current date
+    async function loadChannels() {
+      try {
+        const response = await fetch(`/api/v1/carrier/quality?date=${currentDate}`);
+        const data = await response.json();
+        allChannels = data.channels || [];
+        
+        const picker = document.getElementById('channel-picker');
+        picker.innerHTML = '';
+        
+        // Sort by frequency
+        const sorted = window.GRAPE_UTILS.sortByChannelFrequency(allChannels, 'name');
+        
+        sorted.forEach(ch => {
+          const option = document.createElement('option');
+          option.value = ch.name;
+          option.textContent = ch.name;
+          picker.appendChild(option);
+        });
+        
+        if (sorted.length > 0) {
+          picker.value = sorted[0].name;
+          currentChannel = sorted[0].name;
+          updateSpectrogram();
+        }
+      } catch (err) {
+        console.error('Error loading channels:', err);
+      }
+    }
+    
+    // Update spectrogram display
+    function updateSpectrogram() {
+      const ch = allChannels.find(c => c.name === currentChannel);
+      if (!ch) return;
+      
+      const img = document.getElementById('spectrogram-img');
+      img.src = `${ch.spectrogram_url}?t=${Date.now()}`;
+      img.alt = `${currentChannel} spectrogram for ${currentDate}`;
+      
+      // Channel stats
+      const statsEl = document.getElementById('channel-stats');
+      statsEl.innerHTML = `
+        <div class="channel-stat">
+          <div class="channel-stat-label">SNR</div>
+          <div class="channel-stat-value">${ch.snr_db !== null ? ch.snr_db.toFixed(1) + ' dB' : 'N/A'}</div>
+        </div>
+        <div class="channel-stat">
+          <div class="channel-stat-label">Completeness</div>
+          <div class="channel-stat-value">${ch.completeness_pct !== null ? ch.completeness_pct.toFixed(1) + '%' : 'N/A'}</div>
+        </div>
+        <div class="channel-stat">
+          <div class="channel-stat-label">Sample Rate</div>
+          <div class="channel-stat-value">${ch.sample_rate || '10 Hz'}</div>
+        </div>
+        <div class="channel-stat">
+          <div class="channel-stat-label">Upload</div>
+          <div class="channel-stat-value">${ch.psws_upload_status || 'Pending'}</div>
+        </div>
+      `;
+    }
+    
+    // Event listeners
+    document.getElementById('date-picker').addEventListener('change', (e) => {
+      currentDate = e.target.value;
+      loadChannels();
+    });
+    
+    document.getElementById('channel-picker').addEventListener('change', (e) => {
+      currentChannel = e.target.value;
+      updateSpectrogram();
+    });
+    
+    document.getElementById('btn-refresh').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-refresh');
+      btn.textContent = '⏳...';
+      btn.disabled = true;
+      await loadDataStats();
+      await loadChannels();
+      btn.textContent = '🔄 Refresh';
+      btn.disabled = false;
+      document.getElementById('last-update').textContent = UTCTime.now();
+    });
+    
+    // Auto-refresh
+    function startAutoRefresh() {
+      autoRefreshInterval = setInterval(async () => {
+        await loadDataStats();
+        await loadChannels();
+        document.getElementById('last-update').textContent = UTCTime.now();
+      }, 10 * 60 * 1000); // 10 minutes
+    }
+    
+    // Initialize
+    async function init() {
+      await loadDataStats();
+      await loadChannels();
+      document.getElementById('last-update').textContent = UTCTime.now();
+      startAutoRefresh();
+    }
+    
+    init();
+  </script>
+</body>
+</html>

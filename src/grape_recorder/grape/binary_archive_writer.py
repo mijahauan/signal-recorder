@@ -97,7 +97,8 @@ class BinaryArchiveWriter:
     
     def __init__(self, config: BinaryArchiveConfig):
         self.config = config
-        self.archive_dir = config.output_dir / self._sanitize_channel_name()
+        # output_dir already includes channel name from paths.get_raw_archive_dir()
+        self.archive_dir = config.output_dir
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         
         # Current minute buffer

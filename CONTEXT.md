@@ -1,7 +1,7 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-11  
+**Last Updated:** 2025-12-12  
 **Version:** 6.0.0  
 **Status:** SIMPLIFIED - Lean architecture with external timing
 
@@ -317,11 +317,160 @@ python scripts/test_refactored_pipeline.py
 
 | Purpose | Path |
 |---------|------|
-| Raw data | `/tmp/grape-test/raw_archive/{CHANNEL}/` |
-| Products | `/tmp/grape-test/products/{CHANNEL}/` |
-| Spectrograms | `/tmp/grape-test/products/{CHANNEL}/spectrograms/` |
+| Raw data (production) | `/var/lib/grape-recorder/raw_archive/{CHANNEL}/{YYYYMMDD}/` |
+| Products (production) | `/var/lib/grape-recorder/products/{CHANNEL}/` |
+| Spectrograms (production) | `/var/lib/grape-recorder/products/{CHANNEL}/spectrograms/` |
 | Timing SHM | `/dev/shm/grape_timing` |
-| Config | `grape-config.toml` |
+| Config (production) | `/etc/grape-recorder/grape-config.toml` |
+
+---
+
+## ✅ CURRENT SESSION STATE (2025-12-11 to 2025-12-12)
+
+### Derived Products: Spectrogram + Power Plot
+
+**Primary script (ad-hoc, for now):** `scripts/generate_spectrograms_from_raw.py`
+
+Key improvements made:
+
+- **X-axis alignment** between the power plot and spectrogram:
+  - Uses Matplotlib `GridSpec` with a dedicated colorbar axis so both plots have identical widths.
+- **Spectrogram carrier detail**:
+  - Uses PSD mode with a **Blackman window** and longer FFT (`nperseg=600` at 10 Hz = 60 s) to sharpen carrier structure.
+  - Uses percentile-based scaling (1st–99th) and `viridis` colormap.
+- **Power plot scaling**:
+  - Uses **dBFS** (`20*log10(|x|)`) and converts near-zero samples to `NaN` so gaps don’t pin the plot near 0 dB.
+
+**Inputs/Outputs:**
+
+- Input: `products/{CHANNEL}/decimated/{YYYYMMDD}.bin` (10 Hz complex64)
+- Output: `products/{CHANNEL}/spectrograms/{YYYYMMDD}_spectrogram.png`
+
+**Decimation script (ad-hoc):** `scripts/decimate_raw_to_10hz.py`
+
+- Reads: `raw_archive/{CHANNEL}/{YYYYMMDD}/{minute_ts}.bin`
+- Writes: `products/{CHANNEL}/decimated/{YYYYMMDD}.bin` (864,000 samples)
+
+### Web UI: Production data root and config parsing
+
+**Monitoring server:** `web-ui/monitoring-server-v3.js`
+
+- Fixed argument parsing so `--config /etc/grape-recorder/grape-config.toml` is actually honored.
+- Previously, `process.argv[2]` was treated as the config path; when started with `--config`, it silently fell back to `/tmp/grape-test` and the UI showed “no data” for dates that existed.
+
+Verification:
+
+```bash
+# Confirm the server is serving the production data root
+node web-ui/monitoring-server-v3.js --config /etc/grape-recorder/grape-config.toml
+
+# Confirm a known spectrogram is reachable (example channel/date)
+curl -I "http://localhost:3000/spectrograms/WWV_10_MHz/20251211_spectrogram.png"
+```
+
+---
+
+## 🚨 CURRENT KNOWN ISSUES (MOST IMPORTANT)
+
+### 1) “Blank” minutes that are present but zero-filled
+
+Observed behavior:
+
+- Raw archive minutes exist and metadata reports **100% completeness**, but the IQ samples are **>90% zeros**.
+- These zero-filled minutes occur **at different times on different channels**, creating non-aligned “blanks” in spectrograms.
+
+Implications:
+
+- The current “gap analysis” concept (missing minutes / RTP sequence gaps) is insufficient.
+- We need to treat **mostly-zero minutes** as a first-class quality failure (likely `EMPTY_PAYLOAD` / upstream silence) even if all packets arrived.
+
+Field checks (fast, deterministic):
+
+```bash
+# Count “mostly zero” minutes for a channel on a date (example)
+python3 -c "
+import numpy as np
+from pathlib import Path
+ch='WWV_10_MHz'; date='20251212'
+root=Path('/var/lib/grape-recorder/raw_archive')/ch/date
+mins=sorted(root.glob('*.bin'))
+bad=0
+for f in mins:
+    x=np.fromfile(f,dtype=np.complex64)
+    if (np.abs(x)<1e-10).mean()>0.9:
+        bad+=1
+print(f'{ch} {date}: {bad}/{len(mins)} minutes >90% zeros')
+" 
+```
+
+### 2) ka9q resequencer warnings (real discontinuities)
+
+Logs show frequent warnings like:
+
+- `WARNING:ka9q.resequencer:Gap: 960000 samples (48000.0ms), ~2400 packets`
+- `WARNING:ka9q.resequencer:Lost packet recovery: skip to seq=...`
+
+These indicate RTP discontinuities / resequencing behavior that should map to a **gap source** (e.g. `NETWORK_LOSS`, `RESEQUENCE_TIMEOUT`).
+
+Field checks:
+
+```bash
+journalctl -u grape-core-recorder --since "today" --no-pager | egrep -i "Lost packet recovery|Gap:" | tail -50
+```
+
+### 3) Gap metadata under-reporting
+
+Even when resequencer warnings occur, per-minute JSON may still show `gap_count=0`.
+This suggests a mismatch between:
+
+- ka9q stream-quality gap events
+- what the minute-writer records into `{minute}.json`
+
+This is a data-contract issue and directly affects UI + PSWS product quality.
+
+### 4) Recorder memory usage
+
+`grape-core-recorder` has been observed around **1.6 GB** RAM after several hours.
+This needs profiling/leak-checking to improve robustness.
+
+Field checks:
+
+```bash
+systemctl status grape-core-recorder --no-pager | head -25
+ps -o pid,rss,cmd -p "$(systemctl show -p MainPID --value grape-core-recorder)"
+```
+
+---
+
+## 🔒 NEXT SESSION GOALS (QUALITY + SECURITY + PSWS UPLOAD READINESS)
+
+### Quality / Scientific integrity
+
+- Define and implement **authoritative gap accounting** for the day:
+  - Missing minute files (writer-level)
+  - ka9q-reported discontinuities (resequencer/stream-quality)
+  - “Mostly-zero minute” detection (payload-level)
+- Ensure the daily products (10 Hz + DRF + sidecars) carry these as explicit, machine-readable annotations.
+
+### Security / operational hygiene
+
+- Validate how uploader credentials are stored/loaded:
+  - No secrets in repo
+  - Prefer systemd EnvironmentFile, restricted permissions, or secret manager
+- Validate path/mode coordination:
+  - Production must read/write under `/var/lib/grape-recorder`
+  - Test mode must be explicitly selected
+- Add explicit **schema versioning** for any status/state files consumed by the web UI.
+
+### Packaging / PSWS upload readiness
+
+- Confirm product spec alignment:
+  - File naming
+  - Required metadata fields
+  - Checksums/manifest
+- Add a pre-upload “quality gate”:
+  - Minimum coverage threshold
+  - Reject/flag days with excessive zero-filled minutes or large resequencer gaps
 
 ---
 

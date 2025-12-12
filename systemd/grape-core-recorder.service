@@ -18,12 +18,12 @@ Group=wsprdaemon
 # Environment from file (set by install.sh)
 EnvironmentFile=/etc/grape-recorder/environment
 
-# Working directory
-WorkingDirectory=${GRAPE_PROJECT}
+# Working directory (must be absolute path for systemd)
+WorkingDirectory=/home/wsprdaemon/grape-recorder
 
-# Core recorder reads mode from config to determine paths
-ExecStart=${GRAPE_VENV}/bin/python3 -m grape_recorder.grape.core_recorder \
-    --config ${GRAPE_CONFIG}
+# Stream recorder using RadiodStream from ka9q-python
+ExecStart=/opt/grape-recorder/venv/bin/python3 -m grape_recorder.grape.stream_recorder \
+    --config /etc/grape-recorder/grape-config.toml
 
 # Restart policy - always restart in production
 Restart=always

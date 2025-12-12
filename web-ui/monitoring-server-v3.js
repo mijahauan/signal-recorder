@@ -25,7 +25,7 @@ import toml from 'toml';
 import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { WebSocketServer } from 'ws';
-import { GRAPEPaths, channelNameToKey } from './grape-paths.js';
+import { GRAPEPaths, channelNameToKey, loadPathsFromConfig } from './grape-paths.js';
 import {
   getPrimaryTimeReference,
   getTimingHealthSummary,
@@ -56,29 +56,39 @@ const app = express();
 const PORT = 3000;
 const serverStartTime = Date.now();
 
-// Determine install directory
+// Determine config path: command-line arg > env var > default
 const installDir = process.env.GRAPE_INSTALL_DIR || join(__dirname, '..');
-const configPath = process.env.GRAPE_CONFIG || join(installDir, 'config/grape-config.toml');
 
-// Load configuration
+// Parse --config flag properly
+let configPath = process.env.GRAPE_CONFIG || join(installDir, 'config/grape-config.toml');
+const configArgIndex = process.argv.indexOf('--config');
+if (configArgIndex !== -1 && process.argv[configArgIndex + 1]) {
+  configPath = process.argv[configArgIndex + 1];
+} else if (process.argv[2] && !process.argv[2].startsWith('-')) {
+  // Fallback: positional argument
+  configPath = process.argv[2];
+}
+
+// Load configuration using coordinated grape-paths system
 let config = {};
-let dataRoot = join(process.env.HOME, 'grape-data'); // Fallback
+let dataRoot = '/tmp/grape-test'; // Fallback
 let mode = 'test';
 let paths = null;
 
 try {
+  // Read config for station info (paths handles data_root via loadPathsFromConfig)
   const configContent = fs.readFileSync(configPath, 'utf8');
   config = toml.parse(configContent);
-  
-  // Determine data_root based on mode
   mode = config.recorder?.mode || 'test';
+  
+  // Use coordinated path system - same logic as grape-paths.js loadPathsFromConfig()
   if (mode === 'production') {
-    dataRoot = config.recorder?.production_data_root || '/var/lib/signal-recorder';
+    dataRoot = config.recorder?.production_data_root || '/var/lib/grape-recorder';
   } else {
     dataRoot = config.recorder?.test_data_root || '/tmp/grape-test';
   }
   
-  // Initialize paths API
+  // Initialize paths API with coordinated data root
   paths = new GRAPEPaths(dataRoot);
   
   console.log('📊 GRAPE Monitoring Server V3');

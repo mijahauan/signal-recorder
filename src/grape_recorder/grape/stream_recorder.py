@@ -158,17 +158,20 @@ class ChannelStreamRecorder:
         self.channel_dir = channel_name_to_dir(channel_name)
         
         # Initialize binary archive writer
-        from .binary_archive_writer import BinaryArchiveWriter
+        from .binary_archive_writer import BinaryArchiveWriter, BinaryArchiveConfig
         
-        raw_buffer_dir = self.paths.get_raw_buffer_dir(channel_name)
-        raw_buffer_dir.mkdir(parents=True, exist_ok=True)
+        # Use raw_archive (canonical location) - analytics service reads from here
+        raw_archive_dir = self.paths.get_raw_archive_dir(channel_name)
+        raw_archive_dir.mkdir(parents=True, exist_ok=True)
         
-        self.archive_writer = BinaryArchiveWriter(
-            output_dir=raw_buffer_dir,
+        archive_config = BinaryArchiveConfig(
             channel_name=channel_name,
+            frequency_hz=channel_info.frequency,
             sample_rate=channel_info.sample_rate,
-            file_duration_sec=60
+            output_dir=raw_archive_dir,
+            station_config=station_config
         )
+        self.archive_writer = BinaryArchiveWriter(archive_config)
         
         # Gap tracking
         self.gaps: List[GapRecord] = []
@@ -263,7 +266,7 @@ class ChannelStreamRecorder:
             if quality.batch_gaps:
                 for gap in quality.batch_gaps:
                     gap_record = GapRecord(
-                        start_sample=gap.start_sample,
+                        start_sample=gap.position_samples,  # GapEvent uses position_samples
                         duration_samples=gap.duration_samples,
                         unix_time=now,
                         source=gap.source.name if hasattr(gap, 'source') else 'unknown'
@@ -615,27 +618,74 @@ class StreamRecorder:
 def main():
     """CLI entry point for stream recorder."""
     import argparse
+    import toml
     
     parser = argparse.ArgumentParser(description='GRAPE Stream Recorder')
-    parser.add_argument('--status-address', default='grape.local',
-                       help='radiod status address')
-    parser.add_argument('--data-root', default='/tmp/grape-test',
-                       help='Data root directory')
-    parser.add_argument('--callsign', default='UNKNOWN',
-                       help='Station callsign')
-    parser.add_argument('--grid', default='XX00xx',
-                       help='Grid square')
+    parser.add_argument('--config', '-c', help='Path to TOML config file')
+    parser.add_argument('--status-address', help='radiod status address (overrides config)')
+    parser.add_argument('--data-root', help='Data root directory (overrides config)')
+    parser.add_argument('--callsign', help='Station callsign (overrides config)')
+    parser.add_argument('--grid', help='Grid square (overrides config)')
     
     args = parser.parse_args()
     
+    # Load from config file if provided
+    if args.config:
+        with open(args.config) as f:
+            cfg = toml.load(f)
+        
+        # Determine data root based on mode
+        mode = cfg.get('recorder', {}).get('mode', 'test')
+        if mode == 'production':
+            data_root = cfg.get('recorder', {}).get('production_data_root', '/var/lib/grape-recorder')
+        else:
+            data_root = cfg.get('recorder', {}).get('test_data_root', '/tmp/grape-test')
+        
+        status_address = cfg.get('ka9q', {}).get('status_address', 'grape.local')
+        callsign = cfg.get('station', {}).get('callsign', 'UNKNOWN')
+        grid = cfg.get('station', {}).get('grid_square', 'XX00xx')
+        station_id = cfg.get('station', {}).get('id', '')
+        instrument_id = cfg.get('station', {}).get('instrument_id', '')
+        latitude = cfg.get('station', {}).get('latitude')
+        longitude = cfg.get('station', {}).get('longitude')
+    else:
+        data_root = '/tmp/grape-test'
+        status_address = 'grape.local'
+        callsign = 'UNKNOWN'
+        grid = 'XX00xx'
+        station_id = ''
+        instrument_id = ''
+        latitude = None
+        longitude = None
+    
+    # Command-line overrides
+    if args.status_address:
+        status_address = args.status_address
+    if args.data_root:
+        data_root = args.data_root
+    if args.callsign:
+        callsign = args.callsign
+    if args.grid:
+        grid = args.grid
+    
     config = StreamRecorderConfig(
-        status_address=args.status_address,
-        data_root=Path(args.data_root),
+        status_address=status_address,
+        data_root=Path(data_root),
         station_config={
-            'callsign': args.callsign,
-            'grid_square': args.grid
+            'callsign': callsign,
+            'grid_square': grid,
+            'station_id': station_id,
+            'instrument_id': instrument_id,
+            'latitude': latitude,
+            'longitude': longitude
         }
     )
+    
+    logger.info(f"Starting StreamRecorder")
+    logger.info(f"  Config: {args.config}")
+    logger.info(f"  Status address: {status_address}")
+    logger.info(f"  Data root: {data_root}")
+    logger.info(f"  Station: {callsign} ({grid})")
     
     recorder = StreamRecorder(config)
     recorder.run()

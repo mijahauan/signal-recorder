@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>About - GRAPE Signal Recorder</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script>
+    window.GRAPE_CURRENT_PAGE = 'about';
+  </script>
+  <style>
+    .about-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--spacing-lg);
+    }
+    
+    @media (max-width: 900px) {
+      .about-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: var(--radius-lg);
+      padding: var(--spacing-lg);
+      margin-bottom: var(--spacing-lg);
+    }
+    
+    .section-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: var(--spacing-md);
+      color: var(--accent-light);
+      border-bottom: 1px solid var(--surface-border);
+      padding-bottom: var(--spacing-sm);
+    }
+    
+    .link-card {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-md);
+      padding: var(--spacing-md);
+      background: rgba(15, 23, 42, 0.4);
+      border-radius: var(--radius-md);
+      border: 1px solid var(--surface-border);
+      margin-bottom: var(--spacing-md);
+      text-decoration: none;
+      color: var(--text-primary);
+      transition: all 0.2s;
+    }
+    
+    .link-card:hover {
+      background: rgba(139, 92, 246, 0.15);
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+    
+    .link-icon {
+      font-size: 32px;
+    }
+    
+    .link-content {
+      flex: 1;
+    }
+    
+    .link-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--accent-light);
+      margin-bottom: var(--spacing-xs);
+    }
+    
+    .link-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    
+    .link-url {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: var(--spacing-xs);
+    }
+    
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: var(--spacing-md);
+    }
+    
+    .info-item {
+      padding: var(--spacing-md);
+      background: rgba(15, 23, 42, 0.4);
+      border-radius: var(--radius-md);
+    }
+    
+    .info-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: var(--spacing-xs);
+    }
+    
+    .info-value {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    
+    .reference-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    
+    .reference-list li {
+      padding: var(--spacing-sm) 0;
+      border-bottom: 1px solid var(--surface-border);
+      font-size: 14px;
+    }
+    
+    .reference-list li:last-child {
+      border-bottom: none;
+    }
+    
+    .reference-list a {
+      color: var(--accent-light);
+      text-decoration: none;
+    }
+    
+    .reference-list a:hover {
+      text-decoration: underline;
+    }
+    
+    .channels-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    
+    .channels-table th {
+      text-align: left;
+      padding: var(--spacing-sm);
+      background: rgba(139, 92, 246, 0.2);
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+    
+    .channels-table td {
+      padding: var(--spacing-sm);
+      border-bottom: 1px solid var(--surface-border);
+    }
+    
+    .version-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      background: var(--accent);
+      color: white;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Navigation -->
+    <div id="grape-navigation"></div>
+    
+    <!-- External Links -->
+    <div class="section">
+      <div class="section-title">🔗 External Resources</div>
+      
+      <a href="https://pswsnetwork.eng.ua.edu/" target="_blank" rel="noopener" class="link-card">
+        <span class="link-icon">🛰️</span>
+        <div class="link-content">
+          <div class="link-title">PSWS Network</div>
+          <div class="link-desc">Personal Space Weather Station data repository hosted at University of Alabama</div>
+          <div class="link-url">pswsnetwork.eng.ua.edu</div>
+        </div>
+      </a>
+      
+      <a href="https://hamsci.org/" target="_blank" rel="noopener" class="link-card">
+        <span class="link-icon">📡</span>
+        <div class="link-content">
+          <div class="link-title">HamSCI</div>
+          <div class="link-desc">Ham Radio Science Citizen Investigation - advancing scientific research through amateur radio</div>
+          <div class="link-url">hamsci.org</div>
+        </div>
+      </a>
+      
+      <a href="https://www.nist.gov/pml/time-and-frequency-division/time-distribution/radio-station-wwv" target="_blank" rel="noopener" class="link-card">
+        <span class="link-icon">🕐</span>
+        <div class="link-content">
+          <div class="link-title">NIST WWV/WWVH</div>
+          <div class="link-desc">Official NIST time and frequency services information</div>
+          <div class="link-url">nist.gov</div>
+        </div>
+      </a>
+      
+      <a href="https://nrc.canada.ca/en/certifications-evaluations-standards/canadas-official-time/nrc-shortwave-station-chu" target="_blank" rel="noopener" class="link-card">
+        <span class="link-icon">🍁</span>
+        <div class="link-content">
+          <div class="link-title">NRC CHU</div>
+          <div class="link-desc">Canada's official time broadcast from Ottawa</div>
+          <div class="link-url">nrc.canada.ca</div>
+        </div>
+      </a>
+      
+      <a href="https://github.com/ka9q/ka9q-radio" target="_blank" rel="noopener" class="link-card">
+        <span class="link-icon">📻</span>
+        <div class="link-content">
+          <div class="link-title">ka9q-radio</div>
+          <div class="link-desc">Software-defined radio framework by Phil Karn, KA9Q - the RTP source for GRAPE</div>
+          <div class="link-url">github.com/ka9q/ka9q-radio</div>
+        </div>
+      </a>
+    </div>
+    
+    <div class="about-grid">
+      <!-- Station Information -->
+      <div class="section">
+        <div class="section-title">📍 Station Information</div>
+        <div class="info-grid" id="station-info">
+          <div class="info-item">
+            <div class="info-label">Station ID</div>
+            <div class="info-value" id="station-id">--</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Callsign</div>
+            <div class="info-value" id="callsign">--</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Grid Square</div>
+            <div class="info-value" id="grid-square">--</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Receiver</div>
+            <div class="info-value" id="receiver">--</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Latitude</div>
+            <div class="info-value" id="latitude">--</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Longitude</div>
+            <div class="info-value" id="longitude">--</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- System Information -->
+      <div class="section">
+        <div class="section-title">⚙️ System Information</div>
+        <div class="info-grid">
+          <div class="info-item">
+            <div class="info-label">Software Version</div>
+            <div class="info-value"><span class="version-badge">6.0.0</span></div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Input Sample Rate</div>
+            <div class="info-value">20,000 Hz</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Output Sample Rate</div>
+            <div class="info-value">10 Hz</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Data Format</div>
+            <div class="info-value">Digital RF (HDF5)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Monitored Channels -->
+    <div class="section">
+      <div class="section-title">📻 Monitored Time Station Channels</div>
+      <table class="channels-table">
+        <thead>
+          <tr>
+            <th>Station</th>
+            <th>Location</th>
+            <th>Frequencies</th>
+            <th>Tone Pattern</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>WWV</strong></td>
+            <td>Fort Collins, Colorado, USA</td>
+            <td>2.5, 5, 10, 15, 20, 25 MHz</td>
+            <td>1000 Hz tone at minute mark</td>
+          </tr>
+          <tr>
+            <td><strong>WWVH</strong></td>
+            <td>Kekaha, Kauai, Hawaii, USA</td>
+            <td>2.5, 5, 10, 15 MHz</td>
+            <td>1200 Hz tone at minute mark</td>
+          </tr>
+          <tr>
+            <td><strong>CHU</strong></td>
+            <td>Ottawa, Ontario, Canada</td>
+            <td>3.33, 7.85, 14.67 MHz</td>
+            <td>1000 Hz tone + BCD time code</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    
+    <!-- References -->
+    <div class="section">
+      <div class="section-title">📚 Scientific References</div>
+      <ul class="reference-list">
+        <li>
+          <strong>GRAPE Project:</strong> Geospace Research Amateur Passive Experiment - 
+          <a href="https://hamsci.org/grape" target="_blank">hamsci.org/grape</a>
+        </li>
+        <li>
+          <strong>Digital RF Format:</strong> MIT Haystack Observatory - 
+          <a href="https://github.com/MITHaystack/digital_rf" target="_blank">github.com/MITHaystack/digital_rf</a>
+        </li>
+        <li>
+          <strong>HF Propagation:</strong> Ionospheric effects on HF radio propagation and time transfer
+        </li>
+        <li>
+          <strong>Space Weather:</strong> Solar activity effects on Earth's ionosphere and HF communications
+        </li>
+      </ul>
+    </div>
+    
+    <!-- Credits -->
+    <div class="section" style="text-align: center; color: var(--text-secondary);">
+      <p>
+        <strong>GRAPE Signal Recorder</strong> v6.0.0<br>
+        Developed for the HamSCI GRAPE Project<br>
+        © 2025 Michael James Hauan (AC0G)
+      </p>
+    </div>
+  </div>
+  
+  <script src="/utils/utc-time.js"></script>
+  <script src="/components/theme-toggle.js"></script>
+  <script src="/components/navigation.js"></script>
+  
+  <script>
+    // Load station info
+    async function loadStationInfo() {
+      try {
+        const response = await fetch('/api/v1/summary');
+        const data = await response.json();
+        const station = data.station || {};
+        
+        document.getElementById('station-id').textContent = station.id || station.station_id || 'N/A';
+        document.getElementById('callsign').textContent = station.callsign || 'N/A';
+        document.getElementById('grid-square').textContent = station.grid_square || 'N/A';
+        document.getElementById('receiver').textContent = station.receiver || 'N/A';
+        document.getElementById('latitude').textContent = station.latitude ? station.latitude.toFixed(4) + '°' : 'N/A';
+        document.getElementById('longitude').textContent = station.longitude ? station.longitude.toFixed(4) + '°' : 'N/A';
+      } catch (err) {
+        console.error('Error loading station info:', err);
+      }
+    }
+    
+    loadStationInfo();
+  </script>
+</body>
+</html>
