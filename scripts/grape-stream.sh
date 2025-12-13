@@ -40,6 +40,7 @@ start_stream() {
 import sys
 import signal
 import logging
+import os
 from pathlib import Path
 
 logging.basicConfig(
@@ -51,7 +52,7 @@ from grape_recorder.grape.stream_recorder import StreamRecorder, StreamRecorderC
 
 # Load station config
 import tomli
-config_path = Path('/opt/grape-recorder/config/grape-config.toml')
+config_path = Path(os.environ.get('GRAPE_CONFIG', '/opt/grape-recorder/config/grape-config.toml'))
 if config_path.exists():
     with open(config_path, 'rb') as f:
         full_config = tomli.load(f)
@@ -59,11 +60,69 @@ if config_path.exists():
 else:
     station_config = {'callsign': 'UNKNOWN', 'grid_square': 'XX00xx'}
 
+ka9q_cfg = full_config.get('ka9q', {}) if config_path.exists() else {}
+rec_cfg = full_config.get('recorder', {}) if config_path.exists() else {}
+
+status_address = ka9q_cfg.get('status_address') or '$STATUS_ADDRESS'
+
+mode = (rec_cfg.get('mode') or 'test').lower()
+if mode == 'production':
+    data_root_str = rec_cfg.get('production_data_root', '$DATA_ROOT')
+else:
+    data_root_str = rec_cfg.get('test_data_root', '$DATA_ROOT')
+
+data_root = Path(os.environ.get('DATA_ROOT', data_root_str))
+
+# Optionally auto-create channels in radiod to ensure correct stream definitions
+auto_create = bool(ka9q_cfg.get('auto_create_channels', False))
+channel_defaults = rec_cfg.get('channel_defaults', {})
+channel_specs = rec_cfg.get('channels', [])
+
+configured_freqs = []
+required_channels = []
+for ch in channel_specs:
+    freq = ch.get('frequency_hz')
+    if not freq:
+        continue
+    configured_freqs.append(float(freq))
+    required_channels.append({
+        'ssrc': ch.get('ssrc', 0) or 0,
+        'frequency_hz': float(freq),
+        'preset': ch.get('preset', channel_defaults.get('preset', 'iq')),
+        'sample_rate': int(ch.get('sample_rate', channel_defaults.get('sample_rate', 20000))),
+        'agc': int(ch.get('agc', channel_defaults.get('agc', 0))),
+        'gain': float(ch.get('gain', channel_defaults.get('gain', 0.0))),
+        'encoding': ch.get('encoding', channel_defaults.get('encoding', 'float')),
+        'description': ch.get('description', '')
+    })
+
+if auto_create and required_channels:
+    try:
+        from grape_recorder.channel_manager import ChannelManager
+        mgr = ChannelManager(status_address)
+        for spec in required_channels:
+            mgr.create_channel(
+                frequency_hz=spec['frequency_hz'],
+                preset=spec['preset'],
+                sample_rate=spec['sample_rate'],
+                agc=spec['agc'],
+                gain=spec['gain'],
+                destination=None,
+                ssrc=(spec['ssrc'] if spec['ssrc'] != 0 else None),
+                description=spec['description'],
+                encoding=spec['encoding'],
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning(f'Auto-create channels failed: {e}')
+
 config = StreamRecorderConfig(
-    status_address='$STATUS_ADDRESS',
-    data_root=Path('$DATA_ROOT'),
+    status_address=status_address,
+    data_root=data_root,
     station_config=station_config
 )
+
+if configured_freqs:
+    config.channel_frequencies = configured_freqs
 
 recorder = StreamRecorder(config)
 
