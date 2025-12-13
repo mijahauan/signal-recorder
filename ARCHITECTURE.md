@@ -1,9 +1,9 @@
 # GRAPE Signal Recorder - System Architecture
 
-**Last Updated:** December 6, 2025  
+**Last Updated:** December 13, 2025  
 **Author:** Michael James Hauan (AC0G)  
 **Status:** CANONICAL - Single source of truth for system design  
-**Version:** V3.10 (Multi-Broadcast Fusion + Three-Phase Pipeline)
+**Version:** V3.11 (ka9q-python RadiodStream Integration)
 
 ---
 
@@ -150,121 +150,77 @@ Core Recorder (Stable)  →  Analytics (Evolving)  →  Consumers (Flexible)
 
 ---
 
-## Generic Recording Infrastructure
+## ka9q-python Integration (V3.11)
 
-**New in V3 (November 30, 2025):** The recording layer has been refactored into a **generic, protocol-based design** that separates concerns and enables different applications to use the same core infrastructure.
+**Refactored December 13, 2025:** The recording layer now uses **ka9q-python** directly for all RTP reception and channel management, eliminating ~600 lines of custom code.
 
-### Layer Architecture
+### Current Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         APPLICATION LAYER                                │
-│  GrapeRecorder, WsprRecorder (future), CodarRecorder (future), etc.     │
-│  - App-specific startup logic (buffering, detection)                    │
-│  - App-specific timing (tone detection, GPS sync, etc.)                 │
-│  - Creates & configures RecordingSession + SegmentWriter                │
+│                    GRAPE APPLICATION LAYER                               │
+│  CoreRecorderV2 - Top-level orchestration                               │
+│  StreamRecorderV2 - Per-channel recording via RadiodStream              │
+│  PipelineOrchestrator - Phase 1/2/3 coordination                        │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                         SEGMENT WRITER PROTOCOL                          │
-│  GrapeNPZWriter, DigitalRFWriter (future), WAVWriter (future), etc.     │
-│  - start_segment(segment_info, metadata)                                │
-│  - write_samples(samples, rtp_timestamp, gap_info)                      │
-│  - finish_segment(segment_info) → result                                │
-│  - update_time_snap(time_snap)                                          │
+│                    ka9q-python (RTP + Channel Management)                │
+│  RadiodStream - RTP reception, resequencing, gap detection, decoding    │
+│  RadiodControl - Channel creation, configuration, tune commands         │
+│  discover_channels() - Enumerate existing channels from status          │
+│  StreamQuality - Completeness, packets lost/resequenced, gap metrics    │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                         RECORDING SESSION (generic)                      │
-│  RecordingSession                                                        │
-│  - RTP packet reception (callbacks from RTPReceiver)                    │
-│  - PacketResequencer (out-of-order handling, gap detection)             │
-│  - Time-based segmentation (configurable duration, default 60s)         │
-│  - Calls SegmentWriter callbacks                                        │
-│  - Session metrics (packets, gaps, timing)                              │
-├─────────────────────────────────────────────────────────────────────────┤
-│                         RTP RECEIVER                                     │
-│  RTPReceiver + ka9q-python                                              │
-│  - Multi-SSRC demultiplexing (efficient single socket)                  │
-│  - RTP header parsing (sequence, timestamp, SSRC)                       │
-│  - Transport timing (GPS_TIME/RTP_TIMESNAP → wallclock)                 │
-│  - Callback registration per SSRC                                       │
-├─────────────────────────────────────────────────────────────────────────┤
-│                         TRANSPORT (ka9q-radio)                           │
-│  UDP multicast, RTP protocol                                            │
+│                    ka9q-radio (radiod)                                   │
+│  RTP multicast transport, GPS-disciplined timestamps                    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Key Abstractions
+### What ka9q-python Provides
 
-#### 1. SegmentWriter Protocol
+| Component | Function | Replaces |
+|-----------|----------|----------|
+| **RadiodStream** | RTP reception, packet resequencing, gap detection, sample decoding | Custom `RTPReceiver`, `PacketResequencer` |
+| **RadiodControl** | Channel creation, configuration, tune commands | Custom `ChannelManager` wrapper |
+| **discover_channels()** | Enumerate existing channels from radiod status | Manual channel discovery |
+| **StreamQuality** | Completeness %, packets lost/resequenced, gap count | Manual quality tracking |
 
-Apps implement this protocol to define their storage format:
+### Anti-Hijacking Channel Management
 
-```python
-class SegmentWriter(Protocol):
-    def start_segment(self, segment_info: SegmentInfo, metadata: Dict) -> None: ...
-    def write_samples(self, samples: np.ndarray, rtp_timestamp: int, 
-                      gap_info: Optional[GapInfo]) -> None: ...
-    def finish_segment(self, segment_info: SegmentInfo) -> Any: ...
-    def update_time_snap(self, time_snap: Any) -> None: ...
-```
-
-#### 2. RecordingSession
-
-Generic session manager that handles:
-- RTP packet flow from receiver
-- Packet resequencing and gap detection
-- Time-based segment boundaries
-- Invoking SegmentWriter callbacks
-
-#### 3. RTPReceiver
-
-Handles raw RTP reception:
-- Multicast socket management
-- Per-SSRC callback routing
-- Optional transport timing (wallclock from radiod)
-
-### Timing Model (Two Layers)
-
-| Layer | Source | Purpose |
-|-------|--------|---------|
-| **Transport Timing** | radiod GPS_TIME/RTP_TIMESNAP | When SDR captured samples |
-| **Payload Timing** | App-specific (WWV tones, etc.) | Markers within the signal |
-
-- Transport timing is **generic** (handled by `RTPReceiver` and ka9q-python)
-- Payload timing is **app-specific** (e.g., `StartupToneDetector` for GRAPE)
-
-### Adding a New Application
-
-To create a new recorder (e.g., for WSPR):
+GRAPE uses a **deterministic multicast IP** generated from station_id + instrument_id:
 
 ```python
-# 1. Implement SegmentWriter for your output format
-class WsprWAVWriter:
-    def start_segment(self, segment_info, metadata): ...
-    def write_samples(self, samples, rtp_timestamp, gap_info): ...
-    def finish_segment(self, segment_info): ...  # → return WAV path
-
-# 2. Create application recorder with your startup logic
-class WsprRecorder:
-    def __init__(self, config, rtp_receiver):
-        self.writer = WsprWAVWriter(...)
-        self.session = RecordingSession(
-            ssrc=config.ssrc,
-            sample_rate=config.sample_rate,
-            segment_writer=self.writer,
-            segment_duration=120.0,  # 2-minute WSPR cycles
-        )
-    
-    def start(self):
-        self.session.start(self.rtp_receiver)
+def generate_grape_multicast_ip(station_id: str, instrument_id: str) -> str:
+    key = f"GRAPE:{station_id}:{instrument_id}"
+    hash_bytes = hashlib.sha256(key.encode()).digest()
+    return f"239.{(hash_bytes[0] % 254) + 1}.{hash_bytes[1]}.{(hash_bytes[2] % 254) + 1}"
 ```
 
-### What Each Layer Provides
+**Channel initialization logic:**
+1. Discover existing channels via `discover_channels()`
+2. Separate channels by ownership (our destination vs others)
+3. Reuse channels with our destination, reconfigure if parameters differ
+4. Create new channels for frequencies without our destination
+5. **Never modify channels belonging to other clients** (anti-hijacking)
 
-| Layer | Provides | Apps Don't Need To |
-|-------|----------|-------------------|
-| **RTPReceiver** | Multicast, demux, parsing | Handle sockets, parse headers |
-| **RecordingSession** | Resequencing, segmentation, gaps | Manage packet ordering, detect gaps |
-| **SegmentWriter** | Storage abstraction | Know about RTP internals |
-| **Application** | Domain logic, timing | Reinvent packet handling |
+This enables safe multi-client operation on the same radiod instance.
+
+### Legacy Architecture (V3.0-V3.10)
+
+The previous architecture used custom RTP handling:
+
+These legacy abstractions are still available but no longer used by the main recorder:
+
+- **SegmentWriter Protocol** - Apps implement storage format
+- **RecordingSession** - Generic packet flow, resequencing, segmentation  
+- **RTPReceiver** - Multi-SSRC demultiplexing, transport timing
+
+### V3.11 Key Files
+
+| File | Purpose |
+|------|--------|
+| `core_recorder_v2.py` | Top-level orchestration using RadiodControl |
+| `stream_recorder_v2.py` | Per-channel recording using RadiodStream |
+| `pipeline_orchestrator.py` | Phase 1/2/3 coordination |
+| `binary_archive_writer.py` | Raw binary + JSON metadata output |
 
 ---
 

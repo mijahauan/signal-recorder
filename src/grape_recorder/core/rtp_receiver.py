@@ -41,6 +41,10 @@ class RTPReceiver:
         # Callback signature: callback(header: RTPHeader, payload: bytes, wallclock: Optional[float])
     """
     
+    # Expected bytes per sample for different encodings
+    BYTES_PER_SAMPLE_FLOAT = 8   # complex64 (2 x float32)
+    BYTES_PER_SAMPLE_INT16 = 4   # complex int16 (2 x int16)
+    
     def __init__(self, multicast_address: str, port: int = 5004):
         """
         Initialize RTP receiver.
@@ -56,10 +60,16 @@ class RTPReceiver:
         self.thread = None
         self.callbacks: Dict[int, Callable] = {}  # ssrc -> callback
         self.channel_info: Dict[int, ChannelInfo] = {}  # ssrc -> ChannelInfo for timing
+        self.expected_config: Dict[int, dict] = {}  # ssrc -> expected config for validation
+        self.validated_ssrcs: set = set()  # SSRCs that passed payload validation
         
-    def register_callback(self, ssrc: int, callback: Callable, channel_info: Optional[ChannelInfo] = None):
+    def register_callback(self, ssrc: int, callback: Callable, 
+                          channel_info: Optional[ChannelInfo] = None,
+                          expected_sample_rate: int = 20000,
+                          expected_encoding: str = 'float',
+                          blocktime_ms: float = 20.0):
         """
-        Register callback for specific SSRC.
+        Register callback for specific SSRC with expected configuration.
         
         Args:
             ssrc: RTP SSRC identifier
@@ -67,11 +77,32 @@ class RTPReceiver:
                      wallclock_time is None if timing info not available
             channel_info: Optional ChannelInfo with timing data (gps_time, rtp_timesnap)
                          If provided, enables wallclock time calculation
+            expected_sample_rate: Expected sample rate in Hz (for payload validation)
+            expected_encoding: Expected encoding ('float' or 'int16')
+            blocktime_ms: Expected blocktime in ms (determines samples per packet)
         """
         self.callbacks[ssrc] = callback
         if channel_info:
             self.channel_info[ssrc] = channel_info
-        logger.info(f"Registered callback for SSRC {ssrc} (timing: {'enabled' if channel_info else 'disabled'})")
+        
+        # Store expected config for payload validation
+        samples_per_packet = int(expected_sample_rate * blocktime_ms / 1000)
+        if expected_encoding == 'float':
+            expected_payload_bytes = samples_per_packet * self.BYTES_PER_SAMPLE_FLOAT
+        else:
+            expected_payload_bytes = samples_per_packet * self.BYTES_PER_SAMPLE_INT16
+        
+        self.expected_config[ssrc] = {
+            'sample_rate': expected_sample_rate,
+            'encoding': expected_encoding,
+            'blocktime_ms': blocktime_ms,
+            'samples_per_packet': samples_per_packet,
+            'expected_payload_bytes': expected_payload_bytes
+        }
+        
+        logger.info(f"Registered callback for SSRC {ssrc} "
+                   f"(timing: {'enabled' if channel_info else 'disabled'}, "
+                   f"expect {samples_per_packet} samples, {expected_payload_bytes} bytes/pkt)")
         
     def unregister_callback(self, ssrc: int):
         """
@@ -84,7 +115,73 @@ class RTPReceiver:
             del self.callbacks[ssrc]
         if ssrc in self.channel_info:
             del self.channel_info[ssrc]
+        if ssrc in self.expected_config:
+            del self.expected_config[ssrc]
+        if ssrc in self.validated_ssrcs:
+            self.validated_ssrcs.discard(ssrc)
         logger.info(f"Unregistered callback for SSRC {ssrc}")
+    
+    def validate_payload(self, ssrc: int, payload: bytes) -> tuple:
+        """
+        Validate RTP payload matches expected encoding.
+        
+        Note: radiod uses variable packet sizes (typically 9ms, not fixed 20ms),
+        so we validate encoding type rather than exact byte count.
+        
+        Args:
+            ssrc: Channel SSRC
+            payload: RTP payload bytes
+            
+        Returns:
+            (valid: bool, detected_encoding: str, error: Optional[str])
+        """
+        if ssrc not in self.expected_config:
+            return (True, 'unknown', None)  # No validation configured
+        
+        config = self.expected_config[ssrc]
+        expected_encoding = config['encoding']
+        actual_bytes = len(payload)
+        
+        # Detect encoding from payload size divisibility and value inspection
+        # Float (complex64): 8 bytes per sample, values typically < 1.0
+        # Int16 (complex int16): 4 bytes per sample, values in [-32768, 32767]
+        
+        if actual_bytes % self.BYTES_PER_SAMPLE_FLOAT == 0:
+            # Could be float - verify by checking value range
+            import struct
+            samples = actual_bytes // self.BYTES_PER_SAMPLE_FLOAT
+            if samples > 0:
+                # Check first few samples
+                try:
+                    floats = struct.unpack(f'<{min(8, samples * 2)}f', payload[:min(32, actual_bytes)])
+                    max_val = max(abs(f) for f in floats)
+                    # Float IQ is typically normalized, values < 10
+                    if max_val < 100:
+                        detected_encoding = 'float'
+                        detected_samples = samples
+                    else:
+                        # Large values suggest int16 misinterpreted as float
+                        detected_encoding = 'int16'
+                        detected_samples = actual_bytes // self.BYTES_PER_SAMPLE_INT16
+                except struct.error:
+                    detected_encoding = 'unknown'
+                    detected_samples = 0
+            else:
+                detected_encoding = 'unknown'
+                detected_samples = 0
+        elif actual_bytes % self.BYTES_PER_SAMPLE_INT16 == 0:
+            detected_encoding = 'int16'
+            detected_samples = actual_bytes // self.BYTES_PER_SAMPLE_INT16
+        else:
+            return (False, 'unknown', 
+                   f"Payload size {actual_bytes} not divisible by sample size")
+        
+        # Check if encoding matches expected
+        if detected_encoding != expected_encoding:
+            return (False, detected_encoding,
+                   f"Encoding mismatch: expected {expected_encoding}, got {detected_encoding}")
+        
+        return (True, detected_encoding, None)
     
     def update_channel_info(self, ssrc: int, channel_info: ChannelInfo):
         """
@@ -120,21 +217,13 @@ class RTPReceiver:
         # Bind to port
         self.socket.bind(('', self.port))
         
-        # Join multicast group
-        try:
-            # Try loopback first (for local radiod)
-            mreq = struct.pack("4s4s", 
-                              socket.inet_aton(self.multicast_address),
-                              socket.inet_aton('127.0.0.1'))
-            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-            logger.info(f"Joined multicast {self.multicast_address} on loopback")
-        except OSError:
-            # Fallback to any interface
-            mreq = struct.pack("4sl",
-                              socket.inet_aton(self.multicast_address),
-                              socket.INADDR_ANY)
-            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-            logger.info(f"Joined multicast {self.multicast_address} on all interfaces")
+        # Join multicast group on all interfaces (INADDR_ANY)
+        # Note: radiod may send via network interface, not loopback
+        mreq = struct.pack("4sl",
+                          socket.inet_aton(self.multicast_address),
+                          socket.INADDR_ANY)
+        self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        logger.info(f"Joined multicast {self.multicast_address} on all interfaces")
         
         # Start receiver thread
         self.running = True
@@ -179,6 +268,24 @@ class RTPReceiver:
                     if not has_callback:
                         logger.debug(f"No callback registered for SSRC {header.ssrc}. "
                                     f"Registered SSRCs: {list(self.callbacks.keys())}")
+                    
+                    # Validate first packet payload for registered SSRCs
+                    if has_callback and header.ssrc not in self.validated_ssrcs:
+                        # Extract payload for validation (need to calculate offset first)
+                        val_offset = 12 + (header.csrc_count * 4)
+                        if header.extension and len(data) >= val_offset + 4:
+                            ext_header = struct.unpack('>HH', data[val_offset:val_offset+4])
+                            val_offset += 4 + (ext_header[1] * 4)
+                        if val_offset < len(data):
+                            val_payload = data[val_offset:]
+                            valid, detected, error = self.validate_payload(header.ssrc, val_payload)
+                            if valid:
+                                self.validated_ssrcs.add(header.ssrc)
+                                logger.info(f"✓ SSRC {header.ssrc} payload validated: "
+                                           f"{len(val_payload)} bytes, encoding={detected}")
+                            else:
+                                logger.warning(f"⚠ SSRC {header.ssrc} payload validation failed: {error}")
+                                # Still process packets but log the mismatch
                 
                 # Log periodic stats every 10000 packets (reduced verbosity)
                 if packet_count % 10000 == 0:

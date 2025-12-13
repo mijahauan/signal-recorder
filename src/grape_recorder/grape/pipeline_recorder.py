@@ -82,6 +82,7 @@ class PipelineRecorderConfig:
     # RTP packet timing
     blocktime_ms: float = 20.0  # ka9q-radio default is 20ms = 400 samples @ 20kHz
     max_gap_seconds: float = 60.0
+    encoding: str = 'float'  # 'float' (complex64) or 'int16' (complex int16)
     
     # Phase 1 settings
     raw_archive_compression: str = 'gzip'
@@ -208,11 +209,14 @@ class PipelineRecorder:
         # Start the orchestrator
         self.orchestrator.start()
         
-        # Register RTP callback
+        # Register RTP callback with expected payload configuration
         self.rtp_receiver.register_callback(
             ssrc=self.config.ssrc,
             callback=self._handle_rtp_packet,
-            channel_info=self.channel_info
+            channel_info=self.channel_info,
+            expected_sample_rate=self.config.sample_rate,
+            expected_encoding=self.config.encoding,
+            blocktime_ms=self.config.blocktime_ms
         )
         
         self.session_start_time = time.time()

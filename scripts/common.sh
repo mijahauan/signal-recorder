@@ -35,14 +35,8 @@ DEFAULT_CONFIG="${GRAPE_CONFIG:-$PROJECT_DIR/config/grape-config.toml}"
 # Helper to get data root from config or environment
 get_data_root() {
     local config="${1:-$DEFAULT_CONFIG}"
-    
-    # First check environment variable (set by install.sh or systemd)
-    if [ -n "${GRAPE_DATA_ROOT:-}" ]; then
-        echo "$GRAPE_DATA_ROOT"
-        return
-    fi
-    
-    # Fall back to parsing config file
+
+    # Prefer explicit config file when available
     if [ -f "$config" ]; then
         local mode=$(grep '^mode' "$config" | cut -d'"' -f2)
         if [ "$mode" = "production" ]; then
@@ -50,20 +44,31 @@ get_data_root() {
         else
             grep '^test_data_root' "$config" | cut -d'"' -f2
         fi
-    else
-        echo "/tmp/grape-test"
+        return
     fi
+
+    # Fall back to environment variable (set by install.sh or systemd)
+    if [ -n "${GRAPE_DATA_ROOT:-}" ]; then
+        echo "$GRAPE_DATA_ROOT"
+        return
+    fi
+
+    echo "/tmp/grape-test"
 }
 
 # Helper to get current mode
 get_mode() {
+    if [ -f "$DEFAULT_CONFIG" ]; then
+        grep '^mode' "$DEFAULT_CONFIG" | cut -d'"' -f2
+        return
+    fi
+
     if [ -n "${GRAPE_MODE:-}" ]; then
         echo "$GRAPE_MODE"
-    elif [ -f "$DEFAULT_CONFIG" ]; then
-        grep '^mode' "$DEFAULT_CONFIG" | cut -d'"' -f2
-    else
-        echo "test"
+        return
     fi
+
+    echo "test"
 }
 
 # Helper to get log directory (FHS: /var/log/grape-recorder for production)

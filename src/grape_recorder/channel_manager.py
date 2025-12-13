@@ -318,10 +318,13 @@ class ChannelManager:
         destination: Optional[str] = None
     ) -> Dict[int, int]:
         """
-        Ensure channels exist based on new config format with auto-SSRC.
+        Ensure channels exist based on config format with auto-SSRC.
         
-        Matches channels by frequency rather than SSRC. Creates missing channels
-        and updates existing ones if parameters differ.
+        Matches channels by frequency AND destination. Key behaviors:
+        - If channel exists at freq with OUR destination: reuse or reconfigure
+        - If channel exists at freq with DIFFERENT destination: create NEW channel
+          (radiod supports multiple clients at same frequency)
+        - If no channel at freq: create new channel
         
         Args:
             channels: List of channel specs, each with at least:
@@ -333,7 +336,8 @@ class ChannelManager:
                 - sample_rate: int (default 20000)
                 - agc: int (default 0)
                 - gain: float (default 0.0)
-            destination: RTP destination for all channels (e.g. "time-station-data.local")
+                - encoding: str (default "float")
+            destination: RTP destination for all channels (our GRAPE multicast IP)
         
         Returns:
             Dict mapping frequency_hz -> allocated SSRC
@@ -341,16 +345,36 @@ class ChannelManager:
         logger.info(f"📋 ensure_channels_from_config() with {len(channels)} channels")
         logger.info(f"  Destination: {destination}")
         logger.info(f"  Defaults: preset={defaults.get('preset', 'iq')}, "
-                   f"sample_rate={defaults.get('sample_rate', 20000)}")
+                   f"sample_rate={defaults.get('sample_rate', 20000)}, "
+                   f"encoding={defaults.get('encoding', 'float')}")
+        
+        # Resolve our destination to IP for comparison
+        our_mcast_ip = resolve_mdns_to_ip(destination) if destination else None
+        logger.info(f"  Our multicast IP: {our_mcast_ip}")
         
         # Discover existing channels
         existing = self.discover_existing_channels()
         
-        # Build lookup by frequency (with tolerance)
-        existing_by_freq: Dict[int, tuple] = {}  # freq_hz -> (ssrc, channel_info)
+        # Build lookup by (frequency, destination) for ownership check
+        # Multiple channels can exist at same frequency with different destinations
+        our_channels_by_freq: Dict[int, tuple] = {}  # freq_hz -> (ssrc, channel_info)
+        other_channels_at_freq: Dict[int, List[tuple]] = {}  # freq_hz -> [(ssrc, channel_info), ...]
+        
         for ssrc, ch in existing.items():
             freq_hz = int(round(ch.frequency))
-            existing_by_freq[freq_hz] = (ssrc, ch)
+            ch_mcast = getattr(ch, 'multicast_address', None)
+            
+            if ch_mcast == our_mcast_ip:
+                # This is OUR channel
+                our_channels_by_freq[freq_hz] = (ssrc, ch)
+            else:
+                # This belongs to someone else
+                if freq_hz not in other_channels_at_freq:
+                    other_channels_at_freq[freq_hz] = []
+                other_channels_at_freq[freq_hz].append((ssrc, ch))
+        
+        logger.info(f"  Found {len(our_channels_by_freq)} channels with our destination")
+        logger.info(f"  Found {sum(len(v) for v in other_channels_at_freq.values())} channels with other destinations")
         
         # Process each required channel
         freq_to_ssrc: Dict[int, int] = {}
@@ -365,48 +389,45 @@ class ChannelManager:
             sample_rate = ch_spec.get('sample_rate', defaults.get('sample_rate', 20000))
             agc = ch_spec.get('agc', defaults.get('agc', 0))
             gain = ch_spec.get('gain', defaults.get('gain', 0.0))
+            encoding = ch_spec.get('encoding', defaults.get('encoding', 'float'))
             
-            # Check if channel exists at this frequency
-            if freq_hz in existing_by_freq:
-                existing_ssrc, existing_ch = existing_by_freq[freq_hz]
+            # Check if WE already have a channel at this frequency
+            if freq_hz in our_channels_by_freq:
+                existing_ssrc, existing_ch = our_channels_by_freq[freq_hz]
                 
-                # Resolve our destination to IP for comparison
-                resolved_dest = resolve_mdns_to_ip(destination) if destination else None
-                existing_mcast = getattr(existing_ch, 'multicast_address', None)
-                
-                # Check if parameters match (including destination)
+                # Check if parameters match
                 params_match = (
                     existing_ch.preset == preset and
-                    existing_ch.sample_rate == sample_rate and
-                    (resolved_dest is None or existing_mcast == resolved_dest)
+                    existing_ch.sample_rate == sample_rate
                 )
                 
                 if params_match:
-                    logger.info(f"✓ Channel {freq_hz/1e6:.3f} MHz exists (SSRC {existing_ssrc}, mcast={existing_mcast})")
+                    logger.info(f"✓ Channel {freq_hz/1e6:.3f} MHz exists (SSRC {existing_ssrc}, ours)")
                     freq_to_ssrc[freq_hz] = existing_ssrc
                     success_count += 1
                 else:
-                    logger.info(f"⚙️ Reconfiguring {freq_hz/1e6:.3f} MHz: "
-                               f"mcast={existing_mcast}->{resolved_dest}")
-                    # Update existing channel
-                    logger.info(f"⚙️ Updating {freq_hz/1e6:.3f} MHz: "
+                    # Reconfigure OUR existing channel
+                    logger.info(f"⚙️ Reconfiguring OUR channel {freq_hz/1e6:.3f} MHz: "
                                f"preset={existing_ch.preset}->{preset}, "
                                f"rate={existing_ch.sample_rate}->{sample_rate}")
-                    allocated = self.create_channel(
+                    allocated = self._reconfigure_channel(
+                        ssrc=existing_ssrc,
                         frequency_hz=freq_hz,
                         preset=preset,
                         sample_rate=sample_rate,
-                        agc=agc,
-                        gain=gain,
-                        destination=destination,
-                        ssrc=existing_ssrc,  # Keep existing SSRC
-                        description=description
+                        encoding=encoding
                     )
                     if allocated:
                         freq_to_ssrc[freq_hz] = allocated
                         success_count += 1
             else:
-                # Create new channel (SSRC will be auto-allocated)
+                # No channel with our destination at this frequency
+                # Check if others have channels here (for logging only - we don't touch them)
+                if freq_hz in other_channels_at_freq:
+                    others = other_channels_at_freq[freq_hz]
+                    logger.info(f"ℹ️ {len(others)} other client(s) at {freq_hz/1e6:.3f} MHz - creating separate channel")
+                
+                # Create new channel with our destination (SSRC auto-allocated)
                 logger.info(f"➕ Creating {freq_hz/1e6:.3f} MHz ({description})")
                 allocated = self.create_channel(
                     frequency_hz=freq_hz,
@@ -419,6 +440,9 @@ class ChannelManager:
                     description=description
                 )
                 if allocated:
+                    # Set encoding after creation
+                    if encoding == 'float':
+                        self._set_float_encoding(allocated)
                     freq_to_ssrc[freq_hz] = allocated
                     success_count += 1
                 else:
@@ -426,6 +450,80 @@ class ChannelManager:
         
         logger.info(f"Channel setup complete: {success_count}/{len(channels)} successful")
         return freq_to_ssrc
+    
+    def _reconfigure_channel(self, ssrc: int, frequency_hz: float, 
+                            preset: str, sample_rate: int, encoding: str) -> Optional[int]:
+        """
+        Reconfigure an existing channel via tune().
+        
+        Args:
+            ssrc: Existing channel SSRC
+            frequency_hz: Frequency in Hz
+            preset: Preset/mode
+            sample_rate: Sample rate in Hz
+            encoding: "float" or "int16"
+            
+        Returns:
+            SSRC if successful, None otherwise
+        """
+        try:
+            # Use tune() to update channel parameters
+            result = self.control.tune(
+                ssrc=ssrc,
+                frequency_hz=frequency_hz,
+                preset=preset,
+                sample_rate=sample_rate,
+                encoding=self._encoding_to_int(encoding)
+            )
+            
+            time.sleep(0.3)
+            
+            if self.control.verify_channel(ssrc, frequency_hz):
+                logger.info(f"✓ Channel {ssrc} reconfigured successfully")
+                return ssrc
+            else:
+                logger.warning(f"✗ Channel {ssrc} reconfiguration verification failed")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to reconfigure channel {ssrc}: {e}")
+            return None
+    
+    def _set_float_encoding(self, ssrc: int):
+        """
+        Set channel output encoding to float (complex64).
+        
+        Args:
+            ssrc: Channel SSRC
+        """
+        try:
+            # Encoding value for float - check ka9q-python constants
+            # Typically: 0=S16, 1=F32, etc.
+            self.control.set_output_encoding(ssrc, self._encoding_to_int('float'))
+            logger.debug(f"Set encoding to float for SSRC {ssrc}")
+        except Exception as e:
+            logger.warning(f"Could not set float encoding for SSRC {ssrc}: {e}")
+    
+    @staticmethod
+    def _encoding_to_int(encoding: str) -> int:
+        """
+        Convert encoding string to ka9q-radio integer value.
+        
+        Args:
+            encoding: "float" or "int16"
+            
+        Returns:
+            Integer encoding value for radiod
+        """
+        # ka9q-radio encoding values (from misc.h):
+        # S16 = 0, F32 = 1, OPUS = 2, etc.
+        if encoding == 'float':
+            return 1  # F32
+        elif encoding == 'int16':
+            return 0  # S16
+        else:
+            logger.warning(f"Unknown encoding '{encoding}', defaulting to float")
+            return 1
     
     def close(self):
         """Close the control connection"""

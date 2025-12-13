@@ -1,22 +1,114 @@
 # GRAPE Recorder - AI Context Document
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** 2025-12-08  
-**Version:** 3.16.0  
-**Next Session Focus:** Monitor Production Stability
+**Last Updated:** 2025-12-13  
+**Version:** 3.11.0  
+**Next Session Focus:** IRI-2020 Upgrade + Chrony UTC(NIST) Contribution
 
 ---
 
-## 🎯 NEXT SESSION: MONITOR PRODUCTION STABILITY
+## 🎯 NEXT SESSION: IRI-2020 UPGRADE + CHRONY UTC(NIST)
 
-Production mode is now running on bee1. Focus areas for next session:
+Two main objectives for the next session:
 
-1. **Verify data flow** - Check `/var/lib/grape-recorder/phase2/` for D_clock outputs
-2. **Monitor spectrograms** - Timer runs every 10 min, check `products/*/spectrograms/`
-3. **Test daily upload** - First PSWS upload at 00:30 UTC (Dec 9)
-4. **Web UI stability** - Monitor http://bee1:3000
+### 1. Upgrade IRI-2016 to IRI-2020 in Analytics
 
-Key architecture is in place:
+**Current State:**
+- Ionospheric model in `src/grape_recorder/grape/ionospheric_model.py` uses IRI-2016
+- Used by `TransmissionTimeSolver` for propagation delay estimation
+- Affects D_clock accuracy (ionospheric group delay component)
+
+**IRI-2020 Improvements:**
+- Better topside electron density model
+- Improved storm-time corrections
+- Updated CCIR/URSI coefficients
+- Better high-latitude coverage
+
+**Files to Update:**
+- `src/grape_recorder/grape/ionospheric_model.py` - Main IRI interface
+- `src/grape_recorder/grape/transmission_time_solver.py` - Uses ionospheric model
+- May need to update `iri2016` Python package to `iri2020` equivalent
+
+**Key Questions:**
+- Is there a `iri2020` Python package available?
+- If not, can we use `iricore` or similar that supports IRI-2020?
+- What's the API compatibility between IRI-2016 and IRI-2020?
+
+### 2. Contribute UTC(NIST) Alignment to Chrony
+
+**Current State:**
+- Multi-broadcast fusion achieves ±0.5 ms alignment to UTC(NIST)
+- D_clock measurements from 13 broadcasts (WWV/WWVH/CHU)
+- Calibration offsets learned per-station via EMA
+- Results in `phase2/fusion/fused_d_clock.csv`
+
+**Goal:**
+- Feed fused D_clock to chrony as a reference clock
+- Use chrony's SHM (shared memory) refclock interface
+- Enable GRAPE to discipline system time to UTC(NIST)
+
+**Implementation Path:**
+1. Write fused D_clock to shared memory in chrony SHM format
+2. Configure chrony to read from SHM refclock
+3. Set appropriate stratum and precision values
+4. Monitor chrony's use of the GRAPE refclock
+
+**Relevant Files:**
+- `src/grape_recorder/grape/multi_broadcast_fusion.py` - Fusion algorithm
+- `src/grape_recorder/grape/chrony_shm.py` - SHM writer (may exist from time-manager work)
+- `/etc/chrony/chrony.conf` - Chrony configuration
+
+**Chrony SHM Format:**
+```c
+struct shmTime {
+    int mode;           // 0 = invalid, 1 = valid
+    int count;          // Incremented on each update
+    time_t clockTimeStampSec;
+    int clockTimeStampUSec;
+    time_t receiveTimeStampSec;
+    int receiveTimeStampUSec;
+    int leap;           // Leap second indicator
+    int precision;      // log2(seconds) of precision
+    int nsamples;       // Number of samples
+    int valid;          // Data valid flag
+};
+```
+
+**Key Considerations:**
+- Precision: ±0.5 ms = ~10^-3.3 → precision = -10 to -11
+- Stratum: Should be high (10+) since this is HF-derived, not GPS
+- Update rate: Once per minute (after fusion calculation)
+
+---
+
+## COMPLETED THIS SESSION (Dec 13, 2025)
+
+### ka9q-python RadiodStream Refactoring
+
+**Major refactoring completed** - Core recorder now uses ka9q-python directly:
+
+| Component | Before | After |
+|-----------|--------|-------|
+| RTP Reception | Custom `RTPReceiver` | ka9q-python `RadiodStream` |
+| Resequencing | Custom `PacketResequencer` | Built into `RadiodStream` |
+| Channel Management | Custom `ChannelManager` wrapper | ka9q-python `RadiodControl` directly |
+| Code Reduction | ~1000+ lines custom | ~400 lines using ka9q-python |
+
+**New Files Created:**
+- `src/grape_recorder/grape/core_recorder_v2.py` - Uses RadiodControl directly
+- `src/grape_recorder/grape/stream_recorder_v2.py` - Uses RadiodStream
+
+**Anti-Hijacking:**
+- Deterministic multicast IP from station_id + instrument_id
+- Only modifies channels with our destination
+- Safe multi-client operation on same radiod
+
+**Startup Script Updated:**
+- `scripts/grape-core.sh` now uses `core_recorder_v2`
+
+---
+
+## KEY ARCHITECTURE (Current)
 
 ### Pre-Installation Checklist
 

@@ -44,7 +44,7 @@ start)
     mkdir -p "$DATA_ROOT/logs"
     cd "$PROJECT_DIR/web-ui"
     
-    nohup node monitoring-server-v3.js "$DATA_ROOT" \
+    nohup env GRAPE_CONFIG="$CONFIG" node monitoring-server-v3.js \
         > "$DATA_ROOT/logs/webui.log" 2>&1 &
     
     PID=$!

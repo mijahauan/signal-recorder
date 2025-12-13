@@ -90,11 +90,31 @@ journalctl -u grape-recorder -f    # View logs
 
 **Three-service design** built on a **generic recording infrastructure**:
 
-```
 ka9q-radio (RTP multicast) → Core Recorder → Analytics → Products/Upload
                               20kHz DRF      D_clock    10Hz decimated
                               raw_archive/   phase2/    products/ → PSWS sftp
+
+### ka9q-python Integration (V3.11)
+
+The recording layer leverages **ka9q-python** for all RTP and channel management:
+
 ```
+Application Layer (CoreRecorderV2, StreamRecorderV2)
+        ↓
+PipelineOrchestrator (Phase 1/2/3 coordination)
+        ↓
+ka9q-python RadiodStream (RTP reception, resequencing, decoding)
+        ↓
+ka9q-python RadiodControl (channel creation, configuration)
+        ↓
+ka9q-radio (radiod) via multicast
+```
+
+**ka9q-python provides:**
+- **RadiodStream** - RTP reception, packet resequencing, gap detection, sample decoding
+- **RadiodControl** - Channel creation, configuration, tune commands
+- **discover_channels()** - Enumerate existing channels from radiod status
+- **StreamQuality** - Completeness, packets lost/resequenced, gap metrics
 
 ### Generic Recording Infrastructure (New in V3)
 
@@ -115,14 +135,17 @@ RTPReceiver + ka9q-python (multicast, parsing, timing)
 - **RecordingSession** - Generic packet flow, resequencing, segmentation
 - **RTPReceiver** - Multi-SSRC demultiplexing, transport timing
 
-### 1. Core Recorder (`src/grape_recorder/grape/core_recorder.py`)
+### 1. Core Recorder (`src/grape_recorder/grape/core_recorder_v2.py`)
 
-Rock-solid RTP capture with scientific-grade metadata preservation:
-- Uses `GrapeRecorder` with two-phase operation (startup → recording)
-- RTP → resequencing → gap fill → 20 kHz NPZ (1,200,000 samples/minute)
-- Minimal dependencies, designed for maximum reliability
+Rock-solid RTP capture using ka9q-python RadiodStream:
+- Uses `RadiodStream` for RTP reception, resequencing, and sample decoding
+- Uses `RadiodControl` for channel creation with anti-hijacking protection
+- Deterministic multicast IP from station_id + instrument_id
+- 20 kHz complex64 IQ → binary archive (1,200,000 samples/minute)
 
-**20 kHz NPZ Metadata** (self-contained scientific record):
+**Anti-hijacking:** Only modifies channels with our multicast destination. Creates new channels at same frequency if others exist (radiod supports multiple clients).
+
+**20 kHz Archive Metadata** (self-contained scientific record):
 - **IQ Data:** Complex64 samples, gap-filled with zeros
 - **Timing Reference:** RTP timestamp of first sample, sample rate, SSRC
 - **Time_snap Anchor:** RTP/UTC calibration from WWV/CHU tone detection
@@ -365,6 +388,17 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 ## Status
 
 **Production Ready** - Core functionality complete and tested. Daily recording and PSWS upload operational at AC0G since November 2025.
+
+### v3.11.0 (Dec 13, 2025)
+- **ka9q-python RadiodStream Integration** - Complete refactoring of RTP handling
+  - Replaced custom `RTPReceiver` and `PacketResequencer` with `RadiodStream`
+  - Replaced custom `ChannelManager` wrapper with direct `RadiodControl` usage
+  - ~600 lines of custom code eliminated, leveraging ka9q-python's battle-tested implementation
+  - Built-in gap detection, resequencing, and quality metrics via `StreamQuality`
+- **Anti-Hijacking Channel Management** - Only modifies channels with our multicast destination
+  - Deterministic multicast IP generation from station_id + instrument_id
+  - Safe multi-client operation on same radiod instance
+- **New Files:** `core_recorder_v2.py`, `stream_recorder_v2.py`
 
 ### v3.10.0 (Dec 6, 2025)
 - **Timing Metrology Documentation** - Comprehensive technical reference for metrologists

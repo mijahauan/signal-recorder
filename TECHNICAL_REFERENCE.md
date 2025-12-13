@@ -3,7 +3,7 @@
 **Quick reference for developers working on the GRAPE Signal Recorder.**
 
 **Author:** Michael James Hauan (AC0G)  
-**Last Updated:** December 9, 2025
+**Last Updated:** December 13, 2025
 
 ---
 
@@ -27,17 +27,17 @@
 
 ## System Architecture
 
-### Three-Service Design
+### Three-Service Design (V3.11 - ka9q-python Integration)
 
 ```
-Core Recorder (core_recorder.py → GrapeRecorder)
-├─ Generic: RTPReceiver → RecordingSession → SegmentWriter
-├─ GRAPE-specific: GrapeRecorder (two-phase: startup → recording)
-├─ Startup tone detection (time_snap establishment)
-├─ Gap detection & zero-filling
-└─ NPZ archive writing (1,200,000 samples/minute @ 20 kHz)
+Core Recorder (core_recorder_v2.py)
+├─ Uses ka9q-python RadiodStream for RTP reception
+├─ Uses ka9q-python RadiodControl for channel management
+├─ Anti-hijacking: only modifies channels with our multicast destination
+├─ StreamRecorderV2 per channel → PipelineOrchestrator
+└─ Binary archive writing (1,200,000 samples/minute @ 20 kHz)
 
-Analytics Service (analytics_service.py) - per channel
+Analytics Service (phase2_analytics_service.py) - per channel
 ├─ 12 voting methods (BCD, tones, ticks, 440Hz, test signals, FSS, etc.)
 ├─ Doppler estimation
 ├─ Decimation (20 kHz → 10 Hz)
@@ -50,6 +50,16 @@ DRF Batch Writer (drf_batch_writer.py)
 ```
 
 **Why split?** Core stability vs analytics experimentation. Analytics can restart without data loss.
+
+### ka9q-python Components Used
+
+| Component | Purpose |
+|-----------|--------|
+| `RadiodStream` | RTP reception, packet resequencing, gap detection, sample decoding |
+| `RadiodControl` | Channel creation, configuration, tune commands |
+| `discover_channels()` | Enumerate existing channels from radiod status |
+| `StreamQuality` | Completeness %, packets lost/resequenced, gap count |
+| `ChannelInfo` | Channel metadata (frequency, preset, sample_rate, destination) |
 
 ---
 

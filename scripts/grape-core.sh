@@ -39,8 +39,8 @@ case $ACTION in
 start)
     echo "▶️  Starting Phase 1 Core Recorder..."
     
-    if pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
-        echo "   ℹ️  Already running (PID: $(pgrep -f 'grape_recorder.grape.core_recorder'))"
+    if pgrep -f "grape_recorder.grape.core_recorder_v2" > /dev/null; then
+        echo "   ℹ️  Already running (PID: $(pgrep -f 'grape_recorder.grape.core_recorder_v2'))"
         exit 0
     fi
     
@@ -53,7 +53,8 @@ start)
     mkdir -p "$DATA_ROOT/logs" "$DATA_ROOT/raw_archive" "$DATA_ROOT/status"
     cd "$PROJECT_DIR"
     
-    nohup $PYTHON -m grape_recorder.grape.core_recorder --config "$CONFIG" \
+    # Use V2 recorder (ka9q-python RadiodStream)
+    nohup $PYTHON -m grape_recorder.grape.core_recorder_v2 --config "$CONFIG" \
         > "$DATA_ROOT/logs/phase1-core.log" 2>&1 &
     
     PID=$!
@@ -73,24 +74,24 @@ start)
 stop)
     echo "🛑 Stopping Phase 1 Core Recorder..."
     
-    if ! pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
+    if ! pgrep -f "grape_recorder.grape.core_recorder_v2" > /dev/null; then
         echo "   ℹ️  Not running"
         exit 0
     fi
     
-    pkill -f "grape_recorder.grape.core_recorder" 2>/dev/null
+    pkill -f "grape_recorder.grape.core_recorder_v2" 2>/dev/null
     sleep 2
     
-    if pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
-        pkill -9 -f "grape_recorder.grape.core_recorder" 2>/dev/null
+    if pgrep -f "grape_recorder.grape.core_recorder_v2" > /dev/null; then
+        pkill -9 -f "grape_recorder.grape.core_recorder_v2" 2>/dev/null
     fi
     
     echo "   ✅ Stopped"
     ;;
 
 status)
-    if pgrep -f "grape_recorder.grape.core_recorder" > /dev/null; then
-        echo "✅ Phase 1 Core Recorder: RUNNING (PID: $(pgrep -f 'grape_recorder.grape.core_recorder'))"
+    if pgrep -f "grape_recorder.grape.core_recorder_v2" > /dev/null; then
+        echo "✅ Phase 1 Core Recorder: RUNNING (PID: $(pgrep -f 'grape_recorder.grape.core_recorder_v2'))"
         echo "   Output: $DATA_ROOT/raw_archive/{CHANNEL}/"
         
         # Show channel count if raw_archive exists
