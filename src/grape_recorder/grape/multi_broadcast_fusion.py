@@ -719,17 +719,39 @@ class MultiBroadcastFusion:
         }
 
 
-def run_fusion_service(data_root: Path, interval_sec: float = 60.0):
+def run_fusion_service(data_root: Path, interval_sec: float = 60.0, enable_chrony: bool = True):
     """
     Run continuous fusion service.
     
     Produces fused D_clock estimate every interval_sec.
+    Optionally writes to Chrony SHM refclock for system clock discipline.
+    
+    Args:
+        data_root: Base data directory
+        interval_sec: Fusion interval in seconds
+        enable_chrony: If True, write fused time to Chrony SHM refclock
     """
     fusion = MultiBroadcastFusion(data_root)
+    
+    # Initialize Chrony SHM if enabled
+    chrony_shm = None
+    if enable_chrony:
+        try:
+            from grape_recorder.grape.chrony_shm import ChronySHM
+            chrony_shm = ChronySHM(unit=0)
+            if chrony_shm.connect():
+                logger.info("Chrony SHM refclock enabled (unit=0, refid=TMGR)")
+            else:
+                logger.warning("Failed to connect to Chrony SHM - continuing without")
+                chrony_shm = None
+        except Exception as e:
+            logger.warning(f"Chrony SHM not available: {e}")
+            chrony_shm = None
     
     logger.info("Starting Multi-Broadcast Fusion Service")
     logger.info(f"  Interval: {interval_sec} seconds")
     logger.info(f"  Output: {fusion.fusion_csv}")
+    logger.info(f"  Chrony SHM: {'enabled' if chrony_shm else 'disabled'}")
     
     while True:
         try:
@@ -742,6 +764,20 @@ def run_fusion_service(data_root: Path, interval_sec: float = 60.0):
                     f"± {result.uncertainty_ms:.3f} ms "
                     f"[{result.n_broadcasts} broadcasts, grade {result.quality_grade}]"
                 )
+                
+                # Write to Chrony SHM if available and quality is acceptable
+                if chrony_shm and result.quality_grade in ('A', 'B', 'C'):
+                    # D_clock = T_system - T_UTC(NIST)
+                    # So T_UTC(NIST) = T_system - D_clock
+                    system_time = time.time()
+                    reference_time = system_time - (result.d_clock_fused_ms / 1000.0)
+                    
+                    # Precision based on uncertainty (log2 of seconds)
+                    # uncertainty_ms=1 -> precision=-10, uncertainty_ms=10 -> precision=-7
+                    precision = max(-13, min(-4, int(-10 - np.log2(max(0.1, result.uncertainty_ms)))))
+                    
+                    if chrony_shm.update(reference_time, system_time, precision):
+                        logger.debug(f"Chrony SHM updated: ref={reference_time:.6f}, precision={precision}")
             
             time.sleep(interval_sec)
             
@@ -760,6 +796,10 @@ if __name__ == '__main__':
     parser.add_argument('--data-root', type=Path, required=True)
     parser.add_argument('--interval', type=float, default=60.0)
     parser.add_argument('--log-level', default='INFO')
+    parser.add_argument('--enable-chrony', action='store_true', default=True,
+                        help='Enable Chrony SHM refclock output (default: enabled)')
+    parser.add_argument('--disable-chrony', action='store_true',
+                        help='Disable Chrony SHM refclock output')
     
     args = parser.parse_args()
     
@@ -768,4 +808,5 @@ if __name__ == '__main__':
         format='%(asctime)s %(levelname)s:%(name)s:%(message)s'
     )
     
-    run_fusion_service(args.data_root, args.interval)
+    enable_chrony = args.enable_chrony and not args.disable_chrony
+    run_fusion_service(args.data_root, args.interval, enable_chrony=enable_chrony)

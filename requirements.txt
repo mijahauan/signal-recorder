@@ -26,6 +26,11 @@ ka9q>=3.2.0
 pandas>=2.0.0
 matplotlib>=3.7.0
 
-# IRI-2016 Ionospheric Model (optional, for improved propagation modeling)
+# IRI-2020 Ionospheric Model (optional, for improved propagation modeling)
 # Requires: sudo apt install gfortran (before pip install)
-iri2016>=1.11.1
+# IRI-2020 provides better topside electron density, storm-time corrections,
+# and high-latitude coverage compared to IRI-2016
+# NOTE: Not on PyPI, install from GitHub:
+#   pip install git+https://github.com/space-physics/iri2020.git
+# Or for IRI-2016 fallback (on PyPI):
+#   pip install iri2016

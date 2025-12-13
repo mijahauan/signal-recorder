@@ -32,37 +32,18 @@ fi
 # Default config location (from env or default)
 DEFAULT_CONFIG="${GRAPE_CONFIG:-$PROJECT_DIR/config/grape-config.toml}"
 
-# Helper to get data root from config or environment
-get_data_root() {
-    local config="${1:-$DEFAULT_CONFIG}"
-
-    # Prefer explicit config file when available
-    if [ -f "$config" ]; then
-        local mode=$(grep '^mode' "$config" | cut -d'"' -f2)
-        if [ "$mode" = "production" ]; then
-            grep '^production_data_root' "$config" | cut -d'"' -f2
-        else
-            grep '^test_data_root' "$config" | cut -d'"' -f2
-        fi
-        return
-    fi
-
-    # Fall back to environment variable (set by install.sh or systemd)
-    if [ -n "${GRAPE_DATA_ROOT:-}" ]; then
-        echo "$GRAPE_DATA_ROOT"
-        return
-    fi
-
-    echo "/tmp/grape-test"
-}
-
-# Helper to get current mode
+# Helper to get current mode - CONFIG FILE IS AUTHORITATIVE
+# The grape-config.toml mode setting takes precedence over environment variables
 get_mode() {
-    if [ -f "$DEFAULT_CONFIG" ]; then
-        grep '^mode' "$DEFAULT_CONFIG" | cut -d'"' -f2
+    local config="${1:-$DEFAULT_CONFIG}"
+    
+    # Config file is the single source of truth for mode
+    if [ -f "$config" ]; then
+        grep '^mode' "$config" | cut -d'"' -f2
         return
     fi
 
+    # Fall back to environment only if no config file
     if [ -n "${GRAPE_MODE:-}" ]; then
         echo "$GRAPE_MODE"
         return
@@ -71,13 +52,38 @@ get_mode() {
     echo "test"
 }
 
-# Helper to get log directory (FHS: /var/log/grape-recorder for production)
+# Helper to get data root from config - CONFIG FILE IS AUTHORITATIVE
+get_data_root() {
+    local config="${1:-$DEFAULT_CONFIG}"
+
+    # Config file is the single source of truth
+    if [ -f "$config" ]; then
+        local mode=$(get_mode "$config")
+        if [ "$mode" = "production" ]; then
+            grep '^production_data_root' "$config" | cut -d'"' -f2
+        else
+            grep '^test_data_root' "$config" | cut -d'"' -f2
+        fi
+        return
+    fi
+
+    # Fall back to environment variable only if no config file
+    if [ -n "${GRAPE_DATA_ROOT:-}" ]; then
+        echo "$GRAPE_DATA_ROOT"
+        return
+    fi
+
+    echo "/tmp/grape-test"
+}
+
+# Helper to get log directory - CONFIG FILE IS AUTHORITATIVE
 get_log_dir() {
-    if [ -n "${GRAPE_LOG_DIR:-}" ]; then
-        echo "$GRAPE_LOG_DIR"
-    elif [ "$(get_mode)" = "production" ]; then
+    local config="${1:-$DEFAULT_CONFIG}"
+    local mode=$(get_mode "$config")
+    
+    if [ "$mode" = "production" ]; then
         echo "/var/log/grape-recorder"
     else
-        echo "$(get_data_root)/logs"
+        echo "$(get_data_root "$config")/logs"
     fi
 }

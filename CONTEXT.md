@@ -2,86 +2,174 @@
 
 **Author:** Michael James Hauan (AC0G)  
 **Last Updated:** 2025-12-13  
-**Version:** 3.11.0  
-**Next Session Focus:** IRI-2020 Upgrade + Chrony UTC(NIST) Contribution
+**Version:** 3.12.0  
+**Next Session Focus:** CPU Usage and Disk I/O Optimization
 
 ---
 
-## 🎯 NEXT SESSION: IRI-2020 UPGRADE + CHRONY UTC(NIST)
+## 🎯 NEXT SESSION: CPU & DISK I/O OPTIMIZATION
 
-Two main objectives for the next session:
+### Objective
+Analyze and optimize CPU usage and disk I/O to improve efficiency and reduce burden on the disk.
 
-### 1. Upgrade IRI-2016 to IRI-2020 in Analytics
+### Current System Profile
 
-**Current State:**
-- Ionospheric model in `src/grape_recorder/grape/ionospheric_model.py` uses IRI-2016
-- Used by `TransmissionTimeSolver` for propagation delay estimation
-- Affects D_clock accuracy (ionospheric group delay component)
+**Running Processes:**
+- `core_recorder_v2.py` - Phase 1: RTP reception, binary IQ archiving (9 channels)
+- `phase2_analytics_service.py` - Phase 2: Tone detection, D_clock (9 instances)
+- `multi_broadcast_fusion.py` - Fusion service with Chrony SHM output
+- `monitoring-server-v3.js` - Web UI server
 
-**IRI-2020 Improvements:**
-- Better topside electron density model
-- Improved storm-time corrections
-- Updated CCIR/URSI coefficients
-- Better high-latitude coverage
-
-**Files to Update:**
-- `src/grape_recorder/grape/ionospheric_model.py` - Main IRI interface
-- `src/grape_recorder/grape/transmission_time_solver.py` - Uses ionospheric model
-- May need to update `iri2016` Python package to `iri2020` equivalent
-
-**Key Questions:**
-- Is there a `iri2020` Python package available?
-- If not, can we use `iricore` or similar that supports IRI-2020?
-- What's the API compatibility between IRI-2016 and IRI-2020?
-
-### 2. Contribute UTC(NIST) Alignment to Chrony
-
-**Current State:**
-- Multi-broadcast fusion achieves ±0.5 ms alignment to UTC(NIST)
-- D_clock measurements from 13 broadcasts (WWV/WWVH/CHU)
-- Calibration offsets learned per-station via EMA
-- Results in `phase2/fusion/fused_d_clock.csv`
-
-**Goal:**
-- Feed fused D_clock to chrony as a reference clock
-- Use chrony's SHM (shared memory) refclock interface
-- Enable GRAPE to discipline system time to UTC(NIST)
-
-**Implementation Path:**
-1. Write fused D_clock to shared memory in chrony SHM format
-2. Configure chrony to read from SHM refclock
-3. Set appropriate stratum and precision values
-4. Monitor chrony's use of the GRAPE refclock
-
-**Relevant Files:**
-- `src/grape_recorder/grape/multi_broadcast_fusion.py` - Fusion algorithm
-- `src/grape_recorder/grape/chrony_shm.py` - SHM writer (may exist from time-manager work)
-- `/etc/chrony/chrony.conf` - Chrony configuration
-
-**Chrony SHM Format:**
-```c
-struct shmTime {
-    int mode;           // 0 = invalid, 1 = valid
-    int count;          // Incremented on each update
-    time_t clockTimeStampSec;
-    int clockTimeStampUSec;
-    time_t receiveTimeStampSec;
-    int receiveTimeStampUSec;
-    int leap;           // Leap second indicator
-    int precision;      // log2(seconds) of precision
-    int nsamples;       // Number of samples
-    int valid;          // Data valid flag
-};
+**Data Flow (per channel @ 20 kHz sample rate):**
+```
+RTP packets → binary_archive_writer → raw_buffer/{CHANNEL}/{DATE}/{timestamp}.bin
+                                                    ↓
+                                    phase2_analytics_service reads every minute
+                                                    ↓
+                                    clock_offset_series.csv (append)
 ```
 
-**Key Considerations:**
-- Precision: ±0.5 ms = ~10^-3.3 → precision = -10 to -11
-- Stratum: Should be high (10+) since this is HF-derived, not GPS
-- Update rate: Once per minute (after fusion calculation)
+**Disk Write Patterns:**
+- **raw_buffer**: 9.6 MB/min per channel (20 kHz × 8 bytes × 60 sec)
+- **Total raw**: ~86 MB/min for 9 channels
+- **Phase 2 output**: Small CSV appends (~100 bytes/min per channel)
+- **Fusion output**: ~200 bytes/min
+
+### Optimization Opportunities
+
+1. **Binary Archive Writer** (`binary_archive_writer.py`)
+   - Currently writes one 9.6 MB file per minute per channel
+   - Consider: memory-mapped files, larger buffers, async I/O
+
+2. **Phase 2 Analytics** (`phase2_analytics_service.py`)
+   - Reads entire minute file for each analysis cycle
+   - Consider: streaming analysis, incremental processing
+
+3. **Disk I/O Reduction Strategies:**
+   - Compress raw IQ data (complex64 → int16 with scaling?)
+   - Reduce write frequency (buffer multiple minutes?)
+   - Use tmpfs for intermediate data
+   - Implement circular buffer with fixed disk footprint
+
+4. **CPU Profiling Commands:**
+   ```bash
+   # CPU usage by process
+   top -b -n 1 | grep -E "grape|python|node"
+   
+   # Detailed CPU profile
+   py-spy record -o profile.svg --pid $(pgrep -f core_recorder_v2)
+   
+   # I/O statistics
+   iotop -b -n 5 -P | grep -E "grape|python"
+   
+   # Disk write rate
+   iostat -x 1 5
+   ```
+
+5. **Key Files to Analyze:**
+   - `src/grape_recorder/grape/binary_archive_writer.py` - Disk write logic
+   - `src/grape_recorder/grape/pipeline_orchestrator.py` - Data flow coordination
+   - `src/grape_recorder/grape/phase2_analytics_service.py` - Read patterns
+   - `src/grape_recorder/grape/stream_recorder_v2.py` - Sample processing
+
+### Storage Calculations
+
+| Component | Rate | Daily | Monthly |
+|-----------|------|-------|---------|
+| raw_buffer (9 ch) | 86 MB/min | 124 GB | 3.7 TB |
+| Phase 2 CSVs | ~1 KB/min | 1.4 MB | 43 MB |
+| Fusion CSV | ~0.2 KB/min | 0.3 MB | 9 MB |
+
+**Current Retention:** Configurable via `storage_quota` in grape-config.toml
 
 ---
 
-## COMPLETED THIS SESSION (Dec 13, 2025)
+## ✅ COMPLETED THIS SESSION (Dec 13, 2025)
+
+### 1. ka9q-python Upgrade to 3.2.2
+
+**Problem:** ka9q-python 3.2.0 had a bug where `StreamQuality.last_packet_utc` returned year 2075 instead of correct UTC.
+
+**Fix:** Upgraded to ka9q-python 3.2.2 from the correct repository:
+```bash
+pip install git+https://github.com/mijahauan/ka9q-python.git
+```
+
+**Files Changed:**
+- `src/grape_recorder/grape/stream_recorder_v2.py` - Restored GPS-derived system_time from quality.last_packet_utc
+
+### 2. Chrony SHM Integration (UTC(NIST) → System Clock)
+
+**Implemented:** Fusion service now writes fused D_clock to Chrony's SHM refclock.
+
+**Data Flow:**
+```
+WWV/WWVH/CHU → Phase 2 Analytics → D_clock per channel
+                        ↓
+              Multi-Broadcast Fusion → Fused D_clock (±0.5 ms)
+                        ↓
+              Chrony SHM (unit 0, refid TMGR)
+                        ↓
+              Chrony disciplines system clock
+```
+
+**Files Created/Modified:**
+- `src/grape_recorder/grape/chrony_shm.py` - NEW: SHM refclock writer (copied from time-manager)
+- `src/grape_recorder/grape/multi_broadcast_fusion.py` - Added chrony SHM integration
+- `scripts/grape-analytics.sh` - Added `--enable-chrony` flag
+
+**Chrony Configuration** (already in `/etc/chrony/chrony.conf`):
+```
+refclock SHM 0 refid TMGR poll 6 precision 1e-3 offset 0.0
+```
+
+**Verification:**
+```bash
+chronyc sources  # Look for TMGR with Reach > 0
+```
+
+**Dependencies Added:**
+```bash
+pip install sysv_ipc  # For System V shared memory
+```
+
+### 3. Web UI Fix (snrDb null check)
+
+**Problem:** Timing dashboard crashed with "can't access property 'toFixed', snrDb is null"
+
+**Fix:** Changed null check from `!== undefined` to `!= null` in `timing-dashboard-enhanced.html`
+
+### 4. Mode Switching & Configuration Cleanup
+
+**Single Source of Truth:** `grape-config.toml` is now authoritative for mode setting.
+
+**Files Modified:**
+- `scripts/common.sh` - `get_mode()`, `get_data_root()`, `get_log_dir()` now read from config file
+- `/etc/grape-recorder/environment` - Simplified to only point to config file
+- `scripts/grape-analytics.sh` - Updated to read from `raw_buffer` instead of `raw_archive`
+
+### 5. Analytics Path Fix for raw_buffer
+
+**Problem:** Analytics was looking for data in wrong directory structure.
+
+**Fix:** Updated `phase2_analytics_service.py` to handle when `archive_dir` points directly to `raw_buffer/{channel}`.
+
+**Current Data Structure:**
+```
+{data_root}/
+├── raw_buffer/{CHANNEL}/{YYYYMMDD}/{timestamp}.bin  # Phase 1 output
+├── raw_buffer/{CHANNEL}/{YYYYMMDD}/{timestamp}.json # Metadata sidecar
+├── phase2/{CHANNEL}/clock_offset/                   # Phase 2 output
+└── phase2/fusion/fused_d_clock.csv                  # Fusion output
+```
+
+### 6. IRI-2020 Upgrade (Earlier in Session)
+
+**Completed:** Ionospheric model upgraded from IRI-2016 to IRI-2020 with fallback.
+
+---
+
+## COMPLETED EARLIER (Dec 13, 2025)
 
 ### ka9q-python RadiodStream Refactoring
 
@@ -247,16 +335,18 @@ if f.exists():
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ PHASE 1: RAW ARCHIVE                                                │
-│   RTP → DRF @ 20 kHz                                                │
-│   Output: raw_archive/{CHANNEL}/rf@*.h5                             │
+│ PHASE 1: RAW ARCHIVE (core_recorder_v2.py)                          │
+│   RTP → Binary IQ @ 20 kHz (complex64)                              │
+│   Output: raw_buffer/{CHANNEL}/{YYYYMMDD}/{timestamp}.bin           │
+│   Metadata: raw_buffer/{CHANNEL}/{YYYYMMDD}/{timestamp}.json        │
 ├─────────────────────────────────────────────────────────────────────┤
-│ PHASE 2: ANALYTICAL ENGINE                                          │
-│   Tone detection, D_clock, discrimination, decimation               │
-│   Output: phase2/{CHANNEL}/*.csv, products/{CH}/decimated/*.bin     │
+│ PHASE 2: ANALYTICAL ENGINE (phase2_analytics_service.py × 9)        │
+│   Tone detection, D_clock, discrimination                           │
+│   Output: phase2/{CHANNEL}/clock_offset/*.csv                       │
+│   Fusion: phase2/fusion/fused_d_clock.csv → Chrony SHM              │
 ├─────────────────────────────────────────────────────────────────────┤
 │ PHASE 3: DERIVED PRODUCTS                                           │
-│   Spectrograms, DRF packaging, PSWS upload                          │
+│   Spectrograms, decimation, PSWS upload                             │
 │   Output: products/{CHANNEL}/spectrograms/, upload/{DATE}/          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -352,53 +442,40 @@ export GRAPE_LOG_DIR=/tmp/grape-test/logs
 
 | Date | Focus | Key Changes |
 |------|-------|-------------|
+| Dec 13 PM | Chrony Integration | ka9q-python 3.2.2, Chrony SHM refclock, web UI fix, raw_buffer paths |
+| Dec 13 AM | IRI-2020 Upgrade | Ionospheric model upgraded, mode switching cleanup |
 | Dec 8 Night | Production Deployed | Systemd services running, matplotlib added, docs updated |
 | Dec 8 Eve | Production Mode | TEST/PRODUCTION architecture, install.sh, systemd services |
 | Dec 8 PM | Phase 3 Fixes | StatefulDecimator, path consolidation, spectrogram canonical |
 | Dec 8 AM | Clock Drift | RTP timestamp bug, Kalman state reset, channel discovery |
 | Dec 7 PM | Phase 2 Critique | 16 methodology fixes, uncertainty replaces grades |
 | Dec 7 AM | BCD Correlation | Fixed BCD detection, 440Hz filtering, noise floor band |
-| Dec 6 | Audio Simplification | Removed radiod audio, AM demod from IQ |
-| Dec 5 | Multi-Broadcast Fusion | 13-broadcast fusion for ±0.5ms accuracy |
 
 ---
 
-## NEXT SESSION PRIORITIES
+## ARCHITECTURE CHANGES (Dec 13, 2025)
 
-1. **Monitor Production** - Verify Phase 2 outputs in `/var/lib/grape-recorder/phase2/`
-2. **Check Spectrograms** - Timer runs every 10 min, verify PNG generation
-3. **Daily Upload Test** - First PSWS upload scheduled for 00:30 UTC (Dec 9)
-4. **Storage Quota** - Configure cleanup for production disk space
-5. **Backup Strategy** - Decide what to preserve, what to rotate
-
-### Completed This Session (Dec 8 Night)
-
-- ✅ Deployed production mode with systemd services on bee1
-- ✅ Fixed systemd service paths (hardcoded instead of env vars for WorkingDirectory)
-- ✅ Added matplotlib and pandas to `setup.py` install_requires
-- ✅ Updated `ka9q` dependency to use PyPI instead of git URL
-- ✅ Updated carrier.html with 10-minute auto-refresh and regenerate button
-- ✅ Updated timing-methodology.html for production (systemd commands, fusion service)
-- ✅ Updated discrimination-methodology.html (8 methods, correct weights)
-- ✅ Fixed web-ui service to use `monitoring-server-v3.js`
-
-### Completed Dec 8 Evening
-
-- ✅ Renamed `signal-recorder` → `grape-recorder` in all paths
-- ✅ Updated `grape-config.toml` with correct production path
-- ✅ Created `config/environment.template` with full documentation
-- ✅ Updated all systemd services to use `EnvironmentFile=`
-- ✅ Updated `scripts/install.sh` with three-phase directory structure
-- ✅ Updated `INSTALLATION.md` with mode switching guide
-
-### Key Architecture Changes
+### Data Storage Format Change
 
 | Component | Before | After |
 |-----------|--------|-------|
-| Production data root | `/var/lib/signal-recorder` | `/var/lib/grape-recorder` |
-| Systemd paths | Hardcoded | Via `EnvironmentFile=/etc/grape-recorder/environment` |
-| Service names | `grape-recorder` | `grape-core-recorder` (Phase 1) |
-| Install directories | Legacy `archives/`, `analytics/` | Three-phase: `raw_archive/`, `phase2/`, `products/` |
+| Phase 1 Output | `raw_archive/{CH}/` (DRF HDF5) | `raw_buffer/{CH}/` (binary IQ) |
+| File Format | Digital RF HDF5 | Raw complex64 binary + JSON sidecar |
+| Analytics Input | Read from DRF | Read from raw_buffer binary |
+
+### New Dependencies
+
+```bash
+pip install sysv_ipc                                    # Chrony SHM
+pip install git+https://github.com/mijahauan/ka9q-python.git  # ka9q-python 3.2.2
+```
+
+### Key Configuration
+
+**grape-config.toml** is now the single source of truth for:
+- `mode` ("test" or "production")
+- `test_data_root` / `production_data_root`
+- All channel definitions
 
 ---
 

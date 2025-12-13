@@ -249,13 +249,11 @@ class StreamRecorderV2:
                 self.last_sample_time = time.time()
                 self.last_quality = quality
             
-            # Get system time from quality metrics
-            # last_packet_utc may be a datetime string or None
+            # Get system time from quality metrics (GPS-derived from ka9q-python)
             if quality.last_packet_utc:
                 try:
                     from datetime import datetime
                     if isinstance(quality.last_packet_utc, str):
-                        # Parse ISO format datetime string
                         dt = datetime.fromisoformat(quality.last_packet_utc.replace('Z', '+00:00'))
                         system_time = dt.timestamp()
                     else:

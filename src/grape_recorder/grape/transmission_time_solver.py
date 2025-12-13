@@ -217,8 +217,9 @@ Deviations indicate either:
 ================================================================================
 REVISION HISTORY
 ================================================================================
+2025-12-13: Upgraded to IRI-2020 ionospheric model (improved accuracy)
 2025-12-07: Issue 1.3 FIX - Proper 1/f² ionospheric delay model (replaces linear)
-2025-12-07: Issue 1.2 FIX - Dynamic ionospheric model with IRI-2016 integration
+2025-12-07: Issue 1.2 FIX - Dynamic ionospheric model with IRI integration
 2025-12-07: Added comprehensive theoretical documentation
 2025-11-15: Added multi-station solver for correlated UTC estimation
 2025-10-20: Initial implementation with single-station mode disambiguation
@@ -263,12 +264,13 @@ EARTH_RADIUS_KM = 6371.0
 # =============================================================================
 # IMPORTANT: These constants are now FALLBACKS only.
 #
-# Issue 1.2 Fix (2025-12-07):
+# Issue 1.2 Fix (2025-12-07), upgraded 2025-12-13:
 # The original implementation used these FIXED values, ignoring the significant
 # variation of hmF2 (200-400 km) with time, solar activity, and location.
 # 
 # The new IonosphericModel class provides dynamic heights via:
-#   TIER 1: IRI-2016 (International Reference Ionosphere) when available
+#   TIER 1: IRI-2020 (International Reference Ionosphere) when available
+#           Falls back to IRI-2016 if IRI-2020 not installed
 #   TIER 2: Parametric model capturing diurnal/seasonal/solar variations
 #   TIER 3: These static fallbacks as last resort
 #
@@ -385,12 +387,19 @@ class TransmissionTimeSolver:
     back-calculating when the signal was actually transmitted at
     WWV/WWVH/CHU, recovering UTC(NIST) with ~1ms accuracy.
     
-    Issue 1.2 Fix (2025-12-07):
-    ---------------------------
+    Issue 1.2 Fix (2025-12-07), upgraded 2025-12-13:
+    ------------------------------------------------
     Now uses dynamic ionospheric layer heights via IonosphericModel:
-    - TIER 1: IRI-2016 when available (best accuracy, ~20-30 km)
+    - TIER 1: IRI-2020 when available (best accuracy, ~20-25 km)
+              Falls back to IRI-2016 if IRI-2020 not installed
     - TIER 2: Parametric model (captures diurnal/seasonal variation)
     - TIER 3: Static fallback (original fixed constants)
+    
+    IRI-2020 improvements over IRI-2016:
+    - Better topside electron density model
+    - Improved storm-time corrections
+    - Updated CCIR/URSI coefficients
+    - Better high-latitude coverage
     
     The model also learns calibration offsets from actual measurements
     to track ionospheric "weather" vs "climate".
@@ -431,7 +440,7 @@ class TransmissionTimeSolver:
             )
             # Initialize ionospheric delay calculator (Issue 1.3 fix)
             self.delay_calculator = IonosphericDelayCalculator(iono_model=self.iono_model)
-            logger.info("Dynamic ionospheric model enabled (IRI-2016 + calibration + 1/f² delay)")
+            logger.info("Dynamic ionospheric model enabled (IRI-2020/2016 + calibration + 1/f² delay)")
         else:
             self.iono_model = None
             self.delay_calculator = None

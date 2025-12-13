@@ -7,7 +7,7 @@
 #   - Quality metrics and tone detections
 #   - 10-second sliding window monitoring
 #
-# Input:  raw_archive/{CHANNEL}/ (20 kHz Digital RF from Phase 1)
+# Input:  raw_buffer/{CHANNEL}/ (20 kHz binary IQ from Phase 1)
 # Output: phase2/{CHANNEL}/      (timing analysis, clock offset CSV)
 #
 # Usage: grape-analytics.sh -start|-stop|-status [config-file]
@@ -71,16 +71,16 @@ start)
     cd "$PROJECT_DIR"
     
     # WWV Channels (PYTHON is set by common.sh)
-    # Input: raw_archive/WWV_X_MHz/ (Phase 1 DRF)
+    # Input: raw_buffer/WWV_X_MHz/ (Phase 1 binary IQ)
     # Output: phase2/WWV_X_MHz/    (D_clock, timing metrics)
     for freq_mhz in 2.5 5 10 15 20 25; do
         freq_hz=$(echo "$freq_mhz * 1000000" | bc | cut -d. -f1)
         channel_dir="WWV_${freq_mhz}_MHz"
         
-        # Phase 2 reads from raw_archive (Phase 1 output)
+        # Phase 2 reads from raw_buffer (Phase 1 binary output)
         # and writes timing analysis to phase2/
         nohup $PYTHON -m grape_recorder.grape.phase2_analytics_service \
-          --archive-dir "$DATA_ROOT/raw_archive/$channel_dir" \
+          --archive-dir "$DATA_ROOT/raw_buffer/$channel_dir" \
           --output-dir "$DATA_ROOT/phase2/$channel_dir" \
           --channel-name "WWV ${freq_mhz} MHz" \
           --frequency-hz "$freq_hz" \
@@ -104,7 +104,7 @@ start)
         channel_dir="CHU_${freq_mhz}_MHz"
         
         nohup $PYTHON -m grape_recorder.grape.phase2_analytics_service \
-          --archive-dir "$DATA_ROOT/raw_archive/$channel_dir" \
+          --archive-dir "$DATA_ROOT/raw_buffer/$channel_dir" \
           --output-dir "$DATA_ROOT/phase2/$channel_dir" \
           --channel-name "CHU ${freq_mhz} MHz" \
           --frequency-hz "$freq_hz" \
@@ -132,8 +132,9 @@ start)
       --data-root "$DATA_ROOT" \
       --interval 60.0 \
       --log-level INFO \
+      --enable-chrony \
       > "$DATA_ROOT/logs/phase2-fusion.log" 2>&1 &
-    echo "   🔀 Started Multi-Broadcast Fusion (13 broadcasts → UTC(NIST))"
+    echo "   🔀 Started Multi-Broadcast Fusion (13 broadcasts → UTC(NIST) → Chrony SHM)"
     
     echo "   📄 Logs: $DATA_ROOT/logs/phase2-*.log"
     echo "   📊 Output: $DATA_ROOT/phase2/{CHANNEL}/clock_offset/"
@@ -167,7 +168,7 @@ status)
     COUNT=$(pgrep -f "grape_recorder.grape.phase2_analytics_service" 2>/dev/null | wc -l)
     if [ "$COUNT" -gt 0 ]; then
         echo "✅ Phase 2 Analytics: RUNNING ($COUNT/9 channels)"
-        echo "   Input:  $DATA_ROOT/raw_archive/{CHANNEL}/"
+        echo "   Input:  $DATA_ROOT/raw_buffer/{CHANNEL}/"
         echo "   Output: $DATA_ROOT/phase2/{CHANNEL}/clock_offset/"
     else
         echo "⭕ Phase 2 Analytics: STOPPED"

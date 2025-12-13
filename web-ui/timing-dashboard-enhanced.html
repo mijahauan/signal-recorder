@@ -1415,7 +1415,7 @@
                         
                         // Confidence based on quality metrics
                         const snrDb = chData.quality_metrics?.last_snr_db;
-                        if (snrDb !== undefined) {
+                        if (snrDb != null) {
                             snr = snrDb.toFixed(1);
                             confidence = snrDb > 25 ? 'High' : snrDb > 15 ? 'Med' : 'Low';
                         }

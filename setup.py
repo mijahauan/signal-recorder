@@ -50,6 +50,9 @@ setup(
             "flake8>=6.0.0",
             "mypy>=1.0.0",
         ],
+        "iri": [
+            "iri2020 @ git+https://github.com/space-physics/iri2020.git",  # IRI-2020 (requires gfortran)
+        ],
     },
     entry_points={
         "console_scripts": [

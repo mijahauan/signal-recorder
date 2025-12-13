@@ -873,8 +873,16 @@ class Phase2AnalyticsService:
         
         # Binary files are in raw_buffer directory
         # Path: {data_root}/raw_buffer/{channel}/YYYYMMDD/{minute}.bin
-        binary_dir = self.archive_dir.parent.parent / 'raw_buffer'
-        channel_dir = binary_dir / self.channel_name.replace(' ', '_').replace('.', '_')
+        # archive_dir can be either:
+        #   - raw_buffer/{channel} (new: direct path)
+        #   - raw_archive/{channel} (legacy: need to find raw_buffer sibling)
+        if 'raw_buffer' in str(self.archive_dir):
+            # Direct path to raw_buffer channel
+            channel_dir = self.archive_dir
+        else:
+            # Legacy: archive_dir is raw_archive/{channel}, find raw_buffer sibling
+            binary_dir = self.archive_dir.parent.parent / 'raw_buffer'
+            channel_dir = binary_dir / self.channel_name.replace(' ', '_').replace('.', '_')
         
         dt = datetime.fromtimestamp(target_minute, tz=timezone.utc)
         date_str = dt.strftime('%Y%m%d')
@@ -1015,8 +1023,12 @@ class Phase2AnalyticsService:
         """Get latest minute from binary archive."""
         from datetime import datetime, timezone
         
-        binary_dir = self.archive_dir.parent.parent / 'raw_buffer'
-        channel_dir = binary_dir / self.channel_name.replace(' ', '_').replace('.', '_')
+        # Determine channel_dir based on archive_dir type
+        if 'raw_buffer' in str(self.archive_dir):
+            channel_dir = self.archive_dir
+        else:
+            binary_dir = self.archive_dir.parent.parent / 'raw_buffer'
+            channel_dir = binary_dir / self.channel_name.replace(' ', '_').replace('.', '_')
         
         if not channel_dir.exists():
             return None
