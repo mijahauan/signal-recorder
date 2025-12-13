@@ -103,8 +103,12 @@ class BinaryArchiveWriter:
         logger.info(f"  Format: raw complex64 binary + JSON metadata")
     
     def _sanitize_channel_name(self) -> str:
-        """Convert channel name to filesystem-safe format."""
-        return self.config.channel_name.replace(' ', '_').replace('.', '_')
+        """Convert channel name to filesystem-safe format.
+        
+        Preserves dots in frequency (e.g., CHU_7.85_MHz) for consistency
+        with analytics scripts and web UI.
+        """
+        return self.config.channel_name.replace(' ', '_')
     
     def _get_minute_dir(self, minute_boundary: int) -> Path:
         """Get directory for a specific minute."""
