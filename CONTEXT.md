@@ -2,89 +2,138 @@
 
 **Author:** Michael James Hauan (AC0G)  
 **Last Updated:** 2025-12-13  
-**Version:** 3.12.0  
-**Next Session Focus:** CPU Usage and Disk I/O Optimization
+**Version:** 3.13.0  
+**Next Session Focus:** Monitor timing convergence, evaluate ionospheric propagation limits
 
 ---
 
-## 🎯 NEXT SESSION: CPU & DISK I/O OPTIMIZATION
+## ✅ COMPLETED THIS SESSION (Dec 13, 2025 Evening)
 
-### Objective
-Analyze and optimize CPU usage and disk I/O to improve efficiency and reduce burden on the disk.
+### Timing Calibration Refinement - GPSDO-First Architecture
 
-### Current System Profile
+**Philosophy:** Leverage the GPSDO-disciplined RTP timestamps as the primary timing reference, then progressively refine with tone detections and multi-broadcast fusion.
 
-**Running Processes:**
-- `core_recorder_v2.py` - Phase 1: RTP reception, binary IQ archiving (9 channels)
-- `phase2_analytics_service.py` - Phase 2: Tone detection, D_clock (9 instances)
-- `multi_broadcast_fusion.py` - Fusion service with Chrony SHM output
-- `monitoring-server-v3.js` - Web UI server
+#### 1. Station-Level Calibration (Not Per-Broadcast)
 
-**Data Flow (per channel @ 20 kHz sample rate):**
+**Problem:** Calibrating each broadcast (station+frequency) independently introduced artificial variance because different frequencies from the same station have different ionospheric paths.
+
+**Solution:** Calibrate at the **station level**. Each station (WWV, WWVH, CHU) transmits from a single location using a single atomic clock. The station mean is the ground truth; frequency-to-frequency variations reveal ionospheric propagation effects.
+
+**Files Changed:**
+- `multi_broadcast_fusion.py` - `_update_calibration()` now aggregates by station, not broadcast
+- `multi_broadcast_fusion.py` - `_apply_calibration()` uses station-level offsets
+
+**Calibration State:**
+```json
+{
+  "WWV": {"offset_ms": 3.3, "uncertainty_ms": 0.47, "n_samples": 94},
+  "CHU": {"offset_ms": 8.4, "uncertainty_ms": 0.58, "n_samples": 64},
+  "WWVH": {"offset_ms": 9.5, "uncertainty_ms": 1.05, "n_samples": 12}
+}
 ```
-RTP packets → binary_archive_writer → raw_buffer/{CHANNEL}/{DATE}/{timestamp}.bin
-                                                    ↓
-                                    phase2_analytics_service reads every minute
-                                                    ↓
-                                    clock_offset_series.csv (append)
-```
 
-**Disk Write Patterns:**
-- **raw_buffer**: 9.6 MB/min per channel (20 kHz × 8 bytes × 60 sec)
-- **Total raw**: ~86 MB/min for 9 channels
-- **Phase 2 output**: Small CSV appends (~100 bytes/min per channel)
-- **Fusion output**: ~200 bytes/min
+#### 2. Per-Second Tick SNR for Discrimination (Vote 4)
 
-### Optimization Opportunities
+**Problem:** The 8-vote weighted discrimination system had Vote 4 (per-second tick SNR) implemented but not connected.
 
-1. **Binary Archive Writer** (`binary_archive_writer.py`)
-   - Currently writes one 9.6 MB file per minute per channel
-   - Consider: memory-mapped files, larger buffers, async I/O
+**Solution:** Added `detect_tick_windows()` call in Phase 2 engine and pass results to `finalize_discrimination()`.
 
-2. **Phase 2 Analytics** (`phase2_analytics_service.py`)
-   - Reads entire minute file for each analysis cycle
-   - Consider: streaming analysis, incremental processing
+**Files Changed:**
+- `phase2_temporal_engine.py` - Added tick detection in Step 2B, pass to finalize_discrimination
 
-3. **Disk I/O Reduction Strategies:**
-   - Compress raw IQ data (complex64 → int16 with scaling?)
-   - Reduce write frequency (buffer multiple minutes?)
-   - Use tmpfs for intermediate data
-   - Implement circular buffer with fixed disk footprint
+**Impact:** 59 additional timing confirmations per minute (one per second, excluding minute marker).
 
-4. **CPU Profiling Commands:**
-   ```bash
-   # CPU usage by process
-   top -b -n 1 | grep -E "grape|python|node"
-   
-   # Detailed CPU profile
-   py-spy record -o profile.svg --pid $(pgrep -f core_recorder_v2)
-   
-   # I/O statistics
-   iotop -b -n 5 -P | grep -E "grape|python"
-   
-   # Disk write rate
-   iostat -x 1 5
-   ```
+#### 3. CHU FSK Timing Confirmation
 
-5. **Key Files to Analyze:**
-   - `src/grape_recorder/grape/binary_archive_writer.py` - Disk write logic
-   - `src/grape_recorder/grape/pipeline_orchestrator.py` - Data flow coordination
-   - `src/grape_recorder/grape/phase2_analytics_service.py` - Read patterns
-   - `src/grape_recorder/grape/stream_recorder_v2.py` - Sample processing
+**Problem:** CHU FSK decoder was implemented but timing wasn't used to confirm D_clock.
+
+**Solution:** When CHU FSK is detected (seconds 31-39), compare FSK timing offset with D_clock:
+- Agreement (<5ms): confidence +0.1, `utc_verified=True`
+- Disagreement (>20ms): confidence -0.2, logged as warning
+
+**Files Changed:**
+- `phase2_temporal_engine.py` - Added CHU FSK timing confirmation in Step 3
+
+#### 4. RTP-Based Station Prediction
+
+**Problem:** On shared frequencies (2.5, 5, 10, 15 MHz), low-confidence discrimination caused flip-flopping between WWV and WWVH.
+
+**Solution:** Use RTP calibration history to predict expected station:
+- Store `detected_station` in RTP calibration data
+- `predict_station()` method uses RTP offset to predict which station should be detected
+- Override low-confidence discrimination with high-confidence RTP prediction
+
+**Files Changed:**
+- `timing_calibrator.py` - Added `predict_station()` method, extended `RPTCalibration` with `detected_station`
+- `phase2_temporal_engine.py` - Added station predictor callback
+- `pipeline_orchestrator.py` - Wired station predictor callback
+
+#### 5. Reject Low-Confidence Discrimination on Shared Frequencies
+
+**Problem:** Low-confidence discrimination results were accepted, causing station flip-flopping.
+
+**Solution:** On shared frequencies, require at least MEDIUM confidence for discrimination. LOW confidence falls through to RTP prediction or channel name fallback.
+
+**Files Changed:**
+- `phase2_temporal_engine.py` - Added confidence check in station determination logic
+
+#### 6. Multi-Process State File Coordination
+
+**Problem:** 9 channel recorder processes each had their own `TimingCalibrator` instance, overwriting each other's state.
+
+**Solution:**
+- Reload state from disk before each update (merge with other processes)
+- Save state after every detection during bootstrap
+- Save every 5 detections after bootstrap
+
+**Files Changed:**
+- `timing_calibrator.py` - Added `_load_state()` call in `update_from_detection()`, more frequent saves
+
+---
+
+### CPU & Disk I/O Optimizations (Earlier)
+
+**1. Fixed Path Inconsistency (Duplicate Directories)**
+- **Problem**: `BinaryArchiveReader` used `.replace('.', '_')` but writer preserved dots
+- **Impact**: CHU channels had duplicate directories (e.g., `CHU_7.85_MHz` AND `CHU_7_85_MHz`)
+- **Fix**: Updated all path construction to use `channel_name_to_dir()` from `paths.py`
+- **Files Changed**: `binary_archive_writer.py`, `phase2_analytics_service.py`
+
+**2. Optional zstd/lz4 Compression**
+- **Feature**: Raw IQ files can now be compressed to reduce disk I/O by 2-3x
+- **Configuration** (in `grape-config.toml`):
+  ```toml
+  [recorder]
+  compression = "zstd"  # 'none', 'zstd', or 'lz4'
+  compression_level = 3  # zstd: 1-22, lz4: 1-12
+  ```
+- **Storage Impact**:
+  | Mode | Rate | Daily | Monthly |
+  |------|------|-------|---------|
+  | none | 86 MB/min | 124 GB | 3.7 TB |
+  | zstd | ~35 MB/min | ~50 GB | ~1.5 TB |
+  | lz4 | ~50 MB/min | ~72 GB | ~2.2 TB |
+- **Dependencies** (optional):
+  ```bash
+  pip install zstandard  # for zstd
+  pip install lz4        # for lz4
+  ```
+- **Files Changed**: `binary_archive_writer.py`, `phase2_analytics_service.py`, `pipeline_orchestrator.py`, `stream_recorder_v2.py`, `core_recorder_v2.py`
+
+**3. Backward Compatible Reading**
+- Phase 2 analytics now auto-detects file format (`.bin`, `.bin.zst`, `.bin.lz4`)
+- Uncompressed files use memory-mapping (zero-copy)
+- Compressed files are decompressed on read
 
 ### Storage Calculations
 
-| Component | Rate | Daily | Monthly |
-|-----------|------|-------|---------|
-| raw_buffer (9 ch) | 86 MB/min | 124 GB | 3.7 TB |
-| Phase 2 CSVs | ~1 KB/min | 1.4 MB | 43 MB |
-| Fusion CSV | ~0.2 KB/min | 0.3 MB | 9 MB |
-
-**Current Retention:** Configurable via `storage_quota` in grape-config.toml
+| Component | Rate (uncompressed) | Rate (zstd) | Daily (zstd) |
+|-----------|---------------------|-------------|--------------|
+| raw_buffer (9 ch) | 86 MB/min | ~35 MB/min | ~50 GB |
+| Phase 2 CSVs | ~1 KB/min | ~1 KB/min | 1.4 MB |
+| Fusion CSV | ~0.2 KB/min | ~0.2 KB/min | 0.3 MB |
 
 ---
-
-## ✅ COMPLETED THIS SESSION (Dec 13, 2025)
 
 ### 1. ka9q-python Upgrade to 3.2.2
 

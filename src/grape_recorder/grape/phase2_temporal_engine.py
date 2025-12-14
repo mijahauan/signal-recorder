@@ -199,7 +199,7 @@ import numpy as np
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Optional, Dict, List, Tuple, Any, NamedTuple
+from typing import Optional, Dict, List, Tuple, Any, NamedTuple, Callable
 from dataclasses import dataclass, field
 import threading
 
@@ -461,6 +461,19 @@ class Phase2TemporalEngine:
         self.minutes_processed = 0
         self.last_result: Optional[Phase2Result] = None
         
+        # Configurable search window (can be set by timing calibrator)
+        # Default is wide (500ms) for bootstrap, narrowed after calibration
+        self.config_search_window_ms: Optional[float] = None
+        
+        # Station prediction callback (set by pipeline orchestrator)
+        # Signature: predict_station(channel_name, rtp_timestamp, detected_station, confidence) -> (station, conf)
+        self.station_predictor: Optional[Callable] = None
+        
+        # RTP calibration callback (set by pipeline orchestrator)
+        # Returns calibrated RTP offset for minute boundary, or None if not calibrated
+        # Signature: get_calibrated_rtp_offset(channel_name) -> Optional[int]
+        self.rtp_calibration_callback: Optional[Callable] = None
+        
         logger.info(f"Phase2TemporalEngine initialized for {channel_name}")
         logger.info(f"  Frequency: {self.frequency_mhz:.2f} MHz")
         logger.info(f"  Receiver: {receiver_grid}")
@@ -667,7 +680,7 @@ class Phase2TemporalEngine:
             chu_timing_ms=chu_det.timing_error_ms if chu_det else None,
             anchor_station=anchor_station,
             anchor_confidence=anchor_confidence,
-            search_window_ms=500.0  # Initial wide window, narrowed in Step 2
+            search_window_ms=self.config_search_window_ms or 500.0  # Use calibrated window if available
         )
         
         logger.debug(
@@ -759,6 +772,7 @@ class Phase2TemporalEngine:
         
         # === Step 2B: Doppler and Coherence Estimation ===
         # Measure ionospheric stability from per-tick phase tracking
+        tick_results = None  # Will hold per-second tick SNR for discrimination voting
         try:
             doppler_info = self.discriminator.estimate_doppler_shift_from_ticks(
                 iq_samples=iq_samples,
@@ -773,6 +787,17 @@ class Phase2TemporalEngine:
                 result.max_coherent_window_sec = doppler_info.get('max_coherent_window_sec')
                 result.doppler_quality = doppler_info.get('doppler_quality')
                 result.phase_variance_rad = doppler_info.get('phase_variance_rad')
+            
+            # Detect per-second tick SNR for discrimination voting (Vote 4)
+            # Uses 60-second coherent integration for maximum sensitivity
+            tick_windows = self.discriminator.detect_tick_windows(
+                iq_samples=iq_samples,
+                sample_rate=self.sample_rate,
+                window_seconds=60
+            )
+            if tick_windows:
+                tick_results = tick_windows
+                logger.debug(f"Step 2B Tick detection: {len(tick_windows)} windows")
                 
                 # Estimate coherence time from Doppler standard deviation
                 max_std = max(
@@ -951,14 +976,15 @@ class Phase2TemporalEngine:
                 base_result.power_ratio_db = -10.0  # WWVH detected only
                 base_result.dominant_station = 'WWVH'
             
-            # Finalize with all evidence
+            # Finalize with all evidence including per-second tick SNR
             final_result = self.discriminator.finalize_discrimination(
                 result=base_result,
                 minute_number=minute_number,
                 bcd_wwv_amp=result.bcd_wwv_amplitude,
                 bcd_wwvh_amp=result.bcd_wwvh_amplitude,
                 tone_440_wwv_detected=(minute_number == 2 and result.ground_truth_station == 'WWV'),
-                tone_440_wwvh_detected=(minute_number == 1 and result.ground_truth_station == 'WWVH')
+                tone_440_wwvh_detected=(minute_number == 1 and result.ground_truth_station == 'WWVH'),
+                tick_results=tick_results  # Per-second tick SNR for Vote 4
             )
             
             result.dominant_station = final_result.dominant_station or 'UNKNOWN'
@@ -1110,14 +1136,32 @@ class Phase2TemporalEngine:
                 station = channel.dominant_station
                 logger.debug(f"Station from discrimination (high confidence): {station}")
             
-            # Priority 3: Medium confidence discrimination or channel name fallback
-            elif channel.dominant_station not in ['UNKNOWN', 'BALANCED', 'NONE', None, '']:
+            # Priority 3: Medium confidence discrimination only (NOT low confidence)
+            # Low confidence discrimination on shared frequencies causes flip-flopping
+            elif channel.station_confidence == 'medium' and channel.dominant_station not in ['UNKNOWN', 'BALANCED', 'NONE', None, '']:
                 station = channel.dominant_station
                 logger.debug(f"Station from discrimination (medium confidence): {station}")
             
+            # Priority 4: Use RTP-based prediction if available (improves over time)
+            # This uses historical RTP calibration to predict which station we should see
+            elif self.station_predictor is not None:
+                predicted, pred_conf = self.station_predictor(
+                    self.channel_name,
+                    rtp_timestamp,
+                    channel.dominant_station or channel_station,
+                    channel.station_confidence
+                )
+                if pred_conf > 0.5:
+                    station = predicted
+                    logger.debug(f"Station from RTP prediction: {station} (conf={pred_conf:.2f})")
+                else:
+                    station = channel_station
+                    logger.debug(f"Station from channel name fallback: {station}")
+            
+            # Priority 5: Low confidence - use channel name fallback
             else:
                 station = channel_station
-                logger.debug(f"Station from channel name fallback: {station}")
+                logger.debug(f"Station from channel name fallback (low confidence discrimination rejected): {station}")
         
         # Final fallback
         if not station or station in ['BALANCED', 'UNKNOWN', 'NONE', '']:
@@ -1136,17 +1180,48 @@ class Phase2TemporalEngine:
         if fss_db is not None:
             logger.info(f"Using FSS={fss_db:.1f}dB from test signal for mode disambiguation")
         
-        # Calculate expected second boundary RTP (minute boundary for all stations)
-        # All stations (WWV, WWVH, CHU) transmit at second 0:
-        # - WWV: 1000 Hz, 0.8s tone
-        # - WWVH: 1200 Hz, 0.8s tone
-        # - CHU: 1000 Hz, 0.5s tone (1.0s at top of hour)
+        # GPSDO-FIRST TIMING: RTP timestamp is the gold standard ruler.
         #
-        # The expected_second_rtp is where the tone WOULD arrive if clock were perfect.
-        # Calculate from system_time (buffer start) to minute boundary:
-        minute_boundary = (int(system_time) // 60) * 60
-        samples_to_boundary = int((minute_boundary - system_time) * self.sample_rate)
-        expected_second_rtp = rtp_timestamp + samples_to_boundary
+        # The RTP offset within a minute is DETERMINISTIC with GPSDO:
+        #   rtp_offset = rtp_timestamp % samples_per_minute (1,200,000 at 20 kHz)
+        #
+        # We learn which RTP offset corresponds to the minute boundary from tone
+        # detections, then use that mapping consistently. The mapping is stored
+        # in the timing calibrator's rtp_calibration data.
+        #
+        # This is fundamentally different from recalculating from system_time:
+        # - system_time has NTP jitter (~1-10ms)
+        # - RTP offset is GPSDO-locked (~100ns stability)
+        #
+        samples_per_minute = self.sample_rate * 60  # 1,200,000 at 20 kHz
+        
+        # Get the calibrated RTP offset that corresponds to minute boundary
+        calibrated_offset = None
+        if self.rtp_calibration_callback:
+            calibrated_offset = self.rtp_calibration_callback(self.channel_name)
+        
+        if calibrated_offset is not None:
+            # We have learned which RTP offset corresponds to minute boundary
+            # Use this as the reference - it's stable to GPSDO precision
+            current_offset = rtp_timestamp % samples_per_minute
+            offset_diff = calibrated_offset - current_offset
+            
+            # Handle wraparound (offset_diff should be small, within half a minute)
+            if offset_diff > samples_per_minute // 2:
+                offset_diff -= samples_per_minute
+            elif offset_diff < -samples_per_minute // 2:
+                offset_diff += samples_per_minute
+            
+            expected_second_rtp = rtp_timestamp + offset_diff
+            logger.debug(f"RTP ruler: calibrated_offset={calibrated_offset}, current={current_offset}, diff={offset_diff}")
+        else:
+            # Bootstrap: No calibration yet, use first tone detection to establish mapping
+            # This only happens on first detection - subsequent detections use calibration
+            # For now, estimate from system_time (will be refined by first detection)
+            minute_boundary = (int(system_time) // 60) * 60
+            samples_to_boundary = int((minute_boundary - system_time) * self.sample_rate)
+            expected_second_rtp = rtp_timestamp + samples_to_boundary
+            logger.info(f"Bootstrap: establishing RTP-to-minute mapping from first detection")
         
         # Get arrival RTP from time snap
         arrival_rtp = time_snap.arrival_rtp
@@ -1199,6 +1274,29 @@ class Phase2TemporalEngine:
                 # Back-calculate emission time from each
                 # (This would require expected delays from geo_predictor)
                 pass  # TODO: Implement dual-station cross-validation
+            
+            # CHU FSK timing confirmation
+            # The FSK decoder provides independent timing from seconds 31-39
+            # Compare FSK timing offset with D_clock for cross-validation
+            if station == 'CHU' and channel.chu_fsk_detected and channel.chu_fsk_timing_offset_ms is not None:
+                fsk_timing_ms = channel.chu_fsk_timing_offset_ms
+                timing_diff_ms = abs(d_clock_ms - fsk_timing_ms)
+                
+                if timing_diff_ms < 5.0:
+                    # FSK timing agrees with D_clock - increase confidence
+                    solution.confidence = min(1.0, solution.confidence + 0.1)
+                    solution.utc_verified = True
+                    logger.info(
+                        f"CHU FSK confirms D_clock: FSK={fsk_timing_ms:+.2f}ms, "
+                        f"D_clock={d_clock_ms:+.2f}ms, diff={timing_diff_ms:.2f}ms"
+                    )
+                elif timing_diff_ms > 20.0:
+                    # Large disagreement - flag as suspect
+                    solution.confidence = max(0.1, solution.confidence - 0.2)
+                    logger.warning(
+                        f"CHU FSK disagrees with D_clock: FSK={fsk_timing_ms:+.2f}ms, "
+                        f"D_clock={d_clock_ms:+.2f}ms, diff={timing_diff_ms:.2f}ms"
+                    )
             
             logger.info(
                 f"Step 3 Solution: D_clock={d_clock_ms:+.2f}ms, station={station}, "

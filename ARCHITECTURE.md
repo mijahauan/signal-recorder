@@ -457,6 +457,53 @@ JSON Response → Chart.js plots
 
 ## Timing Architecture
 
+### GPSDO-First Calibration Philosophy
+
+**Core Principle:** The GPSDO-disciplined RTP timestamps provide a stable, high-precision timing foundation. We leverage this stability first, then progressively refine with tone detections and multi-broadcast fusion.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    GPSDO-FIRST TIMING CALIBRATION                        │
+│                                                                          │
+│  LAYER 1: GPSDO Foundation (±0.1 PPM, ~100 ns/sec drift)                │
+│  ├─ RTP timestamps from GPS-disciplined ka9q-radio                      │
+│  ├─ All 9 channels share the same master clock                          │
+│  └─ Sample count integrity: 1,200,000 samples = exactly 60 seconds      │
+│                              ↓                                           │
+│  LAYER 2: Tone Detection (±1 ms initial, ±50 µs refined)                │
+│  ├─ WWV/WWVH 1000/1200 Hz tones at second 0                             │
+│  ├─ CHU 1000 Hz tone at second 0 (500ms duration)                       │
+│  ├─ Per-second tick confirmations (59 per minute)                       │
+│  └─ CHU FSK timing (seconds 31-39) for independent verification         │
+│                              ↓                                           │
+│  LAYER 3: Station-Level Calibration                                     │
+│  ├─ Each station (WWV, WWVH, CHU) has ONE atomic clock                  │
+│  ├─ Station mean is ground truth; frequency variance = propagation      │
+│  └─ Calibration offset brings station mean to UTC(NIST) = 0             │
+│                              ↓                                           │
+│  LAYER 4: Multi-Broadcast Fusion (±0.5 ms)                              │
+│  ├─ Weighted average across 13 broadcasts (6 WWV + 4 WWVH + 3 CHU)      │
+│  ├─ Kalman filter for convergence and anomaly detection                 │
+│  └─ Intra-station consistency checks for discrimination validation      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Why GPSDO-First?**
+
+1. **Stability**: GPSDO provides ±0.1 PPM stability, meaning <100 ns/sec drift
+2. **Coherence**: All channels share the same clock, enabling cross-channel validation
+3. **Predictability**: RTP offset within a minute is deterministic (modulo 1,200,000)
+4. **Noise Rejection**: Ionospheric propagation adds ±5-15 ms jitter; GPSDO doesn't
+
+**The RTP Calibration Insight:**
+
+Once we detect a tone at a specific RTP timestamp, we know:
+- The RTP offset within the minute: `rtp_offset = rtp_timestamp % 1,200,000`
+- The station that was detected at that offset
+- One minute later (1,200,000 samples), the same station should appear at the same offset
+
+This enables **RTP-based station prediction** that improves discrimination over time.
+
 ### Time Reference Hierarchy
 
 **KA9Q Principle:** RTP timestamp is PRIMARY, wall clock is DERIVED.
@@ -464,7 +511,7 @@ JSON Response → Chart.js plots
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ 1. RTP TIMESTAMP (Primary Reference)                        │
-│    • From ka9q-radio packets                                │
+│    • From ka9q-radio packets (GPSDO-disciplined)            │
 │    • 20 kHz sample rate (config-driven)                     │
 │    • Gaps = dropped packets (fill with zeros)               │
 │    • Sample count integrity paramount                        │
@@ -475,16 +522,23 @@ JSON Response → Chart.js plots
 │    • WWV/CHU tone rising edge at :00.000                    │
 │    • Maps RTP to UTC: utc = time_snap_utc +                 │
 │      (rtp_ts - time_snap_rtp) / sample_rate                 │
-│    • Precision: ±1ms                                        │
-│    • Stored in state/analytics-{channel}.json               │
+│    • Precision: ±1ms (initial), ±50µs (with PPM correction) │
+│    • Stored in state/timing_calibration.json                │
 └──────────────────────────────────────────────────────────────┘
                          ↓
 ┌──────────────────────────────────────────────────────────────┐
-│ 3. TIMING QUALITY (Data Annotation)                         │
-│    • TONE_LOCKED (±1ms): Recent time_snap (<5 min)         │
-│    • NTP_SYNCED (±10ms): System NTP synchronized           │
-│    • INTERPOLATED: Aged time_snap (5-60 min)               │
-│    • WALL_CLOCK (±seconds): Fallback (mark for reprocess)  │
+│ 3. TIMING CALIBRATOR (Bootstrap → Calibrated → Verified)    │
+│    • BOOTSTRAP: Wide search (±500ms), learning RTP offsets  │
+│    • CALIBRATED: Narrow search (±50ms), using RTP prediction│
+│    • VERIFIED: High confidence, Kalman converged            │
+└──────────────────────────────────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────────┐
+│ 4. MULTI-BROADCAST FUSION                                    │
+│    • Station-level calibration (not per-broadcast)          │
+│    • Weighted fusion across 13 broadcasts                    │
+│    • Kalman filter for D_clock convergence                   │
+│    • Output: Fused D_clock → Chrony SHM → System clock       │
 └──────────────────────────────────────────────────────────────┘
 ```
 

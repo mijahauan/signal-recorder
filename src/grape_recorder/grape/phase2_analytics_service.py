@@ -881,21 +881,36 @@ class Phase2AnalyticsService:
             channel_dir = self.archive_dir
         else:
             # Legacy: archive_dir is raw_archive/{channel}, find raw_buffer sibling
+            from ..paths import channel_name_to_dir
             binary_dir = self.archive_dir.parent.parent / 'raw_buffer'
-            channel_dir = binary_dir / self.channel_name.replace(' ', '_').replace('.', '_')
+            channel_dir = binary_dir / channel_name_to_dir(self.channel_name)
         
         dt = datetime.fromtimestamp(target_minute, tz=timezone.utc)
         date_str = dt.strftime('%Y%m%d')
         
-        bin_path = channel_dir / date_str / f"{target_minute}.bin"
+        base_path = channel_dir / date_str / f"{target_minute}"
         json_path = channel_dir / date_str / f"{target_minute}.json"
         
-        if not bin_path.exists():
-            logger.debug(f"Binary file not found: {bin_path}")
+        # Try to find the binary file (uncompressed or compressed)
+        bin_path = None
+        compression = None
+        for ext in ['.bin', '.bin.zst', '.bin.lz4']:
+            candidate = Path(f"{base_path}{ext}")
+            if candidate.exists():
+                bin_path = candidate
+                if ext == '.bin.zst':
+                    compression = 'zstd'
+                elif ext == '.bin.lz4':
+                    compression = 'lz4'
+                break
+        
+        if bin_path is None:
+            logger.debug(f"Binary file not found: {base_path}.bin[.zst|.lz4]")
             return None
         
         try:
             # Read metadata
+            metadata = {}
             if json_path.exists():
                 with open(json_path) as f:
                     metadata = json.load(f)
@@ -903,8 +918,29 @@ class Phase2AnalyticsService:
             else:
                 samples_written = bin_path.stat().st_size // 8  # complex64 = 8 bytes
             
-            # Memory-map the binary file for zero-copy reading
-            iq_samples = np.memmap(bin_path, dtype=np.complex64, mode='r')
+            # Read binary file (handle compression)
+            if compression == 'zstd':
+                try:
+                    import zstandard as zstd
+                    with open(bin_path, 'rb') as f:
+                        dctx = zstd.ZstdDecompressor()
+                        decompressed = dctx.decompress(f.read())
+                    iq_samples = np.frombuffer(decompressed, dtype=np.complex64)
+                except ImportError:
+                    logger.warning("zstandard not installed, cannot read .bin.zst files")
+                    return None
+            elif compression == 'lz4':
+                try:
+                    import lz4.frame
+                    with open(bin_path, 'rb') as f:
+                        decompressed = lz4.frame.decompress(f.read())
+                    iq_samples = np.frombuffer(decompressed, dtype=np.complex64)
+                except ImportError:
+                    logger.warning("lz4 not installed, cannot read .bin.lz4 files")
+                    return None
+            else:
+                # Memory-map for zero-copy reading (uncompressed)
+                iq_samples = np.memmap(bin_path, dtype=np.complex64, mode='r')
             
             samples_per_minute = self.sample_rate * 60
             if len(iq_samples) < samples_per_minute * 0.9:  # Need at least 90%
@@ -1027,8 +1063,9 @@ class Phase2AnalyticsService:
         if 'raw_buffer' in str(self.archive_dir):
             channel_dir = self.archive_dir
         else:
+            from ..paths import channel_name_to_dir
             binary_dir = self.archive_dir.parent.parent / 'raw_buffer'
-            channel_dir = binary_dir / self.channel_name.replace(' ', '_').replace('.', '_')
+            channel_dir = binary_dir / channel_name_to_dir(self.channel_name)
         
         if not channel_dir.exists():
             return None

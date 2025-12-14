@@ -503,7 +503,8 @@ class ClockOffsetEngine:
         channel_name: str,
         frequency_hz: float,
         receiver_grid: str,
-        sample_rate: int = 20000
+        sample_rate: int = 20000,
+        timing_calibrator: Optional['TimingCalibrator'] = None
     ):
         """
         Initialize the clock offset engine.
@@ -515,6 +516,7 @@ class ClockOffsetEngine:
             frequency_hz: Center frequency
             receiver_grid: Receiver grid square (for propagation calculation)
             sample_rate: Sample rate (default 20000)
+            timing_calibrator: Optional TimingCalibrator for RTP-first timing
         """
         self.raw_archive_dir = Path(raw_archive_dir)
         self.output_dir = Path(output_dir)
@@ -522,6 +524,7 @@ class ClockOffsetEngine:
         self.frequency_hz = frequency_hz
         self.receiver_grid = receiver_grid
         self.sample_rate = sample_rate
+        self.timing_calibrator = timing_calibrator
         
         # Initialize output writer
         self.writer = ClockOffsetSeriesWriter(output_dir, channel_name)
@@ -565,6 +568,12 @@ class ClockOffsetEngine:
                 sample_rate=self.sample_rate
             )
             
+            # Wire RTP calibration callback for GPSDO-first timing
+            if self.timing_calibrator is not None:
+                self.phase2_engine.rtp_calibration_callback = self._get_calibrated_rtp_offset
+                self.phase2_engine.station_predictor = self.timing_calibrator.predict_station
+                logger.info("✅ RTP calibration callback wired for GPSDO-first timing")
+            
             # Raw archive reader (for batch processing)
             self.archive_reader = RawArchiveReader(
                 self.raw_archive_dir,
@@ -576,6 +585,32 @@ class ClockOffsetEngine:
         except ImportError as e:
             logger.error(f"Failed to initialize Phase 2 engine: {e}")
             raise
+    
+    def _get_calibrated_rtp_offset(self, channel_name: str) -> Optional[int]:
+        """
+        Get calibrated RTP offset for GPSDO-first timing.
+        
+        The RTP offset within a minute is deterministic with GPSDO.
+        Once calibrated, this is the gold standard ruler for timing.
+        
+        Args:
+            channel_name: Channel identifier
+            
+        Returns:
+            Calibrated RTP offset (samples within minute), or None if not calibrated
+        """
+        if self.timing_calibrator is None:
+            return None
+        
+        rtp_cal = self.timing_calibrator.rtp_calibration.get(channel_name)
+        if rtp_cal is None:
+            return None
+        
+        # Only use calibration if we have confirmations (stable)
+        if rtp_cal.n_confirmations < 2:
+            return None
+        
+        return rtp_cal.rtp_offset_samples
     
     def process_minute(
         self,
@@ -646,7 +681,7 @@ class ClockOffsetEngine:
             confidence=solution.confidence,
             uncertainty_ms=solution.uncertainty_ms,
             quality_grade=quality,
-            snr_db=time_snap.wwv_snr_db or time_snap.wwvh_snr_db or 0.0,
+            snr_db=time_snap.wwv_snr_db or time_snap.wwvh_snr_db or time_snap.chu_snr_db or 0.0,
             delay_spread_ms=channel.delay_spread_ms or 0.5,
             doppler_std_hz=channel.doppler_wwv_std_hz or channel.doppler_wwvh_std_hz or 0.1,
             fss_db=None,  # TODO: Extract from test signal if available

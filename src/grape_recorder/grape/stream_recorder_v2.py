@@ -63,6 +63,8 @@ class StreamRecorderConfig:
     # Phase 1 settings
     raw_archive_compression: str = 'gzip'
     raw_archive_file_duration_sec: int = 3600
+    compression: str = 'none'  # 'none', 'zstd', or 'lz4'
+    compression_level: int = 3  # zstd: 1-22, lz4: 1-12
     
     # Phase 2 settings
     enable_analysis: bool = True
@@ -136,7 +138,9 @@ class StreamRecorderV2:
             raw_archive_file_duration_sec=config.raw_archive_file_duration_sec,
             analysis_latency_sec=config.analysis_latency_sec,
             output_sample_rate=config.output_sample_rate,
-            streaming_latency_minutes=config.streaming_latency_minutes
+            streaming_latency_minutes=config.streaming_latency_minutes,
+            compression=config.compression,
+            compression_level=config.compression_level,
         )
         
         self.orchestrator = PipelineOrchestrator(pipeline_config)

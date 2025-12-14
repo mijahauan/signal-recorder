@@ -34,3 +34,13 @@ matplotlib>=3.7.0
 #   pip install git+https://github.com/space-physics/iri2020.git
 # Or for IRI-2016 fallback (on PyPI):
 #   pip install iri2016
+
+# Compression (optional, for reduced disk I/O)
+# Enable in grape-config.toml: compression = "zstd" or "lz4"
+# zstd: Best compression ratio (~2-3x), moderate CPU
+# lz4: Fastest compression/decompression, lower ratio (~1.5-2x)
+# zstandard>=0.22.0
+# lz4>=4.3.0
+
+# Chrony SHM integration (for UTC(NIST) clock discipline)
+sysv_ipc>=1.1.0

@@ -204,6 +204,13 @@ class FusedResult:
     # Quality
     outliers_rejected: int = 0
     quality_grade: str = 'D'
+    
+    # Consistency checks (same-station should be tight, inter-station can vary)
+    wwv_intra_std_ms: Optional[float] = None   # Std dev within WWV frequencies
+    wwvh_intra_std_ms: Optional[float] = None  # Std dev within WWVH frequencies
+    chu_intra_std_ms: Optional[float] = None   # Std dev within CHU frequencies
+    inter_station_spread_ms: Optional[float] = None  # Spread between station means
+    consistency_flag: str = 'OK'  # OK, INTRA_ANOMALY, INTER_ANOMALY, DISCRIMINATION_SUSPECT
 
 
 class MultiBroadcastFusion:
@@ -260,6 +267,13 @@ class MultiBroadcastFusion:
         # History for calibration learning
         self.measurement_history: Dict[str, List[BroadcastMeasurement]] = defaultdict(list)
         self.history_max_size = 100  # Keep last N measurements per station
+        
+        # Kalman filter state for convergence
+        # State: [d_clock_offset, d_clock_drift_rate]
+        self.kalman_state = np.array([0.0, 0.0])  # [offset_ms, drift_ms_per_min]
+        self.kalman_P = np.array([[100.0, 0.0], [0.0, 1.0]])  # Initial uncertainty
+        self.kalman_initialized = False
+        self.kalman_n_updates = 0
         
         # Channels to aggregate
         self.channels = self._discover_channels()
@@ -354,7 +368,9 @@ class MultiBroadcastFusion:
                     'wwv_mean_ms', 'wwvh_mean_ms', 'chu_mean_ms',
                     'wwv_count', 'wwvh_count', 'chu_count',
                     'calibration_applied', 'quality_grade',
-                    'outliers_rejected'
+                    'outliers_rejected',
+                    'wwv_intra_std_ms', 'wwvh_intra_std_ms', 'chu_intra_std_ms',
+                    'inter_station_spread_ms', 'consistency_flag'
                 ])
     
     def _read_latest_measurements(
@@ -506,19 +522,12 @@ class MultiBroadcastFusion:
         """
         calibrated = []
         for m in measurements:
-            # Use per-broadcast key for frequency-dependent calibration
-            broadcast_key = self._get_broadcast_key(m.station, m.frequency_mhz)
-            cal = self.calibration.get(broadcast_key)
-            if cal:
-                # Apply the calibration offset
-                calibrated.append(m.d_clock_ms + cal.offset_ms)
+            # Use station-level calibration (station mean is the ground truth)
+            station_cal = self.calibration.get(m.station)
+            if station_cal:
+                calibrated.append(m.d_clock_ms + station_cal.offset_ms)
             else:
-                # Fall back to station-level calibration for backwards compatibility
-                station_cal = self.calibration.get(m.station)
-                if station_cal:
-                    calibrated.append(m.d_clock_ms + station_cal.offset_ms)
-                else:
-                    calibrated.append(m.d_clock_ms)
+                calibrated.append(m.d_clock_ms)
         return calibrated
     
     def _update_calibration(
@@ -526,19 +535,19 @@ class MultiBroadcastFusion:
         measurements: List[BroadcastMeasurement]
     ):
         """
-        Update calibration offsets per-broadcast.
+        Update calibration offsets per-STATION (not per-broadcast).
         
-        Issue 1.1 Fix (2025-12-08): Now calibrates per-broadcast (station+frequency)
-        instead of per-station. This accounts for frequency-dependent ionospheric
-        delays which follow 1/f² relationship.
+        Rationale: Each station (WWV, WWVH, CHU) transmits from a single location
+        using a single atomic clock. All frequencies from that station are phase-locked.
+        The station mean is the ground truth; frequency deviations reveal propagation.
         
         Uses CHU as reference (assumed most accurate due to FSK).
-        All broadcasts are calibrated to converge to UTC(NIST) = 0.
+        All stations are calibrated to converge to UTC(NIST) = 0.
         """
         if not self.auto_calibrate:
             return
         
-        # Add to history keyed by broadcast (station + frequency)
+        # Add to history keyed by broadcast (station + frequency) for tracking
         for m in measurements:
             broadcast_key = self._get_broadcast_key(m.station, m.frequency_mhz)
             history = self.measurement_history[broadcast_key]
@@ -546,41 +555,117 @@ class MultiBroadcastFusion:
             if len(history) > self.history_max_size:
                 self.measurement_history[broadcast_key] = history[-self.history_max_size:]
         
-        # Update calibration for each broadcast individually
+        # Aggregate all measurements by STATION (not by broadcast)
+        station_measurements: Dict[str, List[float]] = {'WWV': [], 'WWVH': [], 'CHU': []}
+        
         for broadcast_key, history in self.measurement_history.items():
-            if len(history) < 10:
+            if len(history) < 5:
+                continue
+            recent = history[-30:]
+            station = recent[0].station
+            if station in station_measurements:
+                station_measurements[station].extend([m.d_clock_ms for m in recent])
+        
+        # Update calibration per-STATION
+        for station, d_clocks in station_measurements.items():
+            if len(d_clocks) < 10:
                 continue
             
-            # Get recent measurements for this broadcast
-            recent = history[-30:]
-            broadcast_d_clocks = [m.d_clock_ms for m in recent]
-            broadcast_mean = np.mean(broadcast_d_clocks)
+            station_mean = np.mean(d_clocks)
+            station_std = np.std(d_clocks)
             
-            # Extract station and frequency from the history
-            station = recent[0].station
-            frequency_mhz = recent[0].frequency_mhz
+            # Offset should bring station mean to 0 (UTC(NIST) alignment)
+            new_offset = -station_mean
             
-            # Offset should bring mean to 0 (UTC(NIST) alignment)
-            new_offset = -broadcast_mean
+            logger.debug(f"Calibration update {station}: raw_mean={station_mean:.2f}ms, ideal_offset={new_offset:.2f}ms, n={len(d_clocks)}")
             
             # Exponential moving average for smooth updates
-            old_cal = self.calibration.get(broadcast_key)
+            # But don't let alpha get too small or we'll never converge
+            old_cal = self.calibration.get(station)
             if old_cal and old_cal.n_samples > 0:
-                # Faster adaptation initially, slower as samples accumulate
-                alpha = max(0.5, 20.0 / old_cal.n_samples)
+                # Alpha range: 0.3 (fast) to 0.1 (slow), never slower
+                # This ensures we can track changes within ~10 samples
+                alpha = max(0.1, min(0.3, 10.0 / old_cal.n_samples))
                 new_offset = alpha * new_offset + (1 - alpha) * old_cal.offset_ms
             
-            self.calibration[broadcast_key] = BroadcastCalibration(
+            self.calibration[station] = BroadcastCalibration(
                 station=station,
-                frequency_mhz=frequency_mhz,
+                frequency_mhz=0.0,  # Station-level, not frequency-specific
                 offset_ms=new_offset,
-                uncertainty_ms=np.std(broadcast_d_clocks) if len(broadcast_d_clocks) > 1 else 1.0,
-                n_samples=len(history),
+                uncertainty_ms=station_std / np.sqrt(len(d_clocks)),  # Standard error
+                n_samples=len(d_clocks),
                 last_updated=time.time(),
                 reference_station=self.reference_station
             )
         
         self._save_calibration()
+    
+    def _kalman_update(self, measurement: float, measurement_uncertainty: float) -> float:
+        """
+        Update Kalman filter with new measurement and return converged uncertainty.
+        
+        Uses a simple offset+drift model:
+            State: [d_clock_offset, drift_rate]
+            
+        The uncertainty converges over time as more measurements are incorporated.
+        
+        Args:
+            measurement: Current fused D_clock measurement (ms)
+            measurement_uncertainty: Uncertainty of this measurement (ms)
+            
+        Returns:
+            Kalman filter uncertainty (converges over time)
+        """
+        # Initialize on first measurement
+        if not self.kalman_initialized:
+            self.kalman_state[0] = measurement
+            self.kalman_P[0, 0] = measurement_uncertainty ** 2
+            self.kalman_initialized = True
+            self.kalman_n_updates = 1
+            return measurement_uncertainty
+        
+        # State transition matrix (1 minute step)
+        # x_new = F * x_old
+        # [offset]   [1  dt] [offset]
+        # [drift ] = [0   1] [drift ]
+        dt = 1.0  # 1 minute
+        F = np.array([[1.0, dt], [0.0, 1.0]])
+        
+        # Process noise (clock drift uncertainty)
+        # GPSDO has ~1e-9 stability, so drift is negligible
+        # But allow small drift for temperature effects
+        q_offset = 0.01  # ms^2 per minute
+        q_drift = 0.0001  # (ms/min)^2 per minute
+        Q = np.array([[q_offset, 0.0], [0.0, q_drift]])
+        
+        # Predict step
+        x_pred = F @ self.kalman_state
+        P_pred = F @ self.kalman_P @ F.T + Q
+        
+        # Measurement matrix (we only observe offset)
+        H = np.array([[1.0, 0.0]])
+        
+        # Measurement noise
+        R = np.array([[measurement_uncertainty ** 2]])
+        
+        # Kalman gain
+        S = H @ P_pred @ H.T + R
+        K = P_pred @ H.T @ np.linalg.inv(S)
+        
+        # Update step
+        y = measurement - H @ x_pred  # Innovation
+        self.kalman_state = x_pred + K.flatten() * y
+        self.kalman_P = (np.eye(2) - K @ H) @ P_pred
+        
+        self.kalman_n_updates += 1
+        
+        # Return uncertainty (sqrt of offset variance)
+        kalman_uncertainty = np.sqrt(self.kalman_P[0, 0])
+        
+        # Minimum uncertainty floor based on measurement quality
+        min_uncertainty = max(0.1, measurement_uncertainty / np.sqrt(self.kalman_n_updates))
+        
+        return max(kalman_uncertainty, min_uncertainty)
     
     def fuse(self, lookback_minutes: int = 10) -> Optional[FusedResult]:
         """
@@ -626,17 +711,116 @@ class MultiBroadcastFusion:
         raw_d_clocks = np.array([m.d_clock_ms for m in measurements])
         raw_mean = np.mean(raw_d_clocks)
         
-        # Uncertainty from weighted std
+        # Measurement uncertainty from weighted std
         weighted_var = np.sum(w * (d - fused_d_clock)**2) / np.sum(w)
-        uncertainty = np.sqrt(weighted_var)
+        measurement_uncertainty = np.sqrt(weighted_var)
         
-        # Per-station breakdown
+        # Update Kalman filter for convergence
+        kalman_uncertainty = self._kalman_update(fused_d_clock, measurement_uncertainty)
+        
+        # Use Kalman uncertainty (converges over time) instead of instantaneous spread
+        uncertainty = kalman_uncertainty
+        
+        # Per-station breakdown (using calibrated values for consistency)
+        wwv_cal = [c for m, c in zip(measurements, calibrated) if m.station == 'WWV']
+        wwvh_cal = [c for m, c in zip(measurements, calibrated) if m.station == 'WWVH']
+        chu_cal = [c for m, c in zip(measurements, calibrated) if m.station == 'CHU']
+        
+        # Raw values for reporting
         wwv_m = [m.d_clock_ms for m in measurements if m.station == 'WWV']
         wwvh_m = [m.d_clock_ms for m in measurements if m.station == 'WWVH']
         chu_m = [m.d_clock_ms for m in measurements if m.station == 'CHU']
         
         # Unique stations
         stations = set(m.station for m in measurements)
+        
+        # === CONSISTENCY CHECKS ===
+        # Same-station broadcasts should have tight agreement (ionospheric variation only)
+        # Inter-station spread reflects geographic/clock differences (expected to be larger)
+        #
+        # KEY INSIGHT: With GPSDO-locked RTP, timing is deterministic to <1ms.
+        # Therefore, high intra-station variance indicates DISCRIMINATION ERROR,
+        # not timing jitter. We can use this to identify misclassified measurements.
+        
+        # Intra-station std dev (should be small, ~1-3ms for ionospheric variation)
+        wwv_intra_std = np.std(wwv_cal) if len(wwv_cal) > 1 else None
+        wwvh_intra_std = np.std(wwvh_cal) if len(wwvh_cal) > 1 else None
+        chu_intra_std = np.std(chu_cal) if len(chu_cal) > 1 else None
+        
+        # Inter-station spread (difference between station means)
+        station_means = {}
+        if wwv_cal:
+            station_means['WWV'] = np.mean(wwv_cal)
+        if wwvh_cal:
+            station_means['WWVH'] = np.mean(wwvh_cal)
+        if chu_cal:
+            station_means['CHU'] = np.mean(chu_cal)
+        inter_station_spread = (max(station_means.values()) - min(station_means.values())) if len(station_means) > 1 else None
+        
+        # Consistency flag logic
+        consistency_flag = 'OK'
+        INTRA_THRESHOLD_MS = 5.0  # Same-station should agree within 5ms (ionospheric limit)
+        
+        # Check for intra-station anomalies (same station, different frequencies disagree)
+        intra_stds = [s for s in [wwv_intra_std, wwvh_intra_std, chu_intra_std] if s is not None]
+        suspect_count = 0
+        
+        if intra_stds and max(intra_stds) > INTRA_THRESHOLD_MS:
+            # High intra-station spread suggests discrimination errors
+            consistency_flag = 'DISCRIMINATION_SUSPECT'
+            
+            # Identify which measurements are outliers within their station group
+            # and EXCLUDE them from the Kalman update by zeroing their contribution
+            suspect_indices = []
+            for i, (m, cal_val) in enumerate(zip(measurements, calibrated)):
+                is_suspect = False
+                if m.station == 'WWV' and wwv_intra_std and wwv_intra_std > INTRA_THRESHOLD_MS:
+                    wwv_mean = station_means.get('WWV', 0)
+                    if abs(cal_val - wwv_mean) > 1.5 * wwv_intra_std:
+                        is_suspect = True
+                elif m.station == 'WWVH' and wwvh_intra_std and wwvh_intra_std > INTRA_THRESHOLD_MS:
+                    wwvh_mean = station_means.get('WWVH', 0)
+                    if abs(cal_val - wwvh_mean) > 1.5 * wwvh_intra_std:
+                        is_suspect = True
+                elif m.station == 'CHU' and chu_intra_std and chu_intra_std > INTRA_THRESHOLD_MS:
+                    chu_mean = station_means.get('CHU', 0)
+                    if abs(cal_val - chu_mean) > 1.5 * chu_intra_std:
+                        is_suspect = True
+                
+                if is_suspect:
+                    suspect_indices.append(i)
+                    suspect_count += 1
+            
+            # If we have suspects, recalculate fused_d_clock excluding them
+            if suspect_indices and len(measurements) - len(suspect_indices) >= 3:
+                clean_weights = [w for i, w in enumerate(weights) if i not in suspect_indices]
+                clean_calibrated = [c for i, c in enumerate(calibrated) if i not in suspect_indices]
+                
+                w_clean = np.array(clean_weights)
+                d_clean = np.array(clean_calibrated)
+                fused_d_clock = np.sum(w_clean * d_clean) / np.sum(w_clean)
+                
+                # Recalculate uncertainty with clean data
+                weighted_var = np.sum(w_clean * (d_clean - fused_d_clock)**2) / np.sum(w_clean)
+                measurement_uncertainty = np.sqrt(weighted_var)
+                
+                # Update Kalman with cleaner measurement
+                kalman_uncertainty = self._kalman_update(fused_d_clock, measurement_uncertainty)
+                uncertainty = kalman_uncertainty
+                
+                logger.info(
+                    f"Excluded {suspect_count} suspect measurements, "
+                    f"recalculated D_clock: {fused_d_clock:+.3f}ms ± {uncertainty:.3f}ms"
+                )
+            
+            wwv_str = f"{wwv_intra_std:.1f}" if wwv_intra_std is not None else "N/A"
+            wwvh_str = f"{wwvh_intra_std:.1f}" if wwvh_intra_std is not None else "N/A"
+            chu_str = f"{chu_intra_std:.1f}" if chu_intra_std is not None else "N/A"
+            logger.warning(
+                f"High intra-station spread: WWV σ={wwv_str}ms, "
+                f"WWVH σ={wwvh_str}ms, CHU σ={chu_str}ms | "
+                f"{suspect_count} suspect measurements"
+            )
         
         # Quality grade based on number of broadcasts and uncertainty
         if len(measurements) >= 8 and uncertainty < 0.5:
@@ -664,7 +848,12 @@ class MultiBroadcastFusion:
             calibration_applied=True,
             reference_station=self.reference_station,
             outliers_rejected=n_rejected,
-            quality_grade=grade
+            quality_grade=grade,
+            wwv_intra_std_ms=wwv_intra_std,
+            wwvh_intra_std_ms=wwvh_intra_std,
+            chu_intra_std_ms=chu_intra_std,
+            inter_station_spread_ms=inter_station_spread,
+            consistency_flag=consistency_flag
         )
         
         # Write to CSV
@@ -691,7 +880,12 @@ class MultiBroadcastFusion:
                 result.chu_count,
                 result.calibration_applied,
                 result.quality_grade,
-                result.outliers_rejected
+                result.outliers_rejected,
+                result.wwv_intra_std_ms or '',
+                result.wwvh_intra_std_ms or '',
+                result.chu_intra_std_ms or '',
+                result.inter_station_spread_ms or '',
+                result.consistency_flag
             ])
     
     def get_current_calibration(self) -> Dict[str, float]:
@@ -758,6 +952,7 @@ def run_fusion_service(data_root: Path, interval_sec: float = 60.0, enable_chron
             result = fusion.fuse()
             
             if result:
+                # Log main fusion result
                 logger.info(
                     f"Fused D_clock: {result.d_clock_fused_ms:+.3f} ms "
                     f"(raw: {result.d_clock_raw_ms:+.3f} ms) "
@@ -765,8 +960,28 @@ def run_fusion_service(data_root: Path, interval_sec: float = 60.0, enable_chron
                     f"[{result.n_broadcasts} broadcasts, grade {result.quality_grade}]"
                 )
                 
+                # Log consistency check results
+                intra_stds = []
+                if result.wwv_intra_std_ms is not None:
+                    intra_stds.append(f"WWV={result.wwv_intra_std_ms:.1f}")
+                if result.wwvh_intra_std_ms is not None:
+                    intra_stds.append(f"WWVH={result.wwvh_intra_std_ms:.1f}")
+                if result.chu_intra_std_ms is not None:
+                    intra_stds.append(f"CHU={result.chu_intra_std_ms:.1f}")
+                
+                if intra_stds:
+                    logger.debug(
+                        f"  Intra-station σ: {', '.join(intra_stds)} ms | "
+                        f"Inter-station spread: {result.inter_station_spread_ms:.1f} ms | "
+                        f"Flag: {result.consistency_flag}"
+                    )
+                
+                if result.consistency_flag != 'OK':
+                    logger.warning(f"  ⚠️ Consistency: {result.consistency_flag}")
+                
                 # Write to Chrony SHM if available and quality is acceptable
-                if chrony_shm and result.quality_grade in ('A', 'B', 'C'):
+                # Allow grade D during initial calibration - Chrony will weight by precision
+                if chrony_shm and result.quality_grade in ('A', 'B', 'C', 'D'):
                     # D_clock = T_system - T_UTC(NIST)
                     # So T_UTC(NIST) = T_system - D_clock
                     system_time = time.time()

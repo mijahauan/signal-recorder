@@ -424,9 +424,92 @@ likelihood = exp(-0.5 * z_score²)
 | 3-10 ms | Moderate |
 | **< 3 ms** | **Sharp peaks** ✓ |
 
-### Multi-Broadcast Fusion (v3.9.0)
+### Timing Calibrator (v3.13.0)
+
+The `TimingCalibrator` manages the progression from initial bootstrap to verified timing:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    TIMING CALIBRATOR STATE MACHINE                       │
+│                                                                          │
+│  BOOTSTRAP                    CALIBRATED                   VERIFIED      │
+│  ├─ Wide search (±500ms)      ├─ Narrow search (±50ms)     ├─ Locked    │
+│  ├─ Learning RTP offsets      ├─ Using RTP prediction      ├─ Monitoring│
+│  ├─ Collecting detections     ├─ Refining calibration      ├─ Anomaly   │
+│  └─ Exit: 5+ from 2+ stations └─ Exit: Kalman converged    │   detection│
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key Features:**
+
+1. **RTP Calibration**: Stores `rtp_offset = rtp_timestamp % 1,200,000` for each channel
+2. **Station Prediction**: Uses RTP offset to predict which station should be detected
+3. **Multi-Process Coordination**: Reloads state before update, saves after each detection
+
+**State File**: `state/timing_calibration.json`
+
+```json
+{
+  "phase": "bootstrap",
+  "station_calibration": {
+    "WWV": {"propagation_delay_ms": 6.5, "n_samples": 50},
+    "CHU": {"propagation_delay_ms": 4.0, "n_samples": 30}
+  },
+  "rtp_calibration": {
+    "WWV 10 MHz": {
+      "rtp_offset_samples": 254382,
+      "detected_station": "WWV",
+      "n_confirmations": 10
+    }
+  },
+  "stats": {
+    "bootstrap_detections": 50,
+    "discrimination_corrections": 3
+  }
+}
+```
+
+**RTP-Based Station Prediction:**
+
+```python
+def predict_station(self, channel_name, rtp_timestamp, detected_station, confidence):
+    """Use RTP calibration history to predict expected station."""
+    rtp_cal = self.rtp_calibration.get(channel_name)
+    if not rtp_cal:
+        return (detected_station, 0.0)
+    
+    current_offset = rtp_timestamp % self.samples_per_minute
+    expected_offset = rtp_cal.rtp_offset_samples
+    offset_diff_ms = abs(current_offset - expected_offset) / self.sample_rate * 1000
+    
+    if offset_diff_ms < 5.0:
+        # Strong match - predict same station as calibration
+        predicted_station = rtp_cal.detected_station
+        if detected_station != predicted_station and confidence != 'high':
+            # Override low-confidence detection with RTP prediction
+            return (predicted_station, 0.9)
+    
+    return (detected_station, 0.0)
+```
+
+### Multi-Broadcast Fusion (v3.13.0)
 
 Combines 13 broadcasts (6 WWV + 4 WWVH + 3 CHU) to converge on UTC(NIST) alignment.
+
+**Station-Level Calibration (v3.13.0 Change):**
+
+Previously, calibration was per-broadcast (station+frequency). Now it's per-STATION:
+
+```python
+# OLD (per-broadcast) - introduced artificial variance
+calibration["WWV_10MHz"] = -mean(d_clock[WWV_10MHz])
+calibration["WWV_15MHz"] = -mean(d_clock[WWV_15MHz])
+
+# NEW (per-station) - station mean is ground truth
+calibration["WWV"] = -mean(d_clock[all WWV frequencies])
+```
+
+**Rationale:** Each station (WWV, WWVH, CHU) transmits from a single location using a single atomic clock. All frequencies from that station are phase-locked. Frequency-to-frequency variations reveal ionospheric propagation effects, not timing errors.
 
 **Why Fusion?** Single-broadcast D_clock has systematic errors:
 - Ionospheric delay uncertainty (±0.5-2 ms)

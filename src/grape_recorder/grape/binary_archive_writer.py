@@ -44,6 +44,8 @@ class BinaryArchiveConfig:
     output_dir: Path = Path('/tmp/grape-test/raw_buffer')
     station_config: Dict[str, Any] = field(default_factory=dict)
     compress_completed: bool = False  # Async compression of old minutes
+    compression: str = 'none'  # 'none', 'zstd', or 'lz4' - reduces disk I/O by ~2-3x
+    compression_level: int = 3  # zstd: 1-22 (3 = good balance), lz4: 1-12
 
 
 @dataclass
@@ -142,13 +144,51 @@ class BinaryArchiveWriter:
         try:
             minute_dir = self._get_minute_dir(buffer.minute_boundary)
             
-            # Binary file path
-            bin_path = minute_dir / f"{buffer.minute_boundary}.bin"
+            # Binary file path - extension depends on compression
+            compression = self.config.compression.lower()
+            if compression == 'zstd':
+                bin_path = minute_dir / f"{buffer.minute_boundary}.bin.zst"
+            elif compression == 'lz4':
+                bin_path = minute_dir / f"{buffer.minute_boundary}.bin.lz4"
+            else:
+                bin_path = minute_dir / f"{buffer.minute_boundary}.bin"
             json_path = minute_dir / f"{buffer.minute_boundary}.json"
             
             # Write binary data (just the filled portion)
             actual_samples = min(buffer.write_pos, SAMPLES_PER_MINUTE)
-            buffer.samples[:actual_samples].tofile(bin_path)
+            raw_data = buffer.samples[:actual_samples].tobytes()
+            
+            # Apply compression if configured
+            if compression == 'zstd':
+                try:
+                    import zstandard as zstd
+                    # Use multi-threaded compression (threads=-1 = auto-detect cores)
+                    # This releases the GIL and distributes work across cores
+                    cctx = zstd.ZstdCompressor(level=self.config.compression_level, threads=-1)
+                    compressed_data = cctx.compress(raw_data)
+                    with open(bin_path, 'wb') as f:
+                        f.write(compressed_data)
+                    compression_ratio = len(raw_data) / len(compressed_data)
+                    logger.debug(f"zstd compression: {len(raw_data)} -> {len(compressed_data)} ({compression_ratio:.1f}x)")
+                except ImportError:
+                    logger.warning("zstandard not installed, falling back to uncompressed")
+                    bin_path = minute_dir / f"{buffer.minute_boundary}.bin"
+                    buffer.samples[:actual_samples].tofile(bin_path)
+            elif compression == 'lz4':
+                try:
+                    import lz4.frame
+                    compressed_data = lz4.frame.compress(raw_data, compression_level=self.config.compression_level)
+                    with open(bin_path, 'wb') as f:
+                        f.write(compressed_data)
+                    compression_ratio = len(raw_data) / len(compressed_data)
+                    logger.debug(f"lz4 compression: {len(raw_data)} -> {len(compressed_data)} ({compression_ratio:.1f}x)")
+                except ImportError:
+                    logger.warning("lz4 not installed, falling back to uncompressed")
+                    bin_path = minute_dir / f"{buffer.minute_boundary}.bin"
+                    buffer.samples[:actual_samples].tofile(bin_path)
+            else:
+                # No compression - direct write
+                buffer.samples[:actual_samples].tofile(bin_path)
             
             # Write metadata sidecar
             metadata = {
@@ -164,6 +204,7 @@ class BinaryArchiveWriter:
                 'start_rtp_timestamp': buffer.start_rtp,
                 'dtype': 'complex64',
                 'byte_order': 'little',
+                'compression': compression if compression != 'none' else None,
                 'written_at': datetime.now(timezone.utc).isoformat(),
                 'station': self.config.station_config
             }
@@ -307,7 +348,9 @@ class BinaryArchiveReader:
     """
     
     def __init__(self, archive_dir: Path, channel_name: str):
-        self.archive_dir = archive_dir / channel_name.replace(' ', '_').replace('.', '_')
+        # Use channel_name_to_dir for consistent path format (preserves dots)
+        from ..paths import channel_name_to_dir
+        self.archive_dir = archive_dir / channel_name_to_dir(channel_name)
         self.channel_name = channel_name
         self.sample_rate = 20000
     
@@ -321,10 +364,16 @@ class BinaryArchiveReader:
             return []
         
         minutes = []
-        for bin_file in day_dir.glob('*.bin'):
+        # Match both uncompressed and compressed files
+        for bin_file in day_dir.glob('*.bin*'):
             try:
-                minute = int(bin_file.stem)
-                minutes.append(minute)
+                # Handle .bin, .bin.zst, .bin.lz4
+                stem = bin_file.stem
+                if stem.endswith('.bin'):
+                    stem = stem[:-4]  # Remove .bin from .bin.zst
+                minute = int(stem)
+                if minute not in minutes:
+                    minutes.append(minute)
             except ValueError:
                 pass
         
@@ -334,17 +383,44 @@ class BinaryArchiveReader:
         """
         Read samples for a specific minute.
         
-        Returns memory-mapped array for zero-copy access.
+        Handles both compressed and uncompressed files.
+        Returns numpy array (memory-mapped for uncompressed, loaded for compressed).
         """
         dt = datetime.fromtimestamp(minute_boundary, tz=timezone.utc)
         date_str = dt.strftime('%Y%m%d')
-        bin_path = self.archive_dir / date_str / f"{minute_boundary}.bin"
+        base_path = self.archive_dir / date_str / f"{minute_boundary}"
         
-        if not bin_path.exists():
-            return None
+        # Try uncompressed first (fastest - memory-mappable)
+        bin_path = Path(f"{base_path}.bin")
+        if bin_path.exists():
+            return np.memmap(bin_path, dtype=np.complex64, mode='r')
         
-        # Memory-map for zero-copy reading
-        return np.memmap(bin_path, dtype=np.complex64, mode='r')
+        # Try zstd compressed
+        zst_path = Path(f"{base_path}.bin.zst")
+        if zst_path.exists():
+            try:
+                import zstandard as zstd
+                with open(zst_path, 'rb') as f:
+                    dctx = zstd.ZstdDecompressor()
+                    decompressed = dctx.decompress(f.read())
+                return np.frombuffer(decompressed, dtype=np.complex64)
+            except ImportError:
+                logger.warning("zstandard not installed, cannot read .bin.zst files")
+                return None
+        
+        # Try lz4 compressed
+        lz4_path = Path(f"{base_path}.bin.lz4")
+        if lz4_path.exists():
+            try:
+                import lz4.frame
+                with open(lz4_path, 'rb') as f:
+                    decompressed = lz4.frame.decompress(f.read())
+                return np.frombuffer(decompressed, dtype=np.complex64)
+            except ImportError:
+                logger.warning("lz4 not installed, cannot read .bin.lz4 files")
+                return None
+        
+        return None
     
     def read_metadata(self, minute_boundary: int) -> Optional[Dict]:
         """Read metadata for a specific minute."""

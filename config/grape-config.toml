@@ -23,6 +23,12 @@ continuous = true
 blocktime_ms = 20
 max_gap_seconds = 60
 storage_quota = "80%"
+# Compression: 'none', 'zstd', or 'lz4' - reduces disk I/O by ~2-3x
+# zstd: best compression ratio, moderate CPU
+# lz4: fastest, lower compression ratio
+# Requires: pip install zstandard (for zstd) or pip install lz4 (for lz4)
+compression = "zstd"
+compression_level = 3  # zstd: 1-22, lz4: 1-12
 
 [recorder.channel_defaults]
 preset = "iq"

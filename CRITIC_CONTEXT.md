@@ -6,6 +6,269 @@ Primary Instruction:  In this context you will perform a critical review of the 
 
 ---
 
+## 🔴 CURRENT FOCUS: GPSDO-FIRST TIMING CALIBRATION METHODOLOGY
+
+**Purpose:** Critically examine the GPSDO-first timing calibration architecture, looking for mistakes, weaknesses, inconsistencies, and missed opportunities in the methodology.
+
+**Author:** Michael James Hauan (AC0G)  
+**Date:** 2025-12-13 (Updated 2025-12-14)  
+**Status:** 🟡 In Progress - RTP-First Timing Implemented
+
+---
+
+### THE GPSDO-FIRST TIMING CALIBRATION ARCHITECTURE
+
+#### Core Philosophy
+
+The system leverages GPSDO-disciplined RTP timestamps as the **primary timing foundation**, then progressively refines with tone detections and multi-broadcast fusion:
+
+```
+LAYER 1: GPSDO Foundation
+├─ RTP timestamps from GPS-disciplined ka9q-radio (±0.1 PPM)
+├─ All 9 channels share the same master clock
+└─ Sample count integrity: 1,200,000 samples = exactly 60 seconds
+
+LAYER 2: Tone Detection
+├─ WWV/WWVH 1000/1200 Hz tones at second 0 (800ms duration)
+├─ CHU 1000 Hz tone at second 0 (500ms duration)
+├─ Per-second tick confirmations (59 per minute, 5ms each)
+└─ CHU FSK timing (seconds 31-39) for independent verification
+
+LAYER 3: Station-Level Calibration
+├─ Each station (WWV, WWVH, CHU) has ONE atomic clock
+├─ Station mean is ground truth; frequency variance = propagation
+└─ Calibration offset brings station mean to UTC(NIST) = 0
+
+LAYER 4: Multi-Broadcast Fusion
+├─ Weighted average across 13 broadcasts (6 WWV + 4 WWVH + 3 CHU)
+├─ Kalman filter for convergence and anomaly detection
+└─ Intra-station consistency checks for discrimination validation
+```
+
+#### Key Implementation Files
+
+| File | Purpose | Critical Functions |
+|------|---------|-------------------|
+| `timing_calibrator.py` | Bootstrap → Calibrated → Verified phases | `predict_station()`, `update_from_detection()` |
+| `phase2_temporal_engine.py` | Three-step temporal analysis | `_step1_time_snap()`, `_step2_channel_characterization()`, `_step3_transmission_time_solution()` |
+| `clock_offset_series.py` | ClockOffsetEngine with RTP calibration | `_get_calibrated_rtp_offset()`, `process_minute()` |
+| `multi_broadcast_fusion.py` | Station-level calibration + Kalman | `_update_calibration()`, `_kalman_update()`, `fuse()` |
+| `wwvh_discrimination.py` | 8-vote weighted discrimination | `finalize_discrimination()`, `detect_tick_windows()` |
+| `propagation_mode_solver.py` | Ionospheric mode identification | `solve()` |
+| `pipeline_orchestrator.py` | Wires timing_calibrator to ClockOffsetEngine | `_get_calibrated_rtp_offset()` |
+
+---
+
+### CRITIQUE CHECKLIST: METHODOLOGY VALIDATION
+
+#### 1. GPSDO Foundation Assumptions
+
+**Question:** Are we correctly leveraging the GPSDO stability?
+
+- [x] **RTP offset predictability**: Does `rtp_timestamp % 1,200,000` actually remain constant across minutes?
+  - ✅ CONFIRMED: RTP offset is deterministic with GPSDO (~100ns stability)
+  - ✅ IMPLEMENTED (2025-12-14): RTP-first timing uses calibrated offset as gold standard ruler
+  - Validation: Check `timing_calibration.json` for RTP offset drift warnings
+
+- [ ] **Cross-channel coherence**: Are all channels truly sharing the same clock?
+  - Potential issue: Different RTP origins per channel could mask clock issues
+  - Validation: Compare tone arrival times across channels for same minute
+
+- [x] **Sample count integrity**: Is 1,200,000 samples always exactly 60 seconds?
+  - ✅ With GPSDO: Yes, to ±0.1 PPM (±7.2ms/day max drift)
+  - Validation: Check PPM estimates in time_snap data
+
+#### 2. Tone Detection Accuracy
+
+**Question:** Are we detecting tones at the correct positions?
+
+- [ ] **Matched filter template**: Is the 800ms template correct for WWV/WWVH?
+  - NIST confirms 800ms duration for timing tones
+  - CHU uses 500ms (1000ms at top of hour)
+
+- [ ] **Search window**: Is ±500ms (bootstrap) → ±50ms (calibrated) appropriate?
+  - Ionospheric delays range 2-60ms typically
+  - Propagation mode changes can cause 5-10ms jumps
+
+- [ ] **Per-second tick detection**: Are we using 59 ticks correctly?
+  - Ticks are 5ms pulses at 1000/1200 Hz
+  - Coherent integration provides √59 ≈ 7.7x SNR improvement
+
+- [ ] **CHU FSK timing**: Is the 500ms boundary detection accurate?
+  - FSK frames at seconds 31-39
+  - Should provide independent timing confirmation
+
+#### 3. Station-Level Calibration Logic
+
+**Question:** Is station-level calibration the right abstraction?
+
+- [ ] **Single clock assumption**: Is it true that all frequencies from one station share the same clock?
+  - YES: WWV/WWVH/CHU each have one cesium/rubidium reference
+  - Frequency-to-frequency variance is ionospheric, not clock
+
+- [ ] **Station mean calculation**: Are we correctly computing the station mean?
+  - Current: `station_mean = np.mean([d_clock for all frequencies])`
+  - Potential issue: Should we weight by SNR or quality?
+
+- [ ] **Calibration offset stability**: Does the offset converge or oscillate?
+  - EMA smoothing: `new_offset = α × ideal + (1-α) × old_offset`
+  - α = max(0.1, 10.0 / n_samples) - faster initially, slower as samples accumulate
+
+#### 4. Multi-Broadcast Fusion
+
+**Question:** Is the fusion algorithm optimal?
+
+- [ ] **Weighting scheme**: Are weights appropriate?
+  - Current: SNR-based + quality grade + propagation mode
+  - Potential issue: Should discrimination confidence affect weight?
+
+- [ ] **Intra-station consistency**: Are we correctly detecting discrimination errors?
+  - Current: Flag DISCRIMINATION_SUSPECT if intra-station σ > 5ms
+  - Potential issue: 5ms threshold may be too tight for multi-hop propagation
+
+- [ ] **Kalman filter model**: Is the state model appropriate?
+  - Current: [d_clock_offset, drift_rate]
+  - Potential issue: Drift rate may not be meaningful with GPSDO
+
+- [ ] **Suspect measurement exclusion**: Are we excluding the right measurements?
+  - Current: Exclude measurements that increase intra-station variance
+  - Potential issue: May exclude valid measurements during propagation mode changes
+
+#### 5. Discrimination System
+
+**Question:** Is the 8-vote weighted discrimination robust?
+
+| Vote | Method | Weight | Potential Issues |
+|------|--------|--------|------------------|
+| 0 | Test Signal | 15 | Only minutes 8/44; may miss if signal weak |
+| 1 | 440 Hz Station ID | 10 | Only minutes 1/2; harmonic contamination possible |
+| 2 | BCD Amplitude | 2-10 | Requires good SNR; dual-peak detection fragile |
+| 3 | 1000/1200 Hz Power | 1-10 | Affected by propagation fading |
+| 4 | Tick SNR Average | 5 | **NOW CONNECTED** - 59 ticks provide robustness |
+| 5 | 500/600 Hz Ground Truth | 10-15 | 14 minutes/hour; most reliable |
+| 6 | Doppler Stability | 2 | Requires stable channel; may fail in disturbed conditions |
+| 7 | Timing Coherence | 3 | Requires test signal + BCD agreement |
+
+- [ ] **Vote 4 integration**: Is tick SNR now being used correctly?
+  - Added: `detect_tick_windows()` call in Step 2B
+  - Passed to `finalize_discrimination()` as `tick_results`
+
+- [ ] **RTP-based station prediction**: Is it improving discrimination?
+  - `predict_station()` uses RTP offset to predict expected station
+  - Should reduce flip-flopping on shared frequencies
+
+- [ ] **Low-confidence rejection**: Are we correctly rejecting low-confidence results?
+  - On shared frequencies, require MEDIUM confidence minimum
+  - LOW confidence falls through to RTP prediction or channel name
+
+#### 6. Ionospheric Propagation Limits
+
+**Question:** What is the theoretical limit of timing accuracy?
+
+- [ ] **Propagation mode ambiguity**: Can we distinguish 1F vs 2F vs 3F hops?
+  - Mode delays differ by ~1-2ms per hop
+  - Current uncertainty: ±2-5ms after mode identification
+
+- [ ] **Ionospheric jitter**: What is the irreducible variance?
+  - Typical: ±0.5-2ms from ionospheric turbulence
+  - Severe conditions: ±5-10ms
+
+- [ ] **Intra-station spread**: What is the expected variance across frequencies?
+  - Current observation: WWV σ=4-5ms, CHU σ=4-5ms
+  - This may be the ionospheric limit, not a system error
+
+---
+
+### KNOWN ISSUES AND LIMITATIONS
+
+#### 1. Bootstrap Phase Sensitivity
+
+**Issue:** Bootstrap requires high-SNR detections (>15 dB) with high confidence (>0.7).
+
+**Impact:** May take longer to exit bootstrap in weak signal conditions.
+
+**Mitigation:** Consider lowering thresholds or using cross-channel voting.
+
+#### 2. Multi-Process State Coordination
+
+**Issue:** 9 channel recorder processes share one state file.
+
+**Current Fix:** Reload state before update, save after every detection during bootstrap.
+
+**Potential Issue:** Race conditions possible if two processes update simultaneously.
+
+**Mitigation:** Consider file locking or centralized state manager.
+
+#### 3. CHU FSK Detection Sensitivity
+
+**Issue:** CHU FSK decoder may not detect signal in weak conditions.
+
+**Impact:** CHU timing confirmation unavailable when FSK not detected.
+
+**Mitigation:** FSK is optional confirmation; system works without it.
+
+#### 4. Discrimination Flip-Flopping
+
+**Issue:** On shared frequencies, discrimination can flip between WWV and WWVH.
+
+**Current Fix:** 
+- Reject low-confidence discrimination
+- Use RTP-based station prediction
+- Store detected_station in RTP calibration
+
+**Remaining Issue:** First detection on a new channel has no RTP history.
+
+---
+
+### VALIDATION COMMANDS
+
+```bash
+# Check timing calibration state
+cat /tmp/grape-test/state/timing_calibration.json | python3 -m json.tool
+
+# Check broadcast calibration state
+cat /tmp/grape-test/state/broadcast_calibration.json | python3 -m json.tool
+
+# Monitor fusion convergence
+tail -f /tmp/grape-test/logs/phase2-fusion.log
+
+# Check intra-station spread
+grep "intra-station" /tmp/grape-test/logs/phase2-fusion.log | tail -10
+
+# Verify discrimination corrections
+grep "RTP prediction overrides" /tmp/grape-test/logs/phase1-*.log
+```
+
+---
+
+### SUCCESS CRITERIA
+
+| Metric | Target | Current Status |
+|--------|--------|----------------|
+| D_clock accuracy | ±1 ms | ~±5 ms (discrimination errors dominate) |
+| Intra-station spread | <5 ms | ~7-10 ms (discrimination + ionospheric) |
+| Discrimination stability | No flip-flopping | 🔴 MAIN ISSUE - misidentification causes ~50ms errors |
+| Bootstrap exit | <10 minutes | ✅ ~3-5 minutes |
+| Kalman convergence | Grade A/B | Grade C/D (blocked by discrimination) |
+
+### 2025-12-14 UPDATE: RTP-First Timing Implemented
+
+**Root Cause Analysis Complete:**
+
+The D_clock instability is **NOT** caused by RTP timing jitter. The RTP-first timing implementation confirmed that:
+
+1. **RTP offset is stable**: Calibrated offset (e.g., `411038` for WWV 10 MHz) is deterministic
+2. **D_clock clusters correctly by station**:
+   - WWV: clusters around `-4ms` to `-6.5ms`
+   - WWVH: clusters around `-27.9ms`
+3. **Outliers are misidentified stations**: When WWVH is misidentified as WWV, wrong propagation delay is applied, causing ~50ms errors
+
+**Remaining Issue: Station Discrimination**
+
+The discrimination system is the bottleneck. When WWVH signals are misidentified as WWV (or vice versa), the wrong propagation delay is used, causing large D_clock errors. This is particularly problematic on shared frequencies (2.5, 5, 10, 15 MHz).
+
+---
+
 ## ✅ COMPLETED: DATA FLOW CONTRACT ENFORCEMENT
 
 **Purpose:** Critically examine how data is written and read across the GRAPE Recorder system, identifying mismatches between producers and consumers.

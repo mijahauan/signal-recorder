@@ -110,6 +110,8 @@ class PipelineConfig:
     # Phase 1 settings
     raw_archive_compression: str = 'gzip'
     raw_archive_file_duration_sec: int = 3600  # 1 hour files
+    compression: str = 'none'  # 'none', 'zstd', or 'lz4'
+    compression_level: int = 3  # zstd: 1-22, lz4: 1-12
     # Note: Storage quota is managed at top-level, not per-channel
     
     # Phase 2 settings
@@ -125,7 +127,9 @@ class PipelineConfig:
         
         # Derive subdirectories
         self.raw_archive_dir = self.data_dir / 'raw_archive'
-        self.clock_offset_dir = self.data_dir / 'clock_offset'
+        # Phase 2 output goes to phase2/{channel}/clock_offset/ for fusion service compatibility
+        from ..paths import channel_name_to_dir
+        self.clock_offset_dir = self.data_dir / 'phase2' / channel_name_to_dir(self.channel_name) / 'clock_offset'
         self.processed_dir = self.data_dir / 'processed'
         
         # Create directories
@@ -166,8 +170,18 @@ class PipelineOrchestrator:
             frequency_hz=config.frequency_hz,
             sample_rate=config.sample_rate,
             station_config=config.station_config,
+            compression=config.compression,
+            compression_level=config.compression_level,
         )
         self.raw_archive_writer = BinaryArchiveWriter(raw_config)
+        
+        # GPSDO-calibrated timing system (must be initialized before ClockOffsetEngine)
+        # Manages bootstrap (wide search) -> calibrated (narrow search) transition
+        from .timing_calibrator import TimingCalibrator
+        self.timing_calibrator = TimingCalibrator(
+            data_root=config.data_dir,
+            sample_rate=config.sample_rate
+        )
         
         # Phase 2: Clock Offset Engine
         from .clock_offset_series import ClockOffsetEngine
@@ -178,7 +192,8 @@ class PipelineOrchestrator:
             channel_name=config.channel_name,
             frequency_hz=config.frequency_hz,
             receiver_grid=config.receiver_grid,
-            sample_rate=config.sample_rate
+            sample_rate=config.sample_rate,
+            timing_calibrator=self.timing_calibrator
         )
         
         # Phase 3: Product generation is now handled separately as batch processing
@@ -323,9 +338,36 @@ class PipelineOrchestrator:
             # Don't let audio buffer errors affect main pipeline
             pass
         
-        # NOTE: Minute accumulation disabled for performance
-        # Phase 2 reads directly from archive - no need to buffer in memory
-        # self._accumulate_minute(samples, rtp_timestamp, system_time)
+        # In-memory Phase 2 analytics - eliminates disk read for tone detection
+        # This runs the ClockOffsetEngine directly on the minute buffer
+        self._accumulate_minute(samples, rtp_timestamp, system_time)
+    
+    def _get_calibrated_rtp_offset(self, channel_name: str) -> Optional[int]:
+        """
+        Get calibrated RTP offset for a channel from the timing calibrator.
+        
+        This is the GPSDO-first approach: once we have a stable RTP calibration,
+        use it as the reference for expected_second_rtp instead of recalculating
+        from system_time every minute.
+        
+        Args:
+            channel_name: Channel identifier
+            
+        Returns:
+            Calibrated RTP offset (samples within minute), or None if not calibrated
+        """
+        if not hasattr(self, 'timing_calibrator') or self.timing_calibrator is None:
+            return None
+        
+        rtp_cal = self.timing_calibrator.rtp_calibration.get(channel_name)
+        if rtp_cal is None:
+            return None
+        
+        # Only use calibration if we have confirmations (stable)
+        if rtp_cal.n_confirmations < 2:
+            return None
+        
+        return rtp_cal.rtp_offset_samples
     
     def _accumulate_minute(
         self,
@@ -343,8 +385,18 @@ class PipelineOrchestrator:
             # Align to minute boundary
             minute_boundary = (int(system_time) // 60) * 60
             self.current_minute_start_time = minute_boundary
-            self.current_minute_start_rtp = rtp_timestamp
+            # Calculate RTP timestamp at minute boundary
+            # RTP timestamp = current_rtp - (samples since minute boundary)
+            seconds_into_minute = system_time - minute_boundary
+            samples_into_minute = int(seconds_into_minute * self.config.sample_rate)
+            self.current_minute_start_rtp = rtp_timestamp - samples_into_minute
             self.current_minute_samples = []
+            
+            # Pad the start with zeros for samples we missed
+            # This ensures the buffer is aligned to the minute boundary
+            if samples_into_minute > 0:
+                padding = np.zeros(samples_into_minute, dtype=np.complex64)
+                self.current_minute_samples.append(padding)
         
         # Add samples
         self.current_minute_samples.append(samples)
@@ -426,6 +478,30 @@ class PipelineOrchestrator:
                     break
                 
                 system_time, rtp_timestamp, samples = item
+                minute_boundary = (int(system_time) // 60) * 60
+                
+                # Get search window from timing calibrator
+                # During bootstrap: wide (500ms), after calibration: narrow (~5ms)
+                from .timing_calibrator import CalibrationPhase
+                calibrator_phase = self.timing_calibrator.phase
+                
+                # Get calibrated search window if available
+                if calibrator_phase != CalibrationPhase.BOOTSTRAP:
+                    # Use narrow search window from calibrator
+                    # Returns (window_half_width_ms, expected_offset_ms)
+                    window_info = self.timing_calibrator.get_search_window_ms(
+                        station=None,  # Will be determined by detection
+                        frequency_mhz=self.config.frequency_hz / 1e6
+                    )
+                    search_window_ms = window_info[0]  # Just the window width
+                    # Update the phase2 engine's search window and station predictor
+                    if hasattr(self.clock_offset_engine, 'phase2_engine'):
+                        self.clock_offset_engine.phase2_engine.config_search_window_ms = search_window_ms
+                        # Wire up station predictor to use RTP calibration history
+                        self.clock_offset_engine.phase2_engine.station_predictor = self.timing_calibrator.predict_station
+                        # Wire up RTP calibration callback for GPSDO-first timing
+                        self.clock_offset_engine.phase2_engine.rtp_calibration_callback = self._get_calibrated_rtp_offset
+                        logger.debug(f"Using calibrated search window: {search_window_ms:.1f}ms")
                 
                 # Phase 2: Generate D_clock measurement
                 try:
@@ -437,9 +513,29 @@ class PipelineOrchestrator:
                     
                     if measurement:
                         self.stats['minutes_analyzed'] += 1
+                        
+                        # Update timing calibrator with this detection
+                        # This helps narrow search windows after bootstrap
+                        try:
+                            self.timing_calibrator.update_from_detection(
+                                station=measurement.station,
+                                frequency_mhz=self.config.frequency_hz / 1e6,
+                                channel_name=self.config.channel_name,
+                                d_clock_ms=measurement.clock_offset_ms,
+                                propagation_delay_ms=getattr(measurement, 'propagation_delay_ms', 0.0),
+                                snr_db=getattr(measurement, 'snr_db', 0.0),
+                                confidence=measurement.confidence,
+                                rtp_timestamp=rtp_timestamp,
+                                minute_boundary=minute_boundary
+                            )
+                        except Exception as cal_err:
+                            logger.debug(f"Calibrator update error: {cal_err}")
+                        
+                        # Log with calibration phase info
+                        phase_indicator = "🔍" if calibrator_phase == CalibrationPhase.BOOTSTRAP else "🎯"
                         logger.debug(
-                            f"D_clock: {measurement.clock_offset_ms:+.2f}ms "
-                            f"(conf={measurement.confidence:.2f})"
+                            f"{phase_indicator} D_clock: {measurement.clock_offset_ms:+.2f}ms "
+                            f"(conf={measurement.confidence:.2f}, phase={calibrator_phase.value})"
                         )
                 
                 except Exception as e:
@@ -478,7 +574,8 @@ class PipelineOrchestrator:
                 'queue_depth': self.analysis_queue.qsize(),
                 'phase1_stats': self.raw_archive_writer.get_stats(),
                 'phase2_stats': self.clock_offset_engine.get_stats(),
-                'phase3_stats': self.product_generator.get_stats() if self.product_generator else {'status': 'disabled'}
+                'phase3_stats': self.product_generator.get_stats() if self.product_generator else {'status': 'disabled'},
+                'timing_calibrator': self.timing_calibrator.get_status()
             }
     
     def get_status(self) -> Dict[str, Any]:

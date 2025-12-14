@@ -323,6 +323,8 @@ class CoreRecorderV2:
                     output_dir=self.output_dir,
                     station_config=self.station_config,
                     receiver_grid=self.station_config.get('grid_square', ''),
+                    compression=self.recorder_config.get('compression', 'none'),
+                    compression_level=self.recorder_config.get('compression_level', 3),
                 )
                 
                 recorder = StreamRecorderV2(
