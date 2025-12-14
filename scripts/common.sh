@@ -1,5 +1,5 @@
 #!/bin/bash
-# Common settings for all grape-recorder scripts
+# Common settings for all HF Time Standard Analysis (hf-timestd) scripts
 # Source this at the top of every shell script:
 #   source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
@@ -8,15 +8,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Source environment file if exists (production mode)
-# Order: /etc/grape-recorder/environment -> PROJECT_DIR/config/environment
-if [ -f "/etc/grape-recorder/environment" ]; then
+# Order: /etc/hf-timestd/environment -> PROJECT_DIR/config/environment
+# Legacy support: also check /etc/grape-recorder/environment
+if [ -f "/etc/hf-timestd/environment" ]; then
+    source "/etc/hf-timestd/environment"
+elif [ -f "/etc/grape-recorder/environment" ]; then
+    # Legacy path - will be removed in future version
     source "/etc/grape-recorder/environment"
 elif [ -f "$PROJECT_DIR/config/environment" ]; then
     source "$PROJECT_DIR/config/environment"
 fi
 
 # Determine venv location (from env or default)
-VENV_PATH="${GRAPE_VENV:-$PROJECT_DIR/venv}"
+# Support both new TIMESTD_VENV and legacy GRAPE_VENV
+VENV_PATH="${TIMESTD_VENV:-${GRAPE_VENV:-$PROJECT_DIR/venv}}"
 
 # Set Python to use venv - MANDATORY
 if [ -f "$VENV_PATH/bin/python" ]; then
@@ -30,10 +35,16 @@ else
 fi
 
 # Default config location (from env or default)
-DEFAULT_CONFIG="${GRAPE_CONFIG:-$PROJECT_DIR/config/grape-config.toml}"
+# Support both new TIMESTD_CONFIG and legacy GRAPE_CONFIG
+# Try new config name first, fall back to legacy
+if [ -f "$PROJECT_DIR/config/timestd-config.toml" ]; then
+    DEFAULT_CONFIG="${TIMESTD_CONFIG:-$PROJECT_DIR/config/timestd-config.toml}"
+else
+    DEFAULT_CONFIG="${TIMESTD_CONFIG:-${GRAPE_CONFIG:-$PROJECT_DIR/config/grape-config.toml}}"
+fi
 
 # Helper to get current mode - CONFIG FILE IS AUTHORITATIVE
-# The grape-config.toml mode setting takes precedence over environment variables
+# The timestd-config.toml mode setting takes precedence over environment variables
 get_mode() {
     local config="${1:-$DEFAULT_CONFIG}"
     
@@ -44,6 +55,11 @@ get_mode() {
     fi
 
     # Fall back to environment only if no config file
+    # Support both new TIMESTD_MODE and legacy GRAPE_MODE
+    if [ -n "${TIMESTD_MODE:-}" ]; then
+        echo "$TIMESTD_MODE"
+        return
+    fi
     if [ -n "${GRAPE_MODE:-}" ]; then
         echo "$GRAPE_MODE"
         return
@@ -68,12 +84,17 @@ get_data_root() {
     fi
 
     # Fall back to environment variable only if no config file
+    # Support both new TIMESTD_DATA_ROOT and legacy GRAPE_DATA_ROOT
+    if [ -n "${TIMESTD_DATA_ROOT:-}" ]; then
+        echo "$TIMESTD_DATA_ROOT"
+        return
+    fi
     if [ -n "${GRAPE_DATA_ROOT:-}" ]; then
         echo "$GRAPE_DATA_ROOT"
         return
     fi
 
-    echo "/tmp/grape-test"
+    echo "/tmp/timestd-test"
 }
 
 # Helper to get log directory - CONFIG FILE IS AUTHORITATIVE
@@ -82,7 +103,7 @@ get_log_dir() {
     local mode=$(get_mode "$config")
     
     if [ "$mode" = "production" ]; then
-        echo "/var/log/grape-recorder"
+        echo "/var/log/hf-timestd"
     else
         echo "$(get_data_root "$config")/logs"
     fi

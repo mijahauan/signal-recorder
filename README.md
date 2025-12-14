@@ -1,12 +1,12 @@
-# GRAPE Signal Recorder
+# HF Time Standard Analysis
 
-**Precision WWV/CHU time-standard recorder for ionospheric research** - Captures high-precision IQ data from ka9q-radio, performs 12-method WWV/WWVH discrimination, and uploads Digital RF to HamSCI PSWS.
+**Precision WWV/CHU time-standard analysis for UTC alignment** - Captures high-precision IQ data from ka9q-radio, performs multi-method WWV/WWVH discrimination, and produces D_clock measurements for system clock discipline.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Overview
 
-The [HamSCI GRAPE project](https://hamsci.org/grape) studies ionospheric disturbances through timing variations in WWV/CHU broadcasts. This recorder enables amateur radio operators to contribute scientifically valid data to the global observation network.
+HF Time Standard Analysis (`hf_timestd`) receives WWV/WWVH/CHU time standard broadcasts via ka9q-radio and produces precise timing measurements (D_clock) for UTC alignment and system clock discipline via Chrony.
 
 **Key Capabilities:**
 - 📡 **Multi-channel recording** - Simultaneous WWV 2.5-25 MHz, CHU 3.33-14.67 MHz (9 frequencies)
@@ -14,9 +14,10 @@ The [HamSCI GRAPE project](https://hamsci.org/grape) studies ionospheric disturb
 - 🔗 **Multi-broadcast fusion** - Combines WWV/WWVH/CHU with per-station calibration
 - ⏱️ **HF time transfer** - D_clock measurement with ionospheric propagation mode estimation
 - 🔬 **Station discrimination** - Power ratio + ground truth for WWV/WWVH on shared frequencies
-- 📊 **Digital RF output** - 10 Hz IQ + metadata (wsprdaemon-compatible)
 - 🌐 **Web UI** - Real-time monitoring, timing visualizations, quality metrics
-- 🚀 **PSWS upload** - Automated SFTP to HamSCI repository
+- ⏰ **Chrony integration** - SHM refclock for system clock discipline
+
+**Note:** Decimation to 10 Hz, spectrograms, and PSWS upload are in a separate GRAPE application.
 
 ## Quick Start
 
@@ -26,20 +27,20 @@ The [HamSCI GRAPE project](https://hamsci.org/grape) studies ionospheric disturb
 
 ```bash
 # Clone repository
-git clone https://github.com/mijahauan/grape-recorder.git
-cd grape-recorder
+git clone https://github.com/mijahauan/hf-timestd.git
+cd hf-timestd
 
 # Run installer in test mode
 ./scripts/install.sh --mode test
 
 # Edit configuration with your station details
-nano config/grape-config.toml
+nano config/timestd-config.toml
 
 # Start all services
-./scripts/grape-all.sh -start
+./scripts/timestd-all.sh -start
 
 # Check status
-./scripts/grape-all.sh -status
+./scripts/timestd-all.sh -status
 ```
 
 ### Production Mode (24/7 Operation)
@@ -49,50 +50,47 @@ nano config/grape-config.toml
 sudo ./scripts/install.sh --mode production --user $USER
 
 # Edit configuration
-sudo nano /etc/grape-recorder/grape-config.toml
+sudo nano /etc/hf-timestd/timestd-config.toml
 
 # Start and enable services
-sudo systemctl start grape-recorder grape-analytics grape-webui
-sudo systemctl enable grape-recorder grape-analytics grape-webui
-
-# Enable daily uploads (after SSH key setup)
-sudo systemctl enable --now grape-upload.timer
+sudo systemctl start timestd-core-recorder timestd-analytics timestd-web-ui
+sudo systemctl enable timestd-core-recorder timestd-analytics timestd-web-ui
 ```
 
 ### Service Control
 
 **Test Mode (scripts):**
 ```bash
-./scripts/grape-all.sh -start|-stop|-status    # All services
-./scripts/grape-core.sh -start|-stop|-status   # Core recorder only
-./scripts/grape-analytics.sh -start|-stop|-status  # Analytics (9 channels)
-./scripts/grape-ui.sh -start|-stop|-status     # Web UI only
+./scripts/timestd-all.sh -start|-stop|-status    # All services
+./scripts/timestd-core.sh -start|-stop|-status   # Core recorder only
+./scripts/timestd-analytics.sh -start|-stop|-status  # Analytics (9 channels)
+./scripts/timestd-ui.sh -start|-stop|-status     # Web UI only
 ```
 
 **Production Mode (systemd):**
 ```bash
-sudo systemctl start|stop|status grape-recorder
-sudo systemctl start|stop|status grape-analytics
-sudo systemctl start|stop|status grape-webui
-journalctl -u grape-recorder -f    # View logs
+sudo systemctl start|stop|status timestd-core-recorder
+sudo systemctl start|stop|status timestd-analytics
+sudo systemctl start|stop|status timestd-web-ui
+journalctl -u timestd-core-recorder -f    # View logs
 ```
 
 ### Directory Structure
 
 | Mode | Data | Logs | Config |
 |------|------|------|--------|
-| **Test** | `/tmp/grape-test/` | `/tmp/grape-test/logs/` | `config/grape-config.toml` |
-| **Production** | `/var/lib/grape-recorder/` | `/var/log/grape-recorder/` | `/etc/grape-recorder/` |
+| **Test** | `/tmp/timestd-test/` | `/tmp/timestd-test/logs/` | `config/timestd-config.toml` |
+| **Production** | `/var/lib/hf-timestd/` | `/var/log/hf-timestd/` | `/etc/hf-timestd/` |
 
 **Monitor:** Open `http://localhost:3000` for real-time channel health, quality metrics, and logs.
 
 ## Architecture
 
-**Three-service design** built on a **generic recording infrastructure**:
+**Two-phase design** built on a **generic recording infrastructure**:
 
-ka9q-radio (RTP multicast) → Core Recorder → Analytics → Products/Upload
-                              20kHz DRF      D_clock    10Hz decimated
-                              raw_archive/   phase2/    products/ → PSWS sftp
+ka9q-radio (RTP multicast) → Core Recorder → Analytics → Chrony SHM
+                              20kHz DRF      D_clock    System clock
+                              raw_archive/   phase2/    discipline
 
 ### ka9q-python Integration (V3.11)
 
@@ -121,7 +119,7 @@ ka9q-radio (radiod) via multicast
 The recording layer uses a **protocol-based design** enabling multiple applications:
 
 ```
-Application Layer (GrapeRecorder, WsprRecorder, etc.)
+Application Layer (TimeStdRecorder, WsprRecorder, etc.)
         ↓
 SegmentWriter Protocol (GrapeNPZWriter, WAVWriter, etc.)
         ↓
@@ -372,7 +370,7 @@ enabled = false  # Set true after PSWS credentials configured
 6. Configure PSWS SSH keys for uploads
 
 **Daily Operation:** systemd services run 24/7, monitor web UI for 🟢 status, daily 00:30 UTC upload  
-**Maintenance:** Check weekly via `journalctl -u grape-recorder`, verify uploads, review logs
+**Maintenance:** Check weekly via `journalctl -u hf-timestd`, verify uploads, review logs
 
 
 ## Troubleshooting
@@ -453,7 +451,7 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 ### v2.2.0 (Dec 2, 2025)
 - **Unified Installer** - `scripts/install.sh --mode test|production`
 - **Systemd Services** - Production-ready with auto-restart, daily uploads
-- **FHS-Compliant Paths** - `/var/lib/grape-recorder/`, `/var/log/grape-recorder/`, `/etc/grape-recorder/`
+- **FHS-Compliant Paths** - `/var/lib/hf-timestd/`, `/var/log/hf-timestd/`, `/etc/hf-timestd/`
 - **Environment File** - Single source of truth for all paths
 - **PPM-Corrected Timing** - Sub-sample precision via ADC drift compensation
 - **Config-Driven Sample Rate** - 20 kHz default, fully configurable
@@ -473,7 +471,7 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 **Credits:** Phil Karn/KA9Q (ka9q-radio), MIT Haystack (Digital RF), Nathaniel Frissell/W2NAF (HamSCI GRAPE), Rob Robinett/AI6VN (wsprdaemon inspiration), Michael James Hauan/AC0G (this implementation)
 
-**Community:** [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io) | [GitHub Issues](https://github.com/mijahauan/grape-recorder/issues)
+**Community:** [grape@hamsci.groups.io](mailto:grape@hamsci.groups.io) | [GitHub Issues](https://github.com/mijahauan/hf-timestd/issues)
 
 **PSWS Access:** Contact HamSCI coordinators to register station and receive credentials
 

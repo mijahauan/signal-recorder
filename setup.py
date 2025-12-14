@@ -1,5 +1,5 @@
 """
-Setup script for grape-recorder package
+Setup script for hf-timestd (HF Time Standard Analysis) package
 """
 
 from setuptools import setup, find_packages
@@ -10,11 +10,11 @@ readme_file = Path(__file__).parent / "README.md"
 long_description = readme_file.read_text() if readme_file.exists() else ""
 
 setup(
-    name="grape-recorder",
-    version="2.2.0",
+    name="hf-timestd",
+    version="3.0.0",
     author="Michael James Hauan AC0G",
     author_email="ac0g@hauan.org",
-    description="GRAPE recorder for WWV/WWVH/CHU time standard signals via ka9q-radio",
+    description="HF Time Standard Analysis - WWV/WWVH/CHU timing via ka9q-radio",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/mijahauan/grape-recorder",
@@ -56,7 +56,8 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "grape-recorder=grape_recorder.cli:main",
+            "hf-timestd=hf_timestd.cli:main",
+            "timestd=hf_timestd.cli:main",
         ],
     },
 )
