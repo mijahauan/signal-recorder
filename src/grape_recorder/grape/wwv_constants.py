@@ -205,6 +205,17 @@ TONE_SCHEDULE_500_600: Dict[int, Dict[str, Optional[int]]] = {
 }
 
 # =============================================================================
+# STANDARD CHANNELS LIST
+# =============================================================================
+# Systematic list of all monitored channels
+STANDARD_CHANNELS = [
+    'WWV 2.5 MHz', 'WWV 5 MHz', 'WWV 10 MHz', 'WWV 15 MHz', 
+    'WWV 20 MHz', 'WWV 25 MHz',
+    'WWVH 2.5 MHz', 'WWVH 5 MHz', 'WWVH 10 MHz', 'WWVH 15 MHz',
+    'CHU 3.33 MHz', 'CHU 7.85 MHz', 'CHU 14.67 MHz'
+]
+
+# =============================================================================
 # STATION LOCATIONS (for propagation delay calculations)
 # =============================================================================
 # IMPORTANT: These are the AUTHORITATIVE coordinates. All other modules MUST
@@ -326,7 +337,18 @@ IONOSPHERIC_DELAY_PER_HOP_MS = 0.15
 # Maximum frequency-dependent dispersion (ms)
 MAX_DISPERSION_MS = 3.0
 
-# Minimum WWV-WWVH time separation (ms)
+# Safety margin for initial guided search (ms)
+# Widen the window to account for unmodeled delays/errors on first lock
+GUIDED_SEARCH_SAFETY_MARGIN_MS = 5.0
+
+# CRITICAL PHYSICS CONSTRAINT:
+# The total search window (Dispersion + Safety) MUST be significantly smaller
+# than the separation between stations to ensure ambiguity resolution.
+#
+# Limit: (3.0 ms + 5.0 ms) = 8.0 ms << 15.0 ms (Station Separation)
+# This guarantees that a window centered on WWV will NOT capture WWVH.
+
+# Minimum WWV-WWVH time separation (ms) (Path difference ~4000km)
 STATION_SEPARATION_MS = 15.0
 
 # =============================================================================

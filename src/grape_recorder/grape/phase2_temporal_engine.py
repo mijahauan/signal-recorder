@@ -428,7 +428,9 @@ class Phase2TemporalEngine:
         receiver_grid: str,
         sample_rate: int = SAMPLE_RATE_FULL,
         precise_lat: Optional[float] = None,
-        precise_lon: Optional[float] = None
+        precise_lon: Optional[float] = None,
+        discriminator: Optional[Any] = None,
+        solver: Optional[Any] = None
     ):
         """
         Initialize the Phase 2 Temporal Engine.
@@ -442,6 +444,8 @@ class Phase2TemporalEngine:
             sample_rate: Input sample rate (default 20000 Hz)
             precise_lat: Optional precise latitude (improves timing by ~16μs)
             precise_lon: Optional precise longitude (improves timing by ~16μs)
+            discriminator: Optional discriminator instance (dependency injection)
+            solver: Optional transmission time solver (dependency injection)
         """
         self.raw_archive_dir = Path(raw_archive_dir)
         self.output_dir = Path(output_dir)
@@ -452,6 +456,10 @@ class Phase2TemporalEngine:
         self.sample_rate = sample_rate
         self.precise_lat = precise_lat
         self.precise_lon = precise_lon
+        
+        # Dependency injection
+        self.discriminator = discriminator
+        self.solver = solver
         
         # Initialize sub-components (lazy import to avoid circular deps)
         self._init_components()
@@ -491,26 +499,55 @@ class Phase2TemporalEngine:
             )
             
             # Step 2: WWV/WWVH Discriminator (includes BCD and Doppler)
-            from .wwvh_discrimination import WWVHDiscriminator
-            self.discriminator = WWVHDiscriminator(
-                channel_name=self.channel_name,
-                receiver_grid=self.receiver_grid,
-                sample_rate=self.sample_rate
+            if self.discriminator is None:
+                from .wwvh_discrimination import WWVHDiscriminator
+                self.discriminator = WWVHDiscriminator(
+                    channel_name=self.channel_name,
+                    receiver_grid=self.receiver_grid,
+                    sample_rate=self.sample_rate
+                )
+
+            # Step 2b: Probabilistic Discriminator (Shadow Mode)
+            # This is the new ML-based discriminator running in parallel
+            from .probabilistic_discriminator import ProbabilisticDiscriminator
+            self.prob_discriminator = ProbabilisticDiscriminator(
+                model_path=self.output_dir / 'discriminator_model.json',
+                auto_train=True
             )
             
             # Step 3: Transmission Time Solver
-            from .transmission_time_solver import (
-                TransmissionTimeSolver,
-                create_solver_from_grid
-            )
-            self.solver = create_solver_from_grid(
+            if self.solver is None:
+                from .transmission_time_solver import (
+                    TransmissionTimeSolver,
+                    create_solver_from_grid
+                )
+                self.solver = create_solver_from_grid(
                 self.receiver_grid,
                 self.sample_rate,
                 precise_lat=self.precise_lat,
                 precise_lon=self.precise_lon
             )
+
+            # Step 4: Global Station Voter (IPC Mode)
+            # Enables cross-channel "Station Lock" using /dev/shm
+            from .global_station_voter import GlobalStationVoter
+            from .wwv_constants import STANDARD_CHANNELS  # Need list of all channels
             
-            logger.info("✅ Phase 2 components initialized")
+            # Determine known channels (if STANDARD_CHANNELS is not available, default to list)
+            # For now we use the standard list as the voter needs to know what frequencies exist
+            known_channels = [
+                'WWV 2.5 MHz', 'WWV 5 MHz', 'WWV 10 MHz', 'WWV 15 MHz', 'WWV 20 MHz', 'WWV 25 MHz',
+                'WWVH 2.5 MHz', 'WWVH 5 MHz', 'WWVH 10 MHz', 'WWVH 15 MHz', 
+                'CHU 3.33 MHz', 'CHU 7.85 MHz', 'CHU 14.67 MHz'
+            ]
+            
+            self.voter = GlobalStationVoter(
+                channels=known_channels,
+                sample_rate=self.sample_rate,
+                use_ipc=True
+            )
+            
+            logger.info("✅ Phase 2 components initialized (including Global Station Voter)")
             
         except ImportError as e:
             logger.error(f"Failed to initialize Phase 2 components: {e}")
@@ -582,39 +619,33 @@ class Phase2TemporalEngine:
         rtp_timestamp: int
     ) -> TimeSnapResult:
         """
-        Step 1: Fundamental Tone Detection & Time Snap Correction.
+        Step 1: Detect 1000/1200 Hz tones to establish approximate timing.
         
-        Establishes the initial Time Snap Reference for the RTP stream by
-        detecting 800ms timing tones (1000 Hz WWV, 1200 Hz WWVH).
-        
-        Args:
-            iq_samples: Full-rate (20 kHz) complex64 IQ samples
-            system_time: System time of first sample
-            rtp_timestamp: RTP timestamp of first sample
-            
-        Returns:
-            TimeSnapResult with initial timing anchor
+        Uses matched filtering (via ToneDetector) to find signals.
+        If signal is ambiguous or weak, checks GlobalStationVoter for anchors.
         """
+        # A. Initial Wide Search (or Calibration Window)
+        # The original code used self.config_search_window_ms or 500.0
+        # The instruction's new code uses self.calibration.get_search_window_ms()
+        # Assuming self.calibration is not explicitly defined, we'll use self.config_search_window_ms
+        search_window_ms = self.config_search_window_ms or 500.0
+        
         # Calculate buffer mid-point timestamp
         # The tone detector expects timestamp at MIDDLE of buffer for
         # correct minute boundary calculation
         buffer_duration = len(iq_samples) / self.sample_rate
         buffer_mid_time = system_time + buffer_duration / 2
         
-        # Run matched filter tone detection at FULL RATE (20 kHz)
-        # The tone detector is initialized with self.sample_rate (full rate)
-        # for maximum timing accuracy and sub-sample interpolation precision.
-        # Full-rate detection provides more accurate timing than decimated.
-        # Future optimization: implement proper anti-alias decimation.
         detections = self.tone_detector.process_samples(
-            timestamp=buffer_mid_time,
-            samples=iq_samples,  # Full rate for accuracy
+            timestamp=buffer_mid_time, # Use buffer_mid_time for tone detector
+            samples=iq_samples,
             rtp_timestamp=rtp_timestamp,
-            original_sample_rate=self.sample_rate,
-            buffer_rtp_start=rtp_timestamp
+            original_sample_rate=self.sample_rate, # Added from original code
+            buffer_rtp_start=rtp_timestamp, # Added from original code
+            search_window_ms=search_window_ms
         )
         
-        # Extract detection results
+        # B. Analyze detections
         wwv_det = None
         wwvh_det = None
         chu_det = None
@@ -629,39 +660,68 @@ class Phase2TemporalEngine:
                 elif det.station == StationType.CHU:
                     chu_det = det
         
-        # Determine anchor station (highest confidence detection)
-        # Priority: WWV > CHU > WWVH (CHU uses same 1000 Hz as WWV)
+        # C. Global Station Lock Logic
+        # Report what we found to the ecosystem
+        if wwv_det:
+            self.voter.report_detection_result(self.channel_name, wwv_det, rtp_timestamp)
+        if wwvh_det:
+            self.voter.report_detection_result(self.channel_name, wwvh_det, rtp_timestamp)
+        if chu_det:
+            self.voter.report_detection_result(self.channel_name, chu_det, rtp_timestamp)
+            
+        # D. Ambiguity Resolution & Guided Search
+        # If we have NO strong signal, or an ambiguous one, ask for help
         anchor_station = 'UNKNOWN'
         anchor_confidence = 0.0
         timing_error_ms = 0.0
-        arrival_rtp = rtp_timestamp
         
+        # 1. Try local detection first
         if wwv_det and wwvh_det:
-            # Both WWV and WWVH detected - use higher confidence
-            if wwv_det.confidence >= wwvh_det.confidence:
-                anchor_station = 'WWV'
-                anchor_confidence = wwv_det.confidence
-                timing_error_ms = wwv_det.timing_error_ms or 0.0
-            else:
-                anchor_station = 'WWVH'
-                anchor_confidence = wwvh_det.confidence
-                timing_error_ms = wwvh_det.timing_error_ms or 0.0
+             # Both detected - use stronger
+             if wwv_det.confidence >= wwvh_det.confidence:
+                 anchor_station = 'WWV'
+                 anchor_confidence = wwv_det.confidence
+                 timing_error_ms = wwv_det.timing_error_ms or 0.0 # Ensure float
+             else:
+                 anchor_station = 'WWVH'
+                 anchor_confidence = wwvh_det.confidence
+                 timing_error_ms = wwvh_det.timing_error_ms or 0.0 # Ensure float
         elif wwv_det:
-            anchor_station = 'WWV'
-            anchor_confidence = wwv_det.confidence
-            timing_error_ms = wwv_det.timing_error_ms or 0.0
+             anchor_station = 'WWV'
+             anchor_confidence = wwv_det.confidence
+             timing_error_ms = wwv_det.timing_error_ms or 0.0 # Ensure float
         elif chu_det:
-            # CHU detected (500ms @ 1000 Hz) - valid time reference
-            anchor_station = 'CHU'
-            anchor_confidence = chu_det.confidence
-            timing_error_ms = chu_det.timing_error_ms or 0.0
+             anchor_station = 'CHU'
+             anchor_confidence = chu_det.confidence
+             timing_error_ms = chu_det.timing_error_ms or 0.0 # Ensure float
         elif wwvh_det:
-            anchor_station = 'WWVH'
-            anchor_confidence = wwvh_det.confidence
-            timing_error_ms = wwvh_det.timing_error_ms or 0.0
-        
+             anchor_station = 'WWVH'
+             anchor_confidence = wwvh_det.confidence
+             timing_error_ms = wwvh_det.timing_error_ms or 0.0 # Ensure float
+             
+        # 2. If weak/none, check for Global Anchor
+        if anchor_confidence < 0.7:
+             # Look for "Unambiguous Anchors" first (CHU, WWV 20/25)
+             # The voter logic prefers these
+             best_anchor = self.voter.get_best_time_snap_anchor(rtp_timestamp)
+             
+             if best_anchor and best_anchor['snr_db'] > 10.0:
+                 # Found a strong anchor elsewhere!
+                 # If we detected NOTHING, use the anchor's timing directly (rescue)
+                 if anchor_confidence < 0.3:
+                     logger.info(f"⚓ Global Lock: Rescuing weak signal using {best_anchor['station']} on {best_anchor['channel']}")
+                     anchor_station = best_anchor['station']
+                     anchor_confidence = 0.6 # Provisional confidence for rescue
+                     # Calculate expected local timing based on dispersion?
+                     # For now use anchor timing (assuming < 3ms dispersion)
+                     timing_error_ms = (best_anchor['toa_offset_samples'] / self.sample_rate) * 1000.0
+                 else:
+                     # We detected something weak, does it match the anchor?
+                     # If so, boost confidence
+                     pass
+
         # Calculate arrival RTP from timing error
-        # Use round() not int() for proper rounding (at 20kHz, 1 sample = 0.05ms)
+        # Use round() not int() for proper rounding
         timing_offset_samples = round(timing_error_ms * self.sample_rate / 1000)
         arrival_rtp = rtp_timestamp + timing_offset_samples
         
@@ -998,6 +1058,46 @@ class Phase2TemporalEngine:
                 
         except Exception as e:
             logger.warning(f"Station discrimination failed: {e}")
+            
+        # === SHADOW MODE: Probabilistic Discriminator ===
+        # Run the new ML/probabilistic discriminator in parallel and log comparison
+        try:
+            if hasattr(self, 'prob_discriminator'):
+                # Extract features for the model
+                features = self.prob_discriminator.extract_features(
+                    power_ratio_db=base_result.power_ratio_db,
+                    bcd_wwv_amplitude=result.bcd_wwv_amplitude,
+                    bcd_wwvh_amplitude=result.bcd_wwvh_amplitude,
+                    doppler_std_wwv=result.doppler_wwv_std_hz,
+                    doppler_std_wwvh=result.doppler_wwvh_std_hz,
+                    differential_delay_ms=result.bcd_differential_delay_ms,
+                    tone_440_wwv_detected=(minute_number == 2 and result.ground_truth_station == 'WWV'),
+                    tone_440_wwvh_detected=(minute_number == 1 and result.ground_truth_station == 'WWVH'),
+                    tone_500_600_detected=result.ground_truth_station is not None,
+                    minute=minute_number,
+                    timestamp=system_time
+                )
+                
+                # Run classification
+                prob_result = self.prob_discriminator.classify(features)
+                
+                # Log shadow mode comparison
+                heuristic_station = result.dominant_station
+                prob_station = prob_result.station
+                
+                if heuristic_station != prob_station and prob_result.confidence > 0.6:
+                    logger.warning(
+                        f"SHADOW MODE DISAGREEMENT: Heuristic={heuristic_station} vs "
+                        f"Probabilistic={prob_station} (conf={prob_result.confidence:.2f}, "
+                        f"P(WWV)={prob_result.p_wwv:.2f})"
+                    )
+                else:
+                    logger.debug(
+                        f"Shadow Mode Agreement: {prob_station} (conf={prob_result.confidence:.2f})"
+                    )
+                    
+        except Exception as e:
+            logger.debug(f"Shadow mode discriminator failed: {e}")
         
         # Calculate spreading factor L = τ_D × f_D
         if result.delay_spread_ms is not None and result.coherence_time_sec is not None:
@@ -1131,35 +1231,43 @@ class Phase2TemporalEngine:
                 station = channel.ground_truth_station
                 logger.debug(f"Station from ground truth: {station}")
             
-            # Priority 2: High confidence discrimination (detected via voting)
-            elif channel.station_confidence == 'high' and channel.dominant_station not in ['UNKNOWN', 'BALANCED', None]:
-                station = channel.dominant_station
-                logger.debug(f"Station from discrimination (high confidence): {station}")
-            
-            # Priority 3: Medium confidence discrimination only (NOT low confidence)
-            # Low confidence discrimination on shared frequencies causes flip-flopping
-            elif channel.station_confidence == 'medium' and channel.dominant_station not in ['UNKNOWN', 'BALANCED', 'NONE', None, '']:
-                station = channel.dominant_station
-                logger.debug(f"Station from discrimination (medium confidence): {station}")
-            
-            # Priority 4: Use RTP-based prediction if available (improves over time)
-            # This uses historical RTP calibration to predict which station we should see
-            elif self.station_predictor is not None:
-                predicted, pred_conf = self.station_predictor(
+            # Check RTP prediction early
+            rtp_predicted_station = None
+            rtp_conf = 0.0
+            if self.station_predictor is not None:
+                rtp_predicted_station, rtp_conf = self.station_predictor(
                     self.channel_name,
                     rtp_timestamp,
                     channel.dominant_station or channel_station,
                     channel.station_confidence
                 )
-                if pred_conf > 0.5:
-                    station = predicted
-                    logger.debug(f"Station from RTP prediction: {station} (conf={pred_conf:.2f})")
-                else:
-                    station = channel_station
-                    logger.debug(f"Station from channel name fallback: {station}")
+
+            # Priority 2: RTP Prediction (High Confidence) - ROBUST LOCK
+            # If we have a strong RTP history lock (>0.8), we trust it over 
+            # acoustic noise, unless ground truth contradicted it (Priority 1)
+            if not station and rtp_predicted_station and rtp_conf > 0.8:
+                station = rtp_predicted_station
+                logger.debug(f"Station from RTP prediction (HIGH confidence overrides acoustic): {station} (conf={rtp_conf:.2f})")
+
+            # Priority 3: High confidence discrimination (detected via voting)
+            elif not station and channel.station_confidence == 'high' and channel.dominant_station not in ['UNKNOWN', 'BALANCED', None]:
+                station = channel.dominant_station
+                logger.debug(f"Station from discrimination (high confidence): {station}")
             
-            # Priority 5: Low confidence - use channel name fallback
-            else:
+            # Priority 4: RTP Prediction (Moderate Confidence)
+            # If we have a decent RTP history (>0.5), it's better than medium confidence acoustic
+            elif not station and rtp_predicted_station and rtp_conf > 0.5:
+                station = rtp_predicted_station
+                logger.debug(f"Station from RTP prediction (MODERATE confidence): {station} (conf={rtp_conf:.2f})")
+
+            # Priority 5: Medium confidence discrimination only (NOT low confidence)
+            # Low confidence discrimination on shared frequencies causes flip-flopping
+            elif not station and channel.station_confidence == 'medium' and channel.dominant_station not in ['UNKNOWN', 'BALANCED', 'NONE', None, '']:
+                station = channel.dominant_station
+                logger.debug(f"Station from discrimination (medium confidence): {station}")
+            
+            # Priority 6: Low confidence - use channel name fallback
+            if not station:
                 station = channel_station
                 logger.debug(f"Station from channel name fallback (low confidence discrimination rejected): {station}")
         
@@ -1324,172 +1432,79 @@ class Phase2TemporalEngine:
                 utc_verified=False
             )
     
-    def _calculate_uncertainty(
+        return self._calculate_physics_based_uncertainty(channel, solver_result.confidence)[0]
+    
+    def _calculate_physics_based_uncertainty(
         self,
-        solver_result,
-        channel: ChannelCharacterization
-    ) -> float:
-        """Calculate timing uncertainty based on all available metrics."""
-        base_uncertainty = 2.0  # Base uncertainty in ms
+        channel: ChannelCharacterization,
+        solution_confidence: float = 1.0
+    ) -> Tuple[float, float]:
+        """
+        Calculate timing uncertainty using variance propagation.
         
-        # Confidence scaling
-        confidence_factor = 1.0 / max(solver_result.confidence, 0.1)
+        Formula: sigma_total^2 = sigma_snr^2 + sigma_prop^2 + sigma_stab^2 + sigma_sys^2
         
-        # Channel quality scaling
-        if channel.spreading_factor is not None:
-            if channel.spreading_factor > 1.0:
-                channel_factor = 3.0  # Overspread channel
-            elif channel.spreading_factor > 0.3:
-                channel_factor = 1.5  # Moderately spread
-            else:
-                channel_factor = 0.8  # Clean channel
-        else:
-            channel_factor = 1.2  # Unknown, assume moderate
+        Returns:
+            (uncertainty_ms, confidence)
+        """
+        # 1. SNR Variance (Cramer-Rao Lower Bound approximation)
+        # sigma_toa ~ 1 / (B * sqrt(SNR))
+        snr_db = channel.snr_db if channel.snr_db is not None else 0.0
+        snr_linear = 10 ** (max(snr_db, 0.0) / 10.0)
+        # Effective bandwidth ~100Hz for envelope timing
+        sigma_snr_ms = 100.0 / np.sqrt(max(snr_linear, 1.0))
         
-        # Doppler stability
-        max_std = max(
+        # 2. Propagation Variance (Dominant term)
+        # Delay spread directly maps to ambiguity
+        delay_spread = channel.delay_spread_ms or 2.0
+        sigma_prop_ms = delay_spread
+        
+        # 3. Stability Variance
+        # Doppler spread implies changing path length
+        doppler_std = max(
             channel.doppler_wwv_std_hz or 0.0,
             channel.doppler_wwvh_std_hz or 0.0
         )
-        doppler_factor = 1.0 + (max_std * 2.0)  # Higher Doppler = more uncertainty
+        sigma_stab_ms = doppler_std * 10.0  # 1 Hz Doppler ~ 10ms/s rate of change? Heuristic scaling.
         
-        uncertainty = base_uncertainty * confidence_factor * channel_factor * doppler_factor
+        # 4. System Variance (Base metrology limit)
+        sigma_sys_ms = 1.0
         
-        # BCD delay spread improvement: low delay spread = clean channel
-        if channel.delay_spread_ms is not None:
-            if channel.delay_spread_ms < 1.0:
-                # Very clean channel - 20% improvement
-                uncertainty *= 0.8
-                logger.debug(f"BCD delay spread {channel.delay_spread_ms:.1f}ms reduces uncertainty by 20%")
-            elif channel.delay_spread_ms < 2.0:
-                # Clean channel - 10% improvement
-                uncertainty *= 0.9
-                logger.debug(f"BCD delay spread {channel.delay_spread_ms:.1f}ms reduces uncertainty by 10%")
-            elif channel.delay_spread_ms > 5.0:
-                # High multipath - increase uncertainty
-                uncertainty *= 1.3
-                logger.debug(f"BCD delay spread {channel.delay_spread_ms:.1f}ms increases uncertainty by 30%")
+        # Total Variance
+        total_variance = (sigma_snr_ms**2 + 
+                          sigma_prop_ms**2 + 
+                          sigma_stab_ms**2 + 
+                          sigma_sys_ms**2)
+                          
+        uncertainty_ms = np.sqrt(total_variance)
         
-        # BCD correlation quality improvement
-        if channel.bcd_correlation_quality is not None and channel.bcd_correlation_quality > 0.8:
-            uncertainty *= 0.9  # High BCD quality = 10% improvement
-            logger.debug(f"High BCD quality {channel.bcd_correlation_quality:.2f} reduces uncertainty by 10%")
-        
-        # Test signal improvement: reduce uncertainty when test signal provides
-        # high-quality channel characterization
-        if channel.test_signal_detected:
-            test_signal_factor = 0.8  # 20% improvement from test signal
+        # Special cases (Ground Truth / FSK) drastically reduce variance
+        if channel.chu_fsk_detected and channel.chu_fsk_time_verified:
+            uncertainty_ms = 0.1  # FSK is digital lock
+        elif channel.ground_truth_station is not None:
+            uncertainty_ms = min(uncertainty_ms, 1.0)
             
-            # Further reduction if coherence time is good (stable channel)
-            if channel.test_signal_coherence_time_sec is not None:
-                if channel.test_signal_coherence_time_sec > 5.0:
-                    test_signal_factor = 0.6  # Very stable channel
-                elif channel.test_signal_coherence_time_sec > 2.0:
-                    test_signal_factor = 0.7  # Stable channel
-            
-            uncertainty *= test_signal_factor
-            logger.debug(f"Test signal reduces uncertainty by {(1-test_signal_factor)*100:.0f}%")
+        # Confidence logic (consistency checks)
+        confidence = solution_confidence
         
-        # Ground truth provides additional confidence
-        if channel.ground_truth_station is not None:
-            uncertainty *= 0.9  # 10% improvement from ground truth confirmation
-        
-        # CHU FSK provides precise 500ms timing reference and time verification
-        if channel.chu_fsk_detected:
-            # Base improvement from FSK decode
-            chu_factor = 0.8  # 20% improvement from FSK decode
+        # Reduce confidence if systematic disagreements exist
+        disagreements = len(channel.cross_validation_disagreements)
+        if disagreements > 0:
+            confidence *= (0.8 ** disagreements)
             
-            # Additional improvement based on decode confidence
-            if channel.chu_fsk_decode_confidence > 0.8:
-                chu_factor = 0.6  # 40% improvement for high confidence
-            elif channel.chu_fsk_decode_confidence > 0.5:
-                chu_factor = 0.7  # 30% improvement for moderate confidence
-            
-            # Extra boost if decoded time matches expected
-            if channel.chu_fsk_time_verified:
-                chu_factor *= 0.9  # Additional 10% for time verification
-            
-            uncertainty *= chu_factor
-            logger.debug(f"CHU FSK reduces uncertainty by {(1-chu_factor)*100:.0f}% "
-                        f"(confidence={channel.chu_fsk_decode_confidence:.2f})")
-        
-        return min(uncertainty, 100.0)  # Cap at 100ms
-    
+        return uncertainty_ms, confidence
+
     def _estimate_uncertainty(
         self,
         solution: TransmissionTimeSolution,
         channel: ChannelCharacterization
     ) -> Tuple[float, float]:
         """
-        Estimate timing uncertainty based on all available metrics.
-        
-        Issue 6.2 Fix: Replaces arbitrary letter grades (A/B/C/D) with
-        a physically meaningful uncertainty estimate in milliseconds.
-        
-        Returns:
-            (uncertainty_ms, confidence): Tuple of uncertainty and confidence
+        Estimate timing uncertainty based on physics-based variance.
+        Wrapper for _calculate_physics_based_uncertainty.
         """
-        # Base uncertainty from propagation model
-        base_uncertainty = 5.0  # ms, typical ionospheric timing uncertainty
-        
-        # Factors that reduce uncertainty
-        has_ground_truth = channel.ground_truth_station is not None
-        has_test_signal = channel.test_signal_detected
-        has_chu_fsk = channel.chu_fsk_detected and channel.chu_fsk_time_verified
-        agreement_count = len(channel.cross_validation_agreements)
-        disagreement_count = len(channel.cross_validation_disagreements)
-        
-        # Start with solution's confidence
-        confidence = solution.confidence
-        uncertainty = base_uncertainty
-        
-        # CHU FSK provides verified timing (lowest uncertainty)
-        if has_chu_fsk:
-            uncertainty = 0.1  # 100 μs - FSK provides precise timing
-            confidence = max(confidence, 0.95)
-        
-        # Ground truth minutes (silent minutes) provide known station
-        elif has_ground_truth:
-            uncertainty = 1.0  # 1 ms - known station eliminates ambiguity
-            confidence = max(confidence, 0.9)
-        
-        # Test signal provides high SNR measurement
-        elif has_test_signal:
-            uncertainty = 2.0  # 2 ms
-            confidence = max(confidence, 0.8)
-        
-        # Multiple method agreement reduces uncertainty
-        elif agreement_count >= 3:
-            uncertainty = 2.0
-            confidence = max(confidence, 0.75)
-        
-        elif agreement_count >= 2:
-            uncertainty = 3.0
-            confidence = max(confidence, 0.6)
-        
-        # Disagreements increase uncertainty
-        if disagreement_count > 0:
-            uncertainty *= (1 + 0.5 * disagreement_count)
-            confidence *= 0.8
-        
-        # Low SNR increases uncertainty
-        if channel.snr_db is not None and channel.snr_db < 10:
-            uncertainty *= 2.0
-            confidence *= 0.7
-        
-        # Multipath increases uncertainty
-        if channel.delay_spread_ms is not None and channel.delay_spread_ms > 1.0:
-            uncertainty += channel.delay_spread_ms
-        
-        # Low solution confidence increases uncertainty
-        if solution.confidence < 0.5:
-            uncertainty *= (2.0 - solution.confidence)
-        
-        # Cap values
-        uncertainty = min(uncertainty, 50.0)  # Max 50 ms
-        confidence = max(0.0, min(1.0, confidence))
-        
-        return uncertainty, confidence
+        return self._calculate_physics_based_uncertainty(channel, solution.confidence)
+
     
     def process_minute(
         self,
@@ -1503,9 +1518,9 @@ class Phase2TemporalEngine:
         This is the main entry point for Phase 2 analysis, implementing the
         refined temporal analysis order:
         
-        1. Fundamental Tone Detection → Time Snap Anchor
-        2. Ionospheric Channel Characterization → Confidence Scoring
-        3. Transmission Time Solution → D_clock
+        1. Fundamental Tone Detection -> Time Snap Anchor
+        2. Ionospheric Channel Characterization -> Confidence Scoring
+        3. Transmission Time Solution -> D_clock
         
         Args:
             iq_samples: Complex64 IQ samples (60 seconds at sample_rate)

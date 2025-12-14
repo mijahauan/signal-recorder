@@ -25,26 +25,16 @@ Group delay (dispersion) varies by frequency:
 
 The dispersion uncertainty (3ms) << station separation (15ms), so a strong
 detection of one station unambiguously identifies the search window on all bands.
-
-Usage:
-------
-    voter = GlobalStationVoter(channels=['WWV_2.5_MHz', 'WWV_5_MHz', ...])
-    
-    # Each channel reports its minute's detection
-    voter.report_detection('WWV_10_MHz', minute_rtp, result)
-    voter.report_detection('WWV_15_MHz', minute_rtp, result)
-    ...
-    
-    # Get guided search window for weak channel
-    window = voter.get_search_window('WWV_2.5_MHz', minute_rtp, station='WWVH')
-    # Returns: {'center_rtp': 1000000, 'window_samples': 48, 'source_channel': 'WWV_15_MHz'}
-    
-    # Or get stacked correlation for maximum sensitivity
-    stacked = voter.get_stacked_correlation(minute_rtp, station='WWVH')
 """
 
 import logging
 import numpy as np
+import os
+import glob
+import json
+import time
+import fcntl
+from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -60,7 +50,8 @@ from .wwv_constants import (
     ANCHOR_SNR_HIGH,
     ANCHOR_SNR_MEDIUM,
     ANCHOR_SNR_LOW,
-    SAMPLE_RATE_FULL
+    SAMPLE_RATE_FULL,
+    GUIDED_SEARCH_SAFETY_MARGIN_MS
 )
 
 # Samples per millisecond (computed from sample rate)
@@ -97,12 +88,15 @@ class StationAnchor:
         Calculate search window size accounting for dispersion.
         
         Higher frequency difference = more dispersion uncertainty.
+        Added SAFETY MARGIN to be conservative on initial lock.
         """
         freq_diff_mhz = abs(self.frequency_mhz - target_freq_mhz)
         
         # Empirical model: dispersion scales roughly with frequency difference
         # At HF, typical dispersion is ~0.1 ms/MHz (varies with ionosphere)
+        # Add Safety Margin (5ms) to be robust against unmodeled errors
         dispersion_ms = min(MAX_DISPERSION_MS, 0.1 * freq_diff_mhz + 1.0)
+        dispersion_ms += GUIDED_SEARCH_SAFETY_MARGIN_MS
         
         # Convert to samples (± window)
         window_samples = int(dispersion_ms * SAMPLES_PER_MS)
@@ -161,6 +155,116 @@ class MinuteState:
                 self.chu_anchor = anchor
 
 
+class VoterBackend:
+    """Abstract backend for voter state storage"""
+    def save_anchor(self, minute_rtp: int, anchor: StationAnchor):
+        raise NotImplementedError
+        
+    def get_anchors(self, minute_rtp: int) -> List[StationAnchor]:
+        raise NotImplementedError
+
+class MemoryBackend(VoterBackend):
+    """In-memory backend for single-process use (testing/monolithic)"""
+    def __init__(self):
+        self.anchors: Dict[int, List[StationAnchor]] = defaultdict(list)
+        
+    def save_anchor(self, minute_rtp: int, anchor: StationAnchor):
+        # Remove existing anchor for this station/channel if present
+        current_list = self.anchors[minute_rtp]
+        self.anchors[minute_rtp] = [
+            a for a in current_list 
+            if not (a.station == anchor.station and a.channel == anchor.channel)
+        ]
+        self.anchors[minute_rtp].append(anchor)
+        
+    def get_anchors(self, minute_rtp: int) -> List[StationAnchor]:
+        return self.anchors[minute_rtp]
+
+class FileBackend(VoterBackend):
+    """
+    File-based backend for multi-process use.
+    Uses /dev/shm (RAM disk) for low-latency IPC.
+    """
+    def __init__(self, root_dir: Path = Path('/dev/shm/grape_voter')):
+        self.root_dir = root_dir
+        self.root_dir.mkdir(parents=True, exist_ok=True)
+        # Clean up old files on startup? Maybe not, other processes might be running.
+        
+    def _get_minute_dir(self, minute_rtp: int) -> Path:
+        """Get directory for a specific minute"""
+        d = self.root_dir / str(minute_rtp)
+        d.mkdir(EXIST_OK=True) 
+        return d
+        
+    def save_anchor(self, minute_rtp: int, anchor: StationAnchor):
+        """Save anchor to a JSON file"""
+        try:
+            minute_dir = self.root_dir / str(minute_rtp)
+            minute_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Filename: station_channel.json
+            filename = f"{anchor.station}_{anchor.channel.replace(' ', '_')}.json"
+            filepath = minute_dir / filename
+            
+            data = {
+                'station': anchor.station,
+                'channel': anchor.channel,
+                'frequency_mhz': anchor.frequency_mhz,
+                'rtp_timestamp': anchor.rtp_timestamp,
+                'snr_db': anchor.snr_db,
+                'quality': anchor.quality.value,
+                'confidence': anchor.confidence,
+                'toa_offset_samples': anchor.toa_offset_samples,
+                'timestamp': time.time() # Write timestamp
+            }
+            
+            # Atomic write using temp file and rename
+            tmp_path = filepath.with_suffix('.tmp')
+            with open(tmp_path, 'w') as f:
+                json.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            
+            tmp_path.rename(filepath)
+            
+        except Exception as e:
+            logger.error(f"Failed to save anchor to IPC: {e}")
+
+    def get_anchors(self, minute_rtp: int) -> List[StationAnchor]:
+        """Read all anchors for a minute"""
+        anchors = []
+        minute_dir = self.root_dir / str(minute_rtp)
+        
+        if not minute_dir.exists():
+            return []
+            
+        try:
+            for filepath in minute_dir.glob('*.json'):
+                try:
+                    with open(filepath, 'r') as f:
+                        # Simple non-blocking read
+                        data = json.load(f)
+                        
+                    anchors.append(StationAnchor(
+                        station=data['station'],
+                        channel=data['channel'],
+                        frequency_mhz=data['frequency_mhz'],
+                        rtp_timestamp=data['rtp_timestamp'],
+                        snr_db=data['snr_db'],
+                        quality=AnchorQuality(data['quality']),
+                        confidence=data['confidence'],
+                        toa_offset_samples=data['toa_offset_samples'],
+                        correlation_array=None # Can't easily share numpy array via JSON
+                    ))
+                except (json.JSONDecodeError, KeyError):
+                    continue # Ignore partial/corrupt files
+                    
+        except Exception as e:
+            logger.error(f"Failed to read anchors from IPC: {e}")
+            
+        return anchors
+
+
 class GlobalStationVoter:
     """
     Cross-channel coordination for coherent station detection.
@@ -175,7 +279,8 @@ class GlobalStationVoter:
         self,
         channels: List[str],
         sample_rate: int = 20000,
-        history_minutes: int = 60
+        history_minutes: int = 60,
+        use_ipc: bool = True
     ):
         """
         Initialize global voter.
@@ -184,12 +289,21 @@ class GlobalStationVoter:
             channels: List of channel names to coordinate
             sample_rate: Sample rate for RTP calculations
             history_minutes: Number of minutes to keep in history
+            use_ipc: If True, use /dev/shm for cross-process coordination
         """
         self.channels = set(channels)
         self.sample_rate = sample_rate
         self.history_minutes = history_minutes
         
-        # Minute state keyed by minute_rtp (floored to minute boundary)
+        # Select backend
+        if use_ipc:
+            self.backend = FileBackend()
+            logger.info("GlobalStationVoter: Using FileBackend (IPC) at /dev/shm/grape_voter")
+        else:
+            self.backend = MemoryBackend()
+            logger.info("GlobalStationVoter: Using MemoryBackend (Local)")
+
+        # Local cache of minute states to avoid constant disk reads for "my own" state
         self.minute_states: Dict[int, MinuteState] = {}
         
         # Channel -> frequency mapping (extracted from channel name)
@@ -251,7 +365,15 @@ class GlobalStationVoter:
             to_remove = sorted_keys[:-self.history_minutes]
             for key in to_remove:
                 del self.minute_states[key]
-    
+
+    def _sync_from_backend(self, minute_rtp: int):
+        """Update local state with anchors from backend"""
+        minute_state = self._get_or_create_minute(minute_rtp)
+        anchors = self.backend.get_anchors(minute_rtp)
+        
+        for anchor in anchors:
+            minute_state.set_anchor(anchor)
+
     def report_detection(
         self,
         channel: str,
@@ -267,16 +389,6 @@ class GlobalStationVoter:
         Report a detection from a channel.
         
         If detection is strong enough, it becomes an anchor for other channels.
-        
-        Args:
-            channel: Channel name (e.g., 'WWV_10_MHz')
-            rtp_timestamp: RTP timestamp of detection
-            station: Detected station ('WWV', 'WWVH', 'CHU')
-            snr_db: Detection SNR in dB
-            toa_offset_samples: Offset from minute boundary in samples
-            confidence: Detection confidence (0-1)
-            correlation_array: Raw correlation array for potential stacking
-            utc_timestamp: UTC time of minute (optional)
         """
         minute_rtp = self._minute_rtp_key(rtp_timestamp)
         minute_state = self._get_or_create_minute(minute_rtp, utc_timestamp)
@@ -309,6 +421,9 @@ class GlobalStationVoter:
             minute_state.set_anchor(anchor)
             self.stats['anchors_found'] += 1
             
+            # Persist to backend
+            self.backend.save_anchor(minute_rtp, anchor)
+            
             logger.debug(
                 f"Anchor set: {station} on {channel} @ {snr_db:.1f} dB "
                 f"(quality={quality.value}, offset={toa_offset_samples} samples)"
@@ -332,21 +447,11 @@ class GlobalStationVoter:
         
         Returns the RTP position and window size to search, based on
         an anchor from a stronger channel.
-        
-        Args:
-            channel: Target channel needing guidance
-            minute_rtp: Minute RTP timestamp
-            station: Station to search for ('WWV', 'WWVH', 'CHU')
-            
-        Returns:
-            Dict with:
-                - center_rtp: RTP timestamp to center search on
-                - window_samples: ± samples to search
-                - source_channel: Which channel provided the anchor
-                - anchor_snr_db: SNR of the anchor detection
-            Or None if no suitable anchor found.
         """
         minute_key = self._minute_rtp_key(minute_rtp)
+        
+        # Sync with backend
+        self._sync_from_backend(minute_key)
         
         if minute_key not in self.minute_states:
             return None
@@ -385,21 +490,6 @@ class GlobalStationVoter:
     ) -> Optional[Dict[str, Any]]:
         """
         Get coherently stacked correlation across all channels.
-        
-        Sums correlation arrays from all channels, exploiting the fact
-        that signal adds linearly while noise adds as sqrt(N).
-        
-        Args:
-            minute_rtp: Minute RTP timestamp
-            station: Station to stack for ('WWV' or 'WWVH')
-            normalize: Whether to normalize by number of channels
-            
-        Returns:
-            Dict with:
-                - stacked_correlation: Combined correlation array
-                - channels_used: List of channels included
-                - snr_improvement_db: Theoretical SNR improvement
-            Or None if insufficient data.
         """
         minute_key = self._minute_rtp_key(minute_rtp)
         
@@ -435,7 +525,6 @@ class GlobalStationVoter:
             stacked += arr_trimmed
         
         # Theoretical SNR improvement: sqrt(N) for incoherent stacking
-        # (actual improvement depends on noise correlation between channels)
         n_channels = len(correlations)
         snr_improvement_db = 10 * np.log10(n_channels)  # Best case
         
@@ -453,9 +542,6 @@ class GlobalStationVoter:
     def get_minute_summary(self, minute_rtp: int) -> Optional[Dict[str, Any]]:
         """
         Get summary of all detections for a minute.
-        
-        Returns:
-            Dict with anchor info for each station and channel status.
         """
         minute_key = self._minute_rtp_key(minute_rtp)
         
@@ -501,21 +587,11 @@ class GlobalStationVoter:
     ) -> Optional[Dict[str, Any]]:
         """
         Get the best anchor across ALL channels for time_snap establishment.
-        
-        Implements dynamic RTP anchor selection using ensemble voting:
-        - Selects the strongest SNR detection across all frequencies
-        - Prefers WWV/CHU over WWVH (for timing reference)
-        - Returns the anchor with lowest timing uncertainty
-        
-        Args:
-            minute_rtp: Minute RTP timestamp
-            prefer_wwv_chu: If True, prefer WWV/CHU over WWVH for timing
-            min_snr_db: Minimum SNR required for consideration
-            
-        Returns:
-            Dict with best anchor info for time_snap, or None if no good anchor
         """
         minute_key = self._minute_rtp_key(minute_rtp)
+        
+        # Sync with backend to get latest anchors from other channels
+        self._sync_from_backend(minute_key)
         
         if minute_key not in self.minute_states:
             return None
@@ -599,12 +675,6 @@ class GlobalStationVoter:
     ):
         """
         Convenience method to report a ToneDetectionResult.
-        
-        Args:
-            channel: Channel name
-            detection_result: ToneDetectionResult object
-            minute_rtp: Minute boundary RTP
-            correlation_array: Optional correlation array for stacking
         """
         # Extract station name handling both string and enum
         station = detection_result.station
