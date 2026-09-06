@@ -251,6 +251,11 @@ Claude-Session: https://claude.ai/code/session_014fxKGYhGpcPpYFsPbDj4KH"
       # returns (profile of length sample_rate, n_rows_folded)
   def find_fold_peaks(profile: np.ndarray, sample_rate: int, band: str,
                       min_snr_db: float = ACQ_MIN_FOLD_SNR_DB) -> list[FoldPeak]
+  BAND_ARBITRATION_MS = 3.0
+  def arbitrate_bands(peaks_by_band: dict[str, list[FoldPeak]],
+                      agree_ms: float = BAND_ARBITRATION_MS) -> list[FoldPeak]
+      # a 5 ms tick's ~200 Hz main lobe leaks into the neighbouring band; when two bands
+      # show a peak at the same position (within agree_ms), keep only the stronger one
   ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -261,7 +266,7 @@ import numpy as np
 import pytest
 
 from hf_timestd.core.registration_acquirer import (
-    ACQ_MIN_FOLD_SNR_DB, FoldPeak, find_fold_peaks, fold_tick_train,
+    ACQ_MIN_FOLD_SNR_DB, FoldPeak, arbitrate_bands, find_fold_peaks, fold_tick_train,
 )
 from tests.unit.synth_ticks import make_tick_audio
 
@@ -294,13 +299,28 @@ def test_position_wraps_inside_the_second():
     assert abs(best.position_s - ((0.010 - 0.300) % 1.0)) < 0.002
 
 
-def test_wwvh_lands_in_the_1200_band_only():
+def test_wwvh_lands_in_the_1200_band_after_arbitration():
+    # A 5 ms tick has a ~200 Hz sinc main lobe, so a 1200 Hz tick LEAKS into
+    # the 900-1100 band; no filter separates them.  The tone identity comes
+    # from comparing the two bands at the same fold position: the band that
+    # matches the tone responds more strongly.
     audio = make_tick_audio(62, SR, T0, {"WWVH": 0.018}, snr_db=20.0)
     p1000, _ = fold_tick_train(audio, SR, T0, "1000", 60)
     p1200, _ = fold_tick_train(audio, SR, T0, "1200", 60)
-    assert not find_fold_peaks(p1000, SR, "1000")
-    peaks = find_fold_peaks(p1200, SR, "1200")
-    assert peaks and abs(peaks[0].position_s - 0.018) < 0.002
+    peaks = arbitrate_bands({"1000": find_fold_peaks(p1000, SR, "1000"),
+                             "1200": find_fold_peaks(p1200, SR, "1200")})
+    assert len(peaks) == 1 and peaks[0].band == "1200"
+    assert abs(peaks[0].position_s - 0.018) < 0.002
+
+
+def test_arbitration_keeps_distinct_positions_in_both_bands():
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.010, "WWVH": 0.028}, snr_db=20.0)
+    p1000, _ = fold_tick_train(audio, SR, T0, "1000", 60)
+    p1200, _ = fold_tick_train(audio, SR, T0, "1200", 60)
+    peaks = arbitrate_bands({"1000": find_fold_peaks(p1000, SR, "1000"),
+                             "1200": find_fold_peaks(p1200, SR, "1200")})
+    by_band = {p.band: p.position_s for p in peaks}
+    assert abs(by_band["1000"] - 0.010) < 0.002 and abs(by_band["1200"] - 0.028) < 0.002
 
 
 def test_noise_alone_yields_no_peak():
@@ -467,6 +487,28 @@ def find_fold_peaks(profile: np.ndarray, sample_rate: int, band: str,
                               width_ms=width_ms))
     peaks.sort(key=lambda p: -p.snr_db)
     return peaks
+
+
+BAND_ARBITRATION_MS = 3.0
+
+
+def arbitrate_bands(peaks_by_band: Dict[str, List[FoldPeak]],
+                    agree_ms: float = BAND_ARBITRATION_MS) -> List[FoldPeak]:
+    """Assign each fold position to ONE tone band.  A 5 ms tick has a sinc
+    main lobe ~200 Hz wide, so a 1200 Hz tick leaks into 900-1100 Hz and a
+    1000 Hz tick into 1100-1300 Hz; no filter separates them.  The band
+    whose centre matches the tone responds more strongly, so when two
+    bands carry a peak at the same position the weaker one is the leak."""
+    allp = [p for ps in peaks_by_band.values() for p in ps]
+    allp.sort(key=lambda p: -p.snr_db)
+    kept: List[FoldPeak] = []
+    for p in allp:
+        clash = any(k.band != p.band
+                    and abs(((p.position_s - k.position_s) + 0.5) % 1.0 - 0.5) * 1000.0 <= agree_ms
+                    for k in kept)
+        if not clash:
+            kept.append(p)
+    return kept
 ```
 
 - [ ] **Step 4: Run the tests**
@@ -1066,15 +1108,16 @@ class RegistrationAcquirer:
             pieces.append(audio)
         audio_all = np.concatenate(pieces)
         n_sec = min(180, len(audio_all) // self.sample_rate)
-        best: List[Hypothesis] = []
+        by_band: Dict[str, List[FoldPeak]] = {}
         for band in TONE_BANDS_HZ:
-            if not any(BAND_OF_STATION.get(s) == band for s in expected_delays_s):
-                continue
+            # fold EVERY band, even one with no eligible station: the leak of a
+            # 1200 Hz tick into 900-1100 Hz is only recognisable by comparison
             profile, rows = fold_tick_train(audio_all, self.sample_rate, s0, band, n_sec)
             if rows == 0:
                 continue
-            peaks = find_fold_peaks(profile, self.sample_rate, band)
-            best.extend(peaks)
+            by_band[band] = find_fold_peaks(profile, self.sample_rate, band)
+        best = [p for p in arbitrate_bands(by_band)
+                if any(BAND_OF_STATION.get(s) == p.band for s in expected_delays_s)]
         hyps = fit_template(best, expected_delays_s)
         self._open = [h for h in hyps if not h.unambiguous]
         winners = [h for h in hyps if h.unambiguous]
