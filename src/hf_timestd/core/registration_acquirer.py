@@ -199,3 +199,84 @@ def arbitrate_bands(
         if not clash:
             kept.append(p)
     return kept
+
+
+@dataclass(frozen=True)
+class Hypothesis:
+    correction_s: float
+    sigma_ms: float
+    assignments: tuple  # ((station, band, position_s, snr_db), ...)
+    support: int
+    unambiguous: bool
+
+
+def wrap_half_second(x_s: float) -> float:
+    """Wrap into (-0.5, 0.5]."""
+    y = (x_s + 0.5) % 1.0 - 0.5
+    return 0.5 if y == -0.5 else y
+
+
+def _sigma_ms_from_snr(snr_db: float) -> float:
+    # Tick rise through a 200 Hz band ~5 ms; timing sigma ≈ rise / (S/N).
+    rise_ms = 5.0
+    return max(ORIGIN_SIGMA_FLOOR_MS, rise_ms / (10 ** (snr_db / 20.0)) * 3.0)
+
+
+def fit_template(
+    peaks: List[FoldPeak],
+    expected_delays_s: Dict[str, float],
+    agree_ms: float = 3.0,
+) -> List[Hypothesis]:
+    """Fit the peak set to the station delay template by a common shift.
+
+    Every (peak, station) pairing whose tone bands agree proposes a
+    correction; pairings whose corrections agree within ``agree_ms`` form
+    one hypothesis with support = number of peaks.  A hypothesis is
+    unambiguous with support >= 2 or when the peak's band admits exactly
+    one eligible station."""
+    pairings = []
+    for p in peaks:
+        compatible = [s for s in expected_delays_s if BAND_OF_STATION.get(s) == p.band]
+        for s in compatible:
+            corr = wrap_half_second(expected_delays_s[s] - p.position_s)
+            pairings.append((corr, s, p, len(compatible)))
+    if not pairings:
+        return []
+    pairings.sort(key=lambda x: x[0])
+    used = [False] * len(pairings)
+    hyps: List[Hypothesis] = []
+    for i, (corr_i, _, _, _) in enumerate(pairings):
+        if used[i]:
+            continue
+        group = []
+        seen_peaks = set()
+        for j, (corr_j, s_j, p_j, n_comp) in enumerate(pairings):
+            if used[j] or id(p_j) in seen_peaks:
+                continue
+            if abs(wrap_half_second(corr_j - corr_i)) * 1000.0 <= agree_ms:
+                group.append(j)
+                seen_peaks.add(id(p_j))
+        for j in group:
+            used[j] = True
+        members = [pairings[j] for j in group]
+        w = np.array([10 ** (m[2].snr_db / 10.0) for m in members])
+        corr = float(np.sum(w * np.array([m[0] for m in members])) / np.sum(w))
+        sig = float(
+            min(_sigma_ms_from_snr(m[2].snr_db) for m in members)
+            / np.sqrt(len(members))
+        )
+        support = len(members)
+        unamb = support >= 2 or (support == 1 and members[0][3] == 1)
+        hyps.append(
+            Hypothesis(
+                correction_s=wrap_half_second(corr),
+                sigma_ms=max(ORIGIN_SIGMA_FLOOR_MS, sig),
+                assignments=tuple(
+                    (m[1], m[2].band, m[2].position_s, m[2].snr_db) for m in members
+                ),
+                support=support,
+                unambiguous=unamb,
+            )
+        )
+    hyps.sort(key=lambda h: (-h.support, -sum(a[3] for a in h.assignments)))
+    return hyps
