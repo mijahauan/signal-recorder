@@ -1,6 +1,6 @@
 # T3 self-registration — the received ticks place the second, not radiod's pair
 
-**Status:** DRAFT for Michael's review, then writing-plans
+**Status:** APPROVED by Michael 2026-09-06 ("Looks good. Proceed."); plan: docs/superpowers/plans/2026-09-06-t3-self-registration.md
 **Date:** 2026-09-06
 **Authors:** Michael (mjh) with Claude
 **Governs:** `hf-timestd` metrology on stations with and without a TS-1
