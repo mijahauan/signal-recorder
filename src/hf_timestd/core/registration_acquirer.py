@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy.signal import butter, sosfiltfilt
@@ -280,3 +280,68 @@ def fit_template(
         )
     hyps.sort(key=lambda h: (-h.support, -sum(a[3] for a in h.assignments)))
     return hyps
+
+
+MARKER_SEARCH_HALF_S = 1.5
+MARKER_LEN_S = 0.800
+MARKER_MIN_SNR_DB = 6.0
+
+
+def locate_minute_marker(
+    audio: np.ndarray,
+    sample_rate: int,
+    sample0_utc_label: float,
+    band: str,
+    minute_utc: int,
+) -> Optional[Tuple[float, float]]:
+    """Find the 800 ms marker near where the label puts second 0 of
+    ``minute_utc``.  Correlates a boxcar of MARKER_LEN_S with the band
+    envelope over ±MARKER_SEARCH_HALF_S.  Returns (onset offset from the
+    label's minute_utc in seconds, SNR dB) or None."""
+    env = _band_envelope(audio, sample_rate, band)
+    centre = int(round((minute_utc - sample0_utc_label) * sample_rate))
+    half = int(MARKER_SEARCH_HALF_S * sample_rate)
+    L = int(MARKER_LEN_S * sample_rate)
+    a = centre - half
+    b = centre + half + L
+    if a < 0 or b > len(env):
+        return None
+    seg = env[a:b]
+    csum = np.concatenate(([0.0], np.cumsum(seg)))
+    score = (csum[L:] - csum[:-L]) / L  # mean over each 800 ms window
+    k = int(np.argmax(score))
+    # Baseline/spread come from the WHOLE envelope's per-sample robust
+    # stats, not from this windowed score array: a regular 5 ms tick can
+    # only ever touch an L=800 ms window for 5/800 of its length, so the
+    # score sequence's own MAD stays tiny with or without a marker and a
+    # ratio against it cannot tell the two apart (measured: absent a
+    # marker the score ranges 0.0168-0.0226 against a same-scale MAD of
+    # ~0.0006, reading a spurious ~17 dB). The full envelope's per-sample
+    # MAD instead reflects the actual noise/tick floor regardless of
+    # what one window happens to contain, so a genuine ~800 ms marker
+    # (whose window average approaches full tone amplitude) clears it by
+    # orders of magnitude while a bare tick fragment does not.
+    baseline = np.median(env)
+    mad = np.median(np.abs(env - baseline)) * 1.4826
+    if mad <= 0:
+        return None
+    snr_db = float(20 * np.log10((score[k] - baseline) / mad))
+    if snr_db < MARKER_MIN_SNR_DB:
+        return None
+    # refine to the half-rise onset of the envelope inside the window
+    win = seg[k : k + L]
+    thr = baseline + 0.5 * (np.max(win) - baseline)
+    rise = int(np.argmax(win > thr))
+    onset_sample = a + k + rise
+    return (onset_sample / sample_rate) - (minute_utc - sample0_utc_label), snr_db
+
+
+def integer_second_correction(
+    marker_offset_s: float, expected_delay_s: float, fractional_correction_s: float
+) -> int:
+    """Whole seconds to add to the label plane on top of the fold's
+    fractional correction.  The marker appears at ``expected_delay + walk``
+    in the label frame, so the total correction is ``expected_delay −
+    marker_offset``; the fold already supplied its fractional part."""
+    total = expected_delay_s - marker_offset_s
+    return int(round(total - fractional_correction_s))
