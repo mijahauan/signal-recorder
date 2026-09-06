@@ -251,7 +251,7 @@ Claude-Session: https://claude.ai/code/session_014fxKGYhGpcPpYFsPbDj4KH"
       # returns (profile of length sample_rate, n_rows_folded)
   def find_fold_peaks(profile: np.ndarray, sample_rate: int, band: str,
                       min_snr_db: float = ACQ_MIN_FOLD_SNR_DB) -> list[FoldPeak]
-  BAND_ARBITRATION_MS = 3.0
+  BAND_ARBITRATION_MS = 6.0
   def arbitrate_bands(peaks_by_band: dict[str, list[FoldPeak]],
                       agree_ms: float = BAND_ARBITRATION_MS) -> list[FoldPeak]
       # a 5 ms tick's ~200 Hz main lobe leaks into the neighbouring band; when two bands
@@ -489,7 +489,7 @@ def find_fold_peaks(profile: np.ndarray, sample_rate: int, band: str,
     return peaks
 
 
-BAND_ARBITRATION_MS = 3.0
+BAND_ARBITRATION_MS = 6.0
 
 
 def arbitrate_bands(peaks_by_band: Dict[str, List[FoldPeak]],
