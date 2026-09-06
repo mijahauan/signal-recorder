@@ -285,6 +285,7 @@ def fit_template(
 MARKER_SEARCH_HALF_S = 1.5
 MARKER_LEN_S = 0.800
 MARKER_MIN_SNR_DB = 6.0
+MARKER_BIN_S = 0.001
 
 
 def locate_minute_marker(
@@ -295,44 +296,56 @@ def locate_minute_marker(
     minute_utc: int,
 ) -> Optional[Tuple[float, float]]:
     """Find the 800 ms marker near where the label puts second 0 of
-    ``minute_utc``.  Correlates a boxcar of MARKER_LEN_S with the band
-    envelope over ±MARKER_SEARCH_HALF_S.  Returns (onset offset from the
-    label's minute_utc in seconds, SNR dB) or None."""
+    ``minute_utc``.  Decimates the band envelope to MARKER_BIN_S bins over
+    the ±MARKER_SEARCH_HALF_S search segment and scores each MARKER_LEN_S
+    window by its bin-median (a regular tick occupies too few bins to
+    move a median; only a sustained ~800 ms tone lifts one). Returns
+    (onset offset from the label's minute_utc in seconds, SNR dB) or
+    None."""
     env = _band_envelope(audio, sample_rate, band)
     centre = int(round((minute_utc - sample0_utc_label) * sample_rate))
     half = int(MARKER_SEARCH_HALF_S * sample_rate)
-    L = int(MARKER_LEN_S * sample_rate)
+    bin_len = max(1, int(round(sample_rate * MARKER_BIN_S)))
+    window_bins = int(round(MARKER_LEN_S / MARKER_BIN_S))
+    L = window_bins * bin_len
     a = centre - half
     b = centre + half + L
     if a < 0 or b > len(env):
         return None
     seg = env[a:b]
-    csum = np.concatenate(([0.0], np.cumsum(seg)))
-    score = (csum[L:] - csum[:-L]) / L  # mean over each 800 ms window
+    # Score is a sliding MEDIAN over the 800 ms window, taken on a 1 ms
+    # decimation of the envelope -- not a windowed MEAN over the raw
+    # envelope, and not a ratio against the raw envelope's per-sample
+    # MAD.  Both of those were tried first and both leak: a regular 5 ms
+    # tick recurs every second and can only ever nudge a MEAN over 800
+    # 1 ms bins by ~5/800 of its amplitude, but a windowed-mean score's
+    # own MAD shrinks just as fast as a per-sample MAD when tick SNR
+    # rises, so the ratio between them stays roughly constant instead of
+    # closing -- measured on the shipped (now-replaced) version: the
+    # marker-absent case read +9.4 dB at 30 dB tick SNR and +19 dB at 40
+    # dB, both above the 6 dB gate.  A tick occupies ~5 of 800 one-ms
+    # bins in any window; a MEDIAN over that window cannot be moved by
+    # so small a minority no matter how strong the tick, so only a
+    # genuine ~800 ms tone -- which owns the whole window -- lifts it.
+    n_bins = len(seg) // bin_len
+    decimated = seg[: n_bins * bin_len].reshape(n_bins, bin_len).mean(axis=1)
+    windows = np.lib.stride_tricks.sliding_window_view(decimated, window_bins)
+    score = np.median(windows, axis=1)
     k = int(np.argmax(score))
-    # Baseline/spread come from the WHOLE envelope's per-sample robust
-    # stats, not from this windowed score array: a regular 5 ms tick can
-    # only ever touch an L=800 ms window for 5/800 of its length, so the
-    # score sequence's own MAD stays tiny with or without a marker and a
-    # ratio against it cannot tell the two apart (measured: absent a
-    # marker the score ranges 0.0168-0.0226 against a same-scale MAD of
-    # ~0.0006, reading a spurious ~17 dB). The full envelope's per-sample
-    # MAD instead reflects the actual noise/tick floor regardless of
-    # what one window happens to contain, so a genuine ~800 ms marker
-    # (whose window average approaches full tone amplitude) clears it by
-    # orders of magnitude while a bare tick fragment does not.
-    baseline = np.median(env)
-    mad = np.median(np.abs(env - baseline)) * 1.4826
+    baseline = np.median(decimated)
+    mad = np.median(np.abs(decimated - baseline)) * 1.4826
     if mad <= 0:
         return None
     snr_db = float(20 * np.log10((score[k] - baseline) / mad))
     if snr_db < MARKER_MIN_SNR_DB:
         return None
-    # refine to the half-rise onset of the envelope inside the window
-    win = seg[k : k + L]
+    # refine to the half-rise onset of the full-rate envelope inside the
+    # winning (bin-resolution) window
+    onset_bin_sample = k * bin_len
+    win = seg[onset_bin_sample : onset_bin_sample + L]
     thr = baseline + 0.5 * (np.max(win) - baseline)
     rise = int(np.argmax(win > thr))
-    onset_sample = a + k + rise
+    onset_sample = a + onset_bin_sample + rise
     return (onset_sample / sample_rate) - (minute_utc - sample0_utc_label), snr_db
 
 

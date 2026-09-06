@@ -27,6 +27,24 @@ def test_no_marker_returns_none():
     assert locate_minute_marker(audio, SR, T0, "1000", MIN) is None
 
 
+@pytest.mark.parametrize("snr_db", [30.0, 40.0])
+def test_no_marker_at_high_tick_snr(snr_db):
+    # strong ticks must not leak past the gate as the tick SNR rises --
+    # a windowed-MEAN score's own MAD shrinks as fast as the leak it is
+    # trying to detect above, which is why the score statistic is a
+    # bin-median, not a mean-over-MAD ratio.
+    audio = make_tick_audio(10, SR, T0, {"WWV": 0.012}, snr_db=snr_db, marker=False)
+    assert locate_minute_marker(audio, SR, T0, "1000", MIN) is None
+
+
+def test_window_does_not_fit_returns_none():
+    audio = make_tick_audio(10, SR, T0, {"WWV": 0.012}, snr_db=15.0)
+    # the minute sits only 0.5 s after the label's sample0 -- the
+    # ±1.5 s search cannot fit before it
+    label = MIN - 0.5
+    assert locate_minute_marker(audio, SR, label, "1000", MIN) is None
+
+
 @pytest.mark.parametrize(
     "walk_s,frac,expected",
     [
