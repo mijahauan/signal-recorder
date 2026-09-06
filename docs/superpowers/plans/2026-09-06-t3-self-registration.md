@@ -16,6 +16,7 @@
 - **Timing-authority invariant** (`CLAUDE.md`): no new `time.time()`, `datetime.now()`, or `chronyc tracking` in the timing path. The acquirer takes UTC only from `BufferTiming` and the signal. `time.time()` may stamp provenance JSON (`written_at`) only.
 - **Sign convention (pinned):** `correction_s = expected_delay_s − fold_position_s`, wrapped into `(−0.5, 0.5]`; `sample0_utc_acquired = sample0_utc_label + correction_s`. Test: label `T + w` (label late by `w`) ⇒ tick appears at `d + w` in the label frame ⇒ correction `−w` ⇒ acquired plane `T`.
 - **Constants (verbatim from the spec):** `ACQ_MIN_FOLD_SNR_DB = 10.0`; fold lengths 60, 120, 180 s; tone bands 900–1100 Hz (WWV, BPM) and 1100–1300 Hz (WWVH); outlier rejection at 3 ms from the median in per-radiod fusion; correct (re-acquire) when the residual exceeds 3 σ for 2 consecutive minutes on ≥ 2 channels; `timing_admissible` accepts `anchor_source="acquired"` when the registration σ < 2.0 ms; origin σ floored at 1.0 ms.
+- **Same-site correlation (mjh, 2026-09-06):** broadcasts from ONE site (WWV 2.5–25 MHz, all from Fort Collins) share the great-circle path, so their corrections agree far more tightly than corrections derived from different sites (Fort Collins, Kauai, Lintong). Cross-channel corroboration therefore uses two tolerances: `SAME_SITE_AGREE_MS = 1.5` when the sibling registration was derived from the same station, `CROSS_SITE_AGREE_MS = 4.0` otherwise. `Registration.stations` records which stations produced a registration so the tolerance can be chosen.
 - **Skip seconds:** the fold excludes label seconds-in-minute `{59, 0, 1, 28, 29, 30}` (the spec's 0/29/59 widened by ±1 s because the label can be up to ~0.7 s wrong before acquisition).
 - **BufferTiming is a frozen dataclass**; use `dataclasses.replace`. New fields default so every existing constructor call still works: `origin_source: str = "label"`, `origin_sigma_ms: float = float("inf")`, `counter_epoch_id: str = "unregistered"`.
 - **One class per file, filename matches class**; type hints; `UPPER_SNAKE_CASE` constants; black/flake8 clean.
@@ -889,7 +890,11 @@ Claude-Session: https://claude.ai/code/session_014fxKGYhGpcPpYFsPbDj4KH"
       n_minutes: int = 0        # minutes corroborated since acquisition
       channel: str = ""
       hypotheses_open: int = 0
+      stations: tuple = ()      # stations whose ticks produced this registration
       def sample0_utc_for(self, start_rtp: int) -> float
+
+  SAME_SITE_AGREE_MS = 1.5
+  CROSS_SITE_AGREE_MS = 4.0
 
   class RegistrationAcquirer:
       STATE_BOOTSTRAP = "BOOTSTRAP"; STATE_ACQUIRED = "ACQUIRED"
@@ -907,6 +912,12 @@ Claude-Session: https://claude.ai/code/session_014fxKGYhGpcPpYFsPbDj4KH"
           # {station: (ensemble_timing_error_ms, sigma_single_ms)} for tick-like ensembles
           # against the ACQUIRED plane; returns "held" | "tightened" | "reacquire"
       def adopt(self, reg: Registration) -> None      # take a sibling's fused registration
+      def resolve_ambiguity(self, sibling: Registration, start_rtp: int,
+                            label_s0: float) -> Optional[Registration]
+          # BOOTSTRAP with open (ambiguous) hypotheses: pick the ONE whose correction agrees with the
+          # sibling's plane — within SAME_SITE_AGREE_MS if the hypothesis's station is in
+          # sibling.stations, else CROSS_SITE_AGREE_MS; the sibling supplies the whole second.
+          # Returns the new own registration (state -> ACQUIRED) or None when 0 or 2+ agree.
       def reset(self, why: str) -> None
   ```
 - The `audio` offered is the same `envelope − mean` the engine computes (`metrology_engine.py:1437`); the service computes it once (Task 8) and hands it to both.
@@ -995,6 +1006,41 @@ def test_corroborate_tightens_and_flags_sustained_residual():
     assert acq.state == acq.STATE_BOOTSTRAP
 
 
+def test_resolve_ambiguity_prefers_same_site_tolerance():
+    # shared 10 MHz channel hears ONE 1000 Hz tick: WWV (d=0.010) or BPM (d=0.044)?
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    t0 = T0
+    audio = make_tick_audio(62, SR, t0, {"WWV": 0.010}, snr_db=20.0)
+    label = label_timing(t0, 0.100, SR)           # label 100 ms late
+    d = {"WWV": 0.010, "BPM": 0.044}
+    assert acq.offer_minute(audio, label, 1_000_000, MIN, d, "ep-1") is None
+    assert acq.state == acq.STATE_BOOTSTRAP and len(acq._open) == 2
+    # a WWV-only sibling (20 MHz) places the plane 0.8 ms from truth: same site -> 1.5 ms tolerance
+    sib = Registration("ep-1", rtp_ref=1_000_000, utc_ref=t0 + 0.0008, sample_rate=SR,
+                       sigma_ms=1.0, channel="WWV_20000", stations=("WWV",))
+    reg = acq.resolve_ambiguity(sib, 1_000_000, label.sample0_utc)
+    assert reg is not None and acq.state == acq.STATE_ACQUIRED
+    assert reg.stations == ("WWV",)
+    assert reg.sample0_utc_for(1_000_000) == pytest.approx(t0, abs=0.002)
+
+
+def test_resolve_ambiguity_cross_site_is_looser_but_bounded():
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.010}, snr_db=20.0)
+    label = label_timing(T0, 0.100, SR)
+    d = {"WWV": 0.010, "BPM": 0.044}
+    acq.offer_minute(audio, label, 1_000_000, MIN, d, "ep-1")
+    # a WWVH-derived sibling 3 ms off truth: cross-site -> 4 ms tolerance still picks WWV
+    sib = Registration("ep-1", 1_000_000, T0 + 0.003, SR, 1.0, channel="WWVH_5000", stations=("WWVH",))
+    assert acq.resolve_ambiguity(sib, 1_000_000, label.sample0_utc) is not None
+    # 20 ms off: nothing agrees -> None, still BOOTSTRAP
+    acq2 = RegistrationAcquirer("SHARED_10000", SR)
+    acq2.offer_minute(audio, label, 1_000_000, MIN, d, "ep-1")
+    sib2 = Registration("ep-1", 1_000_000, T0 + 0.020, SR, 1.0, channel="WWVH_5000", stations=("WWVH",))
+    assert acq2.resolve_ambiguity(sib2, 1_000_000, label.sample0_utc) is None
+    assert acq2.state == acq2.STATE_BOOTSTRAP
+
+
 def test_adopt_sibling_registration():
     acq = RegistrationAcquirer("WWV_20000", SR)
     reg = Registration(counter_epoch_id="ep-1", rtp_ref=5_000, utc_ref=T0,
@@ -1027,9 +1073,17 @@ class Registration:
     n_minutes: int = 0
     channel: str = ""
     hypotheses_open: int = 0
+    stations: tuple = ()
 
     def sample0_utc_for(self, start_rtp: int) -> float:
         return self.utc_ref + (int(start_rtp) - int(self.rtp_ref)) / float(self.sample_rate)
+
+
+# Same-site broadcasts (WWV on 2.5-25 MHz, all from Fort Collins) share the
+# great-circle path, so their corrections agree far more tightly than those
+# derived from different sites (Fort Collins / Kauai / Lintong) -- mjh 2026-09-06.
+SAME_SITE_AGREE_MS = 1.5
+CROSS_SITE_AGREE_MS = 4.0
 
 
 class RegistrationAcquirer:
@@ -1141,12 +1195,46 @@ class RegistrationAcquirer:
         self._reg = Registration(counter_epoch_id=self._epoch or "unregistered",
                                  rtp_ref=rtp0, utc_ref=s0 + corr,
                                  sample_rate=self.sample_rate, sigma_ms=h.sigma_ms,
-                                 channel=self.channel, hypotheses_open=len(self._open))
+                                 channel=self.channel, hypotheses_open=len(self._open),
+                                 stations=tuple(sorted({a[0] for a in h.assignments})))
         self._state = self.STATE_ACQUIRED
         self._bad_minutes = 0
         logger.info(f"[{self.channel}] ACQUIRED: correction {corr*1000:+.1f} ms "
                     f"(int {k_int:+d} s), σ {h.sigma_ms:.2f} ms, support {h.support}, "
                     f"stations {[a[0] for a in h.assignments]}, fold {n_sec} s")
+        return self._reg
+
+    def resolve_ambiguity(self, sibling: Registration, start_rtp: int,
+                          label_s0: float) -> Optional[Registration]:
+        """A shared channel with one peak carries two or more hypotheses; a
+        sibling channel's plane names the right one.  Same-site agreement
+        is tight (SAME_SITE_AGREE_MS); cross-site looser (CROSS_SITE_AGREE_MS).
+        The sibling also supplies the whole second."""
+        if self._state == self.STATE_ACQUIRED or not self._open:
+            return None
+        sib_s0 = sibling.sample0_utc_for(int(start_rtp))
+        matches = []
+        for h in self._open:
+            st = h.assignments[0][0]
+            tol = SAME_SITE_AGREE_MS if st in sibling.stations else CROSS_SITE_AGREE_MS
+            frac = wrap_half_second((label_s0 + h.correction_s) - sib_s0)
+            if abs(frac) * 1000.0 <= tol:
+                matches.append((h, frac))
+        if len(matches) != 1:
+            return None
+        h, frac = matches[0]
+        # own fractional correction + the sibling's whole second
+        s0 = sib_s0 + frac
+        self._reg = Registration(counter_epoch_id=self._epoch or sibling.counter_epoch_id,
+                                 rtp_ref=int(start_rtp), utc_ref=s0,
+                                 sample_rate=self.sample_rate, sigma_ms=h.sigma_ms,
+                                 channel=self.channel, hypotheses_open=0,
+                                 stations=(h.assignments[0][0],))
+        self._state = self.STATE_ACQUIRED
+        self._open.clear()
+        self._bad_minutes = 0
+        logger.info(f"[{self.channel}] ACQUIRED via sibling {sibling.channel}: "
+                    f"hypothesis {h.assignments[0][0]} agrees within {abs(frac)*1000:.2f} ms")
         return self._reg
 
     # ── corroboration ──────────────────────────────────────────────
@@ -1257,6 +1345,15 @@ def test_fuse_inverse_variance_and_outlier():
     assert f.utc_ref == pytest.approx(100.0004, abs=2e-5)
     assert f.sigma_ms == pytest.approx(1 / (1 + 4) ** 0.5, abs=1e-3)
     assert f.rtp_ref == 1000 and f.channel == "fused"
+
+
+def test_fuse_unions_stations_and_roundtrips_them(tmp_path):
+    regs = [Registration("ep-1", 1000, 100.0, SR, 1.0, channel="a", stations=("WWV",)),
+            Registration("ep-1", 1000, 100.0, SR, 1.0, channel="b", stations=("WWVH", "WWV"))]
+    assert fuse_registrations(regs, 1000).stations == ("WWV", "WWVH")
+    st = RegistrationStore(tmp_path / "reg", tmp_path / "registration.json")
+    st.write_channel(regs[1], "ACQUIRED", {})
+    assert st.read_siblings()[0].stations == ("WWVH", "WWV")
 
 
 def test_fuse_rebases_to_common_rtp():
@@ -1370,7 +1467,8 @@ def fuse_registrations(regs: List[Registration], at_rtp: int) -> Optional[Regist
                         sample_rate=keep[0][0].sample_rate,
                         sigma_ms=float(1.0 / np.sqrt(np.sum(w))),
                         n_minutes=max(r.n_minutes for r, _ in keep), channel="fused",
-                        hypotheses_open=sum(r.hypotheses_open for r, _ in keep))
+                        hypotheses_open=sum(r.hypotheses_open for r, _ in keep),
+                        stations=tuple(sorted({st for r, _ in keep for st in r.stations})))
 
 
 class RegistrationStore:
@@ -1407,7 +1505,8 @@ class RegistrationStore:
         return {"counter_epoch_id": reg.counter_epoch_id, "rtp_ref": int(reg.rtp_ref),
                 "utc_ref": float(reg.utc_ref), "sample_rate": int(reg.sample_rate),
                 "sigma_ms": sigma, "method": reg.method,
-                "n_minutes": int(reg.n_minutes), "hypotheses_open": int(reg.hypotheses_open)}
+                "n_minutes": int(reg.n_minutes), "hypotheses_open": int(reg.hypotheses_open),
+                "stations": list(reg.stations)}
 
     def write_channel(self, reg: Registration, state: str, extra: dict) -> None:
         payload = {"channel": reg.channel, "state": state, "written_at": self._time(),
@@ -1445,7 +1544,8 @@ class RegistrationStore:
                                     method=str(d.get("method") or "fold+template"),
                                     n_minutes=int(d.get("n_minutes", 0)),
                                     channel=str(d["channel"]),
-                                    hypotheses_open=int(d.get("hypotheses_open", 0))))
+                                    hypotheses_open=int(d.get("hypotheses_open", 0)),
+                                    stations=tuple(d.get("stations", []))))
         return out
 
     def read_summary(self) -> Optional[dict]:
@@ -1780,6 +1880,25 @@ def test_sibling_registration_is_adopted(tmp_path):
     assert bt.origin_source == "acquired" and bt.sample0_utc == pytest.approx(T0, abs=1e-6)
 
 
+def test_shared_channel_ambiguity_resolved_by_same_site_sibling(tmp_path):
+    svc = _service(tmp_path)
+
+    class _Eng(_Engine):
+        def expected_delays_s(self, system_time, utc_minute):
+            return {"WWV": 0.0125, "BPM": 0.0465}      # shared 1000 Hz band, 34 ms apart
+    svc.engine = _Eng()
+    from hf_timestd.core.registration_acquirer import Registration
+    epoch = svc.epoch_tracker.observe(**_meta(0))
+    sib = Registration(epoch, rtp_ref=1_000_000, utc_ref=T0 + 0.0005, sample_rate=SR, sigma_ms=0.9,
+                       channel="WWV_20000", stations=("WWV",))
+    svc.reg_store.write_channel(sib, "ACQUIRED", {})
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)   # only WWV audible
+    bt = svc.apply_registration(label_timing(T0, 0.1, SR), audio, 1_000_000, MIN, _meta(0))
+    assert bt.origin_source == "acquired" and bt.sample0_utc == pytest.approx(T0, abs=0.002)
+    assert svc.acquirer.registration.stations == ("WWV",)      # resolved, not merely adopted
+    assert "SHARED_10000" in svc.reg_store.read_summary()["contributing"]
+
+
 def test_feed_back_reacquires_on_sustained_residual(tmp_path):
     svc = _service(tmp_path)
     audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
@@ -1871,6 +1990,12 @@ In `metrology_service.py`:
            own = self.acquirer.offer_minute(audio, buffer_timing, int(start_rtp), int(minute_utc),
                                             delays, epoch)
            sibs = self.reg_store.read_siblings(exclude_channel=self.channel_name)
+           if own is None and sibs:
+               # a shared channel's open hypotheses: let the siblings' plane name the station
+               sib_plane = fuse_registrations(sibs, at_rtp=int(start_rtp))
+               if sib_plane is not None:
+                   own = self.acquirer.resolve_ambiguity(sib_plane, int(start_rtp),
+                                                         float(buffer_timing.sample0_utc))
            fused = fuse_registrations(([own] if own else []) + sibs, at_rtp=int(start_rtp))
            if own is None and fused is not None:
                self.acquirer.adopt(fused)          # a sibling already placed the second

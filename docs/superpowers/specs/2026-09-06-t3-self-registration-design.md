@@ -131,7 +131,13 @@ than the raw label. Each minute yields, per station, an ensemble offset and σ�
   counter-epoch announcement.
 - **Resolve ambiguity.** A shared channel carrying two hypotheses drops the one whose fine
   search yields junk while the other yields ticks, or the one the minute-marker's tone
-  (1000 vs 1200 Hz) contradicts.
+  (1000 vs 1200 Hz) contradicts. A sibling channel's plane also names the station, and
+  the agreement it demands depends on geography (mjh, 2026-09-06): broadcasts from one
+  site — WWV on 2.5 through 25 MHz, all from Fort Collins — share the great-circle path and
+  agree to about a millisecond, while corrections derived from different sites (Fort
+  Collins, Kauai, Lintong) carry independent path-model error. Same-site agreement is
+  tested at 1.5 ms, cross-site at 4 ms; each registration records the stations that
+  produced it so the right tolerance applies.
 - **Step on counter-epoch change.** When `resolve_buffer_timing` reports a new counter
   epoch (radiod restart), discard the registration and re-acquire from the new epoch's
   first minute. The shared origin means the second radiod-channel to acquire gets it free.
