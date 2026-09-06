@@ -128,6 +128,21 @@ class BufferTiming:
     #: T6 produces an abstention rather than a confident wrong answer.
     offset_sigma_ns: float = 0.0
 
+    # ── Origin provenance (T3 self-registration, spec 2026-09-06) ──
+    # Where sample0_utc's ORIGIN came from.  'label' = radiod's
+    # (GPS_TIME, RTP_TIMESNAP) pair as adopted by the ring anchor;
+    # 'acquired' = the received tick train placed the second boundary
+    # (core/registration_acquirer.py).  The RATE is always the GPSDO's.
+    origin_source: str = "label"
+    # 1-sigma of the origin in ms.  inf for a label plane: radiod's pair
+    # is not atomic and its skew was measured at 232 ms (ND) / 701 ms
+    # (B4) on 2026-09-06, so the label carries no honest sigma.
+    origin_sigma_ms: float = float("inf")
+    # Counter epoch the origin belongs to (see CounterEpochTracker).  The
+    # acquired origin is constant in RTP within one epoch and must be
+    # discarded when the epoch changes.
+    counter_epoch_id: str = "unregistered"
+
     def sample_to_utc(self, sample_index: float) -> float:
         """Convert a sample index to a UTC timestamp."""
         return self.sample0_utc + sample_index / self.sample_rate
