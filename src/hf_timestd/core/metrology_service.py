@@ -225,6 +225,12 @@ class MetrologyService:
         self.acquirer = RegistrationAcquirer(self.channel_name, self.engine.sample_rate)
         self.reg_store = RegistrationStore()
         self.epoch_tracker = CounterEpochTracker()
+        # task-11b fix round 1 (C1): whether THIS minute's BufferTiming was
+        # actually built from the acquired/candidate plane (origin_source
+        # "acquired") -- feed_back_ensembles needs this to know whether a
+        # detector result was measured against our plane at all.  False
+        # whenever the label or T6's plane was handed back instead.
+        self._applied_acquired_plane = False
 
         # Storage backend selection. Phase 1 of the HDF5 → SQLite
         # migration (see docs/HDF5-TO-SQLITE-MIGRATION.md): each writer
@@ -665,6 +671,7 @@ class MetrologyService:
         precondition for measuring it (review I1) -- any failure below
         logs and falls back to the plane this method was handed."""
         if buffer_timing is None or buffer_timing.source == 'no_timing':
+            self._applied_acquired_plane = False
             return buffer_timing
         try:
             return self._apply_registration_unsafe(
@@ -674,6 +681,7 @@ class MetrologyService:
                 f"[{self.channel_name}] apply_registration failed for minute "
                 f"{minute_utc}; metrology continues on the label plane",
                 exc_info=True)
+            self._applied_acquired_plane = False
             return buffer_timing
 
     def _t6_authoritative(self, buffer_timing) -> bool:
@@ -696,6 +704,10 @@ class MetrologyService:
     def _apply_registration_unsafe(self, buffer_timing, iq_samples: np.ndarray,
                                    start_rtp: int, minute_utc: int,
                                    metadata: Dict[str, Any]):
+        # task-11b fix round 1 (C1): default to "not applied" -- only the
+        # single success path at the bottom, which actually hands the
+        # engine origin_source="acquired", sets this True.
+        self._applied_acquired_plane = False
         t6_authoritative = self._t6_authoritative(buffer_timing)
         epoch = self.epoch_tracker.observe(metadata.get("gps_time_ns", 0),
                                            metadata.get("rtp_timesnap", 0),
@@ -708,12 +720,20 @@ class MetrologyService:
         own = self.acquirer.offer_minute(audio, buffer_timing, int(start_rtp), int(minute_utc),
                                          delays, epoch)
         sibs = self.reg_store.read_siblings(exclude_channel=self.channel_name)
+        # I3 (task-11 review): resolve-before-adopt precedence -- a plane
+        # `resolve_ambiguity` just named THIS minute already used the
+        # sibling to pick the station and supplied the whole second; it is
+        # independent, this-channel evidence (this channel's own fold
+        # named the fractional second), not a candidate to be dropped in
+        # favour of that same sibling below.
+        resolved_via_sibling_this_minute = False
         if own is None and sibs:
             # a shared channel's open hypotheses: let the siblings' plane name the station
             sib_plane = fuse_registrations(sibs, at_rtp=int(start_rtp))
             if sib_plane is not None:
                 own = self.acquirer.resolve_ambiguity(sib_plane, int(start_rtp),
                                                       float(buffer_timing.sample0_utc))
+                resolved_via_sibling_this_minute = own is not None
         # An ADOPTED `own` is a derived ECHO of a prior sibling fusion, not
         # independent evidence -- folding it back into fuse_registrations
         # alongside the very siblings it was copied from understates sigma
@@ -721,20 +741,47 @@ class MetrologyService:
         # genuinely self-acquired `own` (method != "adopted") IS independent
         # and belongs in the fusion as before.
         own_is_adopted = own is not None and getattr(own, "method", None) == "adopted"
-        fusion_inputs = sibs if own_is_adopted else (([own] if own else []) + sibs)
+        # task-11b fix round 1 (I1): an UNVERIFIED own (CANDIDATE) plane is
+        # not independent evidence either -- `offer_minute` short-circuits
+        # to the *current* registration once ACQUIRED, so a fresh,
+        # unverified candidate is reachable here every minute.  Folding it
+        # into fuse_registrations alongside real (hence already-verified,
+        # per the CANDIDATE invariant) siblings let a phantom knock a good
+        # sibling plane straight to CONFLICT instead of ever being offered
+        # as a sibling itself (review, C1/❌1).  Exclude it -- but NOT when
+        # it was resolved via THIS minute's sibling already (I3 above), and
+        # ONLY
+        # when there are siblings to fuse instead: with none, excluding it
+        # would make `fused` None, the plane would never be applied, and
+        # the candidate could never reach verify() (deadlock).
+        own_unverified_with_siblings = (
+            own is not None
+            and not own_is_adopted
+            and not own.verified
+            and not resolved_via_sibling_this_minute
+            and bool(sibs)
+        )
+        if own_is_adopted or own_unverified_with_siblings:
+            fusion_inputs = sibs
+        else:
+            fusion_inputs = ([own] if own else []) + sibs
         fused = fuse_registrations(fusion_inputs, at_rtp=int(start_rtp))
-        if own is None and fused is not None:
+        if fused is not None and (own is None or own_unverified_with_siblings):
             # `fused` here is built purely from `sibs` (own contributed
-            # nothing to fusion_inputs when own is None) -- every one of
-            # those siblings came from read_siblings, which only returns
-            # state=="ACQUIRED" files, and (task-11b) only a VERIFIED
-            # registration is ever published as ACQUIRED.  So a plane
-            # fused entirely from ACQUIRED siblings is itself verified;
-            # fuse_registrations doesn't carry that through on its own
-            # (its output defaults verified=False like any fresh
+            # nothing to fusion_inputs in either case above) -- every one
+            # of those siblings came from read_siblings, which only
+            # returns state=="ACQUIRED" files, and (task-11b) only a
+            # VERIFIED registration is ever published as ACQUIRED.  So a
+            # plane fused entirely from ACQUIRED siblings is itself
+            # verified; fuse_registrations doesn't carry that through on
+            # its own (its output defaults verified=False like any fresh
             # Registration), so it is stamped here rather than by
-            # touching fuse_registrations itself.
+            # touching fuse_registrations itself.  The unverified
+            # candidate (if any) is dropped in favour of the verified
+            # sibling plane, not kept alongside it.
             self.acquirer.adopt(dataclasses.replace(fused, verified=True))
+            own = self.acquirer.registration
+            own_is_adopted = True
         label_s0 = float(buffer_timing.sample0_utc)
 
         # C3: T6 wins.  The ring anchor already carries T6's correction
@@ -819,6 +866,10 @@ class MetrologyService:
         contributing = ([r.channel for r in sibs]
                        + ([self.channel_name] if (own is not None and not own_is_adopted) else []))
         self._publish_registration(fused, contributing, label_s0, residual_ms, epoch)
+        # task-11b fix round 1 (C1): this minute's BufferTiming really is
+        # the acquired/candidate plane -- feed_back_ensembles needs this to
+        # know a detector result was measured against it at all.
+        self._applied_acquired_plane = True
         # I4: the label carried T6's (or whatever incumbent's) provenance;
         # once the origin is replaced the provenance must move with it --
         # one measurand, one ruler, one registration.
@@ -892,15 +943,35 @@ class MetrologyService:
             logger.error(f"[{self.channel_name}] feed_back_ensembles failed",
                         exc_info=True)
 
+    # task-11b fix round 1 (C1): anchor sources whose timing_error_ms is
+    # measured against OUR plane (whatever anchored the search), and so are
+    # valid feedback about it.  TickEdgeDetector prefers the minute-marker
+    # anchor whenever one is found and confirmed (n_detected sufficient AND
+    # sigma_single_ms <= LABEL_ANCHOR_MAX_SIGMA_MS) -- regardless of the
+    # buffer's origin_source -- so on the strongest channels EVERY result
+    # was 'minute_marker', never 'acquired', and excluding it meant verify()
+    # was never called: the better the signal, the less likely the plane
+    # was ever confirmed.  A marker-anchored, already-confirmed (sigma_1 <=
+    # 6 ms) ensemble is not weaker evidence about the plane than an
+    # acquired-anchored one -- it is stronger.  'host_label' stays excluded
+    # (review I3): that residual is measured against the host clock, not
+    # our plane.
+    _PLANE_FEEDBACK_ANCHOR_SOURCES = ("acquired", "minute_marker")
+
     def _feed_back_ensembles_unsafe(self, results) -> None:
+        if not getattr(self, "_applied_acquired_plane", False):
+            # This minute's BufferTiming was NOT the acquired/candidate
+            # plane (T6 witness, label fallback, ...) -- nothing measured
+            # against it is feedback about it.
+            return
         res = {}
         for r in results or []:
-            if getattr(r, "anchor_source", None) != "acquired":
+            if getattr(r, "anchor_source", None) not in self._PLANE_FEEDBACK_ANCHOR_SOURCES:
                 continue
             res[str(r.station)] = (float(r.ensemble_timing_error_ms), float(r.sigma_single_ms))
         if res:
-            # task-11b: an unverified (CANDIDATE) plane must be confirmed by
-            # the tick detector before it is trusted enough to tighten --
+            # An unverified (CANDIDATE) plane must be confirmed by the tick
+            # detector before it is trusted enough to tighten --
             # RegistrationAcquirer.corroborate() also routes this itself,
             # but the service decides it explicitly too so the intent is
             # visible at the call site.

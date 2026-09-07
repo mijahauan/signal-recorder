@@ -47,14 +47,21 @@ def test_weak_signal_extends_the_fold_to_three_minutes():
     # task-11b's peak-persistence gate (spec §10) additionally folds the
     # FIRST and SECOND HALF of the acquiring buffer independently and
     # requires the winning peak to cross the same ACQ_MIN_FOLD_SNR_DB floor
-    # in BOTH -- so at -17 dB (measured 9.2 / 14.3 / 15.2 dB at 54/108/162
-    # rows) the full 162-row fold clears the floor at 15.2 dB, but each
-    # ~81-row HALF only reaches ~12.2-12.7 dB, under the ~13.4 dB effective
-    # threshold, and the gate correctly refuses to acquire on a signal this
-    # weak.  -16 dB (measured 17.2 dB full, 14.8 / 14.4 dB per half) clears
-    # the floor in both halves while still failing at one minute (54 rows,
-    # no peak at all) -- keeping the "one minute must NOT suffice" half of
-    # this test meaningful.
+    # in BOTH (effective floor 20*log10(max(10^(10/20), sqrt(2*ln(800))+1))
+    # = 13.36 dB) -- so at -17 dB the full 162-row fold clears the floor
+    # (15.00 dB), but each ~81-row HALF (80/82 rows exactly) only reaches
+    # 11.71 / 12.38 dB, under the 13.36 dB floor, and the gate correctly
+    # refuses to acquire on a signal this weak.  -16 dB (measured 17.02 dB
+    # full, 13.93 / 13.89 dB per half -- a bare ~0.5 dB margin over the
+    # floor, review fix round 1 M7) clears both halves while still failing
+    # at one minute (54 rows, no peak at all) -- keeping the "one minute
+    # must NOT suffice" half of this test meaningful.  Cost: gate (a) moves
+    # the acquisition floor from -17 to about -16.5 dB here (~1 dB of input
+    # SNR, from halving the fold's row count) -- recorded in
+    # docs/METROLOGY.md's self-registration paragraph (review fix round 1,
+    # M6); this deterministic (seed=7+k) control is sensitive to any future
+    # change to ENVELOPE_LPF_HZ, the MAD estimator, or the noise-extreme
+    # n_eff term.
     acq = RegistrationAcquirer("SHARED_10000", SR)
     outcomes = []
     for k in range(3):
@@ -201,7 +208,7 @@ def test_lone_transient_peak_does_not_acquire():
     brief).  62 s of quiet noise (no ticks at all) plus ONE 40 ms burst of
     1000 Hz at an arbitrary position in second 12, amplitude 5x a normal
     tick's (a plausible transient, not an exotic one): with the current
-    ~13.4 dB effective detection floor and 54-row averaging, this single
+    ~13.36 dB effective detection floor and 54-row averaging, this single
     occurrence is strong enough to cross the floor at the one fold length
     the acquirer uses -- confirmed directly against the unpatched acquirer
     to acquire before this fix (task-11b, gate a).  The peak-persistence
@@ -261,3 +268,21 @@ def test_corroborate_on_unverified_registration_routes_to_verify():
     assert acq.registration.verified is False
     assert acq.corroborate({"WWV": (0.4, 0.5)}) == "verified"
     assert acq.registration.verified is True
+
+
+def test_acquire_then_verify_then_corroborate_tightens():
+    """task-11b fix round 1 (I3/I4): the real seam, walked end to end --
+    acquire (CANDIDATE) -> verify (confirms, does not tighten) ->
+    corroborate (now runs, and tightens sigma)."""
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    assert acq.registration.verified is False
+    sigma_after_acquire = acq.registration.sigma_ms
+    assert acq.verify({"WWV": (0.5, 0.4)}) == "verified"
+    assert acq.registration.verified is True
+    assert (
+        acq.registration.sigma_ms == sigma_after_acquire
+    )  # verify confirms, doesn't tighten
+    assert acq.corroborate({"WWV": (0.4, 0.4)}) == "tightened"
+    assert acq.registration.sigma_ms < sigma_after_acquire

@@ -704,9 +704,16 @@ def test_nd_shared_channel_resolved_by_real_same_site_siblings(chunk):
       second, survives the halving.  On this exact chunk, WWV_25000 now
       stays BOOTSTRAP outright -- gate (a) alone stops the phantom, never
       reaching the fine-search verification gate (b) at all.  The loop
-      below asserts BOOTSTRAP and, defensively, still runs the (b) path
-      by hand (feeding the fine-search result to ``verify()``) in the
-      event it ever does acquire on different data.
+      below asserts ``gotS is None`` for WWV_25000 UNCONDITIONALLY --
+      review fix round 1, I2: an earlier either/or version of this
+      assertion (BOOTSTRAP-if-never-acquired, else feed the fine-search
+      result to ``verify()`` and require "rejected") kept passing even
+      with gate (a) disabled, since gate (b) alone was enough to reject
+      the resulting plane -- so it never actually pinned gate (a).  The
+      unconditional assert now fails outright if gate (a) ever regresses;
+      the (b) fallback after it is unreachable on this fixture and kept
+      only in case a future/different WWV_25000 chunk ever acquires
+      despite gate (a).
 
     Everything the fixture CAN establish is asserted; the sibling-resolved
     assertions run only behind a real, tick-like sibling plane, and the
@@ -780,6 +787,8 @@ def test_nd_shared_channel_resolved_by_real_same_site_siblings(chunk):
     sibling_planes = {}
     acquired_siblings = []
     trusted = []
+    narrative = {}  # name -> what was actually measured THIS run (I2: no
+    # hard-coded prose in the trailing pytest.skip below)
     for name, iq_s, meta_s in (
         ("WWV_20000", iq20, meta20),
         ("WWV_25000", iq25, meta25),
@@ -787,32 +796,43 @@ def test_nd_shared_channel_resolved_by_real_same_site_siblings(chunk):
         gotS, acqS, rtpS, audioS, delaysS, muS, btS, aS, kS = _acquire_channel(
             iq_s, meta_s, shift_ms=0.0, epoch_id="ep-nd", max_k=5
         )
+        if name == "WWV_25000":
+            # task-11b fix round 1 (I2): UNCONDITIONAL -- this fixture's
+            # WWV_25000 must not acquire at all; gate (a) [peak
+            # persistence, spec §10] is the mechanism that stops it.  This
+            # must fail if gate (a) ever regresses -- it is not allowed to
+            # instead pass via gate (b) rejecting an acquired plane (the
+            # reviewer confirmed the previous either/or structure kept
+            # passing with gate (a) patched to a no-op).
+            assert gotS is None, (
+                f"WWV_25000 acquired unambiguously (stations={gotS.stations}, "
+                f"sigma={gotS.sigma_ms:.3f} ms, state={acqS.state}) -- gate (a) "
+                "peak-persistence should have stopped this fold-lattice "
+                "phantom outright; it did not"
+            )
         if gotS is None:
             snr = _max_fold_snr_by_band(iq_s, meta_s, sr)
+            snr_str = ", ".join(f"{b}:{s:.1f} dB (n={n})" for b, (n, s) in snr.items())
             print(
                 f"  {name}: NO acquisition in {kS + 1} offered minutes "
                 f"(state={acqS.state}); max fold SNR over the whole chunk = "
-                + ", ".join(f"{b}:{s:.1f} dB (n={n})" for b, (n, s) in snr.items())
-                + " -- band closed, acquirer correctly stays BOOTSTRAP"
+                f"{snr_str} -- band closed, acquirer correctly stays BOOTSTRAP"
             )
             assert acqS.state == RegistrationAcquirer.STATE_BOOTSTRAP
-            if name == "WWV_25000":
-                # task-11b, gate (a): this used to be the phantom -- confirm
-                # it now stays BOOTSTRAP outright, never even reaching the
-                # fine-search verification gate (b).
-                print(
-                    "    -> gate (a) [peak persistence, spec §10] stopped the "
-                    "fold-lattice phantom before any fine-search verification "
-                    "was needed"
-                )
+            narrative[name] = (
+                f"{name} never acquired in {kS + 1} offered minutes "
+                f"(state={acqS.state}; max fold SNR {snr_str})"
+            )
             continue
         res = _own_plane_fine(
             meta_s, gotS, rtpS, audioS, delaysS, muS, btS, gotS.stations[0]
         )
         if name == "WWV_25000":
-            # task-11b, gate (b) run BY HAND: defensive fallback in case this
-            # chunk (or different data) ever acquires despite gate (a) --
-            # feeding the fine-search result into verify() must reject it.
+            # Unreachable on this fixture (the hard assert above already
+            # requires gotS is None here) -- kept as a defensive fallback
+            # so gate (b) is still exercised and still rejects if a
+            # future/different WWV_25000 fixture ever DOES acquire despite
+            # gate (a).
             outcome = acqS.verify(
                 {
                     gotS.stations[0]: (
@@ -821,11 +841,12 @@ def test_nd_shared_channel_resolved_by_real_same_site_siblings(chunk):
                     )
                 }
             )
-            print(
-                f"  WWV_25000 acquired despite gate (a) (sigma1="
+            narrative[name] = (
+                f"WWV_25000 acquired despite gate (a) (sigma1="
                 f"{res.sigma_single_ms if res else float('nan'):.3f} ms); "
                 f"gate (b) verify() -> {outcome}"
             )
+            print(f"  {narrative[name]}")
             assert outcome == "rejected"
             assert acqS.state == RegistrationAcquirer.STATE_BOOTSTRAP
             continue
@@ -953,19 +974,21 @@ def test_nd_shared_channel_resolved_by_real_same_site_siblings(chunk):
             )
 
     if not trusted:
+        # I2 (task-11b fix round 1): built from what THIS run actually
+        # measured (`narrative`), not asserted in prose which gate fired --
+        # the reviewer showed the previous hard-coded text kept narrating
+        # "gate (a) stopped it" even with gate (a) patched to a no-op.
         pytest.skip(
             "no ND same-site sibling supplies a trustworthy plane in this window: "
-            "WWV_20000 has no acquirable tick (fold SNR under the ~13 dB floor at "
-            "every fold length) and WWV_25000's fold-lattice phantom (a single "
-            "13.7 dB peak at 502.54 ms, absent from 60/180/540 s folds of the same "
-            "chunk, which used to reach a ~497 ms wrong plane with fine-search "
-            "sigma1 14.6 ms > TIMING_SIGMA_MAX_MS = 6 ms) is now stopped by "
-            "task-11b's peak-persistence gate (a) before it ever acquires.  The "
-            "cross-channel machinery was still exercised above and behaved "
-            "correctly: no phantom was offered as a sibling, and fuse_registrations "
-            "did not silently average a bad plane in.  The sibling-resolved "
-            "assertions below need a window where 20 or 25 MHz is actually open at "
-            "ND -- see the task-11 report, fix round 4, and the task-11b report."
+            + "; ".join(
+                narrative.get(n, f"{n}: no data") for n in ("WWV_20000", "WWV_25000")
+            )
+            + ".  The cross-channel machinery was still exercised above and "
+            "behaved correctly: no phantom was offered as a sibling, and "
+            "fuse_registrations did not silently average a bad plane in.  The "
+            "sibling-resolved assertions below need a window where 20 or 25 MHz "
+            "is actually open at ND -- see the task-11 report, fix round 4, and "
+            "the task-11b report."
         )
 
     # ── With a real, tick-like sibling: the design's own claims ──

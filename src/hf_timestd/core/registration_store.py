@@ -114,6 +114,7 @@ class RegistrationStore:
                 "method": None,
                 "n_minutes": 0,
                 "hypotheses_open": 0,
+                "verified": None,
             }
         # strict JSON: a BOOTSTRAP channel file carries sigma inf -> null
         sigma = float(reg.sigma_ms) if math.isfinite(reg.sigma_ms) else None
@@ -127,6 +128,11 @@ class RegistrationStore:
             "n_minutes": int(reg.n_minutes),
             "hypotheses_open": int(reg.hypotheses_open),
             "stations": list(reg.stations),
+            # task-11b fix round 1 (M5): round-trip verified so a future
+            # direct adopt(sibling) doesn't silently reconstruct a
+            # permanently-unverified plane from a file that was, in fact,
+            # verified when written.
+            "verified": bool(reg.verified),
         }
 
     def write_channel(self, reg: Registration, state: str, extra: dict) -> None:
@@ -193,6 +199,9 @@ class RegistrationStore:
                         channel=str(d["channel"]),
                         hypotheses_open=int(d.get("hypotheses_open", 0)),
                         stations=tuple(d.get("stations", [])),
+                        # M5: default False when absent (older files, or a
+                        # schema-incomplete write) rather than raising.
+                        verified=bool(d.get("verified", False)),
                     )
                 )
             except (KeyError, TypeError, ValueError):

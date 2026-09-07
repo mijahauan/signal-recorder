@@ -104,6 +104,42 @@ def test_verified_plane_publishes_acquired_next_minute(tmp_path):
     assert s["state"] == "ACQUIRED"
 
 
+def test_marker_anchored_ensemble_also_verifies_the_plane(tmp_path):
+    """task-11b fix round 1 (C1): TickEdgeDetector prefers the
+    minute-marker anchor whenever one is found and confirmed, regardless
+    of the buffer's origin_source -- so on strong channels EVERY result
+    is 'minute_marker', never 'acquired', and excluding it meant verify()
+    was never called there.  3 minutes of marker-anchored, tick-like
+    (sigma_1 <= 6 ms) ensembles must verify the plane; the NEXT minute's
+    channel file is ACQUIRED."""
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    label = label_timing(T0, 0.250, SR)
+    svc.apply_registration(
+        label, audio, start_rtp=1_000_000, minute_utc=MIN, metadata=_meta(0)
+    )
+    assert svc.reg_store.read_summary()["state"] == "CANDIDATE"
+    for _ in range(3):
+        r = SimpleNamespace(
+            station="WWV",
+            ensemble_timing_error_ms=0.2,
+            sigma_single_ms=0.3,
+            anchor_source="minute_marker",
+        )
+        svc.feed_back_ensembles([r])
+    assert svc.acquirer.registration.verified is True
+    bt2 = svc.apply_registration(
+        label_timing(T0 + 60, 0.250, SR),
+        audio,
+        start_rtp=1_000_000 + 60 * SR,
+        minute_utc=MIN + 60,
+        metadata=_meta(1),
+    )
+    assert bt2.origin_source == "acquired"
+    s = svc.reg_store.read_summary()
+    assert s["state"] == "ACQUIRED"
+
+
 def test_unverifiable_plane_publishes_bootstrap_next_minute(tmp_path):
     """task-11b: a junk (non-tick-like) ensemble fails verification and
     resets the acquirer -- the next minute publishes BOOTSTRAP."""
@@ -359,13 +395,21 @@ def test_sibling_conflict_reverts_to_label_and_flags_conflict(tmp_path):
     EVEN total (an odd count always keeps at least the middle value, which
     sits at distance 0 from itself) -- so the minimal, reliable
     reproduction is exactly two planes (this channel's own + one sibling),
-    not the review's "two siblings" text verbatim."""
+    not the review's "two siblings" text verbatim.
+
+    task-11b fix round 1 (I1): CONFLICT requires two independently-TRUSTED
+    planes disagreeing -- an unverified own CANDIDATE instead defers to a
+    real sibling's plane (adopt), it does not conflict with it.  So this
+    scenario needs the own plane marked verified first, exactly as the
+    ruling's own words draw the line ("own verified -> fuse own +
+    siblings (as now)")."""
     svc = _service(tmp_path)
     from hf_timestd.core.registration_acquirer import Registration
 
     audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
     svc.apply_registration(label_timing(T0, 0.0, SR), audio, 1_000_000, MIN, _meta(0))
     assert svc.acquirer.state == RegistrationAcquirer.STATE_ACQUIRED
+    svc.acquirer.registration.verified = True
     own_epoch = svc.acquirer.registration.counter_epoch_id
     sib = Registration(
         own_epoch,
@@ -388,6 +432,47 @@ def test_sibling_conflict_reverts_to_label_and_flags_conflict(tmp_path):
     s = svc.reg_store.read_summary()
     assert s["state"] == "CONFLICT"
     assert "SHARED_10000" in s["contributing"] and "WWV_20000" in s["contributing"]
+
+
+def test_candidate_own_defers_to_verified_sibling_no_conflict(tmp_path):
+    """task-11b fix round 1 (I1): an own CANDIDATE (unverified) plane is not
+    independent evidence to fuse against a real sibling -- unlike the
+    CONFLICT test above (own VERIFIED, genuine disagreement), an unverified
+    own plane defers to a verified sibling's plane even 250 ms away: the
+    NEXT minute's applied plane is the sibling's, state ACQUIRED, no
+    CONFLICT."""
+    svc = _service(tmp_path)
+    from hf_timestd.core.registration_acquirer import Registration
+
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    bt0 = svc.apply_registration(
+        label_timing(T0, 0.0, SR), audio, 1_000_000, MIN, _meta(0)
+    )
+    assert bt0.origin_source == "acquired"
+    assert svc.acquirer.registration.verified is False  # still a CANDIDATE
+
+    sib = Registration(
+        svc.acquirer.registration.counter_epoch_id,
+        rtp_ref=1_000_000,
+        utc_ref=T0 + 0.250,  # 250 ms away -- would CONFLICT if own were trusted
+        sample_rate=SR,
+        sigma_ms=0.9,
+        channel="WWV_20000",
+        stations=("WWV",),
+        verified=True,
+    )
+    svc.reg_store.write_channel(sib, "ACQUIRED", {})
+
+    audio1 = make_tick_audio(62, SR, T0 + 60, {"WWV": 0.0125}, snr_db=20.0, seed=8)
+    bt1 = svc.apply_registration(
+        label_timing(T0 + 60, 0.0, SR), audio1, 1_000_000 + 60 * SR, MIN + 60, _meta(1)
+    )
+    assert bt1.origin_source == "acquired"
+    assert bt1.sample0_utc == pytest.approx(T0 + 60 + 0.250, abs=0.002)
+    assert svc.acquirer.registration.method == "adopted"
+    assert svc.acquirer.registration.verified is True
+    s = svc.reg_store.read_summary()
+    assert s["state"] == "ACQUIRED"
 
 
 def test_adopted_plane_with_expired_donor_returns_to_bootstrap(tmp_path, caplog):
