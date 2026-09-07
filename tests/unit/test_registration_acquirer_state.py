@@ -249,6 +249,30 @@ def test_verify_rejects_a_non_tick_like_ensemble():
     assert acq.state == acq.STATE_BOOTSTRAP
 
 
+def test_verify_rejects_a_tick_like_ensemble_with_a_large_residual():
+    """task-11b fix round 2 (N1): a marker-anchored search sits on the
+    signal's OWN grid, so sigma_single_ms stays tick-like (~0.01 ms)
+    however wrong our plane is -- only ensemble_timing_error_ms carries
+    the plane error for that anchor.  A tick-like ensemble whose residual
+    exceeds VERIFY_MAX_RESIDUAL_MS (= TickEdgeDetector.SEARCH_WINDOW_MS,
+    20 ms) is itself a rejection, not "pending"."""
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    assert acq.verify({"WWV": (30.0, 0.01)}) == "rejected"
+    assert acq.state == acq.STATE_BOOTSTRAP
+
+
+def test_verify_confirms_a_tick_like_ensemble_with_a_small_residual():
+    """task-11b fix round 2 (N1): the companion case -- tick-like sigma AND
+    a residual well inside VERIFY_MAX_RESIDUAL_MS still verifies."""
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    assert acq.verify({"WWV": (4.0, 0.3)}) == "verified"
+    assert acq.registration.verified is True
+
+
 def test_verify_pending_then_rejects_after_max_minutes():
     acq = RegistrationAcquirer("SHARED_10000", SR)
     audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)

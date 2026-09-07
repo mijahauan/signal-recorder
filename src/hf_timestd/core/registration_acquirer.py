@@ -489,6 +489,17 @@ class RegistrationAcquirer:
     # registration's stations (host-label-anchored minute, filter skipped
     # them, ...) before an unverified plane is given up on and reset.
     VERIFY_MAX_MINUTES = 3
+    # task-11b fix round 2 (N1): sigma_single_ms alone does not discriminate
+    # a marker-anchored ensemble -- that search sits on the signal's OWN
+    # marker grid, so its sigma_1 stays tick-like (~0.01 ms) however wrong
+    # our plane is; only ensemble_timing_error_ms carries the plane error
+    # for that anchor.  Bound it to the same window an acquired-anchored
+    # confirmation is implicitly held to (TickEdgeDetector.SEARCH_WINDOW_MS,
+    # 20 ms: an acquired-anchored search outside that window returns window
+    # scatter, sigma_1 >> TIMING_SIGMA_MAX_MS, and is already rejected on
+    # sigma alone) so marker- and acquired-anchored evidence are held to
+    # one equivalent standard.
+    VERIFY_MAX_RESIDUAL_MS = TickEdgeDetector.SEARCH_WINDOW_MS
 
     def __init__(self, channel: str, sample_rate: int):
         self.channel = channel
@@ -709,12 +720,19 @@ class RegistrationAcquirer:
         for the ensembles the service saw this minute, restricted here to
         this registration's own stations.
 
-        * Any station in ``self._reg.stations`` with a tick-like ensemble
-          (``sigma_single_ms <= TIMING_SIGMA_MAX_MS``) confirms the plane:
-          ``verified = True``, returns "verified".
-        * Ensembles for those stations arrived but none is tick-like: the
-          acquired plane is a fold-lattice phantom, not a tick lock --
-          reset to BOOTSTRAP, returns "rejected".
+        * A station in ``self._reg.stations`` with a tick-like ensemble
+          (``sigma_single_ms <= TIMING_SIGMA_MAX_MS``) AND a small residual
+          (``abs(timing_error_ms) <= VERIFY_MAX_RESIDUAL_MS``) confirms the
+          plane: ``verified = True``, returns "verified".
+        * A tick-like ensemble whose residual exceeds
+          ``VERIFY_MAX_RESIDUAL_MS`` is itself a rejection, not "pending"
+          (fix round 2, N1): a marker-anchored search sits on the signal's
+          OWN grid, so its sigma stays tick-like however wrong our plane
+          is -- only the residual can say the plane is wrong there, and it
+          just did.  Reset to BOOTSTRAP, returns "rejected".
+        * No tick-like ensemble at all for those stations: the acquired
+          plane is a fold-lattice phantom, not a tick lock -- reset,
+          returns "rejected".
         * No ensemble at all for those stations (host-label-anchored
           minute, filter skipped them, ...): keep waiting, returns
           "pending"; after ``VERIFY_MAX_MINUTES`` consecutive pending
@@ -733,11 +751,20 @@ class RegistrationAcquirer:
                 )
                 return "rejected"
             return "pending"
-        if any(sig <= self.TIMING_SIGMA_MAX_MS for _err, sig in relevant.values()):
+        tick_like = [
+            (err, sig)
+            for err, sig in relevant.values()
+            if sig <= self.TIMING_SIGMA_MAX_MS
+        ]
+        if not tick_like:
+            self.reset("acquired plane failed fine-search verification")
+            return "rejected"
+        if any(abs(err) <= self.VERIFY_MAX_RESIDUAL_MS for err, _sig in tick_like):
             self._reg.verified = True
             self._verify_pending = 0
             return "verified"
-        self.reset("acquired plane failed fine-search verification")
+        worst_err = max((err for err, _sig in tick_like), key=abs)
+        self.reset(f"acquired plane failed verification: residual {worst_err:+.1f} ms")
         return "rejected"
 
     # ── corroboration ──────────────────────────────────────────────

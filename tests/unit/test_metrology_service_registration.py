@@ -140,6 +140,45 @@ def test_marker_anchored_ensemble_also_verifies_the_plane(tmp_path):
     assert s["state"] == "ACQUIRED"
 
 
+def test_marker_anchored_large_residual_rejects_not_verifies(tmp_path):
+    """task-11b fix round 2 (N1): a marker-anchored search sits on the
+    signal's own grid, so sigma_single_ms stays tick-like regardless of
+    how wrong our plane is -- confirmed round 1's C1 fix opened a hole
+    where a plane 20-200 ms wrong could be VERIFIED from one
+    marker-confirmed minute.  One marker-anchored result with err +30 ms /
+    sigma_1 0.01 ms must reject: the NEXT minute the channel is BOOTSTRAP
+    (not ACQUIRED), and the stale channel file is not offered as a
+    sibling."""
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    label = label_timing(T0, 0.250, SR)
+    svc.apply_registration(
+        label, audio, start_rtp=1_000_000, minute_utc=MIN, metadata=_meta(0)
+    )
+    assert svc.reg_store.read_summary()["state"] == "CANDIDATE"
+    r = SimpleNamespace(
+        station="WWV",
+        ensemble_timing_error_ms=30.0,
+        sigma_single_ms=0.01,
+        anchor_source="minute_marker",
+    )
+    svc.feed_back_ensembles([r])
+    assert svc.acquirer.state == RegistrationAcquirer.STATE_BOOTSTRAP
+    rng = np.random.default_rng(5)
+    noise = 0.1 * rng.standard_normal(62 * SR)
+    bt2 = svc.apply_registration(
+        label_timing(T0 + 60, 0.250, SR),
+        noise,
+        start_rtp=1_000_000 + 60 * SR,
+        minute_utc=MIN + 60,
+        metadata=_meta(1),
+    )
+    assert bt2.origin_source == "label"
+    s = svc.reg_store.read_summary()
+    assert s["state"] == "BOOTSTRAP"
+    assert svc.reg_store.read_siblings(exclude_channel="WWV_20000") == []
+
+
 def test_unverifiable_plane_publishes_bootstrap_next_minute(tmp_path):
     """task-11b: a junk (non-tick-like) ensemble fails verification and
     resets the acquirer -- the next minute publishes BOOTSTRAP."""
