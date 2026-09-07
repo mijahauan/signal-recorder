@@ -109,10 +109,16 @@ def test_bootstrap_channel_file_has_null_sigma_and_is_not_a_sibling(tmp_path):
 
 
 def test_read_siblings_skips_a_schema_incomplete_file(tmp_path):
-    st = RegistrationStore(tmp_path / "reg", tmp_path / "registration.json")
+    clock = [5000.0]
+    st = RegistrationStore(
+        tmp_path / "reg",
+        tmp_path / "registration.json",
+        time_fn=lambda: clock[0],
+    )
     # Write a valid ACQUIRED file for channel "a"
     st.write_channel(_reg("a", 100.0, 1.0), "ACQUIRED", {})
     # Write an incomplete JSON file for channel "b" (missing rtp_ref)
+    # Use written_at=5000.0 (same as current clock) so it's not stale
     (tmp_path / "reg").mkdir(parents=True, exist_ok=True)
     (tmp_path / "reg" / "b.json").write_text(
         json.dumps(
@@ -121,11 +127,12 @@ def test_read_siblings_skips_a_schema_incomplete_file(tmp_path):
                 "state": "ACQUIRED",
                 "utc_ref": 1.0,
                 "sigma_ms": 1.0,
-                "written_at": 1000.0,
+                "written_at": 5000.0,
             }
         )
     )
     # read_siblings must return exactly the "a" registration
+    # (b is skipped by the KeyError guard since it's missing rtp_ref)
     sibs = st.read_siblings()
     assert len(sibs) == 1
     assert sibs[0].channel == "a"
