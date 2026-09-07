@@ -1,3 +1,5 @@
+import pytest
+
 from hf_timestd.core.offset_judge import (
     BenchReading,
     HfAcquiredBench,
@@ -42,7 +44,10 @@ def test_bench_projects_the_registration_to_the_arrival(tmp_path):
     r = bench.poll()
     assert r is not None
     assert r.utc == 110.0 and r.mono == 42.0
-    assert r.sigma_ns == 0.8e6 and r.tier == "T3"
+    # addendum: the bench floors its sigma at ORIGIN_SIGMA_FLOOR_MS -- the
+    # summary's 0.8 ms is the fused plane's repeatability, and the bench's
+    # sigma is an ACCURACY claim
+    assert r.sigma_ns == 1.0e6 and r.tier == "T3"
     assert (
         r.detail["bench"] == "hf_acquired" and r.detail["raw_pair_residual_ms"] == 16.7
     )
@@ -77,7 +82,7 @@ def test_bench_answers_on_witness_state_too(tmp_path):
     r = bench.poll()
     assert r is not None
     assert r.utc == 110.0 and r.mono == 42.0
-    assert r.sigma_ns == 0.8e6 and r.tier == "T3"
+    assert r.sigma_ns == 1.0e6 and r.tier == "T3"  # floored, see above
     assert (
         r.detail["bench"] == "hf_acquired" and r.detail["raw_pair_residual_ms"] == 4.2
     )
@@ -221,8 +226,9 @@ class _FakeStreamRecorder:
 
 
 class _FakeQuality:
-    def __init__(self, last_rtp_timestamp, delivered_rtp_start=None,
-                 batch_samples_delivered=0):
+    def __init__(
+        self, last_rtp_timestamp, delivered_rtp_start=None, batch_samples_delivered=0
+    ):
         self.last_rtp_timestamp = last_rtp_timestamp
         if delivered_rtp_start is not None:
             self.delivered_rtp_start = delivered_rtp_start
@@ -308,3 +314,92 @@ def test_wwvb_stream_no_longer_writes_hf_arrival():
     recorder (no archive tap ever wired) has no _hf_arrival at all."""
     recorder = CoreRecorderV2.__new__(CoreRecorderV2)
     assert recorder._hf_acquired_bench_state() is None
+
+
+# ── addendum: the bench's sigma is an ACCURACY claim, floored ─────────
+
+
+def _acquired_summary(tmp_path, clock, sigma_ms, utc_ref=100.0):
+    st = _store(tmp_path, clock)
+    st.write_summary(
+        Registration(
+            "ep-1",
+            rtp_ref=0,
+            utc_ref=utc_ref,
+            sample_rate=SR,
+            sigma_ms=sigma_ms,
+            channel="fused",
+        ),
+        ["SHARED_10000", "WWV_20000"],
+        "ACQUIRED",
+        {},
+    )
+    return st
+
+
+@pytest.mark.parametrize(
+    "sigma_ms,expected_ns",
+    [
+        (0.41, 1.0e6),  # six 1 ms channels fused: repeatability, not accuracy
+        (0.707, 1.0e6),  # two 1 ms channels fused
+        (1.0, 1.0e6),  # already at the bound
+        (2.5, 2.5e6),  # a loose plane is published as loose
+    ],
+)
+def test_bench_sigma_is_floored_at_the_delay_model_bound(
+    tmp_path, sigma_ms, expected_ns
+):
+    """The delay-model accuracy bound is COMMON-MODE across channels: every
+    channel's origin is `expected_delay - fold_position`, so they all
+    inherit the same great-circle/F2-hop model error and the same mode
+    ambiguity, and inverse-variance combination across N channels does not
+    shrink it.  `fuse_registrations` is right to report the fused plane's
+    repeatability (that is what its inputs measure), so the floor belongs
+    here, where the number becomes an accuracy claim the judge acts on."""
+    clock = [5000.0]
+    st = _acquired_summary(tmp_path, clock, sigma_ms)
+    bench = HfAcquiredBench(
+        provider=lambda: (0, 42.0, SR),
+        store=st,
+        mono_fn=lambda: 42.0,
+        time_fn=lambda: clock[0],
+    )
+    r = bench.poll()
+    assert r is not None
+    assert r.sigma_ns == pytest.approx(expected_ns)
+
+
+def test_floored_hf_acquired_does_not_displace_a_tighter_fusion_bench(tmp_path):
+    """The reason the floor is load-bearing.  FusionBench and
+    HfAcquiredBench are the only pair sharing tier T3, so
+    _select_bench_locked's same-tier sigma tie-break decides which of them
+    governs -- and the judge's offset_ns is what the recorder folds into
+    the ring anchor and what reaches chrony through FUSE.  A fused
+    registration presenting 0.41 ms of repeatability must not take T3 from
+    a FusionBench reading at 0.6 ms; floored to the delay-model bound it
+    cannot."""
+    wall0 = 1_800_000_000.0
+    clock = [wall0]
+    st = _acquired_summary(tmp_path, clock, 0.41, utc_ref=wall0)
+    fusion_like = BenchReading(tier="T3", utc=wall0, sigma_ns=600_000.0, mono=1000.0)
+    judge = OffsetJudge(
+        config={"enabled": True},
+        benches=[_FixedBench(fusion_like)],
+        publish_path=tmp_path / "offset_judge.json",
+        time_fn=lambda: wall0,
+        mono_fn=lambda: 1000.0,
+    )
+    judge.add_bench(
+        HfAcquiredBench(
+            provider=lambda: (0, 1000.0, SR),
+            store=st,
+            mono_fn=lambda: 1000.0,
+            time_fn=lambda: wall0,
+        )
+    )
+    key = ("hf-status.local", 0xABCD1234)
+    judge.register_radiod_pair(key, _unix_to_gps_ns(wall0), 0, SR)
+    judge.tick()
+    verdict = judge.offset_for(key, 0)
+    assert verdict is not None and verdict.tier == "T3"
+    assert verdict.sigma_ns == pytest.approx(600_000.0)

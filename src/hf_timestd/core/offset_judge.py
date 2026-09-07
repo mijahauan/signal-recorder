@@ -67,6 +67,12 @@ import numpy as np
 # stdlib-only sibling imports (verified: no heavy science deps)
 from .chrony_stats import parse_tracking
 from .leap_second import gps_leap_seconds_at_gps_time
+# The delay-model accuracy bound HfAcquiredBench floors its published
+# sigma at.  registration_acquirer pulls in tick_edge_detector and
+# counter_epoch_tracker, neither of which imports this module, so the
+# import is safe at module scope (registration_store stays lazy because
+# constructing a default store touches the filesystem path).
+from .registration_acquirer import ORIGIN_SIGMA_FLOOR_MS
 
 logger = logging.getLogger(__name__)
 
@@ -703,6 +709,13 @@ class HfAcquiredBench:
     NativeAnchorBench does for T6.  Its residual against the raw radiod
     pair (carried in ``detail``) names pair skew directly.
 
+    Its published sigma is floored at ``ORIGIN_SIGMA_FLOOR_MS``: the fused
+    registration's sigma is the REPEATABILITY of the plane, while this
+    bench's sigma is its ACCURACY claim, and the accuracy of a
+    ``expected_delay - fold_position`` origin is bounded by the delay
+    model -- common-mode across channels, so fusing N of them does not
+    shrink it.
+
     Answers on both ACQUIRED and WITNESS summary states.  WITNESS means
     a T6 station is publishing the acquired plane without it driving
     metrology — the bench still answers so the judge can compute the
@@ -770,8 +783,22 @@ class HfAcquiredBench:
             return None
         delta_rtp = _rtp_delta_signed(int(arrival_rtp), int(s["rtp_ref"]))
         utc = float(s["utc_ref"]) + delta_rtp / sr
+        # The summary's sigma_ms is the FUSED plane's REPEATABILITY -- fold
+        # SNR over tick rise time, divided by sqrt(n) and then combined
+        # inverse-variance across channels, so six 1 ms channels report
+        # 0.41 ms.  This bench's sigma is an ACCURACY claim the judge acts
+        # on, and the acquired origin's accuracy is bounded by
+        # `expected_delay - fold_position`: the great-circle/F2-hop
+        # propagation model and mode ambiguity (1F vs 2F is milliseconds).
+        # That bound is COMMON-MODE across channels -- every channel
+        # inherits the same model error -- so it does not shrink with N and
+        # cannot be fused away.  Floor it at ORIGIN_SIGMA_FLOOR_MS here,
+        # where the number stops being a measurement and starts being a
+        # claim; `fuse_registrations` is left reporting what its inputs
+        # actually measured.
+        sigma_ms = max(float(s["sigma_ms"]), ORIGIN_SIGMA_FLOOR_MS)
         return BenchReading(
-            utc=utc, mono=float(arrival_mono), sigma_ns=float(s["sigma_ms"]) * 1e6,
+            utc=utc, mono=float(arrival_mono), sigma_ns=sigma_ms * 1e6,
             tier=self.TIER,
             detail={"bench": "hf_acquired", "counter_epoch_id": s.get("counter_epoch_id"),
                     "raw_pair_residual_ms": s.get("raw_pair_residual_ms"),
