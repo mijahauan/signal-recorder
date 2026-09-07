@@ -225,7 +225,6 @@ class MetrologyService:
         self.acquirer = RegistrationAcquirer(self.channel_name, self.engine.sample_rate)
         self.reg_store = RegistrationStore()
         self.epoch_tracker = CounterEpochTracker()
-        self._last_registration_meta: Dict[str, Any] = {}
 
         # Storage backend selection. Phase 1 of the HDF5 → SQLite
         # migration (see docs/HDF5-TO-SQLITE-MIGRATION.md): each writer
@@ -648,17 +647,64 @@ class MetrologyService:
                 )
                 time.sleep(1.0)
 
+    # Where AuthorityManager publishes the active timing tier (T_LEVELS_RANKED
+    # in authority_manager.py, key "t_level_active").  The live ring path
+    # never populates BufferTiming.judge_tier -- ring_buffer_reader's
+    # extract_interval metadata carries no "timing" block, so
+    # resolve_buffer_timing only ever fills judge_tier from a sidecar's
+    # Offset Judge provenance (Task 8 fix round 1, C3: confirmed by reading
+    # both files; the live path's tier is this file, not the BufferTiming).
+    _AUTHORITY_JSON_PATH = Path("/run/hf-timestd/authority.json")
+
     def apply_registration(self, buffer_timing, iq_samples: np.ndarray, start_rtp: int,
                            minute_utc: int, metadata: Dict[str, Any]):
         """Replace the label ORIGIN with the acquired one (rate untouched).
-        Returns the BufferTiming to hand the engine."""
+        Returns the BufferTiming to hand the engine.
+
+        Never raises: registration is an improvement to the plane, never a
+        precondition for measuring it (review I1) -- any failure below
+        logs and falls back to the plane this method was handed."""
         if buffer_timing is None or buffer_timing.source == 'no_timing':
             return buffer_timing
+        try:
+            return self._apply_registration_unsafe(
+                buffer_timing, iq_samples, start_rtp, minute_utc, metadata)
+        except Exception:
+            logger.error(
+                f"[{self.channel_name}] apply_registration failed for minute "
+                f"{minute_utc}; metrology continues on the label plane",
+                exc_info=True)
+            return buffer_timing
+
+    def _t6_authoritative(self, buffer_timing) -> bool:
+        """Is T6 the active timing authority right now?
+
+        Preferred: ``buffer_timing.judge_tier`` (populated from a sidecar's
+        Offset Judge block -- Task 11's replay path, and any future direct
+        caller).  The live ring path never sets it, so fall back to reading
+        AuthorityManager's own publication."""
+        tier = getattr(buffer_timing, "judge_tier", None)
+        if tier is not None:
+            return tier == "T6"
+        try:
+            with open(self._AUTHORITY_JSON_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("t_level_active") == "T6"
+        except Exception:
+            return False
+
+    def _apply_registration_unsafe(self, buffer_timing, iq_samples: np.ndarray,
+                                   start_rtp: int, minute_utc: int,
+                                   metadata: Dict[str, Any]):
+        t6_authoritative = self._t6_authoritative(buffer_timing)
         epoch = self.epoch_tracker.observe(metadata.get("gps_time_ns", 0),
                                            metadata.get("rtp_timesnap", 0),
                                            metadata.get("sample_rate", self.engine.sample_rate))
         audio = self.engine.prepare_audio(iq_samples)
         delays = self.engine.expected_delays_s(buffer_timing.sample0_utc, int(minute_utc))
+        # Still run the acquirer even when T6 is authoritative: a
+        # registration must exist to WITNESS against (spec §6), even though
+        # it will not replace T6's origin below.
         own = self.acquirer.offer_minute(audio, buffer_timing, int(start_rtp), int(minute_utc),
                                          delays, epoch)
         sibs = self.reg_store.read_siblings(exclude_channel=self.channel_name)
@@ -668,26 +714,98 @@ class MetrologyService:
             if sib_plane is not None:
                 own = self.acquirer.resolve_ambiguity(sib_plane, int(start_rtp),
                                                       float(buffer_timing.sample0_utc))
-        fused = fuse_registrations(([own] if own else []) + sibs, at_rtp=int(start_rtp))
+        # An ADOPTED `own` is a derived ECHO of a prior sibling fusion, not
+        # independent evidence -- folding it back into fuse_registrations
+        # alongside the very siblings it was copied from understates sigma
+        # by sqrt(n+1) every minute after the first (review C1).  A
+        # genuinely self-acquired `own` (method != "adopted") IS independent
+        # and belongs in the fusion as before.
+        own_is_adopted = own is not None and getattr(own, "method", None) == "adopted"
+        fusion_inputs = sibs if own_is_adopted else (([own] if own else []) + sibs)
+        fused = fuse_registrations(fusion_inputs, at_rtp=int(start_rtp))
         if own is None and fused is not None:
             self.acquirer.adopt(fused)          # a sibling already placed the second
         label_s0 = float(buffer_timing.sample0_utc)
+
+        # C3: T6 wins.  The ring anchor already carries T6's correction
+        # (offset_judge -> stream_recorder_v2 -> resolve_buffer_timing), so
+        # replacing sample0_utc here would fight it, not defer to it.
+        # Publish what the acquirer measured as a WITNESS, and hand the
+        # engine T6's plane back untouched.
+        if t6_authoritative:
+            residual_vs_t6_ms = (
+                None if fused is None
+                else (fused.sample0_utc_for(int(start_rtp)) - label_s0) * 1000.0
+            )
+            contributing = (
+                [] if fused is None
+                else [r.channel for r in sibs]
+                     + ([self.channel_name] if (own is not None and not own_is_adopted) else [])
+            )
+            self._publish_registration(
+                fused, contributing, label_s0, residual_vs_t6_ms, epoch,
+                state_override="WITNESS",
+                extra_extra={
+                    "witness_of": "T6",
+                    "residual_vs_t6_ms": (
+                        None if residual_vs_t6_ms is None else round(residual_vs_t6_ms, 3)
+                    ),
+                },
+            )
+            return dataclasses.replace(buffer_timing, counter_epoch_id=epoch)
+
+        # I2: this channel already has its own ACQUIRED plane, but nothing
+        # in the sibling fusion agrees with it within FUSE_OUTLIER_MS of the
+        # combined median -- a real disagreement between channels sharing
+        # one origin, not a bootstrap.  Surface it; do not silently revert
+        # with contradictory provenance (channel file ACQUIRED, summary
+        # BOOTSTRAP) as before.
+        if own is not None and fused is None:
+            own_s0 = own.sample0_utc_for(int(start_rtp))
+            deltas = ", ".join(
+                f"{r.channel}={(r.sample0_utc_for(int(start_rtp)) - own_s0) * 1000.0:+.1f}ms"
+                for r in sibs
+            )
+            logger.warning(
+                f"[{self.channel_name}] sibling registrations disagree with this "
+                f"channel's own plane ({deltas}); reverting to the label plane "
+                f"this minute")
+            involved = sorted({self.channel_name, *(r.channel for r in sibs)})
+            self._publish_registration(None, involved, label_s0, None, epoch,
+                                       state_override="CONFLICT")
+            return dataclasses.replace(buffer_timing, origin_source="label",
+                                       counter_epoch_id=epoch)
+
         if fused is None:
             self._publish_registration(None, [], label_s0, None, epoch)
             return dataclasses.replace(buffer_timing, origin_source="label",
                                        counter_epoch_id=epoch)
         s0 = fused.sample0_utc_for(int(start_rtp))
         residual_ms = (s0 - label_s0) * 1000.0
-        self._publish_registration(fused, [r.channel for r in sibs] + ([self.channel_name] if own else []),
-                                   label_s0, residual_ms, epoch)
+        contributing = ([r.channel for r in sibs]
+                       + ([self.channel_name] if (own is not None and not own_is_adopted) else []))
+        self._publish_registration(fused, contributing, label_s0, residual_ms, epoch)
+        # I4: the label carried T6's (or whatever incumbent's) provenance;
+        # once the origin is replaced the provenance must move with it --
+        # one measurand, one ruler, one registration.
         return dataclasses.replace(buffer_timing, sample0_utc=s0, origin_source="acquired",
-                                   origin_sigma_ms=fused.sigma_ms, counter_epoch_id=epoch)
+                                   origin_sigma_ms=fused.sigma_ms, counter_epoch_id=epoch,
+                                   judge_tier="T3", offset_sigma_ns=fused.sigma_ms * 1e6)
 
-    def _publish_registration(self, fused, contributing, label_s0, residual_ms, epoch):
-        own = self.acquirer.registration
-        state = self.acquirer.state
-        if own is not None:
-            self.reg_store.write_channel(own, state, {
+    def _publish_registration(self, fused, contributing, label_s0, residual_ms, epoch,
+                              *, state_override: Optional[str] = None,
+                              extra_extra: Optional[Dict[str, Any]] = None):
+        # NOTE: this "current" registration is the ACQUIRER's own state as of
+        # right now (post adopt/acquire this minute) -- a distinct quantity
+        # from the caller's "own" (this minute's fresh offer_minute /
+        # resolve_ambiguity return), which is None exactly in the adopt case.
+        # Conflating the two names previously masked that adopt rewrites
+        # `self.acquirer.registration` out from under the caller's `own`
+        # (review M5).
+        current = self.acquirer.registration
+        state = state_override if state_override is not None else self.acquirer.state
+        if current is not None:
+            self.reg_store.write_channel(current, state, {
                 "label_sample0_utc": label_s0,
                 "correction_ms": None if residual_ms is None else round(residual_ms, 3)})
         else:
@@ -695,15 +813,30 @@ class MetrologyService:
                 Registration(counter_epoch_id=epoch, rtp_ref=0, utc_ref=0.0,
                              sample_rate=self.engine.sample_rate, sigma_ms=float("inf"),
                              channel=self.channel_name), state, {"label_sample0_utc": label_s0})
-        self.reg_store.write_summary(fused, sorted(set(contributing)),
-                                     "ACQUIRED" if fused is not None else "BOOTSTRAP",
-                                     {"raw_pair_residual_ms": None if residual_ms is None else round(residual_ms, 3),
-                                      "counter_epoch_id": epoch,
-                                      "minutes_since_acquisition": 0 if fused is None else fused.n_minutes})
+        summary_state = (
+            state_override if state_override is not None
+            else ("ACQUIRED" if fused is not None else "BOOTSTRAP")
+        )
+        extra = {"raw_pair_residual_ms": None if residual_ms is None else round(residual_ms, 3),
+                 "counter_epoch_id": epoch,
+                 "minutes_since_acquisition": 0 if fused is None else fused.n_minutes}
+        if extra_extra:
+            extra.update(extra_extra)
+        self.reg_store.write_summary(fused, sorted(set(contributing)), summary_state, extra)
 
     def feed_back_ensembles(self, results) -> None:
         """Hand this minute's acquired-plane ensembles to the acquirer
-        (spec §5 corroborate / correct)."""
+        (spec §5 corroborate / correct).
+
+        Never raises (review I1): a bad ensemble must not abort the
+        minute's product writes in ``_process_minute_data``."""
+        try:
+            self._feed_back_ensembles_unsafe(results)
+        except Exception:
+            logger.error(f"[{self.channel_name}] feed_back_ensembles failed",
+                        exc_info=True)
+
+    def _feed_back_ensembles_unsafe(self, results) -> None:
         res = {}
         for r in results or []:
             if getattr(r, "anchor_source", None) != "acquired":

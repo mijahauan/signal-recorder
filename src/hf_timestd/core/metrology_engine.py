@@ -524,7 +524,12 @@ class MetrologyEngine:
             expected_delay_ms, _dist_km, _unc = self._predict_geometric_delay(station, system_time)
             if expected_delay_ms > 0:
                 delays_ms[station] = expected_delay_ms
-        utc_hour = (int(minute_utc) // 3600) % 24
+        # ONE minute-boundary derivation (review M1): round to the nearest
+        # whole minute rather than trusting the caller's minute_utc to
+        # already be exactly aligned, and hand this same mb to
+        # _log_arrival_gate so its log-only gate agrees with this one.
+        mb = int(round(float(minute_utc) / 60.0)) * 60
+        utc_hour = (mb // 3600) % 24
         bpm_hours = getattr(getattr(self, "bpm_discriminator", None), "active_hours", None)
         try:
             from hf_timestd.core.wwv_constants import STATION_CATALOG as _CAT
@@ -532,7 +537,7 @@ class MetrologyEngine:
                         if _CAT.get(n) is not None}
         except Exception:  # noqa: BLE001
             st_freqs = None
-        eligible = eligible_candidates(delays_ms, utc_minute=(int(minute_utc) // 60) % 60,
+        eligible = eligible_candidates(delays_ms, utc_minute=(mb // 60) % 60,
                                        utc_hour=utc_hour, bpm_active_hours=bpm_hours,
                                        frequency_mhz=self.frequency_mhz,
                                        station_frequencies=st_freqs)
@@ -1997,7 +2002,7 @@ class MetrologyEngine:
         # across hours with different propagation.  Reports only --
         # nothing downstream consumes it yet.
         self._log_arrival_gate(measurements, expected_delays_by_station,
-                               buffer_timing)
+                               buffer_timing, minute_boundary=minute_boundary)
              
         # === Step 2: Channel Characterization ===
         # We need this for Station ID and Metrics
@@ -2401,7 +2406,7 @@ class MetrologyEngine:
         return results
 
     def _log_arrival_gate(self, measurements, expected_delays_by_station,
-                          buffer_timing=None) -> None:
+                          buffer_timing=None, minute_boundary=None) -> None:
         """Report which stations their ARRIVAL TIMES support.
 
         The deployed discriminator assigns by ORDER -- early peak and
@@ -2414,6 +2419,16 @@ class MetrologyEngine:
         which is what geometry constrains.  Logged only; no verdict of
         this function reaches any product.  See
         core/station_arrival_gate.py.
+
+        ``minute_boundary``: the same integer-second minute boundary
+        ``process_minute`` already derived (robustly, via
+        ``round(buffer_anchor_utc/60)*60``) and that ``expected_delays_s``
+        derives independently for the acquirer.  Passed through here so
+        this log-only gate collapses onto that ONE derivation instead of
+        re-deriving hour/minute from ``buffer_timing.sample0_utc`` via
+        ``time.gmtime`` -- the two disagreed within one minute of an hour
+        boundary (review M1/§ "one derivation").  Falls back to the old
+        gmtime path only if no caller supplies it.
         """
         try:
             import time as _time
@@ -2428,11 +2443,15 @@ class MetrologyEngine:
             # minutes an hour and is off entirely on some frequencies at
             # some hours, so it stops being a candidate then -- an arrival
             # near its window is still reported, just not under its name.
-            utc0 = float(getattr(buffer_timing, "sample0_utc", 0.0) or 0.0)
             utc_hour = utc_minute = None
-            if utc0 > 0:
-                tm = _time.gmtime(utc0)
-                utc_hour, utc_minute = tm.tm_hour, tm.tm_min
+            if minute_boundary is not None:
+                mb = int(minute_boundary)
+                utc_hour, utc_minute = (mb // 3600) % 24, (mb // 60) % 60
+            else:
+                utc0 = float(getattr(buffer_timing, "sample0_utc", 0.0) or 0.0)
+                if utc0 > 0:
+                    tm = _time.gmtime(utc0)
+                    utc_hour, utc_minute = tm.tm_hour, tm.tm_min
             bpm_hours = getattr(
                 getattr(self, "bpm_discriminator", None), "active_hours", None)
             try:
