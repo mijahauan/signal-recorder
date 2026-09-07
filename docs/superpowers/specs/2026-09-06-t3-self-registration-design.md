@@ -228,17 +228,18 @@ without TS-1, T5 or T4, T3 carries the burden and must beat WAN NTP; what must n
 alignment of the RTP counter with UTC. The verified, marker-corroborated registration is therefore
 the anchor on a T6-less station, and every consumer reads it:
 
-1. **Judge precedence within T3.** The `hf_acquired` bench outranks `FusionBench` within tier T3
-   whenever it answers (its reading is host-clock-free and registration-verified; FusionBench's
-   d_clock is measured against the anchor and certifies the anchor, not UTC). Same-tier adoption
-   is immediate and ungated, so the judge's verdict becomes the acquired plane's residual and
-   `_update_ring_anchor` re-registers the ring — and with it authority.json §18 and every
-   subscriber — within one revalidation tick. The σ floor of §6 stands; precedence, not σ, decides.
-2. **The chrony feed carries the host error.** The FUSE SHM sample is `system_time − (judge_offset
-   + d_clock)` when the judge's best bench is a label-plane (host-clock-free) bench, read from
-   `/run/hf-timestd/offset_judge.json`; otherwise as today. Fusion's d_clock, measured on the
-   re-registered plane, then reports the residual, and the judge's offset reports the host's
-   error against the tick-aligned UTC. FUSE's own view of host frequency stops being host-locked.
+1. **The anchor IS the registration.** Michael, the same day: "Why do we compare things to the host
+   clock? It is not the ruler or the standard but a product of FUSION. Imagine there is no host clock
+   at all, but ONLY FUSION." On a station with no authoritative T6, the recorder builds its native
+   anchor directly from the verified registration — `NativeAnchor(anchor_rtp=rtp_ref,
+   anchor_utc_ns=utc_ref, captured_via_tier="T3")` — exactly as the T6 inversion builds it from the
+   PPS edge, and drives the ring anchor and the authority.json §18 fields from it. Radiod's
+   host-stamped pair is no longer the base of anything; it names the whole second during bootstrap
+   and nothing else. The Offset Judge's `hf_acquired` bench remains a witness (its σ floor stands).
+2. **chrony is disciplined from the anchor, never consulted.** The FUSE sample is the anchor's UTC
+   of the newest arrived sample, placed at that sample's arrival instant — the shape the T6 native
+   bench already forms. Fusion's d_clock becomes a diagnostic in that regime. The host clock appears
+   in exactly one role: the thing being disciplined.
 3. **Acceptance.** On ND, the T3-anchored UTC holds within the NTP witnesses' own scatter
    indefinitely (`chronyc sources` offsets of the pool servers stay within ±10 ms of zero), the
    `hf_acquired` verdict and FUSE agree, and `raw_pair_residual_ms` in registration.json trends
