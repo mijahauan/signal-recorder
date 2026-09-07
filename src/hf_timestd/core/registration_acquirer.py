@@ -52,6 +52,12 @@ PEAK_MAX_WIDTH_MS = 25.0
 ENVELOPE_LPF_HZ = 400.0
 ORIGIN_SIGMA_FLOOR_MS = 1.0
 
+# Same-site broadcasts (WWV on 2.5-25 MHz, all from Fort Collins) share the
+# great-circle path, so their corrections agree far more tightly than those
+# derived from different sites (Fort Collins / Kauai / Lintong) -- mjh 2026-09-06.
+SAME_SITE_AGREE_MS = 1.5
+CROSS_SITE_AGREE_MS = 4.0
+
 
 @dataclass(frozen=True)
 class FoldPeak:
@@ -227,7 +233,7 @@ def _sigma_ms_from_snr(snr_db: float) -> float:
 def fit_template(
     peaks: List[FoldPeak],
     expected_delays_s: Dict[str, float],
-    agree_ms: float = 3.0,
+    agree_ms: float = CROSS_SITE_AGREE_MS,
 ) -> List[Hypothesis]:
     """Fit the peak set to the station delay template by a common shift.
 
@@ -235,7 +241,17 @@ def fit_template(
     correction; pairings whose corrections agree within ``agree_ms`` form
     one hypothesis with support = number of peaks.  A hypothesis is
     unambiguous with support >= 2 or when the peak's band admits exactly
-    one eligible station."""
+    one eligible station.
+
+    ``agree_ms`` defaults to ``CROSS_SITE_AGREE_MS``: every pairing this
+    function forms compares two DIFFERENT stations (WWV vs. BPM, or WWV
+    vs. WWVH) sharing one tone band, which is a cross-site comparison by
+    definition (task-11 fix round 1, controller ruling 2026-09-07) --
+    the earlier literal ``3.0`` was a plan error, not a deliberately
+    chosen tolerance, and sat marginally below the jitter a weak (14-18
+    dB) secondary station's fold position carries at 180 s of
+    integration, intermittently stalling real acquisitions that should
+    have resolved."""
     pairings = []
     for p in peaks:
         compatible = [s for s in expected_delays_s if BAND_OF_STATION.get(s) == p.band]
@@ -382,13 +398,6 @@ class Registration:
         return self.utc_ref + (int(start_rtp) - int(self.rtp_ref)) / float(
             self.sample_rate
         )
-
-
-# Same-site broadcasts (WWV on 2.5-25 MHz, all from Fort Collins) share the
-# great-circle path, so their corrections agree far more tightly than those
-# derived from different sites (Fort Collins / Kauai / Lintong) -- mjh 2026-09-06.
-SAME_SITE_AGREE_MS = 1.5
-CROSS_SITE_AGREE_MS = 4.0
 
 
 class RegistrationAcquirer:
