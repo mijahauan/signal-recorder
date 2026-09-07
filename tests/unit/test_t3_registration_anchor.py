@@ -1,0 +1,192 @@
+"""T3 label-plane anchor built from the verified registration (spec §11,
+amendment 2026-09-07, revised by mjh the same day).
+
+"Why do we compare things to the host clock?  It is not the ruler or the
+standard but a product of FUSION.  Imagine there is no host clock at all,
+but ONLY FUSION."  So the anchor is NOT "radiod's host-stamped pair plus a
+judge offset": it is the registration itself, expressed exactly as T6
+expresses its own anchor -- a NativeAnchor.
+"""
+
+import pytest
+
+from hf_timestd.core.native_anchor import NativeAnchor, utc_ns_at_rtp
+from hf_timestd.core.registration_acquirer import Registration
+from hf_timestd.core.registration_store import RegistrationStore
+from hf_timestd.core.t3_registration_anchor import T3RegistrationAnchor
+
+SR = 24000
+WALL0 = 1_800_000_000.0
+
+
+def _store(tmp_path, clock):
+    return RegistrationStore(
+        tmp_path / "reg",
+        tmp_path / "registration.json",
+        time_fn=lambda: clock[0],
+    )
+
+
+def _write(
+    store,
+    state,
+    *,
+    rtp_ref=1000,
+    utc_ref=WALL0,
+    sample_rate=SR,
+    epoch="ep-1",
+    sigma_ms=1.0,
+    extra=None,
+):
+    store.write_summary(
+        Registration(
+            epoch,
+            rtp_ref=rtp_ref,
+            utc_ref=utc_ref,
+            sample_rate=sample_rate,
+            sigma_ms=sigma_ms,
+            channel="fused",
+        ),
+        ["SHARED_10000", "WWV_15000"],
+        state,
+        dict(extra or {"counter_epoch_id": epoch}),
+    )
+
+
+def _anchor(tmp_path, clock, **kw):
+    store = _store(tmp_path, clock)
+    _write(store, "ACQUIRED", **kw)
+    return T3RegistrationAnchor(store=store, time_fn=lambda: clock[0])
+
+
+# ── the anchor IS the registration ───────────────────────────────────
+
+
+def test_acquired_registration_becomes_a_native_anchor(tmp_path):
+    clock = [WALL0]
+    holder = _anchor(tmp_path, clock)
+    decision = holder.refresh(sample_rate=SR, t6_authoritative=False)
+    assert decision.reason == "acquired"
+    a = decision.anchor
+    assert isinstance(a, NativeAnchor)
+    assert a.anchor_rtp == 1000
+    assert a.anchor_utc_ns == int(round(WALL0 * 1e9))
+    assert a.sample_rate_hz == SR
+    assert a.chain_delay_ns == 0  # no RF chain term: this IS the plane
+    assert a.captured_via_tier == "T3"
+    assert a.captured_at_utc_ns == int(round(WALL0 * 1e9))  # written_at, provenance
+    assert decision.epoch_id == "ep-1"
+    # The anchor projects by pure counter arithmetic, exactly like T6's.
+    assert utc_ns_at_rtp(1000 + 10 * SR, a) == int(round((WALL0 + 10.0) * 1e9))
+
+
+def test_t6_authoritative_wins_and_the_registration_is_ignored(tmp_path):
+    """One registration per station: while a T6 native anchor is
+    authoritative it owns the plane and T3 must not offer a second one."""
+    clock = [WALL0]
+    holder = _anchor(tmp_path, clock)
+    decision = holder.refresh(sample_rate=SR, t6_authoritative=True)
+    assert decision.anchor is None
+    assert decision.reason == "t6_authoritative"
+
+
+@pytest.mark.parametrize("state", ["BOOTSTRAP", "CANDIDATE", "CONFLICT", "WITNESS"])
+def test_only_acquired_carries_a_verified_plane(tmp_path, state):
+    """CANDIDATE is the acquired-but-UNVERIFIED plane (metrology_service
+    publishes ACQUIRED in the summary only once a verified plane
+    contributed); WITNESS means a T6 station publishes the plane without
+    it driving metrology.  Neither may anchor the ring."""
+    clock = [WALL0]
+    store = _store(tmp_path, clock)
+    _write(store, state)
+    holder = T3RegistrationAnchor(store=store, time_fn=lambda: clock[0])
+    decision = holder.refresh(sample_rate=SR, t6_authoritative=False)
+    assert decision.anchor is None
+    assert decision.reason == f"state:{state}"
+
+
+def test_missing_summary_is_no_anchor(tmp_path):
+    clock = [WALL0]
+    store = _store(tmp_path, clock)
+    holder = T3RegistrationAnchor(store=store, time_fn=lambda: clock[0])
+    decision = holder.refresh(sample_rate=SR, t6_authoritative=False)
+    assert decision.anchor is None and decision.reason == "no_summary"
+
+
+def test_stale_summary_is_dropped(tmp_path):
+    """read_summary returns the last file it finds however old (store
+    F1/F2).  A registration whose writer died is not a live plane."""
+    clock = [WALL0]
+    holder = _anchor(tmp_path, clock)
+    assert holder.refresh(sample_rate=SR, t6_authoritative=False).anchor is not None
+    clock[0] += 301.0  # store stale_s default is 300 s
+    decision = holder.refresh(sample_rate=SR, t6_authoritative=False)
+    assert decision.anchor is None and decision.reason == "stale"
+
+
+def test_sample_rate_mismatch_is_refused(tmp_path):
+    """rtp_ref is stamped in ONE counter domain.  A channel running at a
+    different configured rate is a different counter entirely
+    (cross_channel_rtp.py); silence beats a wrong plane."""
+    clock = [WALL0]
+    holder = _anchor(tmp_path, clock)
+    decision = holder.refresh(sample_rate=96000, t6_authoritative=False)
+    assert decision.anchor is None and decision.reason == "sample_rate_mismatch"
+
+
+def test_incomplete_summary_is_refused(tmp_path):
+    clock = [WALL0]
+    store = _store(tmp_path, clock)
+    store.write_summary(None, [], "ACQUIRED", {})  # utc_ref/rtp_ref null
+    holder = T3RegistrationAnchor(store=store, time_fn=lambda: clock[0])
+    decision = holder.refresh(sample_rate=SR, t6_authoritative=False)
+    assert decision.anchor is None and decision.reason == "incomplete"
+
+
+def test_a_moved_registration_yields_a_moved_anchor(tmp_path):
+    clock = [WALL0]
+    store = _store(tmp_path, clock)
+    _write(store, "ACQUIRED")
+    holder = T3RegistrationAnchor(store=store, time_fn=lambda: clock[0])
+    first = holder.refresh(sample_rate=SR, t6_authoritative=False).anchor
+    clock[0] += 60.0
+    _write(store, "ACQUIRED", utc_ref=WALL0 + 0.020)  # plane moved 20 ms
+    second = holder.refresh(sample_rate=SR, t6_authoritative=False).anchor
+    assert second.anchor_utc_ns - first.anchor_utc_ns == 20_000_000
+
+
+def test_counter_epoch_change_is_reported(tmp_path):
+    clock = [WALL0]
+    store = _store(tmp_path, clock)
+    _write(store, "ACQUIRED", epoch="ep-1")
+    holder = T3RegistrationAnchor(store=store, time_fn=lambda: clock[0])
+    assert holder.refresh(sample_rate=SR, t6_authoritative=False).epoch_id == "ep-1"
+    _write(store, "ACQUIRED", epoch="ep-2", rtp_ref=7777)
+    d = holder.refresh(sample_rate=SR, t6_authoritative=False)
+    assert d.epoch_id == "ep-2" and d.anchor.anchor_rtp == 7777
+
+
+def test_a_read_failure_never_raises(tmp_path):
+    class _Boom:
+        stale_s = 300.0
+
+        def read_summary(self):
+            raise OSError("boom")
+
+    holder = T3RegistrationAnchor(store=_Boom(), time_fn=lambda: WALL0)
+    decision = holder.refresh(sample_rate=SR, t6_authoritative=False)
+    assert decision.anchor is None and decision.reason == "read_failed"
+
+
+def test_station_wide_refresh_accepts_the_registrations_own_domain(tmp_path):
+    """The station-wide refresh names no channel: it accepts whatever
+    counter domain the registration was acquired in, and each consumer
+    matches its own configured rate before using the anchor."""
+    clock = [WALL0]
+    store = _store(tmp_path, clock)
+    _write(store, "ACQUIRED", sample_rate=96000)
+    holder = T3RegistrationAnchor(store=store, time_fn=lambda: clock[0])
+    decision = holder.refresh(t6_authoritative=False)
+    assert decision.reason == "acquired"
+    assert decision.anchor.sample_rate_hz == 96000
+    assert holder.state() == (decision.anchor, "ep-1")

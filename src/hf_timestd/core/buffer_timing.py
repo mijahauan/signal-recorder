@@ -278,6 +278,26 @@ def _gps_snapshot_to_utc(snapshot: Dict) -> Optional[float]:
     return gps_ns / BILLION + GPS_EPOCH_UNIX - gps_leap_seconds_at_gps_time(gps_ns)
 
 
+def unix_ns_to_gps_time_ns(unix_ns: int) -> int:
+    """Inverse of :func:`_gps_snapshot_to_utc`: Unix ns → radiod GPS_TIME ns.
+
+    The ring stores its anchor as radiod does, in GPS time, so a label
+    plane expressed in UTC (the T3 registration, spec §11) has to change
+    variable before it can be written there.  This is a pure change of
+    epoch plus the leap-second offset in force — no clock is consulted.
+
+    The offset is looked up against the FIRST-PASS GPS time (Unix ns
+    shifted by the GPS epoch alone).  That guess is ~18 s early, so the
+    lookup picks the wrong side of a leap-second threshold only for a
+    plane inside the 18 s preceding an insertion; ``_gps_snapshot_to_utc``
+    inverts this exactly everywhere else.
+    """
+    unix_ns = int(unix_ns)
+    guess_gps_ns = unix_ns - GPS_EPOCH_UNIX * BILLION
+    leap = gps_leap_seconds_at_gps_time(guess_gps_ns)
+    return guess_gps_ns + leap * BILLION
+
+
 def _from_rtp_gps(
     start_rtp: int,
     snapshots: List[Dict],

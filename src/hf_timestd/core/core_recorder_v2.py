@@ -537,6 +537,15 @@ class CoreRecorderV2:
         # No continuous drift-monitor feedback; the anchor is either
         # valid or it isn't.
         self._t6_native_anchor = None
+        # Spec §11 (2026-09-07): the T3 label-plane anchor — the station's
+        # own VERIFIED registration, expressed as a NativeAnchor exactly
+        # as T6 expresses its own.  It carries the whole-second role on a
+        # T6-less station: "imagine there is no host clock at all, but
+        # ONLY FUSION" (mjh).  None while T6 is authoritative or no
+        # verified registration exists.  Re-derived on the 60 s
+        # revalidation tick; see ``_refresh_t3_native_anchor``.
+        self._t3_native_anchor = None
+        self._t3_anchor_holder = None
         # Wrap-rejection guard: the BPSK calibrator algorithm has a known
         # cascade where a noise edge near the half-second mark from a real
         # edge displaces the reference and causes chain_delay to wrap by
@@ -1244,6 +1253,11 @@ class CoreRecorderV2:
                 # and shared-MultiStream modes (the shared mode has no
                 # per-recorder health thread to piggyback on).
                 if now - last_pair_revalidate >= 60:
+                    # Spec §11 (2026-09-07): re-derive the T3 label-plane
+                    # anchor from the registration BEFORE the recorders
+                    # act on it, so a re-fused plane reaches the ring
+                    # within one revalidation tick.
+                    self._refresh_t3_native_anchor()
                     for _rec in list(self.recorders.values()):
                         _rec.revalidate_radiod_pair()
                     last_pair_revalidate = now
@@ -1467,6 +1481,12 @@ class CoreRecorderV2:
                 # stream is absent (never raises; wiring failure just
                 # leaves this stream out of the fallback set).
                 self._wire_t5_fallback_arrival(description, recorder, sample_rate)
+                # Spec §11 (2026-09-07): on a T6-less station the verified
+                # registration IS the anchor, and the ring — which
+                # metrology, authority.json §18 and every subscriber
+                # resolve UTC from — carries it directly rather than
+                # radiod's host-stamped pair with a correction bolted on.
+                recorder.set_label_anchor_provider(self._t3_label_anchor_state)
 
             logger.info(f"✓ Initialized {len(self.recorders)} archive recorders")
 
@@ -2552,6 +2572,56 @@ class CoreRecorderV2:
         offset this bench does not have. Silence beats a wrong ``utc``.
         """
         return getattr(self, '_hf_arrival', None)
+
+    # ── T3 label-plane anchor (spec §11, 2026-09-07) ─────────────────
+
+    def _t6_anchor_is_authoritative(self) -> bool:
+        """Does a T6 native anchor currently own the station's plane?
+
+        Same predicate ``time_map_context`` calls lock_credible: an
+        anchor exists AND the authority says AUTHORITATIVE with no
+        violations.  ``_t6_native_anchor is not None`` alone is NOT
+        enough — the coarse cascade re-captures one from the same MF edge
+        while the carrier is still lost (hf-timestd#14)."""
+        if getattr(self, '_t6_native_anchor', None) is None:
+            return False
+        try:
+            auth = self._t6_authority_status() or {}
+        except Exception:  # noqa: BLE001
+            return False
+        return (auth.get('state') == 'AUTHORITATIVE'
+                and not (auth.get('violations') or []))
+
+    def _refresh_t3_native_anchor(self) -> None:
+        """Re-derive the T3 anchor from the verified registration.
+
+        Called on the 60 s revalidation tick, which is also the cadence
+        the registration re-fuses at.  Never raises: a station with no
+        registration simply has no T3 anchor, and the ring keeps the
+        pre-amendment judged-pair behaviour.
+        """
+        try:
+            holder = getattr(self, '_t3_anchor_holder', None)
+            if holder is None:
+                from .t3_registration_anchor import T3RegistrationAnchor
+                holder = T3RegistrationAnchor()
+                self._t3_anchor_holder = holder
+            holder.refresh(
+                t6_authoritative=self._t6_anchor_is_authoritative()
+            )
+            self._t3_native_anchor = holder.anchor
+        except Exception as exc:  # noqa: BLE001 — never disturb recording
+            logger.debug(f"T3 anchor refresh failed: {exc}")
+
+    def _t3_label_anchor_state(self):
+        """``StreamRecorderV2`` provider: ``(NativeAnchor, epoch_id)``.
+
+        Cached state only — no I/O on the caller's thread.  Each
+        recorder refuses an anchor from another counter domain before
+        using it (``StreamRecorderV2._label_anchor_state``).
+        """
+        holder = getattr(self, '_t3_anchor_holder', None)
+        return None if holder is None else holder.state()
 
     def _wire_t5_fallback_arrival(self, description: str, recorder,
                                    sample_rate: int) -> None:

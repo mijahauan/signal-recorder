@@ -207,6 +207,11 @@ class StreamRecorderV2:
         # revalidation tick can re-anchor when the judge's correction
         # moves.  (gps_time_ns, rtp_timesnap, offset_ns) or None.
         self._ring_anchor_state: Optional[tuple] = None
+        # Spec §11 (2026-09-07): the label-plane anchor provider (the
+        # station's verified registration, or None) and the
+        # (NativeAnchor, epoch_id) actually written into the ring.
+        self._label_anchor_provider = None
+        self._ring_label_anchor: Optional[tuple] = None
         # NOTE (2026-02-03): bootstrap_service parameter kept for API compatibility
         # but is no longer used. MetrologyEngine handles timing lock internally.
         
@@ -762,6 +767,75 @@ class StreamRecorderV2:
             return 0.0
         return float(v.offset_ns) if v is not None else 0.0
 
+    def set_label_anchor_provider(self, provider) -> None:
+        """Install the label-plane anchor provider (spec §11, 2026-09-07).
+
+        ``provider() -> Optional[(NativeAnchor, epoch_id)]``.  While it
+        answers with an anchor in THIS channel's counter domain, that
+        anchor — not radiod's host-stamped pair — registers the ring.
+        Silence restores the pre-amendment behaviour exactly.
+        """
+        self._label_anchor_provider = provider
+
+    def _label_anchor_state(self):
+        """The label-plane anchor for this channel, or None.
+
+        Refuses an anchor stamped in another counter domain: ``rtp_ref``
+        and this channel's RTP counter are only the same ruler at the
+        same configured rate (``cross_channel_rtp.py``).
+        """
+        provider = getattr(self, '_label_anchor_provider', None)
+        if provider is None:
+            return None
+        try:
+            state = provider()
+        except Exception as exc:  # noqa: BLE001 — never disturb the ring
+            logger.debug(
+                f"{self.config.description}: label-anchor provider "
+                f"failed: {exc}"
+            )
+            return None
+        if state is None:
+            return None
+        anchor, epoch_id = state
+        if int(anchor.sample_rate_hz) != int(self.config.sample_rate):
+            return None
+        return (anchor, epoch_id)
+
+    def _anchor_ring_from_label_plane(self, anchor, epoch_id) -> bool:
+        """Write the label plane itself into the ring's anchor pair.
+
+        The ring's (gps_time_ns, rtp_timesnap) is resolved by readers as
+        ``gps→utc(gps_time_ns) + (rtp − rtp_timesnap)/fs``, which is the
+        NativeAnchor projection under another name.  So the anchor needs
+        no correction folded into it and no host comparison to produce:
+        the pair IS ``(utc_ref, rtp_ref)`` after the GPS-epoch change of
+        variable, and ring-resolved UTC(rtp) is the registration's own
+        UTC(rtp) exactly (spec §11: "the verified, marker-corroborated
+        registration is therefore the anchor on a T6-less station, and
+        every consumer reads it").
+        """
+        from .buffer_timing import unix_ns_to_gps_time_ns
+        gps_time_ns = unix_ns_to_gps_time_ns(int(anchor.anchor_utc_ns))
+        rtp_timesnap = int(anchor.anchor_rtp) & 0xFFFFFFFF
+        try:
+            self.ring_buffer.update_anchor(
+                gps_time_ns=gps_time_ns, rtp_timesnap=rtp_timesnap,
+            )
+        except Exception as exc:
+            logger.error(
+                f"{self.config.description}: ring update_anchor failed: {exc}"
+            )
+            return False
+        self._ring_label_anchor = (anchor, epoch_id)
+        logger.info(
+            f"{self.config.description}: ring anchored on the "
+            f"{anchor.captured_via_tier} registration "
+            f"(rtp_ref={rtp_timesnap}, "
+            f"utc_ref={anchor.anchor_utc_ns / 1e9:.6f}, epoch={epoch_id})"
+        )
+        return True
+
     def _update_ring_anchor(self, gps_time_ns: int, rtp_timesnap: int) -> None:
         """Anchor the ring with the JUDGED mapping (P2 item 4, audit G6).
 
@@ -777,9 +851,24 @@ class StreamRecorderV2:
         re-invoked by the revalidation tick when the judge's offset has
         moved beyond RING_REANCHOR_MIN_DELTA_NS.  Judge absent ⇒ raw
         pair, byte-identical to the pre-judge ring.
+
+        Spec §11 (2026-09-07) puts a label-plane anchor ahead of all of
+        that when one is in force: the registration is the anchor
+        directly, and radiod's pair is not consulted at all.  The raw
+        pair is still recorded in ``_ring_anchor_state`` so a withdrawn
+        registration falls straight back to the judged mapping.
         """
         if self.ring_buffer is None:
             return
+        label = self._label_anchor_state()
+        if label is not None:
+            # Keep the raw pair for the fallback path, then let the
+            # registration — not the host-stamped pair — register the ring.
+            self._ring_anchor_state = (
+                int(gps_time_ns), int(rtp_timesnap), 0.0
+            )
+            if self._anchor_ring_from_label_plane(*label):
+                return
         offset_ns = self._current_judge_offset_ns(int(rtp_timesnap))
         try:
             self.ring_buffer.update_anchor(
@@ -789,6 +878,7 @@ class StreamRecorderV2:
             self._ring_anchor_state = (
                 int(gps_time_ns), int(rtp_timesnap), float(offset_ns)
             )
+            self._ring_label_anchor = None
             if offset_ns:
                 logger.info(
                     f"{self.config.description}: ring anchor updated with "
@@ -808,13 +898,81 @@ class StreamRecorderV2:
         paths diverge by however far the offset walks (audit G6).  Runs
         on the revalidation tick; the RING_REANCHOR_MIN_DELTA_NS
         hysteresis keeps healthy steady state (offset flat) write-free.
+
+        Spec §11 (2026-09-07): while a label-plane anchor is in force the
+        quantity being tracked is the REGISTRATION's own movement, not
+        the judge's correction — the registration re-fuses every minute
+        and the ring must follow it within one revalidation tick.
         """
-        if self.ring_buffer is None or self._ring_anchor_state is None:
+        if self.ring_buffer is None:
+            return
+        if self._reanchor_ring_from_label_plane():
+            return
+        if self._ring_anchor_state is None:
             return
         gps_time_ns, rtp_timesnap, applied_ns = self._ring_anchor_state
         current_ns = self._current_judge_offset_ns(rtp_timesnap)
         if abs(current_ns - applied_ns) > self.RING_REANCHOR_MIN_DELTA_NS:
             self._update_ring_anchor(gps_time_ns, rtp_timesnap)
+
+    def _reanchor_ring_from_label_plane(self) -> bool:
+        """Track the label-plane anchor; True when it owns this decision.
+
+        Three ways the registration moves, and all three re-register:
+
+        * a NEW counter epoch — ``rtp_ref`` names a different counter, so
+          comparing the two planes would be arithmetic across two rulers
+          and the epoch alone decides;
+        * a changed sample rate — likewise a different ruler;
+        * a plane shift beyond RING_REANCHOR_MIN_DELTA_NS, measured by
+          projecting the NEW anchor to the APPLIED anchor's own RTP and
+          differencing two UTC labels for one sample.  Pure counter
+          arithmetic; no clock of any kind enters.
+
+        Returns False when no label anchor is in force, so the caller
+        falls through to the judged-pair path — and re-registers from the
+        raw pair first when a label anchor has just been WITHDRAWN.
+        """
+        label = self._label_anchor_state()
+        applied = getattr(self, '_ring_label_anchor', None)
+        if label is None:
+            if applied is None:
+                return False
+            # Withdrawn (BOOTSTRAP / CONFLICT / stale / T6 authoritative):
+            # hand the ring back to the judged pair rather than freeze on
+            # a plane nobody is maintaining any more.
+            self._ring_label_anchor = None
+            state = getattr(self, '_ring_anchor_state', None)
+            if state is not None:
+                logger.warning(
+                    f"{self.config.description}: label-plane anchor "
+                    f"withdrawn — ring returns to radiod's pair with the "
+                    f"judge's correction"
+                )
+                self._update_ring_anchor(state[0], state[1])
+            return True
+        anchor, epoch_id = label
+        if applied is None:
+            self._anchor_ring_from_label_plane(anchor, epoch_id)
+            return True
+        applied_anchor, applied_epoch = applied
+        if (epoch_id != applied_epoch
+                or int(anchor.sample_rate_hz)
+                != int(applied_anchor.sample_rate_hz)):
+            self._anchor_ring_from_label_plane(anchor, epoch_id)
+            return True
+        from .native_anchor import utc_ns_at_rtp
+        shift_ns = (
+            utc_ns_at_rtp(int(applied_anchor.anchor_rtp) & 0xFFFFFFFF, anchor)
+            - int(applied_anchor.anchor_utc_ns)
+        )
+        if abs(shift_ns) > self.RING_REANCHOR_MIN_DELTA_NS:
+            logger.info(
+                f"{self.config.description}: registration moved "
+                f"{shift_ns / 1e9:+.6f}s — re-registering the ring"
+            )
+            self._anchor_ring_from_label_plane(anchor, epoch_id)
+        return True
 
     # A re-observed radiod pair that disagrees with the adopted mapping
     # by more than this is a genuine discontinuity (restart/re-snap) and
