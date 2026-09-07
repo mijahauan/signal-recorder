@@ -210,7 +210,13 @@ class EdgeEnsembleResult:
     # at a few ms; threshold-level junk found where the label said to look
     # spreads over the whole ±SEARCH_WINDOW_MS (σ ≈ 11.5 ms for ±20 ms).
     sigma_single_ms: float = 0.0
-    
+
+    # 1-sigma of the anchor plane itself (ms), T3 self-registration spec §5.
+    # inf for a host label (no honest sigma exists for the un-registered
+    # radiod pair); the registration sigma carried on BufferTiming when
+    # anchor_source == 'acquired'.
+    anchor_sigma_ms: float = float("inf")
+
     # Doppler from carrier phase slope across the minute
     doppler_hz: Optional[float] = None
     doppler_uncertainty_hz: Optional[float] = None
@@ -305,7 +311,13 @@ class TickEdgeDetector:
     # like ticks, not like the search window.  Uniform junk over ±20 ms
     # gives σ ≈ 11.5 ms; real HF ticks give 1–4 ms.
     LABEL_ANCHOR_MAX_SIGMA_MS = 6.0
-    
+    # T3 self-registration spec §5: an 'acquired' anchor (BufferTiming
+    # registered by the received tick train, not the host label) admits
+    # timing only while its own registration sigma is under this — a
+    # loose registration is still an honest sigma, but not yet tight
+    # enough to vouch for sub-ms timing.
+    ACQUIRED_ANCHOR_MAX_SIGMA_MS = 2.0
+
     # Bandpass filter: 800-1400 Hz (same as ntpd)
     # Wide enough to pass both 1000 and 1200 Hz with their sidebands,
     # narrow enough to reject 100 Hz BCD, 440/500/600 Hz tones.
@@ -606,6 +618,15 @@ class TickEdgeDetector:
         """
         if result.anchor_source == 'minute_marker':
             return True, "anchored on the minute marker"
+        if result.anchor_source == 'acquired':
+            if result.anchor_sigma_ms >= cls.ACQUIRED_ANCHOR_MAX_SIGMA_MS:
+                return False, (f"acquired anchor σ {result.anchor_sigma_ms:.2f} ms ≥ "
+                               f"{cls.ACQUIRED_ANCHOR_MAX_SIGMA_MS} ms — registration not yet tight")
+            if result.sigma_single_ms > cls.LABEL_ANCHOR_MAX_SIGMA_MS:
+                return False, (f"acquired anchor but per-tick σ {result.sigma_single_ms:.1f} ms "
+                               f"is window scatter, not ticks")
+            return True, (f"acquired anchor σ {result.anchor_sigma_ms:.2f} ms, "
+                          f"per-tick σ {result.sigma_single_ms:.1f} ms")
         if result.sigma_single_ms <= cls.LABEL_ANCHOR_MAX_SIGMA_MS:
             return True, (f"host-label anchor, per-tick σ {result.sigma_single_ms:.1f} ms "
                           f"≤ {cls.LABEL_ANCHOR_MAX_SIGMA_MS:.0f} ms")
@@ -624,7 +645,13 @@ class TickEdgeDetector:
         anchor_onset: Optional[Tuple[int, float]],
     ) -> Optional[EdgeEnsembleResult]:
         """One search pass; see detect_edges for the anchor semantics."""
-        anchor_source = 'minute_marker' if anchor_onset is not None else 'host_label'
+        if anchor_onset is not None:
+            anchor_source = 'minute_marker'
+        elif getattr(buffer_timing, 'origin_source', 'label') == 'acquired':
+            anchor_source = 'acquired'
+        else:
+            anchor_source = 'host_label'
+        anchor_sigma_ms = float(getattr(buffer_timing, 'origin_sigma_ms', float('inf')))
         tick_freq = STATION_TICK_FREQ[station]
         skip_seconds = STATION_SKIP_SECONDS[station]
         template_sin, template_cos = self._templates[station]
@@ -859,6 +886,7 @@ class TickEdgeDetector:
                 edges=ticks,
                 anchor_source=anchor_source,
                 sigma_single_ms=999.0,
+                anchor_sigma_ms=anchor_sigma_ms,
             )
         
         # Robust SNR-weighted median of timing errors
@@ -913,6 +941,7 @@ class TickEdgeDetector:
             edges=ticks,
             anchor_source=anchor_source,
             sigma_single_ms=float(sigma_single),
+            anchor_sigma_ms=anchor_sigma_ms,
         )
     
     @staticmethod
