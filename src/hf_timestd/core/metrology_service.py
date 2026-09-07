@@ -761,20 +761,44 @@ class MetrologyService:
         # with contradictory provenance (channel file ACQUIRED, summary
         # BOOTSTRAP) as before.
         if own is not None and fused is None:
-            own_s0 = own.sample0_utc_for(int(start_rtp))
-            deltas = ", ".join(
-                f"{r.channel}={(r.sample0_utc_for(int(start_rtp)) - own_s0) * 1000.0:+.1f}ms"
-                for r in sibs
-            )
-            logger.warning(
-                f"[{self.channel_name}] sibling registrations disagree with this "
-                f"channel's own plane ({deltas}); reverting to the label plane "
-                f"this minute")
-            involved = sorted({self.channel_name, *(r.channel for r in sibs)})
-            self._publish_registration(None, involved, label_s0, None, epoch,
-                                       state_override="CONFLICT")
-            return dataclasses.replace(buffer_timing, origin_source="label",
-                                       counter_epoch_id=epoch)
+            if own_is_adopted and not sibs:
+                # The donor's evidence is gone (its file expired past
+                # RegistrationStore.stale_s, or simply vanished) -- an
+                # adopted plane with nothing left to corroborate it is an
+                # ORPHAN, not a disagreement between channels.  CONFLICT
+                # would misreport "channels disagree" when nothing does,
+                # and would never recover on its own (ACQUIRED short-
+                # circuits offer_minute, and a label-plane ensemble is
+                # filtered out of feed_back_ensembles, so corroborate
+                # never runs).  Reset to BOOTSTRAP instead so this channel
+                # tries its own signal, or re-adopts a fresh sibling, next
+                # minute (review, fix round 2).
+                self.acquirer.reset("adopted plane's donor expired")
+                self._publish_registration(None, [], label_s0, None, epoch)
+                return dataclasses.replace(buffer_timing, origin_source="label",
+                                           counter_epoch_id=epoch)
+            elif sibs:
+                # A genuine disagreement between channels sharing one
+                # origin -- CONFLICT requires siblings to disagree WITH.
+                own_s0 = own.sample0_utc_for(int(start_rtp))
+                deltas = ", ".join(
+                    f"{r.channel}={(r.sample0_utc_for(int(start_rtp)) - own_s0) * 1000.0:+.1f}ms"
+                    for r in sibs
+                )
+                logger.warning(
+                    f"[{self.channel_name}] sibling registrations disagree with this "
+                    f"channel's own plane ({deltas}); reverting to the label plane "
+                    f"this minute")
+                involved = sorted({self.channel_name, *(r.channel for r in sibs)})
+                self._publish_registration(None, involved, label_s0, None, epoch,
+                                           state_override="CONFLICT")
+                return dataclasses.replace(buffer_timing, origin_source="label",
+                                           counter_epoch_id=epoch)
+            # else: a genuinely self-acquired `own` with zero siblings and
+            # `fused is None` is mathematically unreachable here --
+            # fuse_registrations of a single entry is an identity and
+            # never returns None -- so no case falls through unhandled;
+            # continue to the generic BOOTSTRAP publish below.
 
         if fused is None:
             self._publish_registration(None, [], label_s0, None, epoch)

@@ -3,6 +3,7 @@ and hands the engine a BufferTiming with origin_source='acquired'."""
 
 import dataclasses
 import json
+import logging
 from types import SimpleNamespace
 
 import numpy as np
@@ -297,6 +298,83 @@ def test_sibling_conflict_reverts_to_label_and_flags_conflict(tmp_path):
     assert "SHARED_10000" in s["contributing"] and "WWV_20000" in s["contributing"]
 
 
+def test_adopted_plane_with_expired_donor_returns_to_bootstrap(tmp_path, caplog):
+    """New Important (re-review, fix round 2): CONFLICT requires siblings
+    to disagree WITH.  The C1 fix (excluding an adopted `own` from
+    fusion_inputs) meant that once the donor's file goes stale (or
+    disappears), fusion_inputs is empty, fuse_registrations([]) is None,
+    and the old code read that as "channels disagree" -- publishing
+    CONFLICT and the label plane every minute forever, with a WARNING
+    naming nothing (empty parentheses), because ACQUIRED short-circuits
+    offer_minute and a label-plane ensemble never reaches corroborate.
+    An orphaned adopted plane must instead reset to BOOTSTRAP so the
+    channel tries its own signal (or re-adopts a fresh sibling) next
+    minute."""
+    svc = _service(tmp_path)
+    clock = [1_000_000.0]
+    svc.reg_store = RegistrationStore(
+        tmp_path / "reg", tmp_path / "registration.json", time_fn=lambda: clock[0]
+    )
+    from hf_timestd.core.registration_acquirer import Registration
+
+    # minute 1: this channel hears nothing and adopts a sibling's plane.
+    sib = Registration(
+        counter_epoch_id=svc.epoch_tracker.observe(**_meta(0)),
+        rtp_ref=1_000_000,
+        utc_ref=T0,
+        sample_rate=SR,
+        sigma_ms=0.9,
+        channel="WWV_20000",
+    )
+    svc.reg_store.write_channel(sib, "ACQUIRED", {})
+    rng = np.random.default_rng(3)
+    noise1 = 0.1 * rng.standard_normal(62 * SR)
+    bt1 = svc.apply_registration(
+        label_timing(T0, 0.3, SR), noise1, 1_000_000, MIN, _meta(0)
+    )
+    assert bt1.origin_source == "acquired"
+    assert svc.acquirer.registration.channel == "SHARED_10000"
+    assert svc.acquirer.registration.method == "adopted"
+
+    # advance the clock past the sibling file's staleness window (300 s).
+    clock[0] += 301.0
+
+    # minute 2: the donor's file is now stale -> read_siblings drops it ->
+    # fusion_inputs is empty -> ORPHAN, not CONFLICT.
+    noise2 = 0.1 * rng.standard_normal(62 * SR)
+    with caplog.at_level("WARNING", logger="hf_timestd.core.metrology_service"):
+        bt2 = svc.apply_registration(
+            label_timing(T0 + 60, 0.3, SR),
+            noise2,
+            1_000_000 + 60 * SR,
+            MIN + 60,
+            _meta(1),
+        )
+    assert bt2.origin_source == "label"
+    s = svc.reg_store.read_summary()
+    assert s["state"] == "BOOTSTRAP"
+    assert svc.acquirer.state == RegistrationAcquirer.STATE_BOOTSTRAP
+    # no "sibling registrations disagree ... ()" warning naming nothing
+    assert not any("own plane ()" in r.getMessage() for r in caplog.records)
+    assert not any(
+        r.levelno >= logging.WARNING and "CONFLICT" in r.getMessage()
+        for r in caplog.records
+    )
+
+    # minute 3: audible ticks -> re-acquires from this channel's OWN signal.
+    audio3 = make_tick_audio(62, SR, T0 + 120, {"WWV": 0.0125}, snr_db=20.0, seed=9)
+    bt3 = svc.apply_registration(
+        label_timing(T0 + 120, 0.0, SR),
+        audio3,
+        1_000_000 + 120 * SR,
+        MIN + 120,
+        _meta(2),
+    )
+    assert bt3.origin_source == "acquired"
+    assert svc.acquirer.state == RegistrationAcquirer.STATE_ACQUIRED
+    assert svc.acquirer.registration.method != "adopted"
+
+
 def test_host_label_ensemble_does_not_reach_corroborate(tmp_path, monkeypatch):
     """I3: the anchor_source filter -- a host_label ensemble must never
     reach RegistrationAcquirer.corroborate."""
@@ -345,9 +423,28 @@ def test_counter_epoch_change_on_the_live_ring_reacquires(tmp_path):
     assert bt1.origin_source == "acquired"  # re-acquired within the same minute
 
 
-def test_no_timing_buffer_returns_unchanged_with_no_store_write(tmp_path):
-    """I3: the no_timing guard -- returned unchanged, no store write."""
+def test_no_timing_buffer_returns_unchanged_with_no_store_write(
+    tmp_path, monkeypatch, caplog
+):
+    """I3: the no_timing guard -- returned unchanged, no store write, and
+    the acquirer never even offered the minute.
+
+    Given teeth (fix round 2): a 10-sample buffer let the *previous*
+    version of this test pass for the wrong reason -- with the guard
+    deleted, the unsafe path raised ValueError out of sosfiltfilt on the
+    too-short buffer, and I1's blanket except caught it and returned the
+    same object, so the assertions held even with no guard at all.  A
+    full 62 s clean 20 dB audio buffer means nothing raises on its own;
+    offer_minute is monkeypatched to explode if the guard is ever
+    removed; and asserting no ERROR was logged rules out "the guard is
+    gone but I1's except silently saved us" as an explanation for a pass.
+    """
     svc = _service(tmp_path)
+
+    def _must_not_be_offered(*a, **k):
+        raise AssertionError("must not be offered")
+
+    monkeypatch.setattr(svc.acquirer, "offer_minute", _must_not_be_offered)
     bt_in = BufferTiming(
         sample0_utc=0.0,
         sample_rate=SR,
@@ -355,9 +452,13 @@ def test_no_timing_buffer_returns_unchanged_with_no_store_write(tmp_path):
         n_snapshots_used=0,
         jitter_ms=float("inf"),
     )
-    bt_out = svc.apply_registration(bt_in, np.zeros(10), 0, MIN, _meta(0))
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    with caplog.at_level("ERROR", logger="hf_timestd.core.metrology_service"):
+        bt_out = svc.apply_registration(bt_in, audio, 1_000_000, MIN, _meta(0))
     assert bt_out is bt_in
     assert svc.reg_store.read_summary() is None
+    assert not (tmp_path / "reg").exists()
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
 
 
 def test_resolve_before_adopt_precedence(tmp_path, monkeypatch):
