@@ -605,3 +605,85 @@ def test_the_hold_state_clears_on_reset():
     acq._marker_k_holds = 2
     acq.reset("test")
     assert acq._marker_k_seen is None and acq._marker_k_holds == 0
+
+
+# ── Task 17 review I1: a disagreeing marker is never silent ───────────
+#
+# The silent window lives on a DEDICATED channel, where the fold names
+# the station on its own (one eligible station in the band, so the
+# hypothesis is unambiguous) and the marker is consulted for the whole
+# second alone.  On a shared channel the marker also has to NAME the
+# station, and that test refuses a displaced marker before the
+# whole-second code is reached at all -- which is why the window the
+# review measured is a dedicated-channel window.  B4, where the review
+# took its numbers, runs dedicated WWV channels.
+
+D_DEDICATED = {"WWV": 0.010}
+
+
+def _disagreement_log(monkeypatch, caplog, displace_s):
+    """Acquire one minute on a DEDICATED channel with the marker search
+    result displaced by ``displace_s``, and return what was logged."""
+    import logging
+
+    from hf_timestd.core import registration_acquirer as ra
+
+    real = ra.marker_in_envelope
+
+    def displaced(env, sample_rate, sample0_utc_label, minute_utc):
+        got = real(env, sample_rate, sample0_utc_label, minute_utc)
+        return None if got is None else (got[0] + displace_s, 30.0)
+
+    monkeypatch.setattr(ra, "marker_in_envelope", displaced)
+    acq = ra.RegistrationAcquirer("WWV_10000", SR)
+    audio, label, t0 = _shared_channel_minute(walk_s=0.100, marker=True)
+    with caplog.at_level(logging.INFO, logger="hf_timestd.core.registration_acquirer"):
+        reg = acq.offer_minute(audio, label, 1_000_000, MIN, D_DEDICATED, "ep-1")
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    return reg, warnings, t0
+
+
+@pytest.mark.parametrize("displace_s", [0.030, 0.200, 0.400, 0.520, 1.0])
+def test_a_disagreeing_marker_always_says_so(monkeypatch, caplog, displace_s):
+    """I1.  Logged on disagreement alone, whatever whole second it implies.
+
+    17b routed the log through ``dec.reason``, and
+    ``whole_second_from_marker`` answers ``"zero"`` and returns before it
+    consults ``agrees`` — so every displacement implying no whole second
+    (roughly −418 ms to +580 ms of the predicted position, nearly the
+    whole search window) passed in SILENCE.  The first four cases here
+    are the review's own probe points, three of which said nothing.
+
+    That window holds review C3's class (ii): the ~37 ms WWV-vs-BPM
+    misnaming, the remaining live risk, which had just lost its only
+    witness.  The 1.0 s case is the W2 marker, which DOES imply a second
+    — it must log through the same branch, so one fault reads as one
+    message whatever its magnitude.
+    """
+    reg, warnings, t0 = _disagreement_log(monkeypatch, caplog, displace_s)
+    assert reg is not None, "the fold names the station without the marker"
+    disagreements = [w for w in warnings if "disagrees with hypothesis" in w]
+    assert len(disagreements) == 1, warnings
+    line = disagreements[0]
+    assert "disagrees with hypothesis WWV" in line
+    assert "predicted" in line
+    assert "SNR 30.0 dB" in line
+    # ...and the plane is still the fold plane, on truth.
+    assert reg.sample0_utc_for(1_000_000) == pytest.approx(t0, abs=0.003)
+
+
+def test_an_agreeing_marker_logs_no_disagreement(monkeypatch, caplog):
+    """The control: the marker on the ticks must stay quiet."""
+    reg, warnings, _t0 = _disagreement_log(monkeypatch, caplog, 0.0)
+    assert reg is not None
+    assert reg.whole_second_unresolved is False
+    assert not [w for w in warnings if "disagrees with hypothesis" in w]
+
+
+def test_the_disagreement_log_does_not_need_an_unresolved_second(monkeypatch, caplog):
+    """The distinction I1 turns on: disagreement and an unresolved whole
+    second are different facts, and the log reports the first even when
+    the second is absent."""
+    reg, warnings, _t0 = _disagreement_log(monkeypatch, caplog, 0.200)
+    assert reg.whole_second_unresolved is False, "no whole second implied"
+    assert [w for w in warnings if "disagrees with hypothesis" in w]

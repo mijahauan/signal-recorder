@@ -1140,19 +1140,32 @@ class RegistrationAcquirer:
                 )
             k_int = dec.k_int
             whole_second_unresolved = dec.unresolved
-            if dec.reason == "disagrees":
+            if not dec.agrees:
+                # Task 17 review I1.  Logged on DISAGREEMENT ALONE, never
+                # on the whole second it happens to imply.
+                #
+                # 17b routed this branch through ``dec.reason``, and
+                # ``whole_second_from_marker`` answers "zero" and returns
+                # before it consults ``agrees`` -- so a marker anywhere
+                # from about -418 ms to +580 ms of the predicted position
+                # implied no whole second, took the "zero" path, and
+                # logged NOTHING.  That window is exactly where review
+                # C3's class (ii) lives: the ~37 ms WWV-vs-BPM misnaming
+                # bounded "by the 800 ms-tone physics and by nothing
+                # else".  17b closed the 1000 ms fault and blinded the
+                # operator to the 37 ms one; under "expose, never
+                # correct" that trade goes the wrong way.
+                #
                 # A marker that does not stand on this station's folded
-                # ticks belongs to something else; taking a whole second
-                # from it would move the plane for no reason (task 15).
-                # After 17b this also catches the W2 case -- a marker a
-                # whole second away -- which used to be indistinguishable
-                # from a marker on the ticks.
+                # ticks belongs to something else, and the disagreement is
+                # the whole message -- whether it asks for a second (the
+                # W2 case) or for none.
                 logger.warning(
                     f"[{self.channel}] minute marker at {mk[0] * 1000:+.1f} "
-                    f"ms (SNR {mk[1]:.1f} dB) does not stand on {st0}'s "
-                    f"ticks ({predicted_ms:+.1f} ms); it implies "
-                    f"{dec.k_raw:+d} s and gets none — whole second "
-                    f"UNRESOLVED"
+                    f"ms disagrees with hypothesis {st0} (predicted "
+                    f"{predicted_ms:+.1f} ms, SNR {mk[1]:.1f} dB); it "
+                    f"implies {dec.k_raw:+d} s and gets none"
+                    + (" — whole second UNRESOLVED" if dec.unresolved else "")
                 )
             elif dec.unresolved:
                 logger.warning(

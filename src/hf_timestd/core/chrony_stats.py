@@ -22,6 +22,7 @@ sample against the GPSDO ruler; chrony never sees it and never sets it.
 
 import logging
 import math
+import statistics
 import subprocess
 import re
 import time
@@ -29,8 +30,6 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -125,18 +124,30 @@ class CsvSource:
 
     The CSV form is the machine-readable one: mode, state, address,
     stratum, poll, reach, last-Rx, adjusted offset, measured offset,
-    margin of error.  Its offsets are seconds, signed in the sense
-    ``source − local`` — the same sense as the label-plane anchor's
-    ``reference − system`` — so the two can be compared without a
-    conversion step, which is the whole point of reading it here
-    (task 17c).
+    margin of error.
+
+    ⛔ SIGN.  ``offset_s`` carries chrony's own convention, and chrony's
+    documentation for the ``sources`` command states it verbatim:
+    *"Positive offsets indicate that the local clock is ahead of the
+    source."*  So this field runs ``local − source``, which is
+    ``system − reference`` — the NEGATIVE of the label-plane anchor's
+    ``reference − system``.  The field name says so
+    (``offset_system_minus_reference_s``); read it nowhere without
+    converting.  Task 17 review C1: the first version of this module
+    asserted the opposite convention, and the WOULD-feed line would then
+    have printed the AC0G-ND contradiction as two positive numbers —
+    reading as agreement on the very evidence that condemned the closure.
     """
 
     mode: str
     state: str
     address: str
-    reach: int
-    offset_s: float
+    # As printed by chronyc in CSV mode.  Only ``== 0`` ("nothing has
+    # been heard from this source") is acted on, and zero reads as zero
+    # in any base, so the base does not matter here -- but the number
+    # would mislead anyone who printed it, hence the name (review M4).
+    reach_raw: int
+    offset_system_minus_reference_s: float
 
 
 # Modes that are an INDEPENDENT witness of the host clock.  '#' (a local
@@ -163,24 +174,36 @@ def parse_csv_sources(output: str) -> List[CsvSource]:
             continue
         try:
             mode, state, address = parts[0], parts[1], parts[2]
-            reach = int(parts[5])
+            reach_raw = int(parts[5])
             offset_s = float(parts[7])
         except (TypeError, ValueError):
             continue
-        if mode not in WITNESS_MODES or reach == 0:
+        if mode not in WITNESS_MODES or reach_raw == 0:
             continue
         if not math.isfinite(offset_s):
             continue
-        rows.append(CsvSource(mode, state, address, reach, offset_s))
+        rows.append(CsvSource(mode, state, address, reach_raw, offset_s))
     return rows
 
 
-def pool_median_offset_ms(output: Optional[str] = None) -> Optional[float]:
-    """The NTP consensus: median witness offset in ms, or None.
+def pool_median_system_minus_reference_ms(
+    output: Optional[str] = None,
+) -> Optional[float]:
+    """The NTP consensus, in CHRONY's sign: median witness offset in ms.
 
-    ``reference − system`` in sign, so a positive value says the pool
-    reads LATER than the host clock — the host is slow.  None when no
-    witness answered, which is not the same as a consensus of zero: on
+    ⛔ ``system − reference``.  Positive says the local clock is ahead of
+    the pool — the host is FAST.  That is chrony's own convention (see
+    :class:`CsvSource`), kept here rather than converted, so the
+    conversion happens exactly once, at the point where the name of the
+    quantity changes.  ``multi_broadcast_fusion.anchor_sign_line`` is
+    that point.
+
+    The name is the guard.  Review C1: this function used to be called
+    ``pool_median_offset_ms`` and documented as ``reference − system``,
+    and every test it had asserted only that the median arithmetic
+    worked, so nothing in the suite could see the sign.
+
+    None when no witness answered — which is not a consensus of zero.  On
     2026-09-07 a zero would have read as "the pool agrees the host is
     fine", the one thing the pool did not say.
 
@@ -194,7 +217,14 @@ def pool_median_offset_ms(output: Optional[str] = None) -> Optional[float]:
     rows = parse_csv_sources(output)
     if not rows:
         return None
-    return float(np.median([r.offset_s for r in rows])) * 1000.0
+    # statistics.median over a handful of floats; numpy is not worth an
+    # import here (review M6).
+    return (
+        statistics.median(
+            [r.offset_system_minus_reference_s for r in rows]
+        )
+        * 1000.0
+    )
 
 
 def parse_sources(output: str) -> List[ChronySource]:

@@ -4233,10 +4233,23 @@ class MultiBroadcastFusion:
 # surface onto one plane at once, so nothing is left to disagree.
 #
 # Fusion therefore states the three numbers side by side once a minute,
-# at INFO, whether or not the closure is on.  All three carry the SAME
-# sign convention -- reference minus system, positive meaning the host
-# clock reads EARLY of the reference -- so the contradiction is the gap
-# between the first two, and no reader has to invert anything.
+# at INFO, whether or not the closure is on.
+#
+# ⛔ ONE convention, printed in the line itself: reference − system,
+# POSITIVE MEANING THE HOST IS SLOW.  Every term is converted into it at
+# the point where the name of the quantity changes, and nowhere else.
+# The three sources disagree natively and each has to be turned around:
+#
+#     anchor    LabelPlaneAnchorSample.offset_s  reference − system  as-is
+#     NTP pool  chronyc -c sources field 7       system − reference  NEGATE
+#     d_clock   FusedResult.d_clock_fused_ms     system − reference  NEGATE
+#
+# Review C1/C2: the first version of this line asserted that chrony's
+# field and its own third term already ran reference − system.  Neither
+# does.  Fed the AC0G-ND 21:21Z episode -- anchor +60.5 ms slow, pool
+# 30 ms fast -- it printed two POSITIVE numbers and would have read the
+# contradiction as agreement, arguing for the closure on the evidence
+# that condemned it.
 
 # How often the line is written, seconds.  The fusion cycle is 60 s by
 # default, so this is one line per cycle; the limiter exists for a
@@ -4247,33 +4260,67 @@ ANCHOR_SIGN_LOG_INTERVAL_S = 60.0
 def _ms_or_na(value: Optional[float]) -> str:
     if value is None or not math.isfinite(float(value)):
         return "n/a"
-    return f"{float(value):+.1f} ms"
+    # Round FIRST, then add 0.0: IEEE-754 gives +0.0 for `-0.0 + 0.0`, so
+    # a term that cancels -- which `ring−registration` does whenever the
+    # ring plane IS the registration -- prints `+0.0 ms` rather than
+    # `-0.0 ms`.  A minus sign on a zero plane gap reads as a direction.
+    return f"{round(float(value), 1) + 0.0:+.1f} ms"
 
 
 def anchor_sign_line(
-    anchor_offset_ms: float,
-    pool_median_ms: Optional[float],
+    anchor_reference_minus_system_ms: float,
+    pool_median_system_minus_reference_ms: Optional[float],
     d_clock_fused_ms: Optional[float],
 ) -> str:
-    """The one-line statement of the three planes.
+    """The one-line statement of the three planes, in ONE convention.
 
-    ``anchor_offset_ms`` is the anchor's own ``reference − system``.
-    ``pool_median_ms`` is the NTP consensus in the same sense
-    (``chrony_stats.pool_median_offset_ms``).  The third term is their
-    DIFFERENCE with fusion's d_clock -- ``d_clock − anchor`` -- which is
-    the ring plane's residual against the registration: d_clock measures
-    the host against the ring plane, the anchor measures it against the
-    registration, and one host cancels.  Never their sum; summing them
-    double-counts the host (offset_judge §11.2).
+    Every parameter is named for the convention it ARRIVES in, and the
+    line prints ``reference − system`` throughout, positive meaning the
+    host clock is SLOW.  Two of the three therefore get negated here.
+
+    ``anchor_reference_minus_system_ms`` — the anchor's own
+    ``LabelPlaneAnchorSample.offset_s``, already in the printed
+    convention.
+
+    ``pool_median_system_minus_reference_ms`` — the NTP consensus from
+    ``chrony_stats.pool_median_system_minus_reference_ms``, in chrony's
+    convention ("positive offsets indicate that the local clock is ahead
+    of the source"), so NEGATED to print.  The contradiction is then
+    visible as opposite signs: the ND 21:21Z episode prints anchor
+    ``+60.5 ms`` beside NTP ``-30.0 ms``.
+
+    ``d_clock_fused_ms`` — fusion's own ``system − reference`` against the
+    RING plane (``reference_time_l2 = system_time − d_clock/1000``, and
+    ``timing_error = arrival − prop_delay`` grows positive when the host
+    stamps a tick late), so it too is negated.
+
+    The third term printed is ``ring − registration``.  Writing
+    ``d = d_clock`` and ``a = anchor``, with ``sys`` the host clock and
+    ``ring``/``reg`` the two references::
+
+        d = sys − ring          a = reg − sys
+        d + a = reg − ring      →   ring − reg = −(d + a)
+
+    The host cancels in the SUM, which is why the printed term is
+    ``-(d_clock + anchor)``.  Review C2: this was written
+    ``d_clock − anchor``, which expands to ``2·sys − ring − reg`` and
+    double-counts the very clock it was meant to cancel.  So the check
+    that matters: a station whose ring plane and registration agree
+    prints ``+0.0 ms`` here however far the host has walked.
     """
-    ring_vs_reg: Optional[float] = None
+    anchor = float(anchor_reference_minus_system_ms)
+    pool: Optional[float] = None
+    if pool_median_system_minus_reference_ms is not None and math.isfinite(
+        float(pool_median_system_minus_reference_ms)
+    ):
+        pool = -float(pool_median_system_minus_reference_ms)
+    ring_minus_reg: Optional[float] = None
     if d_clock_fused_ms is not None and math.isfinite(float(d_clock_fused_ms)):
-        ring_vs_reg = float(d_clock_fused_ms) - float(anchor_offset_ms)
+        ring_minus_reg = -(float(d_clock_fused_ms) + anchor)
     return (
-        f"anchor-direct WOULD feed: reference−system = "
-        f"{_ms_or_na(anchor_offset_ms)}; NTP consensus (chronyc sources, "
-        f"pool median) = {_ms_or_na(pool_median_ms)}; ring plane vs "
-        f"registration = {_ms_or_na(ring_vs_reg)}"
+        "anchor-direct WOULD feed (reference−system, +ve = host slow): "
+        f"anchor {_ms_or_na(anchor)} | NTP pool {_ms_or_na(pool)} | "
+        f"ring−registration {_ms_or_na(ring_minus_reg)}"
     )
 
 
@@ -4804,11 +4851,16 @@ def run_fusion_service(
                         >= ANCHOR_SIGN_LOG_INTERVAL_S):
                     _last_anchor_sign_log = _now_mono
                     from hf_timestd.core.chrony_stats import (
-                        pool_median_offset_ms,
+                        pool_median_system_minus_reference_ms,
                     )
                     logger.info(anchor_sign_line(
+                        # already reference − system
                         _sign_sample.offset_s * 1e3,
-                        pool_median_offset_ms(),
+                        # chrony's system − reference; anchor_sign_line
+                        # negates it
+                        pool_median_system_minus_reference_ms(),
+                        # fusion's system − reference against the ring
+                        # plane; negated there too
                         (result_l2.d_clock_fused_ms
                          if result_l2 is not None else None),
                     ))
