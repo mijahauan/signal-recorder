@@ -89,7 +89,13 @@ SyslogIdentifier=timestd-metrology-%i
 # --- Security hardening ---
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/timestd /var/log/hf-timestd /dev/shm/timestd
+# /run/hf-timestd holds the per-channel registration files and the station
+# summary (T3 self-registration, spec 2026-09-06).  Shared with
+# timestd-core-recorder and timestd-fusion, which also declare it;
+# RuntimeDirectoryPreserve keeps it when one instance restarts.
+RuntimeDirectory=hf-timestd
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=/var/lib/timestd /var/log/hf-timestd /dev/shm/timestd /run/hf-timestd
 ProtectHome=true
 
 [Install]

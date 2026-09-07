@@ -76,6 +76,7 @@ class RegistrationStore:
         self.summary_path = Path(summary_path)
         self.stale_s = float(stale_s)
         self._time = time_fn
+        self.write_failures = 0
 
     # ── writing ────────────────────────────────────────────────────
     def _atomic_write(self, path: Path, payload: dict) -> None:
@@ -95,7 +96,11 @@ class RegistrationStore:
                 tmp_path = tmp.name
             os.replace(tmp_path, path)
         except OSError as e:
-            logger.warning(f"registration write failed for {path}: {e}")
+            self.write_failures += 1
+            if self.write_failures == 1 or self.write_failures % 60 == 0:
+                logger.error(f"registration write failed for {path}: {e}")
+            else:
+                logger.warning(f"registration write failed for {path}: {e}")
 
     @staticmethod
     def _payload(reg: Optional[Registration]) -> dict:
@@ -169,20 +174,24 @@ class RegistrationStore:
                 continue
             if d.get("state") != "ACQUIRED":
                 continue
-            out.append(
-                Registration(
-                    counter_epoch_id=str(d["counter_epoch_id"]),
-                    rtp_ref=int(d["rtp_ref"]),
-                    utc_ref=float(d["utc_ref"]),
-                    sample_rate=int(d["sample_rate"]),
-                    sigma_ms=float(d["sigma_ms"]),
-                    method=str(d.get("method") or "fold+template"),
-                    n_minutes=int(d.get("n_minutes", 0)),
-                    channel=str(d["channel"]),
-                    hypotheses_open=int(d.get("hypotheses_open", 0)),
-                    stations=tuple(d.get("stations", [])),
+            try:
+                out.append(
+                    Registration(
+                        counter_epoch_id=str(d["counter_epoch_id"]),
+                        rtp_ref=int(d["rtp_ref"]),
+                        utc_ref=float(d["utc_ref"]),
+                        sample_rate=int(d["sample_rate"]),
+                        sigma_ms=float(d["sigma_ms"]),
+                        method=str(d.get("method") or "fold+template"),
+                        n_minutes=int(d.get("n_minutes", 0)),
+                        channel=str(d["channel"]),
+                        hypotheses_open=int(d.get("hypotheses_open", 0)),
+                        stations=tuple(d.get("stations", [])),
+                    )
                 )
-            )
+            except (KeyError, TypeError, ValueError):
+                logger.debug(f"registration file {p} unreadable; skipped")
+                continue
         return out
 
     def read_summary(self) -> Optional[dict]:

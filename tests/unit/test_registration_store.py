@@ -106,3 +106,35 @@ def test_bootstrap_channel_file_has_null_sigma_and_is_not_a_sibling(tmp_path):
     text = (tmp_path / "reg" / "WWV_25000.json").read_text()
     assert "Infinity" not in text and json.loads(text)["sigma_ms"] is None
     assert st.read_siblings() == []
+
+
+def test_read_siblings_skips_a_schema_incomplete_file(tmp_path):
+    st = RegistrationStore(tmp_path / "reg", tmp_path / "registration.json")
+    # Write a valid ACQUIRED file for channel "a"
+    st.write_channel(_reg("a", 100.0, 1.0), "ACQUIRED", {})
+    # Write an incomplete JSON file for channel "b" (missing rtp_ref)
+    (tmp_path / "reg").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "reg" / "b.json").write_text(
+        json.dumps(
+            {
+                "channel": "b",
+                "state": "ACQUIRED",
+                "utc_ref": 1.0,
+                "sigma_ms": 1.0,
+                "written_at": 1000.0,
+            }
+        )
+    )
+    # read_siblings must return exactly the "a" registration
+    sibs = st.read_siblings()
+    assert len(sibs) == 1
+    assert sibs[0].channel == "a"
+
+
+def test_write_failure_is_counted(tmp_path):
+    # Create a file at the directory path so mkdir cannot create it
+    bad_dir = tmp_path / "bad_file.txt"
+    bad_dir.write_text("not a directory")
+    st = RegistrationStore(bad_dir / "reg", tmp_path / "registration.json")
+    st.write_channel(_reg("test", 100.0, 1.0), "ACQUIRED", {})
+    assert st.write_failures == 1
