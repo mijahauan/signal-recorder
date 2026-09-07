@@ -614,15 +614,21 @@ class TestT5BenchDecoupling:
                 self.taps.append(cb)
 
         rec = FakeRecorder()
-        cr._wire_t5_fallback_arrival("CHU_7_MHz", rec)
+        cr._wire_t5_fallback_arrival("CHU_7_MHz", rec, SR)
         assert "CHU_7_MHz" in cr._t5_fallback_pairings
         pairing = cr._t5_fallback_pairings["CHU_7_MHz"][0]
         assert pairing.source == "stream:CHU_7_MHz"
         assert len(rec.taps) == 1
-        rec.taps[0](None, types.SimpleNamespace(last_rtp_timestamp=1234))
+        # task 9 review fix round 1 (F1/F2): the tap now ALSO feeds
+        # HfAcquiredBench's _hf_arrival with (last_sample_rtp, mono,
+        # sample_rate), so it needs a real samples batch (len()able),
+        # not None.
+        rec.taps[0]([0] * 100, types.SimpleNamespace(last_rtp_timestamp=1234))
         assert pairing.latest_arrival[0] == 1234
+        assert cr._hf_acquired_bench_state()[0] == 1234 + 100
+        assert cr._hf_acquired_bench_state()[2] == SR
         # quality without an RTP timestamp is a no-op, not a crash
-        rec.taps[0](None, types.SimpleNamespace(last_rtp_timestamp=None))
+        rec.taps[0]([0] * 100, types.SimpleNamespace(last_rtp_timestamp=None))
         assert pairing.latest_arrival[0] == 1234
 
     def test_pairing_product_source_key_honesty(self):
