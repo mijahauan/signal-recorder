@@ -620,10 +620,19 @@ class TestT5BenchDecoupling:
         assert pairing.source == "stream:CHU_7_MHz"
         assert len(rec.taps) == 1
         # task 9 review fix round 1 (F1/F2): the tap now ALSO feeds
-        # HfAcquiredBench's _hf_arrival with (last_sample_rtp, mono,
-        # sample_rate), so it needs a real samples batch (len()able),
-        # not None.
-        rec.taps[0]([0] * 100, types.SimpleNamespace(last_rtp_timestamp=1234))
+        # HfAcquiredBench's _hf_arrival with (newest_sample_rtp, mono,
+        # sample_rate).  final review I1: that label comes from the
+        # DELIVERED batch (delivered_rtp_start + batch_samples_delivered),
+        # not from last_rtp_timestamp + len(samples) -- the received
+        # header slips from the delivered stream under loss.
+        rec.taps[0](
+            [0] * 100,
+            types.SimpleNamespace(
+                last_rtp_timestamp=1234,
+                delivered_rtp_start=1234,
+                batch_samples_delivered=100,
+            ),
+        )
         assert pairing.latest_arrival[0] == 1234
         assert cr._hf_acquired_bench_state()[0] == 1234 + 100
         assert cr._hf_acquired_bench_state()[2] == SR

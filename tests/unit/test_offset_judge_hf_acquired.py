@@ -221,8 +221,12 @@ class _FakeStreamRecorder:
 
 
 class _FakeQuality:
-    def __init__(self, last_rtp_timestamp):
+    def __init__(self, last_rtp_timestamp, delivered_rtp_start=None,
+                 batch_samples_delivered=0):
         self.last_rtp_timestamp = last_rtp_timestamp
+        if delivered_rtp_start is not None:
+            self.delivered_rtp_start = delivered_rtp_start
+            self.batch_samples_delivered = batch_samples_delivered
 
 
 def test_wire_t5_fallback_arrival_feeds_hf_arrival_from_the_real_tap():
@@ -242,7 +246,14 @@ def test_wire_t5_fallback_arrival_feeds_hf_arrival_from_the_real_tap():
     assert fake_stream.tap is not None
 
     samples = [0.0] * 240
-    fake_stream.tap(samples, _FakeQuality(last_rtp_timestamp=1000))
+    fake_stream.tap(
+        samples,
+        _FakeQuality(
+            last_rtp_timestamp=1000,
+            delivered_rtp_start=1000,
+            batch_samples_delivered=240,
+        ),
+    )
 
     arrival = recorder._hf_acquired_bench_state()
     assert arrival is not None
@@ -250,6 +261,44 @@ def test_wire_t5_fallback_arrival_feeds_hf_arrival_from_the_real_tap():
     assert arrival_rtp == 1000 + 240
     assert arrival_sr == SR
     assert isinstance(arrival_mono, float) and arrival_mono > 0
+
+
+def test_arrival_tap_labels_from_the_delivered_stream_not_the_received_header():
+    """I1 (final review): the tap hand-rolled ``last_rtp_timestamp +
+    len(samples)``.  ``last_rtp_timestamp`` is the last RECEIVED packet's
+    header, stamped before the resequencer runs, and it "desynchronizes
+    from delivered samples under loss" -- the root cause of the T6 origin
+    slips of 2026-08-11.  ``newest_sample_rtp`` exists and returns exactly
+    this quantity from ``delivered_rtp_start + batch_samples_delivered``.
+    HfAcquiredBench pairs the label with time.monotonic() and projects the
+    registration onto it, so any slip lands directly on the bench's utc."""
+    recorder = CoreRecorderV2.__new__(CoreRecorderV2)
+    fake_stream = _FakeStreamRecorder()
+    recorder._wire_t5_fallback_arrival("SHARED_10000", fake_stream, SR)
+    # loss: the received header ran 4800 samples (200 ms) ahead of what the
+    # resequencer actually delivered
+    fake_stream.tap(
+        [0.0] * 240,
+        _FakeQuality(
+            last_rtp_timestamp=1000 + 4800,
+            delivered_rtp_start=1000,
+            batch_samples_delivered=240,
+        ),
+    )
+    arrival_rtp, _mono, _sr = recorder._hf_acquired_bench_state()
+    assert arrival_rtp == 1240
+    assert arrival_rtp != (1000 + 4800) + 240  # the hand-rolled label
+
+
+def test_arrival_tap_falls_back_for_a_producer_without_the_delivered_field():
+    """``newest_sample_rtp``'s own fallback: ka9q-python < 3.21.0 has no
+    ``delivered_rtp_start``, so the received header is all there is."""
+    recorder = CoreRecorderV2.__new__(CoreRecorderV2)
+    fake_stream = _FakeStreamRecorder()
+    recorder._wire_t5_fallback_arrival("SHARED_10000", fake_stream, SR)
+    fake_stream.tap([0.0] * 240, _FakeQuality(last_rtp_timestamp=1000))
+    arrival_rtp, _mono, _sr = recorder._hf_acquired_bench_state()
+    assert arrival_rtp == 1000
 
 
 def test_wwvb_stream_no_longer_writes_hf_arrival():

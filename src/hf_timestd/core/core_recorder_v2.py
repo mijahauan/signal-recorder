@@ -2581,7 +2581,10 @@ class CoreRecorderV2:
         (96 kHz) streams.  The channel's own ``sample_rate`` rides along
         in the stored triple so ``HfAcquiredBench`` can refuse to answer
         if a later archive channel's tap overwrote it with a mismatched
-        rate before the bench's next poll.
+        rate before the bench's next poll.  The label itself comes from
+        ``newest_sample_rtp`` -- the END of the DELIVERED batch, the same
+        quantity ``_t6_note_arrival`` uses -- not from the last received
+        packet's pre-resequencer header (final review, I1).
         """
         fallbacks = getattr(self, '_t5_fallback_pairings', None)
         if fallbacks is None:
@@ -2600,8 +2603,18 @@ class CoreRecorderV2:
             rtp = getattr(quality, 'last_rtp_timestamp', None)
             if rtp is not None:
                 _p.note_arrival(rtp)
-                last_rtp = (int(rtp) + len(samples)) & 0xFFFFFFFF
-                self._hf_arrival = (last_rtp, time.monotonic(), _sr)
+            # I1 (final review): label the arrival from the DELIVERED
+            # stream, not from `last_rtp_timestamp + len(samples)`.
+            # last_rtp_timestamp is the last RECEIVED packet's header,
+            # stamped before the resequencer runs, and it desynchronizes
+            # from delivered samples under loss -- the root cause of the T6
+            # origin slips of 2026-08-11 (see resolve_batch_rtp and
+            # newest_sample_rtp above).  HfAcquiredBench pairs this label
+            # with time.monotonic() and projects the registration onto it,
+            # so a loss-driven slip lands straight on the bench's utc.
+            newest = newest_sample_rtp(quality)
+            if newest is not None:
+                self._hf_arrival = (newest, time.monotonic(), _sr)
 
         try:
             recorder.add_tap(_note_arrival_tap)
