@@ -863,7 +863,15 @@ class RegistrationAcquirer:
         * No ensemble at all for those stations (host-label-anchored
           minute, filter skipped them, ...): keep waiting, returns
           "pending"; after ``VERIFY_MAX_MINUTES`` consecutive pending
-          minutes, give up -- reset, returns "rejected"."""
+          minutes, give up -- reset, returns "rejected".
+
+        The task-11b record claimed "pending" was unreachable through the
+        service because ``_feed_back_ensembles_unsafe`` gates on ``if
+        res:``.  That record is wrong (final review, §3): ``res`` is keyed
+        by station over EVERY plane-anchored result of the minute, so a
+        non-empty ``res`` carrying no station in ``self._reg.stations`` --
+        a sibling station heard while ours was not -- reaches "pending"
+        normally."""
         if self._reg is None:
             return "pending"
         relevant = {s: r for s, r in residuals_ms.items() if s in self._reg.stations}

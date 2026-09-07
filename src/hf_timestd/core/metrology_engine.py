@@ -301,7 +301,14 @@ class MetrologyEngine:
         # Every EdgeEnsembleResult produced this minute, flat (not keyed by
         # station) -- the acquirer's feed-back path (T3 self-registration
         # spec §5) reads this list; reset at the top of each process_minute.
-        self.last_edge_results: List[Any] = []
+        #
+        # Named apart from `_last_edge_results` above ON PURPOSE (final
+        # review, M1): the two used to differ by a single underscore and
+        # hold different types (that one is a dict keyed by station, this
+        # one a flat list), and `_process_minute_data` reads both a few
+        # dozen lines apart -- a name that invited exactly the wrong
+        # getattr.
+        self.edge_results_this_minute: List[Any] = []
 
         
         # NOTE (§3.4 Low): a `bpm_calibration` dict + `_load_calibration`
@@ -1422,7 +1429,7 @@ class MetrologyEngine:
         """
         # Every EdgeEnsembleResult produced this minute (T3 self-registration
         # spec §5 feed-back); reset before the per-station loop below.
-        self.last_edge_results = []
+        self.edge_results_this_minute = []
 
         # Derive the minute boundary from the authoritative timing source
         # (M-M6).  `system_time` is the writer's start-of-buffer wall-clock
@@ -1708,7 +1715,7 @@ class MetrologyEngine:
                 
                 if edge_result is not None:
                     edge_results[station_name] = edge_result
-                    self.last_edge_results.append(edge_result)
+                    self.edge_results_this_minute.append(edge_result)
 
                     # If this station had NO correlation detection but the
                     # edge ensemble has sufficient confidence, create a

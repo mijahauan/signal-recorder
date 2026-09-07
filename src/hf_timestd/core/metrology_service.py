@@ -1080,7 +1080,7 @@ class MetrologyService:
                 buffer_timing=buffer_timing
             )
 
-            edge_results = getattr(self.engine, "last_edge_results", None)
+            edge_results = getattr(self.engine, "edge_results_this_minute", None)
             if edge_results:
                 self.feed_back_ensembles(edge_results)
 

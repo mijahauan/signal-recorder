@@ -954,3 +954,42 @@ def test_conflict_does_not_hide_the_summary_state_from_the_bench(tmp_path):
         "SHARED_10000",
         "WWV_20000",
     ]
+
+
+# ── M1 (final review): the two edge-result attributes, named apart ────
+
+
+def test_process_minute_data_feeds_back_the_flat_edge_result_list(tmp_path):
+    """M1: ``MetrologyEngine`` carries ``_last_edge_results`` (a dict keyed
+    by station, for the tick writer) and ``edge_results_this_minute`` (the
+    flat list the acquirer's feed-back path wants).  Those two used to
+    differ by a single underscore, and ``_process_minute_data`` reads both
+    a few dozen lines apart -- a name that invited exactly the wrong
+    getattr, silently starving verify()/corroborate().  This walks the real
+    seam with a stub engine that exposes ONLY the flat list, so a rename on
+    one side and not the other fails here."""
+    svc = _service(tmp_path)
+    seen = []
+    svc.feed_back_ensembles = seen.append
+    svc.writer = None
+    svc.tick_writer = None
+    svc.channel_name = "SHARED_10000"
+    ensembles = [SimpleNamespace(station="WWV", anchor_source="acquired")]
+
+    class _StubEngine(_Engine):
+        edge_results_this_minute = ensembles
+        _last_edge_results = {}
+
+        def process_minute(self, **kwargs):
+            return []
+
+    svc.engine = _StubEngine()
+    svc._process_minute_data(
+        minute_boundary=MIN,
+        iq_samples=np.zeros(10),
+        system_time=float(MIN),
+        rtp_timestamp=1_000_000,
+        metadata=_meta(0),
+        buffer_timing=label_timing(T0, 0.0, SR),
+    )
+    assert seen == [ensembles]
