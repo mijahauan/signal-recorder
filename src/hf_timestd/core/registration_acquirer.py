@@ -77,12 +77,71 @@ class FoldPeak:
 
 
 def _band_envelope(audio: np.ndarray, sample_rate: int, band: str) -> np.ndarray:
+    """Band-limited tick envelope, returned in **float32**.
+
+    A 180 s buffer at 24 kHz is 34.6 MB in float64 and half that in
+    float32, and the acquirer holds one envelope per tone band across the
+    full fold and both half folds (final review, I2: a bootstrap minute
+    added ~200 MB of peak RSS against MemoryHigh=900M, on the night when
+    every channel bootstraps at once).  The filtering itself stays in
+    float64 -- the butter coefficients are float64, and a float32 SOS is
+    where biquad cascades go unstable -- so only the LIVE array narrows;
+    the intermediates die with this call.
+    """
     lo, hi = TONE_BANDS_HZ[band]
     sos = butter(4, [lo, hi], btype="bandpass", fs=sample_rate, output="sos")
     x = sosfiltfilt(sos, np.asarray(audio, dtype=np.float64))
-    env = np.abs(x)
+    np.abs(x, out=x)
     sos_lp = butter(2, ENVELOPE_LPF_HZ, btype="lowpass", fs=sample_rate, output="sos")
-    return sosfiltfilt(sos_lp, env)
+    return sosfiltfilt(sos_lp, x).astype(np.float32, copy=False)
+
+
+def band_envelopes(audio: np.ndarray, sample_rate: int) -> Dict[str, np.ndarray]:
+    """One envelope per tone band, computed ONCE (final review, I2)."""
+    return {band: _band_envelope(audio, sample_rate, band) for band in TONE_BANDS_HZ}
+
+
+def fold_envelope(
+    env: np.ndarray,
+    sample_rate: int,
+    sample0_utc_label: float,
+    n_seconds: int,
+    start_offset_s: float = 0.0,
+) -> Tuple[np.ndarray, int]:
+    """Average ``n_seconds`` label-seconds of an ALREADY band-limited
+    envelope into one second, starting ``start_offset_s`` into ``env``.
+
+    ``sample0_utc_label`` labels sample 0 of ``env``, not of the offset
+    start, so a caller folding the second half of a buffer passes the same
+    label it used for the first (final review, I2: the half-fold
+    persistence gate used to re-filter a slice of the raw audio, which
+    both re-derived the envelope and put a filtfilt edge transient at the
+    halfway point).
+
+    Rows whose label second-in-minute is in FOLD_SKIP_SECONDS are left
+    out.  Accumulates in place rather than materialising ``np.stack(rows)``
+    (31 MB at 180 s).  Returns (profile[sample_rate], rows_used).
+    """
+    base = int(round(start_offset_s * sample_rate))
+    label0 = sample0_utc_label + start_offset_s
+    first_sec = int(np.ceil(label0))
+    i0 = base + int(round((first_sec - label0) * sample_rate))
+    acc = np.zeros(sample_rate, dtype=np.float64)
+    rows = 0
+    n_env = len(env)
+    for k in range(n_seconds):
+        if (first_sec + k) % 60 in FOLD_SKIP_SECONDS:
+            continue
+        a = i0 + k * sample_rate
+        b = a + sample_rate
+        if b > n_env:
+            break
+        acc += env[a:b]
+        rows += 1
+    if rows == 0:
+        return np.zeros(sample_rate), 0
+    acc /= rows
+    return acc, rows
 
 
 def fold_tick_train(
@@ -94,23 +153,14 @@ def fold_tick_train(
 ) -> Tuple[np.ndarray, int]:
     """Average ``n_seconds`` label-seconds of the band envelope into one
     second.  Rows whose label second-in-minute is in FOLD_SKIP_SECONDS
-    are left out.  Returns (profile[sample_rate], rows_used)."""
+    are left out.  Returns (profile[sample_rate], rows_used).
+
+    A convenience wrapper over ``_band_envelope`` + ``fold_envelope``: it
+    derives the envelope for one band and throws it away.  The acquirer
+    itself does not use this -- it derives every fold of an attempt from
+    one envelope per band (I2)."""
     env = _band_envelope(audio, sample_rate, band)
-    first_sec = int(np.ceil(sample0_utc_label))
-    i0 = int(round((first_sec - sample0_utc_label) * sample_rate))
-    rows = []
-    for k in range(n_seconds):
-        utc_sec = first_sec + k
-        if utc_sec % 60 in FOLD_SKIP_SECONDS:
-            continue
-        a = i0 + k * sample_rate
-        b = a + sample_rate
-        if b > len(env):
-            break
-        rows.append(env[a:b])
-    if not rows:
-        return np.zeros(sample_rate), 0
-    return np.mean(np.stack(rows), axis=0), len(rows)
+    return fold_envelope(env, sample_rate, sample0_utc_label, n_seconds)
 
 
 def find_fold_peaks(
@@ -218,23 +268,37 @@ def arbitrate_bands(
     return kept
 
 
-def _fold_and_arbitrate(
-    audio: np.ndarray, sample_rate: int, sample0_utc_label: float, n_seconds: int
+def peaks_from_envelopes(
+    envelopes: Dict[str, np.ndarray],
+    sample_rate: int,
+    sample0_utc_label: float,
+    n_seconds: int,
+    start_offset_s: float = 0.0,
 ) -> List[FoldPeak]:
-    """Fold every tone band over ``n_seconds`` and arbitrate the leaks
-    between them -- the full ``fold_tick_train``/``find_fold_peaks``/
+    """Fold every tone band's envelope over ``n_seconds`` and arbitrate the
+    leaks between them -- the ``fold_envelope``/``find_fold_peaks``/
     ``arbitrate_bands`` pipeline, shared by the full-buffer fold and the
-    peak-persistence half-folds below (task-11b) so both apply exactly the
-    same detection threshold."""
+    peak-persistence half-folds (task-11b) so both apply exactly the same
+    detection threshold."""
     by_band: Dict[str, List[FoldPeak]] = {}
-    for band in TONE_BANDS_HZ:
-        profile, rows = fold_tick_train(
-            audio, sample_rate, sample0_utc_label, band, n_seconds
+    for band, env in envelopes.items():
+        profile, rows = fold_envelope(
+            env, sample_rate, sample0_utc_label, n_seconds, start_offset_s
         )
         if rows == 0:
             continue
         by_band[band] = find_fold_peaks(profile, sample_rate, band)
     return arbitrate_bands(by_band)
+
+
+def _fold_and_arbitrate(
+    audio: np.ndarray, sample_rate: int, sample0_utc_label: float, n_seconds: int
+) -> List[FoldPeak]:
+    """``peaks_from_envelopes`` on envelopes derived here and discarded --
+    the raw-audio entry point, kept for callers that hold no envelopes."""
+    return peaks_from_envelopes(
+        band_envelopes(audio, sample_rate), sample_rate, sample0_utc_label, n_seconds
+    )
 
 
 @dataclass(frozen=True)
@@ -253,7 +317,7 @@ def wrap_half_second(x_s: float) -> float:
 
 
 def _peak_persists_in_both_halves(
-    audio_all: np.ndarray,
+    envelopes: Dict[str, np.ndarray],
     sample_rate: int,
     s0: float,
     n_sec: int,
@@ -270,10 +334,13 @@ def _peak_persists_in_both_halves(
     half = n_sec // 2
     if half < 1:
         return False
-    half_samples = half * sample_rate
-    first = _fold_and_arbitrate(audio_all, sample_rate, s0, half)
-    second = _fold_and_arbitrate(
-        audio_all[half_samples:], sample_rate, s0 + half, n_sec - half
+    # I2: both halves come off the SAME envelopes the full fold used --
+    # this gate used to re-filter the whole buffer twice more per band
+    # (~0.5 s of CPU and ~100 MB of allocation per attempt), and it passed
+    # `audio_all` rather than a slice for the first half.
+    first = peaks_from_envelopes(envelopes, sample_rate, s0, half)
+    second = peaks_from_envelopes(
+        envelopes, sample_rate, s0, n_sec - half, start_offset_s=float(half)
     )
     for _station, band, position_s, _snr in h.assignments:
         in_first = any(
@@ -631,12 +698,20 @@ class RegistrationAcquirer:
                 audio = audio[have - want :]
             pieces.append(audio)
         audio_all = np.concatenate(pieces)
+        del pieces
         n_sec = min(180, len(audio_all) // self.sample_rate)
+        # I2: ONE envelope per band per attempt, in float32, and the raw
+        # concatenation freed as soon as they exist.  Every fold of this
+        # attempt -- the full one and both halves of the persistence gate --
+        # comes off these two arrays; deriving each fold from the audio
+        # again cost ~100 MB of live float64 per band and ~0.5 s of CPU.
+        envelopes = band_envelopes(audio_all, self.sample_rate)
+        del audio_all
         # fold EVERY band, even one with no eligible station: the leak of a
         # 1200 Hz tick into 900-1100 Hz is only recognisable by comparison
         best = [
             p
-            for p in _fold_and_arbitrate(audio_all, self.sample_rate, s0, n_sec)
+            for p in peaks_from_envelopes(envelopes, self.sample_rate, s0, n_sec)
             if any(BAND_OF_STATION.get(s) == p.band for s in expected_delays_s)
         ]
         hyps = fit_template(best, expected_delays_s)
@@ -655,14 +730,13 @@ class RegistrationAcquirer:
         # phantom to "unambiguous" by construction (a lone peak has no second
         # station to disagree with it), self-registering on noise with no
         # corroboration.
-        if not _peak_persists_in_both_halves(
-            audio_all, self.sample_rate, s0, n_sec, h
-        ):
+        if not _peak_persists_in_both_halves(envelopes, self.sample_rate, s0, n_sec, h):
             logger.info(
                 f"[{self.channel}] BOOTSTRAP: winning peak at "
                 f"{h.assignments[0][2] * 1000:.1f} ms did not recur in both halves"
             )
             return None
+        del envelopes  # I2: not needed past the persistence gate
         # integer second from the marker of the most recent minute, located in
         # the OLDEST label's frame (re-labelled through RTP) so that a ring
         # anchor refresh between minutes cannot shift the whole-second answer
@@ -696,6 +770,12 @@ class RegistrationAcquirer:
         self._state = self.STATE_ACQUIRED
         self._bad_minutes = 0
         self._verify_pending = 0
+        # I2: the plane is held in the RTP frame from here on; three
+        # promoted float64 minutes (35.7 MB) were kept for the life of the
+        # process, and `offer_minute` short-circuits on ACQUIRED so they
+        # could never be used again.  `reset` re-fills the buffer if the
+        # plane is ever given up on.
+        self._buf.clear()
         logger.info(
             f"[{self.channel}] ACQUIRED: correction {corr*1000:+.1f} ms "
             f"(int {k_int:+d} s), σ {h.sigma_ms:.2f} ms, support {h.support}, "
@@ -750,6 +830,7 @@ class RegistrationAcquirer:
         self._open.clear()
         self._bad_minutes = 0
         self._verify_pending = 0
+        self._buf.clear()  # I2: see _try_acquire
         logger.info(
             f"[{self.channel}] ACQUIRED via sibling {sibling.channel}: "
             f"hypothesis {h.assignments[0][0]} agrees within {abs(frac)*1000:.2f} ms"
@@ -785,9 +866,7 @@ class RegistrationAcquirer:
           minutes, give up -- reset, returns "rejected"."""
         if self._reg is None:
             return "pending"
-        relevant = {
-            s: r for s, r in residuals_ms.items() if s in self._reg.stations
-        }
+        relevant = {s: r for s, r in residuals_ms.items() if s in self._reg.stations}
         if not relevant:
             self._verify_pending += 1
             if self._verify_pending >= self.VERIFY_MAX_MINUTES:
@@ -872,9 +951,7 @@ class RegistrationAcquirer:
             1.0 / max(sig, ORIGIN_SIGMA_FLOOR_MS) ** 2 for _, sig in good.values()
         )
         e_new = (
-            sum(
-                e / max(sig, ORIGIN_SIGMA_FLOOR_MS) ** 2 for e, sig in good.values()
-            )
+            sum(e / max(sig, ORIGIN_SIGMA_FLOOR_MS) ** 2 for e, sig in good.values())
             / w_new
         )
         n = min(self._reg.n_minutes, self.FILTER_MEMORY_MINUTES)

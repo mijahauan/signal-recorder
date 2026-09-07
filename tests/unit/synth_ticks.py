@@ -6,6 +6,7 @@ that quantity directly: tone bursts (1000 Hz for WWV/BPM, 1200 Hz for
 WWVH) of 5 ms at each UTC second, skipping seconds 29 and 59, with an
 800 ms marker at second 0, each onset at ``utc_sec + delay_s`` in TRUTH.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -17,13 +18,19 @@ TICK_S = 0.005
 MARKER_S = 0.800
 
 
-def make_tick_audio(n_seconds: int, sample_rate: int, true_sample0_utc: float,
-                    stations: dict, snr_db: float, seed: int = 7,
-                    marker: bool = True) -> np.ndarray:
+def make_tick_audio(
+    n_seconds: int,
+    sample_rate: int,
+    true_sample0_utc: float,
+    stations: dict,
+    snr_db: float,
+    seed: int = 7,
+    marker: bool = True,
+) -> np.ndarray:
     """``stations`` maps station name -> propagation delay in seconds."""
     rng = np.random.default_rng(seed)
     n = int(n_seconds * sample_rate)
-    noise_std = 10.0 ** (-snr_db / 20.0)        # tick amplitude is 1.0
+    noise_std = 10.0 ** (-snr_db / 20.0)  # tick amplitude is 1.0
     audio = noise_std * rng.standard_normal(n)
     t = np.arange(n) / sample_rate
     first_sec = int(np.floor(true_sample0_utc))
@@ -45,9 +52,14 @@ def make_tick_audio(n_seconds: int, sample_rate: int, true_sample0_utc: float,
     return audio
 
 
-def label_timing(true_sample0_utc: float, walk_s: float,
-                 sample_rate: int) -> BufferTiming:
+def label_timing(
+    true_sample0_utc: float, walk_s: float, sample_rate: int
+) -> BufferTiming:
     """The label plane: sample0_utc off truth by walk_s (positive = label late)."""
-    return BufferTiming(sample0_utc=true_sample0_utc + walk_s,
-                        sample_rate=sample_rate, source="rtp_gps",
-                        n_snapshots_used=1, jitter_ms=0.0)
+    return BufferTiming(
+        sample0_utc=true_sample0_utc + walk_s,
+        sample_rate=sample_rate,
+        source="rtp_gps",
+        n_snapshots_used=1,
+        jitter_ms=0.0,
+    )

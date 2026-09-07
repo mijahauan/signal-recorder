@@ -3,8 +3,10 @@ import pytest
 
 from hf_timestd.core.registration_acquirer import (
     ACQ_MIN_FOLD_SNR_DB,
+    _band_envelope,
     arbitrate_bands,
     find_fold_peaks,
+    fold_envelope,
     fold_tick_train,
 )
 from synth_ticks import make_tick_audio
@@ -95,3 +97,42 @@ def test_two_same_band_ticks_20ms_apart_resolve():
     pos = sorted(p.position_s for p in peaks)
     assert len(pos) == 2
     assert abs(pos[0] - 0.010) < 0.002 and abs(pos[1] - 0.030) < 0.002
+
+
+# ── I2 (final review): one envelope per band per attempt ──────────────
+
+
+def test_band_envelope_is_float32():
+    """I2: a 180 s envelope at 24 kHz is 34.6 MB in float64 and half that
+    in float32, and the acquirer holds one per tone band across the full
+    fold and both half folds.  The FILTERING stays float64 (a float32 SOS
+    is where biquad cascades go unstable); only the live array narrows."""
+    audio = make_tick_audio(4, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    env = _band_envelope(audio, SR, "1000")
+    assert env.dtype == np.float32
+
+
+def test_fold_envelope_start_offset_matches_folding_the_slice():
+    """I2: the half-fold persistence gate used to re-filter a slice of the
+    raw audio for its second half.  ``start_offset_s`` folds the SAME
+    envelope from that point instead, which must line up sample for sample
+    with the row selection the slice produced -- otherwise the gate
+    compares peaks on a shifted grid."""
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    env = _band_envelope(audio, SR, "1000")
+    half = 30
+    off, rows_off = fold_envelope(env, SR, T0, 30, start_offset_s=float(half))
+    sliced, rows_sliced = fold_envelope(env[half * SR :], SR, T0 + half, 30)
+    assert rows_off == rows_sliced
+    assert np.allclose(off, sliced, rtol=0, atol=0)
+
+
+def test_fold_envelope_agrees_with_the_raw_audio_wrapper():
+    """``fold_tick_train`` is now a wrapper over ``_band_envelope`` +
+    ``fold_envelope``; the two paths must give the same profile."""
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    direct, n1 = fold_tick_train(audio, SR, T0, "1000", 60)
+    env = _band_envelope(audio, SR, "1000")
+    viaenv, n2 = fold_envelope(env, SR, T0, 60)
+    assert n1 == n2
+    assert np.allclose(direct, viaenv, rtol=0, atol=0)

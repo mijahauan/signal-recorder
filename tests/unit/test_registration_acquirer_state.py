@@ -437,3 +437,78 @@ def test_a_fresh_plane_still_follows_its_first_evidence():
     assert acq.corroborate({"WWV": (2.0, 0.4)}) == "tightened"
     moved_ms = (before - acq.registration.utc_ref) * 1000.0
     assert moved_ms == pytest.approx(2.0, abs=1e-3)
+
+
+# ── I2 (final review): memory held across an attempt ─────────────────
+
+
+def test_each_bands_envelope_is_derived_once_per_attempt(monkeypatch):
+    """I2 / ledger T11b: the acquiring attempt used to derive every band's
+    envelope THREE times -- once for the full fold and once for each half
+    of the peak-persistence gate -- each derivation making full-length
+    float64 arrays of a 180 s buffer.  One envelope per band, and every
+    fold of the attempt comes off it."""
+    import hf_timestd.core.registration_acquirer as ra
+
+    calls = []
+    real = ra._band_envelope
+
+    def counting(audio, sample_rate, band):
+        calls.append(band)
+        return real(audio, sample_rate, band)
+
+    monkeypatch.setattr(ra, "_band_envelope", counting)
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    reg = acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    assert reg is not None  # the persistence gate ran, so all three folds did
+    fold_calls = [b for b in calls[: len(ra.TONE_BANDS_HZ)]]
+    assert sorted(fold_calls) == sorted(ra.TONE_BANDS_HZ)
+    # the only further call is the minute-marker search, on ONE band
+    assert len(calls) == len(ra.TONE_BANDS_HZ) + 1
+
+
+def test_buffer_is_released_on_a_successful_acquisition():
+    """I2: `offer_minute` short-circuits on ACQUIRED, so the three promoted
+    float64 minutes (35.7 MB) could never be used again -- and the process
+    held them for the rest of its life."""
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    assert acq.offer_minute(audio, label, rtp, m, D, "ep-1") is not None
+    assert acq._buf == []
+    # and a reset re-opens it for the next minute
+    acq.reset("test")
+    rng = np.random.default_rng(2)
+    acq.offer_minute(
+        0.05 * rng.standard_normal(62 * SR),
+        label_timing(T0 + 60, 0.0, SR),
+        rtp + 60 * SR,
+        m + 60,
+        D,
+        "ep-1",
+    )
+    assert len(acq._buf) == 1
+
+
+def test_buffer_is_released_when_a_sibling_resolves_the_ambiguity():
+    """The same release on the resolve_ambiguity path, which also lands in
+    ACQUIRED."""
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    # a shared 10 MHz channel hearing ONE 1000 Hz tick: WWV or BPM?
+    delays = {"WWV": 0.010, "BPM": 0.044}
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.010}, snr_db=20.0)
+    label = label_timing(T0, 0.100, SR)
+    assert acq.offer_minute(audio, label, 1_000_000, MIN, delays, "ep-1") is None
+    assert acq._buf  # still bootstrapping, buffer retained
+    sib = Registration(
+        counter_epoch_id="ep-1",
+        rtp_ref=1_000_000,
+        utc_ref=T0 + 0.0008,
+        sample_rate=SR,
+        sigma_ms=1.0,
+        channel="WWV_20000",
+        stations=("WWV",),
+        verified=True,
+    )
+    assert acq.resolve_ambiguity(sib, 1_000_000, label.sample0_utc) is not None
+    assert acq._buf == []
