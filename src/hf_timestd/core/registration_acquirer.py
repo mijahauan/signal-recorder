@@ -820,7 +820,31 @@ class RegistrationAcquirer:
         (sigma ≤ TIMING_SIGMA_MAX_MS) count.
 
         An unverified (CANDIDATE) registration must pass ``verify`` first
-        (task-11b); routed here rather than tightened blindly."""
+        (task-11b); routed here rather than tightened blindly.
+
+        ONE floor, ``ORIGIN_SIGMA_FLOOR_MS`` = 1 ms, governs the new
+        evidence's weight, the accumulated estimate's weight, and the
+        registration sigma itself (final review, C2 + I5).  That floor is
+        the DELAY-MODEL ACCURACY bound, not a repeatability bound: this
+        sigma comes from fold SNR and tick rise time divided by sqrt(n), so
+        it measures how repeatably the ticks land, while the acquired
+        origin's accuracy is bounded by ``expected_delays_s`` -- the
+        great-circle/F2-hop propagation model, and mode ambiguity (1F vs 2F
+        is milliseconds).  Publishing 0.17 ms for a quantity whose
+        systematic floor sits several milliseconds up let the Offset
+        Judge's same-tier sigma tie-break hand the PUBLISHED T3 offset to
+        ``hf_acquired`` instead of ``FusionBench`` within the first hour on
+        a live station -- a change of operative timing authority spec §6
+        does not sanction.
+
+        Flooring both weights equally also makes the filter what spec §5
+        asks for: "on the GPSDO the true origin is constant, so the filter
+        is a running weighted mean with a long memory, not a tracker".
+        With ``w_new`` floored at 0.1 ms and ``w_old`` at 1.0 ms, a
+        realistic 0.4 ms per-tick sigma under-weighted the history 6.25x
+        per minute and the effective memory was about five minutes -- short
+        enough to follow the ionosphere's path-delay wander into the
+        origin, which is spec §10's last risk row."""
         if self._reg is None:
             return "held"
         if not self._reg.verified:
@@ -844,8 +868,15 @@ class RegistrationAcquirer:
         self._bad_minutes = 0
         # slow filter: running weighted mean with long memory (the true origin
         # is constant on the GPSDO; this is a smoother, not a tracker)
-        w_new = sum(1.0 / max(sig, 0.1) ** 2 for _, sig in good.values())
-        e_new = sum(e / max(sig, 0.1) ** 2 for e, sig in good.values()) / w_new
+        w_new = sum(
+            1.0 / max(sig, ORIGIN_SIGMA_FLOOR_MS) ** 2 for _, sig in good.values()
+        )
+        e_new = (
+            sum(
+                e / max(sig, ORIGIN_SIGMA_FLOOR_MS) ** 2 for e, sig in good.values()
+            )
+            / w_new
+        )
         n = min(self._reg.n_minutes, self.FILTER_MEMORY_MINUTES)
         w_old = (n / max(self._reg.sigma_ms, ORIGIN_SIGMA_FLOOR_MS) ** 2) if n else 0.0
         shift_ms = (w_new * e_new) / (w_new + w_old)
@@ -861,6 +892,6 @@ class RegistrationAcquirer:
             1.0 / np.sqrt(w_new + w_old) if (w_new + w_old) > 0 else self._reg.sigma_ms
         )
         self._reg.sigma_ms = float(
-            max(ORIGIN_SIGMA_FLOOR_MS * 0.1, min(self._reg.sigma_ms, new_sigma))
+            max(ORIGIN_SIGMA_FLOOR_MS, min(self._reg.sigma_ms, new_sigma))
         )
         return "tightened"

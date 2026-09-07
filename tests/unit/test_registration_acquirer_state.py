@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from hf_timestd.core.registration_acquirer import (
+    ORIGIN_SIGMA_FLOOR_MS,
     Registration,
     RegistrationAcquirer,
 )
@@ -294,10 +295,17 @@ def test_corroborate_on_unverified_registration_routes_to_verify():
     assert acq.registration.verified is True
 
 
-def test_acquire_then_verify_then_corroborate_tightens():
+def test_acquire_then_verify_then_corroborate_runs():
     """task-11b fix round 1 (I3/I4): the real seam, walked end to end --
     acquire (CANDIDATE) -> verify (confirms, does not tighten) ->
-    corroborate (now runs, and tightens sigma)."""
+    corroborate (now runs, and accumulates evidence).
+
+    final review C2: corroborate no longer tightens sigma BELOW
+    ORIGIN_SIGMA_FLOOR_MS, and at 20 dB the acquisition sigma already sits
+    on that floor -- so what this walk pins now is that corroborate RUNS
+    (n_minutes accumulates) and that the floor holds, not that the number
+    shrinks.  The floor is the delay-model accuracy bound; shrinking past
+    it published repeatability as accuracy."""
     acq = RegistrationAcquirer("SHARED_10000", SR)
     audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
     acq.offer_minute(audio, label, rtp, m, D, "ep-1")
@@ -308,8 +316,11 @@ def test_acquire_then_verify_then_corroborate_tightens():
     assert (
         acq.registration.sigma_ms == sigma_after_acquire
     )  # verify confirms, doesn't tighten
+    assert acq.registration.n_minutes == 0
     assert acq.corroborate({"WWV": (0.4, 0.4)}) == "tightened"
-    assert acq.registration.sigma_ms < sigma_after_acquire
+    assert acq.registration.n_minutes == 1
+    assert acq.registration.sigma_ms <= sigma_after_acquire
+    assert acq.registration.sigma_ms >= ORIGIN_SIGMA_FLOOR_MS
 
 
 def test_offer_minute_resets_when_the_epoch_offset_steps(caplog):
@@ -358,3 +369,71 @@ def test_offer_minute_keeps_the_plane_across_ordinary_pair_skew():
         epoch_offset_s=958.5,
     )
     assert reg1 is reg0 and acq.state == acq.STATE_ACQUIRED
+
+
+# ── C2 + I5 (final review): one sigma floor, long filter memory ───────
+
+
+def test_corroborate_sigma_never_falls_below_the_floor():
+    """C2: ``corroborate`` used to clamp at ORIGIN_SIGMA_FLOOR_MS * 0.1 and
+    reached 0.17 ms within thirty minutes.  That sigma is a repeatability
+    bound (fold SNR / rise time, divided by sqrt(n)); the acquired origin's
+    ACCURACY is bounded by expected_delays_s -- propagation model plus mode
+    ambiguity, milliseconds up.  Publishing the smaller number let the
+    judge's same-tier sigma tie-break hand the published T3 offset to
+    hf_acquired instead of FusionBench.  One floor, 1 ms."""
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    acq.registration.verified = True
+    for _ in range(60):
+        assert acq.corroborate({"WWV": (0.0, 0.4)}) in ("tightened", "held")
+    assert acq.registration.sigma_ms == pytest.approx(ORIGIN_SIGMA_FLOOR_MS)
+
+
+def _corroborating_plane(n_minutes, sigma_ms=ORIGIN_SIGMA_FLOOR_MS):
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    acq._state = acq.STATE_ACQUIRED
+    acq._reg = Registration(
+        counter_epoch_id="ep-1",
+        rtp_ref=1_000_000,
+        utc_ref=T0,
+        sample_rate=SR,
+        sigma_ms=sigma_ms,
+        channel="SHARED_10000",
+        n_minutes=n_minutes,
+        stations=("WWV",),
+        verified=True,
+    )
+    return acq
+
+
+def test_the_filter_has_a_long_memory_not_a_five_minute_one():
+    """I5: spec §5 asks for "a running weighted mean with a long memory,
+    not a tracker".  With w_new floored at 0.1 ms and w_old at 1.0 ms, a
+    realistic 0.4 ms per-tick sigma under-weighted the history by
+    (1.0/0.4)^2 = 6.25x per minute against a w_old capped at
+    FILTER_MEMORY_MINUTES -- an effective memory of about five minutes,
+    short enough to follow path-delay wander into the origin.  One floor on
+    both weights makes a saturated filter move by 1/(1+FILTER_MEMORY_MINUTES)
+    of a new residual, not by a sixth of it."""
+    acq = _corroborating_plane(RegistrationAcquirer.FILTER_MEMORY_MINUTES)
+    before = acq.registration.utc_ref
+    assert acq.corroborate({"WWV": (2.0, 0.4)}) == "tightened"
+    moved_ms = (before - acq.registration.utc_ref) * 1000.0
+    expected = 2.0 / (1 + RegistrationAcquirer.FILTER_MEMORY_MINUTES)
+    # utc_ref sits at ~1.8e9 s, where one float64 ulp is 2.4e-4 ms
+    assert moved_ms == pytest.approx(expected, abs=1e-3)
+    # the pre-fix asymmetry would have moved it 5.3x further
+    assert moved_ms < 0.1
+
+
+def test_a_fresh_plane_still_follows_its_first_evidence():
+    """The other side of I5: long memory must not mean frozen.  With no
+    accumulated history (n_minutes = 0) the first minute's residual is
+    taken in full."""
+    acq = _corroborating_plane(0)
+    before = acq.registration.utc_ref
+    assert acq.corroborate({"WWV": (2.0, 0.4)}) == "tightened"
+    moved_ms = (before - acq.registration.utc_ref) * 1000.0
+    assert moved_ms == pytest.approx(2.0, abs=1e-3)
