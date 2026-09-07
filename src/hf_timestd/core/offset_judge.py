@@ -76,6 +76,16 @@ from .registration_acquirer import ORIGIN_SIGMA_FLOOR_MS
 
 logger = logging.getLogger(__name__)
 
+PUBLISH_SCHEMA = "offset-judge-v1"
+# The additive block spec §11.2 (2026-09-07) publishes for the FUSE feed.
+LABEL_PLANE_ANCHOR_KEY = "label_plane_anchor"
+# How old the anchor's arrival may be before the fusion process refuses
+# it.  One judge tick (10 s) + one arrival window (5 s) + one fusion
+# cycle (8 s) with margin: past this the pairing has been projected on
+# the monotonic clock long enough for the host's own frequency error to
+# matter, and a fresh sample is due anyway.
+LABEL_ANCHOR_MAX_AGE_S = 30.0
+
 GPS_EPOCH_UNIX = 315964800
 BILLION = 1_000_000_000
 RTP_WRAP = 0x100000000
@@ -1070,6 +1080,12 @@ class OffsetJudge:
         # tick), and the CRITICAL rate limiter.
         self._cross_conflict: Optional[Dict] = None
         self._shadow_residuals: Dict[str, Dict] = {}
+        # Spec §11.2 (2026-09-07): the label-plane anchor's own statement
+        # this tick, published for the FUSE chrony feed.  NOT the
+        # selected bench — the label plane speaks whether or not the
+        # judge adopted it (hf_acquired stays a witness in the tier
+        # arbitration).  See _select_label_anchor_locked.
+        self._label_anchor: Optional[BenchReading] = None
         self._dissent = None
         from .witness_dissent import DissentWatch
         self._dissent_watch = DissentWatch()
@@ -1371,6 +1387,7 @@ class OffsetJudge:
             # Shadow-mode residuals: every non-adopted bench vs the
             # adopted one, refreshed each tick (gate doc).
             self._observe_label_plane_locked(readings)
+            self._select_label_anchor_locked(readings)
             self._update_shadow_locked(readings, self._best, mono_now)
             # Violation + rate evaluation run every tick even in
             # holdover so sustained windows keep counting / clearing.
@@ -1793,6 +1810,60 @@ class OffsetJudge:
         for label in labels:
             self.observe_label_plane(label, host)
 
+
+    def _select_label_anchor_locked(
+        self, readings: List[BenchReading]
+    ) -> None:
+        """Hold this tick's label-plane anchor statement (spec §11.2).
+
+        Deliberately independent of ``_select_bench_locked``: the FUSE
+        feed needs the LABEL PLANE, and the tier arbitration may well
+        have adopted a host-plane bench instead (hf_acquired is a witness
+        there, by mjh's ruling of 2026-09-07).  Publishing "whichever
+        bench won" would put the host clock back in the loop through the
+        side door — the exact circularity §11 exists to break.
+
+        Highest tier first, then the tightest sigma: T6's native anchor
+        outranks the T3 registration when both stand up, which is the
+        one-station-one-registration rule (mjh, 2026-09-04).
+        """
+        labels = [r for r in readings
+                  if getattr(r, "plane", "host") == "label"]
+        if not labels:
+            self._label_anchor = None
+            return
+        self._label_anchor = min(
+            labels,
+            key=lambda r: (self._tier_rank(r.tier), float(r.sigma_ns)),
+        )
+
+    def _label_anchor_block_locked(self, mono_now: float) -> Optional[Dict]:
+        """The published ``label_plane_anchor`` block, or None.
+
+        ``utc`` and ``mono`` together ARE the measurement pair: the
+        anchor's UTC for the newest arrived sample, and the monotonic
+        instant that sample arrived.  A consumer pairs ``mono`` with its
+        own ``time.monotonic()``/``time.time()`` to recover what the host
+        clock read at that instant — and nothing else is needed to state
+        the host's error.  See :func:`label_plane_chrony_sample`.
+        """
+        r = self._label_anchor
+        if r is None:
+            return None
+        detail = r.detail or {}
+        bench = detail.get("bench")
+        if not bench:
+            bench = ("t6_native_anchor" if r.tier == "T6"
+                     else f"{r.tier}_label_plane")
+        return {
+            "bench": str(bench),
+            "tier": str(r.tier),
+            "plane": "label",
+            "utc": float(r.utc),
+            "mono": float(r.mono),
+            "sigma_ns": round(float(r.sigma_ns), 1),
+            "age_s": round(mono_now - float(r.mono), 3),
+        }
 
     def _update_shadow_locked(
         self,
@@ -2517,7 +2588,7 @@ class OffsetJudge:
             }
         t6r = self._t6_rate
         return {
-            "schema": "offset-judge-v1",
+            "schema": PUBLISH_SCHEMA,
             "utc_published": datetime.fromtimestamp(
                 self._time(), tz=timezone.utc
             ).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -2539,6 +2610,11 @@ class OffsetJudge:
             # the correction applied to every cross-plane comparison is
             # auditable rather than implicit.
             "label_plane": self.label_plane_status(),
+            # Spec §11.2 (2026-09-07): the label plane's own (UTC,
+            # monotonic) statement, for the FUSE chrony feed in the
+            # fusion process.  Published independently of tier
+            # arbitration — see _select_label_anchor_locked.
+            LABEL_PLANE_ANCHOR_KEY: self._label_anchor_block_locked(mono_now),
             # Precision non-regression clause: a voluntary upgrade
             # currently refused because the candidate's sigma would
             # materially regress the judge's precision (None when
@@ -2637,3 +2713,141 @@ class OffsetJudge:
                     f"(judge continues; will retry each tick, logging once)"
                 )
                 self._publish_error_logged = True
+
+
+# ────────────────────────────────────────────────────────────────────
+# The FUSE chrony feed reads the label-plane anchor (spec §11.2)
+#
+# AC0G-ND, 2026-09-07: the FUSE sample was ``system_time - d_clock``.
+# d_clock is fusion's estimate of the host clock's offset from the plane
+# its measurements were LABELLED on, and radiod stamps GPS_TIME from the
+# host clock -- so plane and host were the same object and d_clock ~ 0
+# voted "the host is right" while the host walked 150 ms from four NTP
+# witnesses.  A host-relative measurement cannot detect a host-wide
+# error; no amount of correction added to d_clock changes that.
+#
+# The label-plane anchor already forms the pair chrony actually wants,
+# and forms it without consulting any clock:
+#
+#     reference_time = anchor's UTC of the newest arrived sample
+#     system_time    = what the host clock read AT THAT ARRIVAL
+#
+# chrony computes offset = clockTimeStamp - receiveTimeStamp
+# = reference - system (traced through refclock_shm.c in chrony_shm.py),
+# which is exactly the host's error against the tick-aligned UTC.
+#
+# ⚠ WHY NOTHING IS DOUBLE-COUNTED.  d_clock does not appear in this
+# sample at all -- not added, not subtracted.  The two are alternative
+# ANSWERS to one question ("what is the host clock's error?"), not two
+# terms of a sum: d_clock answers it against the ring plane, the anchor
+# answers it against the tick train.  In this regime d_clock becomes a
+# diagnostic (their difference is the ring plane's residual against the
+# registration, published as ``anchor_offset_ms`` beside
+# ``d_clock_fused_ms`` in fusion_status.json).  A reader tempted to sum
+# them should read this paragraph twice.
+# ────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class LabelPlaneAnchorSample:
+    """One chrony SHM sample derived from the label-plane anchor."""
+
+    bench: str
+    tier: str
+    reference_time: float   # true UTC of the arrival (the anchor's label)
+    system_time: float      # host clock at that same arrival instant
+    sigma_ns: float
+    age_s: float
+    # The published arrival's own monotonic stamp.  Identity of the
+    # MEASUREMENT: the fusion loop cycles faster than the judge ticks, so
+    # a consumer must not hand chrony the same arrival twice under two
+    # (reference, system) pairs -- correlated samples offered as
+    # independent ones understate the refclock's dispersion.
+    anchor_mono: float = 0.0
+
+    @property
+    def offset_s(self) -> float:
+        """What chrony will compute: reference - system.
+
+        Negative means the host clock ran FAST at the arrival instant and
+        chrony slews it backwards.
+        """
+        return self.reference_time - self.system_time
+
+    @property
+    def shm_precision(self) -> int:
+        """log2(sigma in seconds), clamped to chrony's useful range.
+
+        Same clamp the legacy d_clock feed applies ([-20, -4] = 1 us to
+        62 ms): the sample must claim neither better than the instrument
+        nor worse than chrony can use.
+        """
+        sigma_s = max(float(self.sigma_ns) / 1e9, 1e-9)
+        return max(-20, min(-4, int(math.log2(sigma_s))))
+
+
+def read_label_plane_anchor(
+    path: os.PathLike = Path("/run/hf-timestd/offset_judge.json"),
+) -> Optional[Dict]:
+    """The published ``label_plane_anchor`` block, or None.
+
+    None on every failure mode a consumer must survive: no file, bad
+    JSON, an unrecognised schema, no label plane this tick, or a block
+    that does not actually claim the label plane.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != PUBLISH_SCHEMA:
+        return None
+    block = data.get(LABEL_PLANE_ANCHOR_KEY)
+    if not isinstance(block, dict) or not block:
+        return None
+    if str(block.get("plane")) != "label":
+        return None
+    return block
+
+
+def label_plane_chrony_sample(
+    path: os.PathLike = Path("/run/hf-timestd/offset_judge.json"),
+    *,
+    max_age_s: float = LABEL_ANCHOR_MAX_AGE_S,
+    time_fn: Callable[[], float] = time.time,
+    mono_fn: Callable[[], float] = time.monotonic,
+) -> Optional[LabelPlaneAnchorSample]:
+    """Turn the published anchor into a chrony SHM sample, or None.
+
+    ``system_time`` is recovered by walking the host clock BACK along the
+    monotonic clock to the arrival instant.  CLOCK_MONOTONIC is
+    system-wide on Linux, so the judge's ``mono`` is directly comparable
+    here even though another process published it; /run is tmpfs, so a
+    file cannot survive the reboot that would invalidate that.
+
+    An arrival in the future, or older than ``max_age_s``, is refused:
+    the interval is walked on the monotonic clock, which chrony itself
+    slews, so a long projection re-imports the very frequency error the
+    sample is meant to measure.
+    """
+    block = read_label_plane_anchor(path)
+    if block is None:
+        return None
+    try:
+        utc = float(block["utc"])
+        mono = float(block["mono"])
+        sigma_ns = float(block.get("sigma_ns") or 0.0)
+    except (KeyError, TypeError, ValueError):
+        return None
+    age_s = mono_fn() - mono
+    if age_s < 0 or age_s > float(max_age_s):
+        return None
+    return LabelPlaneAnchorSample(
+        bench=str(block.get("bench") or "label_plane"),
+        tier=str(block.get("tier") or "T3"),
+        reference_time=utc,
+        system_time=time_fn() - age_s,
+        sigma_ns=sigma_ns,
+        age_s=age_s,
+        anchor_mono=mono,
+    )

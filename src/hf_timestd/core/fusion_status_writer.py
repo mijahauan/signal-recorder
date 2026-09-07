@@ -30,7 +30,12 @@ Schema v1:
       },
       "chrony_gate": {
         "last_fed": true,
-        "skip_reasons": []
+        "skip_reasons": [],
+        "feed_regime": "anchor",
+        "anchor_bench": "hf_acquired",
+        "anchor_tier": "T3",
+        "anchor_offset_ms": -150.0,
+        "anchor_age_s": 2.1
       }
     }
 
@@ -50,6 +55,7 @@ from typing import List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hf_timestd.core.multi_broadcast_fusion import FusedResult
+    from hf_timestd.core.offset_judge import LabelPlaneAnchorSample
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +75,7 @@ class FusionStatusWriter:
         result: Optional["FusedResult"],
         chrony_fed: bool,
         skip_reasons: List[str],
+        anchor_sample: Optional["LabelPlaneAnchorSample"] = None,
     ) -> None:
         """Write the current cycle's fusion status.
 
@@ -76,6 +83,15 @@ class FusionStatusWriter:
         (e.g., empty lookback window). Consumers then see
         fusion.available=false but still get a fresh utc_published — proof
         that the service itself is alive.
+
+        `anchor_sample` names the label-plane anchor that fed chrony this
+        cycle (spec §11.2, 2026-09-07), or None for the legacy
+        d_clock feed.  Its presence changes `chrony_gate.feed_regime` and
+        publishes the anchor's own offset beside `fusion.d_clock_fused_ms`
+        — the two answer the same question from different planes, so
+        their DIFFERENCE is the ring plane's residual against the
+        registration.  Never their sum (see `offset_judge`'s §11.2
+        section on double counting).
         """
         utc_now = datetime.now(timezone.utc)
 
@@ -116,6 +132,28 @@ class FusionStatusWriter:
         payload["chrony_gate"] = {
             "last_fed": bool(chrony_fed),
             "skip_reasons": list(skip_reasons),
+            # "anchor": the sample handed to chrony came from the
+            # label-plane anchor (T3 registration or T6 native anchor).
+            # "fusion_d_clock": the legacy host-relative sample.
+            "feed_regime": "anchor" if anchor_sample is not None
+            else "fusion_d_clock",
+            "anchor_bench": (
+                anchor_sample.bench if anchor_sample is not None else None
+            ),
+            "anchor_tier": (
+                anchor_sample.tier if anchor_sample is not None else None
+            ),
+            # The host clock's error against the tick-aligned UTC, as the
+            # anchor states it.  Compare against fusion.d_clock_fused_ms;
+            # never add the two.
+            "anchor_offset_ms": (
+                round(anchor_sample.offset_s * 1e3, 4)
+                if anchor_sample is not None else None
+            ),
+            "anchor_age_s": (
+                round(anchor_sample.age_s, 3)
+                if anchor_sample is not None else None
+            ),
         }
 
         self._atomic_write(payload)

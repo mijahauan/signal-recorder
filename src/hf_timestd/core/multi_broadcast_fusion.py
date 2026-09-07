@@ -4283,6 +4283,12 @@ def run_fusion_service(
     # making the second feed redundant.  result_l1 is still computed
     # for the L1-vs-L2 diagnostic comparison logged later in this
     # function, but never published to chrony.
+    # Spec §11.2: which regime last fed chrony, so the regime change is
+    # logged once rather than every cycle.
+    _last_feed_regime = None
+    # The arrival last handed to chrony, so one measurement is offered
+    # once however many fusion cycles see it.
+    _last_anchor_mono = None
     chrony_shm_l2 = None  # SHM 1: refid FUSE
     _chrony_shm_available = False  # True if sysv_ipc is importable
 
@@ -4477,6 +4483,13 @@ def run_fusion_service(
             # FusionStatusWriter before the watchdog notify at end of loop).
             chrony_fed_this_cycle = False
             chrony_skip_reasons: List[str] = []
+            # Spec §11.2 (2026-09-07): the label-plane anchor sample that
+            # fed chrony this cycle, or None for the legacy d_clock feed.
+            anchor_sample = None
+            # True while the anchor regime holds, even on a cycle that
+            # writes nothing because the arrival has not advanced -- the
+            # legacy d_clock write must stay stood down either way.
+            anchor_regime = False
 
             # Notify watchdog we are alive
             if SYSTEMD_AVAILABLE:
@@ -4617,6 +4630,69 @@ def run_fusion_service(
                 # The initial write in fuse() happened before L1/L2 were set
                 fusion._write_fused_result(result)
             
+            # ── the FUSE feed carries the anchor (spec §11.2) ─────────
+            # Ahead of the fusion-quality gates below, and outside
+            # `if result:`, deliberately: the anchor is INDEPENDENT
+            # evidence.  On AC0G-ND 2026-09-07 the host walked 150 ms
+            # while every tick agreed with the registration; a chrony
+            # feed that can only speak when fusion's own quality gates
+            # pass is exactly the feed that went quiet.  The anchor's
+            # own freshness bound (LABEL_ANCHOR_MAX_AGE_S) is its gate.
+            if chrony_shm_l2 and chrony_shm_l2.connected:
+                try:
+                    from hf_timestd.core.offset_judge import (
+                        label_plane_chrony_sample,
+                    )
+                    anchor_sample = label_plane_chrony_sample()
+                except Exception as _anchor_exc:  # noqa: BLE001
+                    anchor_sample = None
+                    logger.debug(
+                        f"label-plane anchor unavailable: {_anchor_exc}"
+                    )
+            if anchor_sample is not None:
+                anchor_regime = True
+            if (anchor_sample is not None
+                    and anchor_sample.anchor_mono != _last_anchor_mono):
+                _shm_anchor_t0 = time.monotonic()
+                try:
+                    if chrony_shm_l2.update(
+                        anchor_sample.reference_time,
+                        anchor_sample.system_time,
+                        anchor_sample.shm_precision,
+                    ):
+                        chrony_fed_this_cycle = True
+                        _last_anchor_mono = anchor_sample.anchor_mono
+                        if _last_feed_regime != "anchor":
+                            logger.info(
+                                "FUSE feed: ANCHOR-DIRECT (bench "
+                                f"{anchor_sample.bench}, tier "
+                                f"{anchor_sample.tier}, host error "
+                                f"{anchor_sample.offset_s * 1e3:+.1f} ms, "
+                                f"sigma {anchor_sample.sigma_ns / 1e6:.3f} ms"
+                                ") -- the registration states the host's "
+                                "error; d_clock is now a diagnostic"
+                            )
+                            _last_feed_regime = "anchor"
+                    else:
+                        logger.warning("Chrony SHM FUSE anchor write failed")
+                        anchor_sample = None
+                        anchor_regime = False
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"Chrony SHM anchor update exception: {e}")
+                    anchor_sample = None
+                    anchor_regime = False
+                if loop_metrics is not None:
+                    loop_metrics.record_phase(
+                        "shm_write", time.monotonic() - _shm_anchor_t0)
+            if not anchor_regime and _last_feed_regime != "fusion_d_clock":
+                logger.warning(
+                    "FUSE feed: falling back to fusion d_clock -- no fresh "
+                    "label-plane anchor.  d_clock is measured against the "
+                    "ring plane, which radiod stamps from the host clock, "
+                    "so it cannot see a host-wide error (spec §11.2)."
+                )
+                _last_feed_regime = "fusion_d_clock"
+
             if result:
                 # Log summary
                 logger.info(
@@ -4756,8 +4832,14 @@ def run_fusion_service(
                             f"flag={result.consistency_flag}, unc={result.uncertainty_ms:.1f}ms, "
                             f"cal_converged={calibration_converged}]"
                         )
-                        # Expose the same reasons to the status writer.
-                        chrony_skip_reasons = list(gate_reasons)
+                        # Expose the same reasons to the status writer --
+                        # but only when the d_clock feed was the one that
+                        # mattered.  §11.2: in the anchor regime these
+                        # gates describe a feed that stood down on
+                        # purpose, and reporting them beside last_fed=true
+                        # would read as "fed despite being gated".
+                        if not anchor_regime:
+                            chrony_skip_reasons = list(gate_reasons)
                     
                     if quality_ok and multi_station and consistent and discontinuity_ok:
                         now = time.time()
@@ -4777,7 +4859,14 @@ def run_fusion_service(
                             # making the second feed redundant.  result_l1 is
                             # still computed for the L1-vs-L2 diagnostic
                             # comparison logged earlier in the cycle.
-                            if chrony_shm_l2 and chrony_shm_l2.connected and result_l2:
+                            # §11.2: the anchor regime has already fed
+                            # chrony this cycle with the registration's own
+                            # statement.  Writing d_clock on top would
+                            # overwrite a host-clock-free sample with a
+                            # host-relative one -- and summing the two
+                            # would double-count (see offset_judge §11.2).
+                            if (chrony_shm_l2 and chrony_shm_l2.connected
+                                    and result_l2 and not anchor_regime):
                                 reference_time_l2 = system_time - (result_l2.d_clock_fused_ms / 1000.0)
                                 uncertainty_sec_l2 = max(0.1, result_l2.uncertainty_ms) / 1000.0
                                 # Precision = log2(seconds), more negative = better
@@ -4858,6 +4947,7 @@ def run_fusion_service(
                         result=result,
                         chrony_fed=chrony_fed_this_cycle,
                         skip_reasons=chrony_skip_reasons,
+                        anchor_sample=anchor_sample,
                     )
                 except Exception as e:
                     logger.warning(f"Fusion status write failed: {e}")
