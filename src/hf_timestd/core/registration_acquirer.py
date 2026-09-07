@@ -20,12 +20,14 @@ Sign convention (pinned in the plan's Global Constraints):
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy.signal import butter, sosfiltfilt
 
+from .counter_epoch_tracker import COUNTER_EPOCH_STEP_S
 from .tick_edge_detector import TickEdgeDetector
 
 logger = logging.getLogger(__name__)
@@ -466,6 +468,12 @@ class Registration:
     # carries (a fused plane built purely from already-ACQUIRED, hence
     # already-verified, siblings is verified).
     verified: bool = False
+    # The counter epoch as a MEASURED quantity: UTC of RTP sample 0 under
+    # radiod's pair (CounterEpochTracker.epoch_offset_s).  ``fuse_registrations``
+    # clusters on this, because one process per channel means two channels in
+    # one physical epoch can spell ``counter_epoch_id`` differently (final
+    # review, C1).  NaN when the writer never saw a valid pair.
+    epoch_offset_s: float = float("nan")
 
     def sample0_utc_for(self, start_rtp: int) -> float:
         return self.utc_ref + (int(start_rtp) - int(self.rtp_ref)) / float(
@@ -513,6 +521,7 @@ class RegistrationAcquirer:
         self._bad_minutes = 0
         self._open: List[Hypothesis] = []
         self._verify_pending = 0
+        self._epoch_offset_s = float("nan")
 
     @property
     def state(self) -> str:
@@ -562,10 +571,28 @@ class RegistrationAcquirer:
         minute_utc: int,
         expected_delays_s: Dict[str, float],
         counter_epoch_id: str,
+        epoch_offset_s: float = float("nan"),
     ) -> Optional[Registration]:
+        """``epoch_offset_s``: the counter epoch as a MEASURED quantity
+        (``CounterEpochTracker.epoch_offset_s``).  The id string is
+        per-process and cannot be compared across channels, so this is what
+        every registration carries for ``fuse_registrations`` to cluster on
+        (final review, C1).  NaN keeps the pre-C1 id-string behaviour."""
         if self._epoch is not None and counter_epoch_id != self._epoch:
             self.reset(f"counter epoch {self._epoch} -> {counter_epoch_id}")
+        elif self._epoch_stepped(epoch_offset_s):
+            # The id string is only ``ep-<int(offset_s)>`` (C1), so a
+            # re-anchor that moves the mapping DOWN by 0.5-1.0 s opens a new
+            # epoch in CounterEpochTracker while spelling it the same way.
+            # The offset itself always sees it: within one epoch the tracker
+            # reports a running MINIMUM, which moves by at most
+            # COUNTER_EPOCH_STEP_S per observation.
+            self.reset(
+                f"counter epoch offset {self._epoch_offset_s:.3f} -> "
+                f"{float(epoch_offset_s):.3f} s"
+            )
         self._epoch = counter_epoch_id
+        self._epoch_offset_s = float(epoch_offset_s)
         if self._state == self.STATE_ACQUIRED and self._reg is not None:
             return self._reg
         self._buf.append(
@@ -578,6 +605,13 @@ class RegistrationAcquirer:
         )
         self._buf = self._buf[-3:]
         return self._try_acquire(expected_delays_s)
+
+    def _epoch_stepped(self, epoch_offset_s: float) -> bool:
+        """Has the counter epoch's implied offset moved past the step?"""
+        held = self._epoch_offset_s
+        if math.isnan(held) or math.isnan(epoch_offset_s):
+            return False
+        return abs(float(epoch_offset_s) - held) > COUNTER_EPOCH_STEP_S
 
     def _try_acquire(
         self, expected_delays_s: Dict[str, float]
@@ -657,6 +691,7 @@ class RegistrationAcquirer:
             channel=self.channel,
             hypotheses_open=len(self._open),
             stations=tuple(sorted({a[0] for a in h.assignments})),
+            epoch_offset_s=self._epoch_offset_s,
         )
         self._state = self.STATE_ACQUIRED
         self._bad_minutes = 0
@@ -669,7 +704,11 @@ class RegistrationAcquirer:
         return self._reg
 
     def resolve_ambiguity(
-        self, sibling: Registration, start_rtp: int, label_s0: float
+        self,
+        sibling: Registration,
+        start_rtp: int,
+        label_s0: float,
+        epoch_offset_s: float = float("nan"),
     ) -> Optional[Registration]:
         """A shared channel with one peak carries two or more hypotheses; a
         sibling channel's plane names the right one.  Same-site agreement
@@ -677,6 +716,8 @@ class RegistrationAcquirer:
         The sibling also supplies the whole second."""
         if self._state == self.STATE_ACQUIRED or not self._open:
             return None
+        if not math.isnan(epoch_offset_s):
+            self._epoch_offset_s = float(epoch_offset_s)
         sib_s0 = sibling.sample0_utc_for(int(start_rtp))
         matches = []
         for h in self._open:
@@ -699,6 +740,11 @@ class RegistrationAcquirer:
             channel=self.channel,
             hypotheses_open=0,
             stations=(h.assignments[0][0],),
+            epoch_offset_s=(
+                self._epoch_offset_s
+                if not math.isnan(self._epoch_offset_s)
+                else sibling.epoch_offset_s
+            ),
         )
         self._state = self.STATE_ACQUIRED
         self._open.clear()

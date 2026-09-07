@@ -310,3 +310,51 @@ def test_acquire_then_verify_then_corroborate_tightens():
     )  # verify confirms, doesn't tighten
     assert acq.corroborate({"WWV": (0.4, 0.4)}) == "tightened"
     assert acq.registration.sigma_ms < sigma_after_acquire
+
+
+def test_offer_minute_resets_when_the_epoch_offset_steps(caplog):
+    """C1's id string is ``ep-<int(epoch_offset_s)>``, so a re-anchor that
+    moves the mapping DOWN by 0.5-1.0 s opens a new epoch in
+    CounterEpochTracker while spelling it exactly the same way.  The offset
+    itself always sees the step (within one epoch the tracker reports a
+    running MINIMUM, which moves at most COUNTER_EPOCH_STEP_S per
+    observation), so spec §5's "step on counter-epoch change" must key on
+    it too -- otherwise a registration held in the OLD RTP frame survives
+    the change."""
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    acq.offer_minute(audio, label, rtp, m, D, "ep-958", epoch_offset_s=958.9)
+    assert acq.state == acq.STATE_ACQUIRED
+    rng = np.random.default_rng(4)
+    noise = 0.05 * rng.standard_normal(62 * SR)
+    with caplog.at_level("INFO"):
+        acq.offer_minute(
+            noise,
+            label_timing(T0 + 60, 0.0, SR),
+            rtp + 60 * SR,
+            m + 60,
+            D,
+            "ep-958",  # SAME id string
+            epoch_offset_s=958.3,  # 0.6 s down: a different counter space
+        )
+    assert acq.state == acq.STATE_BOOTSTRAP
+    assert "counter epoch offset" in caplog.text
+
+
+def test_offer_minute_keeps_the_plane_across_ordinary_pair_skew():
+    """The companion case: an offset that moved less than
+    COUNTER_EPOCH_STEP_S is the pair's own skew, not a new counter space --
+    the registration must survive it (I3)."""
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    reg0 = acq.offer_minute(audio, label, rtp, m, D, "ep-958", epoch_offset_s=958.9)
+    reg1 = acq.offer_minute(
+        audio,
+        label_timing(T0 + 60, 0.0, SR),
+        rtp + 60 * SR,
+        m + 60,
+        D,
+        "ep-958",
+        epoch_offset_s=958.5,
+    )
+    assert reg1 is reg0 and acq.state == acq.STATE_ACQUIRED

@@ -656,10 +656,15 @@ def test_host_label_ensemble_does_not_reach_corroborate(tmp_path, monkeypatch):
 
 
 def test_counter_epoch_change_on_the_live_ring_reacquires(tmp_path):
-    """I3: a pair jump > COUNTER_EPOCH_STEP_S mid-stream resets the acquirer
-    to BOOTSTRAP and, at good SNR, lets it re-acquire within the same
-    minute -- exercised through the service's own apply_registration, not
-    just the acquirer directly."""
+    """I3: a genuine radiod re-anchor mid-stream resets the acquirer to
+    BOOTSTRAP and, at good SNR, lets it re-acquire within the same minute --
+    exercised through the service's own apply_registration, not just the
+    acquirer directly.
+
+    final review, I3: the jump here used to be 0.7 s, which is B4's
+    measured PAIR SKEW, not a counter-space change -- the tracker no longer
+    opens an epoch for lateness alone.  A real re-anchor moves the mapping
+    by hours, so this asks for 19.4 h."""
     svc = _service(tmp_path)
     audio0 = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
     bt0 = svc.apply_registration(
@@ -669,8 +674,8 @@ def test_counter_epoch_change_on_the_live_ring_reacquires(tmp_path):
     epoch0 = svc.acquirer.registration.counter_epoch_id
     meta1 = dict(_meta(1))
     meta1["gps_time_ns"] = meta1["gps_time_ns"] + int(
-        0.7e9
-    )  # pair jumps 0.7s -> new epoch
+        69732e9
+    )  # radiod re-anchors 19.4 h away -> a new counter space
     audio1 = make_tick_audio(62, SR, T0 + 60, {"WWV": 0.0125}, snr_db=20.0, seed=8)
     bt1 = svc.apply_registration(
         label_timing(T0 + 60, 0.0, SR),
@@ -761,3 +766,84 @@ def test_resolve_before_adopt_precedence(tmp_path, monkeypatch):
     assert bt.origin_source == "acquired" and bt.sample0_utc == pytest.approx(
         T0, abs=0.002
     )
+
+
+# ── C1 (final review): fusion crosses PROCESSES, not id strings ───────
+
+
+def test_sibling_in_the_same_counter_space_under_a_different_id_still_fuses(tmp_path):
+    """C1: metrology runs one process per channel, each with its own
+    CounterEpochTracker, so two channels in ONE physical counter epoch
+    routinely write two different ``counter_epoch_id`` strings.  The old
+    majority-string filter then discarded every channel but one, and per-radiod
+    inverse-variance fusion (spec §4.6) never happened in production at all.
+    Two 1.0 ms-class planes in one counter space must fuse tighter than
+    either, and ``contributing`` must name both."""
+    from hf_timestd.core.registration_acquirer import Registration
+
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    svc.apply_registration(label_timing(T0, 0.0, SR), audio, 1_000_000, MIN, _meta(0))
+    svc.acquirer.registration.verified = True
+    own_sigma = svc.acquirer.registration.sigma_ms
+    own_offset = svc.epoch_tracker.epoch_offset_s
+    assert svc.acquirer.registration.epoch_offset_s == pytest.approx(own_offset)
+
+    sib = Registration(
+        "ep-named-by-another-process",  # a DIFFERENT string, same counter space
+        rtp_ref=1_000_000,
+        utc_ref=T0 + 0.0005,
+        sample_rate=SR,
+        sigma_ms=1.0,
+        channel="WWV_20000",
+        stations=("WWV",),
+        verified=True,
+        epoch_offset_s=own_offset + 0.0019,  # the measured cross-channel spread
+    )
+    svc.reg_store.write_channel(sib, "ACQUIRED", {})
+
+    audio1 = make_tick_audio(62, SR, T0 + 60, {"WWV": 0.0125}, snr_db=20.0, seed=8)
+    bt = svc.apply_registration(
+        label_timing(T0 + 60, 0.0, SR), audio1, 1_000_000 + 60 * SR, MIN + 60, _meta(1)
+    )
+    assert bt.origin_source == "acquired"
+    s = svc.reg_store.read_summary()
+    assert sorted(s["contributing"]) == ["SHARED_10000", "WWV_20000"]
+    assert s["sigma_ms"] < min(own_sigma, 1.0)
+    assert s["epoch_offset_s"] == pytest.approx(own_offset, abs=1e-6)
+
+
+def test_contributing_names_only_what_fusion_kept(tmp_path):
+    """C1's third consequence: ``contributing`` was built from every sibling
+    read off disk, so the summary claimed corroboration from a channel the
+    outlier test had just thrown out."""
+    from hf_timestd.core.registration_acquirer import Registration
+
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    svc.apply_registration(label_timing(T0, 0.0, SR), audio, 1_000_000, MIN, _meta(0))
+    svc.acquirer.registration.verified = True
+    own_offset = svc.epoch_tracker.epoch_offset_s
+    for ch, delta in (("WWV_20000", 0.0005), ("WWV_25000", 0.020)):
+        svc.reg_store.write_channel(
+            Registration(
+                "ep-x",
+                rtp_ref=1_000_000,
+                utc_ref=T0 + delta,
+                sample_rate=SR,
+                sigma_ms=1.0,
+                channel=ch,
+                stations=("WWV",),
+                verified=True,
+                epoch_offset_s=own_offset,
+            ),
+            "ACQUIRED",
+            {},
+        )
+    audio1 = make_tick_audio(62, SR, T0 + 60, {"WWV": 0.0125}, snr_db=20.0, seed=8)
+    svc.apply_registration(
+        label_timing(T0 + 60, 0.0, SR), audio1, 1_000_000 + 60 * SR, MIN + 60, _meta(1)
+    )
+    s = svc.reg_store.read_summary()
+    assert sorted(s["contributing"]) == ["SHARED_10000", "WWV_20000"]
+    assert "WWV_25000" not in s["contributing"]

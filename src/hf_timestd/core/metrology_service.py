@@ -54,7 +54,11 @@ from hf_timestd.core.ring_buffer import (
 from hf_timestd.core.ring_buffer_reader import RingBufferReader
 from hf_timestd.core.counter_epoch_tracker import CounterEpochTracker
 from hf_timestd.core.registration_acquirer import RegistrationAcquirer, Registration
-from hf_timestd.core.registration_store import RegistrationStore, fuse_registrations
+from hf_timestd.core.registration_store import (
+    RegistrationStore,
+    fuse_registrations,
+    fuse_registrations_with_members,
+)
 
 from hf_timestd.core.wwv_constants import (
     TEST_SIGNAL_MINUTES, station_for_test_minute,
@@ -717,8 +721,13 @@ class MetrologyService:
         # Still run the acquirer even when T6 is authoritative: a
         # registration must exist to WITNESS against (spec §6), even though
         # it will not replace T6's origin below.
+        # C1: hand the acquirer the epoch as a MEASURED offset as well as a
+        # name.  The name is this process's own; the offset is what the
+        # other channels' processes agree on, and it is what fusion clusters
+        # by (registration_store._same_counter_space).
+        epoch_offset_s = self.epoch_tracker.epoch_offset_s
         own = self.acquirer.offer_minute(audio, buffer_timing, int(start_rtp), int(minute_utc),
-                                         delays, epoch)
+                                         delays, epoch, epoch_offset_s=epoch_offset_s)
         sibs = self.reg_store.read_siblings(exclude_channel=self.channel_name)
         # I3 (task-11 review): resolve-before-adopt precedence -- a plane
         # `resolve_ambiguity` just named THIS minute already used the
@@ -732,7 +741,8 @@ class MetrologyService:
             sib_plane = fuse_registrations(sibs, at_rtp=int(start_rtp))
             if sib_plane is not None:
                 own = self.acquirer.resolve_ambiguity(sib_plane, int(start_rtp),
-                                                      float(buffer_timing.sample0_utc))
+                                                      float(buffer_timing.sample0_utc),
+                                                      epoch_offset_s=epoch_offset_s)
                 resolved_via_sibling_this_minute = own is not None
         # An ADOPTED `own` is a derived ECHO of a prior sibling fusion, not
         # independent evidence -- folding it back into fuse_registrations
@@ -765,7 +775,11 @@ class MetrologyService:
             fusion_inputs = sibs
         else:
             fusion_inputs = ([own] if own else []) + sibs
-        fused = fuse_registrations(fusion_inputs, at_rtp=int(start_rtp))
+        # C1: `kept` is what fusion ACTUALLY combined -- the summary's
+        # `contributing` must name those channels, not every sibling read
+        # off disk, or it claims corroboration the station never performed.
+        fused, kept = fuse_registrations_with_members(fusion_inputs,
+                                                      at_rtp=int(start_rtp))
         if fused is not None and (own is None or own_unverified_with_siblings):
             # `fused` here is built purely from `sibs` (own contributed
             # nothing to fusion_inputs in either case above) -- every one
@@ -794,11 +808,7 @@ class MetrologyService:
                 None if fused is None
                 else (fused.sample0_utc_for(int(start_rtp)) - label_s0) * 1000.0
             )
-            contributing = (
-                [] if fused is None
-                else [r.channel for r in sibs]
-                     + ([self.channel_name] if (own is not None and not own_is_adopted) else [])
-            )
+            contributing = [] if fused is None else list(kept)
             # task-11b fix round 3: the CANDIDATE gate must apply on T6
             # stations too.  On this path the acquired plane is never
             # applied to BufferTiming (T6 wins below), so no detector pass
@@ -880,8 +890,7 @@ class MetrologyService:
                                        counter_epoch_id=epoch)
         s0 = fused.sample0_utc_for(int(start_rtp))
         residual_ms = (s0 - label_s0) * 1000.0
-        contributing = ([r.channel for r in sibs]
-                       + ([self.channel_name] if (own is not None and not own_is_adopted) else []))
+        contributing = list(kept)
         self._publish_registration(fused, contributing, label_s0, residual_ms, epoch)
         # task-11b fix round 1 (C1): this minute's BufferTiming really is
         # the acquired/candidate plane -- feed_back_ensembles needs this to

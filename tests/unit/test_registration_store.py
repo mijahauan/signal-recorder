@@ -3,12 +3,16 @@ import json
 import pytest
 
 from hf_timestd.core.registration_acquirer import Registration
-from hf_timestd.core.registration_store import RegistrationStore, fuse_registrations
+from hf_timestd.core.registration_store import (
+    RegistrationStore,
+    fuse_registrations,
+    fuse_registrations_with_members,
+)
 
 SR = 24000
 
 
-def _reg(ch, utc_ref, sigma, epoch="ep-1", rtp_ref=1000):
+def _reg(ch, utc_ref, sigma, epoch="ep-1", rtp_ref=1000, epoch_offset_s=float("nan")):
     return Registration(
         counter_epoch_id=epoch,
         rtp_ref=rtp_ref,
@@ -16,6 +20,7 @@ def _reg(ch, utc_ref, sigma, epoch="ep-1", rtp_ref=1000):
         sample_rate=SR,
         sigma_ms=sigma,
         channel=ch,
+        epoch_offset_s=epoch_offset_s,
     )
 
 
@@ -171,3 +176,104 @@ def test_write_failure_is_counted(tmp_path):
     st = RegistrationStore(bad_dir / "reg", tmp_path / "registration.json")
     st.write_channel(_reg("test", 100.0, 1.0), "ACQUIRED", {})
     assert st.write_failures == 1
+
+
+# ── C1: cluster by IMPLIED OFFSET, not by epoch id string ─────────────
+
+
+def test_fuse_clusters_by_offset_across_differently_named_epochs():
+    """C1 (final review): metrology runs one process per channel, each with
+    its own CounterEpochTracker sampling the ring anchor at its own phase,
+    so two channels in ONE physical counter epoch carry two different
+    ``counter_epoch_id`` strings.  The old majority-epoch filter saw every
+    count tied at 1, ``max`` returned the first key in insertion order, and
+    every other channel was discarded -- inverse-variance combination across
+    channels (spec §4.6) silently degraded to "pick one channel".  Cluster by
+    the implied offset instead: two 1.0 ms planes must fuse to 0.707 ms."""
+    off = 1_000_000_000.0
+    regs = [
+        _reg("a", 100.0, 1.0, epoch="ep-A", epoch_offset_s=off),
+        _reg("b", 100.0, 1.0, epoch="ep-B", epoch_offset_s=off + 0.0019),
+    ]
+    f = fuse_registrations(regs, at_rtp=1000)
+    assert f.sigma_ms == pytest.approx(1.0 / 2**0.5, abs=1e-6)
+    assert f.utc_ref == pytest.approx(100.0)
+
+
+def test_fuse_rejects_a_channel_from_a_different_counter_space():
+    """The other half of C1: an offset a full counter epoch away (hours) is
+    a different RTP counter space and must NOT be fused in, however its id
+    string happens to be spelled."""
+    off = 1_000_000_000.0
+    regs = [
+        _reg("a", 100.0, 1.0, epoch="ep-A", epoch_offset_s=off),
+        _reg("b", 100.0, 1.0, epoch="ep-A", epoch_offset_s=off + 0.0019),
+        _reg("c", 100.0, 0.2, epoch="ep-A", epoch_offset_s=off + 69732.0),
+    ]
+    fused, kept = fuse_registrations_with_members(regs, at_rtp=1000)
+    assert [r for r in kept] == ["a", "b"]
+    assert fused.sigma_ms == pytest.approx(1.0 / 2**0.5, abs=1e-6)
+
+
+def test_fuse_offset_tie_goes_to_the_cluster_with_the_smallest_sigma():
+    """Two clusters of equal size: prefer the one holding the tightest
+    plane rather than whichever landed first in insertion order (the
+    defect the string-id ``max`` had)."""
+    off = 1_000_000_000.0
+    regs = [
+        _reg("a", 100.0, 1.0, epoch_offset_s=off),
+        _reg("b", 200.0, 0.25, epoch_offset_s=off + 4000.0),
+    ]
+    fused, kept = fuse_registrations_with_members(regs, at_rtp=1000)
+    assert kept == ["b"] and fused.utc_ref == pytest.approx(200.0)
+
+
+def test_fuse_falls_back_to_the_id_string_when_offsets_are_unknown():
+    """A registration written before ``epoch_offset_s`` existed (or by a
+    tracker that never saw a valid pair) carries NaN.  Then the only thing
+    left to group by is the id string, which is the pre-C1 behaviour."""
+    regs = [
+        _reg("a", 100.0, 1.0, "ep-2"),
+        _reg("b", 100.0, 1.0, "ep-2"),
+        _reg("c", 5.0, 1.0, "ep-1"),
+    ]
+    fused, kept = fuse_registrations_with_members(regs, at_rtp=1000)
+    assert fused.counter_epoch_id == "ep-2" and kept == ["a", "b"]
+
+
+def test_fuse_members_are_what_fusion_actually_kept():
+    """C1's third consequence: the summary's ``contributing`` claimed N
+    contributors for a one-channel answer.  ``fuse_registrations_with_members``
+    returns the channels the outlier test kept, so the caller can publish
+    the truth."""
+    off = 1_000_000_000.0
+    regs = [
+        _reg("a", 100.000, 1.0, epoch_offset_s=off),
+        _reg("b", 100.0005, 0.5, epoch_offset_s=off),
+        _reg("c", 100.0100, 0.5, epoch_offset_s=off),
+    ]
+    fused, kept = fuse_registrations_with_members(regs, at_rtp=1000)
+    assert kept == ["a", "b"]  # c is 10 ms off the median
+    assert fused.epoch_offset_s == pytest.approx(off)
+
+
+def test_store_round_trips_the_epoch_offset(tmp_path):
+    st = RegistrationStore(tmp_path / "reg", tmp_path / "registration.json")
+    st.write_channel(
+        _reg("WWV_20000", 100.0, 1.0, epoch_offset_s=1_234.5), "ACQUIRED", {}
+    )
+    data = json.loads((tmp_path / "reg" / "WWV_20000.json").read_text())
+    assert data["epoch_offset_s"] == pytest.approx(1_234.5)
+    assert st.read_siblings()[0].epoch_offset_s == pytest.approx(1_234.5)
+
+
+def test_store_writes_null_for_an_unknown_epoch_offset(tmp_path):
+    """strict JSON: NaN is not a JSON number.  It must round-trip as null
+    -> NaN, and a null must not make the file unreadable as a sibling."""
+    st = RegistrationStore(tmp_path / "reg", tmp_path / "registration.json")
+    st.write_channel(_reg("WWV_20000", 100.0, 1.0), "ACQUIRED", {})
+    text = (tmp_path / "reg" / "WWV_20000.json").read_text()
+    assert "NaN" not in text and json.loads(text)["epoch_offset_s"] is None
+    import math
+
+    assert math.isnan(st.read_siblings()[0].epoch_offset_s)

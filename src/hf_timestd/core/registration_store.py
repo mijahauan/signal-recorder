@@ -18,10 +18,11 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .counter_epoch_tracker import COUNTER_EPOCH_STEP_S
 from .registration_acquirer import ORIGIN_SIGMA_FLOOR_MS, Registration
 
 logger = logging.getLogger(__name__)
@@ -31,28 +32,83 @@ DEFAULT_SUMMARY = Path("/run/hf-timestd/registration.json")
 FUSE_OUTLIER_MS = 3.0
 
 
-def fuse_registrations(regs: List[Registration], at_rtp: int) -> Optional[Registration]:
+def _same_counter_space(regs: List[Registration]) -> List[Registration]:
+    """The registrations that share one physical counter epoch.
+
+    Grouped by the MEASURED epoch offset, not by ``counter_epoch_id``
+    (final review, C1).  One metrology process per channel means each
+    channel runs its own ``CounterEpochTracker``, sampling the ring's
+    anchor at its own phase, so two channels in one epoch routinely carry
+    two different id strings -- and the old majority-string filter then saw
+    every count tied at 1, took whichever key ``max`` reached first, and
+    discarded every other channel.  Inverse-variance combination across
+    channels (spec §4.6) silently became "pick one channel", and the
+    ``FUSE_OUTLIER_MS`` median test that exists to reject a wrong sibling
+    plane never saw a second plane to compare against.
+
+    Every channel on one radiod observes the same pair stream, so their
+    offsets agree to the pair skew (1.937 ms measured across ND's six
+    24 kHz channels, ``cross_channel_rtp.py``).  Cluster within
+    ``COUNTER_EPOCH_STEP_S``; the largest cluster wins, and a tie goes to
+    the cluster holding the tightest plane rather than to insertion order.
+
+    Falls back to the id string only when some offset is unknown (NaN) --
+    a file written before this field existed, or by a tracker that never
+    saw a valid pair.
+    """
+    offsets = [float(getattr(r, "epoch_offset_s", float("nan"))) for r in regs]
+    if not all(math.isfinite(o) for o in offsets):
+        epochs: Dict[str, int] = {}
+        for r in regs:
+            epochs[r.counter_epoch_id] = epochs.get(r.counter_epoch_id, 0) + 1
+        epoch = max(epochs, key=lambda k: epochs[k])
+        return [r for r in regs if r.counter_epoch_id == epoch]
+    best: List[Registration] = []
+    best_sigma = float("inf")
+    for centre in offsets:
+        members = [
+            r for r, o in zip(regs, offsets) if abs(o - centre) <= COUNTER_EPOCH_STEP_S
+        ]
+        sigma = min(r.sigma_ms for r in members)
+        if len(members) > len(best) or (
+            len(members) == len(best) and sigma < best_sigma
+        ):
+            best, best_sigma = members, sigma
+    return best
+
+
+def fuse_registrations_with_members(
+    regs: List[Registration], at_rtp: int
+) -> Tuple[Optional[Registration], List[str]]:
+    """``(fused, channels_kept)``.
+
+    The second element is what fusion ACTUALLY kept -- the channels inside
+    the winning counter-space cluster that also survived the outlier test.
+    ``metrology_service`` publishes it as the summary's ``contributing``,
+    which previously named every sibling read from disk and so claimed
+    corroboration the station had not performed (final review, C1).
+    """
     if not regs:
-        return None
-    epochs: Dict[str, int] = {}
-    for r in regs:
-        epochs[r.counter_epoch_id] = epochs.get(r.counter_epoch_id, 0) + 1
-    epoch = max(epochs, key=epochs.get)
-    same = [r for r in regs if r.counter_epoch_id == epoch]
+        return None, []
+    same = _same_counter_space(regs)
+    if not same:
+        return None, []
     utc = np.array([r.sample0_utc_for(at_rtp) for r in same])
     med = np.median(utc)
     keep = [
         (r, u) for r, u in zip(same, utc) if abs(u - med) * 1000.0 <= FUSE_OUTLIER_MS
     ]
     if not keep:
-        return None
+        return None, []
     w = np.array(
         [1.0 / max(r.sigma_ms, ORIGIN_SIGMA_FLOOR_MS * 0.1) ** 2 for r, _ in keep]
     )
     u = np.array([u for _, u in keep])
     fused_utc = float(np.sum(w * u) / np.sum(w))
-    return Registration(
-        counter_epoch_id=epoch,
+    offsets = [float(getattr(r, "epoch_offset_s", float("nan"))) for r, _ in keep]
+    finite = [o for o in offsets if math.isfinite(o)]
+    fused = Registration(
+        counter_epoch_id=keep[0][0].counter_epoch_id,
         rtp_ref=int(at_rtp),
         utc_ref=fused_utc,
         sample_rate=keep[0][0].sample_rate,
@@ -61,7 +117,17 @@ def fuse_registrations(regs: List[Registration], at_rtp: int) -> Optional[Regist
         channel="fused",
         hypotheses_open=sum(r.hypotheses_open for r, _ in keep),
         stations=tuple(sorted({st for r, _ in keep for st in r.stations})),
+        # the cluster's own offset: its members agree to the pair skew, so
+        # the minimum (the least-late pair anyone saw) is the truest
+        epoch_offset_s=min(finite) if finite else float("nan"),
     )
+    return fused, [r.channel for r, _ in keep]
+
+
+def fuse_registrations(regs: List[Registration], at_rtp: int) -> Optional[Registration]:
+    """The fused plane alone -- see :func:`fuse_registrations_with_members`
+    for the channels it kept."""
+    return fuse_registrations_with_members(regs, at_rtp)[0]
 
 
 class RegistrationStore:
@@ -115,6 +181,7 @@ class RegistrationStore:
                 "n_minutes": 0,
                 "hypotheses_open": 0,
                 "verified": None,
+                "epoch_offset_s": None,
             }
         # strict JSON: a BOOTSTRAP channel file carries sigma inf -> null
         sigma = float(reg.sigma_ms) if math.isfinite(reg.sigma_ms) else None
@@ -133,6 +200,12 @@ class RegistrationStore:
             # permanently-unverified plane from a file that was, in fact,
             # verified when written.
             "verified": bool(reg.verified),
+            # C1: the epoch as a measured offset, so another PROCESS can
+            # tell "same counter space" from "same id string".  strict
+            # JSON again: NaN (no valid pair seen) -> null.
+            "epoch_offset_s": (
+                float(reg.epoch_offset_s) if math.isfinite(reg.epoch_offset_s) else None
+            ),
         }
 
     def write_channel(self, reg: Registration, state: str, extra: dict) -> None:
@@ -202,6 +275,11 @@ class RegistrationStore:
                         # M5: default False when absent (older files, or a
                         # schema-incomplete write) rather than raising.
                         verified=bool(d.get("verified", False)),
+                        epoch_offset_s=(
+                            float(d["epoch_offset_s"])
+                            if d.get("epoch_offset_s") is not None
+                            else float("nan")
+                        ),
                     )
                 )
             except (KeyError, TypeError, ValueError):
