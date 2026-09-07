@@ -799,9 +799,26 @@ class MetrologyService:
                 else [r.channel for r in sibs]
                      + ([self.channel_name] if (own is not None and not own_is_adopted) else [])
             )
+            # task-11b fix round 3: the CANDIDATE gate must apply on T6
+            # stations too.  On this path the acquired plane is never
+            # applied to BufferTiming (T6 wins below), so no detector pass
+            # ever verifies it through feed_back_ensembles
+            # (_applied_acquired_plane stays False all minute) -- but T6's
+            # plane IS the reference here, so verify against IT directly,
+            # overriding whatever `verified` this registration carried in
+            # (e.g. from an earlier sibling-fusion adoption, which agreed
+            # with siblings, not necessarily with T6).
+            if own is not None:
+                own.verified = (
+                    residual_vs_t6_ms is not None
+                    and abs(residual_vs_t6_ms) <= RegistrationAcquirer.VERIFY_MAX_RESIDUAL_MS
+                )
+            witness_state = (
+                "WITNESS" if (own is not None and own.verified) else "CANDIDATE"
+            )
             self._publish_registration(
                 fused, contributing, label_s0, residual_vs_t6_ms, epoch,
-                state_override="WITNESS",
+                state_override=witness_state,
                 extra_extra={
                     "witness_of": "T6",
                     "residual_vs_t6_ms": (

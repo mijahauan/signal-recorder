@@ -343,6 +343,52 @@ def test_t6_authoritative_plane_is_not_replaced(tmp_path):
     assert s["residual_vs_t6_ms"] == pytest.approx(-10.0, abs=2.0)
 
 
+def test_t6_authoritative_small_residual_vs_t6_is_witness(tmp_path):
+    """task-11b fix round 3: the CANDIDATE gate applies on T6 stations
+    too -- on the WITNESS path the acquired plane is never applied to
+    BufferTiming, so no detector pass ever verifies it via
+    feed_back_ensembles; verify against T6's OWN plane instead.  A small
+    residual (0.8 ms, well inside VERIFY_MAX_RESIDUAL_MS = 20 ms)
+    verifies -> state WITNESS."""
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    label = label_timing(T0, 0.0008, SR)  # T6 says T0+0.8ms; real ticks at T0
+    label.judge_tier = "T6"
+    bt = svc.apply_registration(label, audio, 1_000_000, MIN, _meta(0))
+    assert bt.origin_source == "label"
+    s = svc.reg_store.read_summary()
+    assert s["state"] == "WITNESS"
+    assert abs(s["residual_vs_t6_ms"]) <= RegistrationAcquirer.VERIFY_MAX_RESIDUAL_MS
+    assert svc.acquirer.registration.verified is True
+
+
+def test_t6_authoritative_large_residual_vs_t6_is_candidate_not_witness(tmp_path):
+    """task-11b fix round 3: the companion case -- a plane 40 ms off T6
+    (well past VERIFY_MAX_RESIDUAL_MS) must NOT verify -- state CANDIDATE,
+    not WITNESS -- and HfAcquiredBench.poll() must treat that summary as
+    silence (CANDIDATE is not in _LIVE_STATES), so a phantom never reaches
+    the judge on a T6 station."""
+    from hf_timestd.core.offset_judge import HfAcquiredBench
+
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    label = label_timing(T0, 0.040, SR)  # T6 says T0+40ms; real ticks at T0
+    label.judge_tier = "T6"
+    bt = svc.apply_registration(label, audio, 1_000_000, MIN, _meta(0))
+    assert bt.origin_source == "label"
+    s = svc.reg_store.read_summary()
+    assert s["state"] == "CANDIDATE"
+    assert abs(s["residual_vs_t6_ms"]) > RegistrationAcquirer.VERIFY_MAX_RESIDUAL_MS
+    assert svc.acquirer.registration.verified is False
+
+    bench = HfAcquiredBench(
+        provider=lambda: (1_000_000, 1000.0, SR),
+        store=svc.reg_store,
+        mono_fn=lambda: 1000.0,
+    )
+    assert bench.poll() is None
+
+
 def test_t6_authoritative_via_authority_json_on_the_live_ring_path(tmp_path):
     """C3, second path: the live ring never populates ``judge_tier`` on
     BufferTiming (ring_buffer_reader's metadata carries no "timing" block --
