@@ -12,6 +12,10 @@ band-limited envelope at one second, find the peaks, fit them to the
 expected station delays by a common shift, hold the result in the RTP
 frame, and corroborate or correct it every minute.
 
+When one folded peak fits two stations (WWV or BPM on a shared channel)
+and no sibling channel can choose, the 800 ms minute marker does: WWV and
+WWVH transmit one, BPM does not (spec §12, task 15).
+
 Sign convention (pinned in the plan's Global Constraints):
     correction_s = expected_delay_s - fold_position_s, wrapped to (-0.5, 0.5]
     sample0_utc_acquired = sample0_utc_label + correction_s
@@ -449,14 +453,38 @@ def locate_minute_marker(
     band: str,
     minute_utc: int,
 ) -> Optional[Tuple[float, float]]:
+    """``marker_in_envelope`` on an envelope derived here and discarded --
+    the raw-audio entry point, for callers that hold no envelopes."""
+    return marker_in_envelope(
+        _band_envelope(audio, sample_rate, band),
+        sample_rate,
+        sample0_utc_label,
+        minute_utc,
+    )
+
+
+def marker_in_envelope(
+    env: np.ndarray,
+    sample_rate: int,
+    sample0_utc_label: float,
+    minute_utc: int,
+) -> Optional[Tuple[float, float]]:
     """Find the 800 ms marker near where the label puts second 0 of
-    ``minute_utc``.  Decimates the band envelope to MARKER_BIN_S bins over
-    the ±MARKER_SEARCH_HALF_S search segment and scores each MARKER_LEN_S
-    window by its bin-median (a regular tick occupies too few bins to
-    move a median; only a sustained ~800 ms tone lifts one). Returns
-    (onset offset from the label's minute_utc in seconds, SNR dB) or
-    None."""
-    env = _band_envelope(audio, sample_rate, band)
+    ``minute_utc``, in an ALREADY band-limited envelope.  Decimates it to
+    MARKER_BIN_S bins over the ±MARKER_SEARCH_HALF_S search segment and
+    scores each MARKER_LEN_S window by its bin-median (a regular tick
+    occupies too few bins to move a median; only a sustained ~800 ms tone
+    lifts one). Returns (onset offset from the label's minute_utc in
+    seconds, SNR dB) or None.
+
+    Takes the envelope rather than the audio (task 15) so the acquirer's
+    marker search comes off the SAME two envelopes its folds do -- one
+    derivation per band per attempt (I2) -- and so the search can run over
+    the whole CONCATENATED bootstrap buffer, where a minute boundary has
+    run-up on both sides.  The live ring hands the service [minute,
+    minute + 60 s): inside one such buffer the minute's own marker sits at
+    sample ~0 and the ±1.5 s search never fits, which is why the
+    integer-second search found nothing on either station before this."""
     centre = int(round((minute_utc - sample0_utc_label) * sample_rate))
     half = int(MARKER_SEARCH_HALF_S * sample_rate)
     bin_len = max(1, int(round(sample_rate * MARKER_BIN_S)))
@@ -501,6 +529,85 @@ def locate_minute_marker(
     rise = int(np.argmax(win > thr))
     onset_sample = a + onset_bin_sample + rise
     return (onset_sample / sample_rate) - (minute_utc - sample0_utc_label), snr_db
+
+
+MARKER_HYPOTHESIS_AGREE_MS = 10.0
+# WWV and WWVH open every minute with an 800 ms tone (1000 Hz from Fort
+# Collins, 1200 Hz from Kauai).  BPM does not transmit a minute marker at
+# all -- its second pulses are 10 cycles of 1 kHz and its minute structure
+# differs -- so an 800 ms tone standing on a tick train's own fold
+# position says the train is not BPM's.
+MARKER_STATIONS = frozenset({"WWV", "WWVH"})
+
+
+def marker_position_s(expected_delay_s: float, correction_s: float) -> float:
+    """Where a hypothesis puts its station's minute marker: the offset
+    from the LABEL's minute, which is what ``marker_in_envelope``
+    measures, wrapped into one second.
+
+    A hypothesis says the label plane sits ``correction_s`` off truth
+    (``utc = label + correction``), so a transmission leaving the station
+    at second 0 arrives ``expected_delay_s - correction_s`` after the
+    label's minute.  That is the same position the station's ordinary
+    ticks fold to -- which is the whole point of the check: the marker has
+    to stand ON the tick train it is being asked to name.
+
+    It follows that two hypotheses built from ONE peak (WWV vs. BPM on a
+    shared channel) predict the SAME marker position: ``correction`` is
+    ``expected_delay - peak_position`` for each, so both reduce to the
+    peak position.  Position therefore CONFIRMS that a marker belongs to
+    this peak; it can never choose between the two stations reading it.
+    The choice comes from BPM transmitting no marker at all."""
+    return wrap_half_second(expected_delay_s - correction_s)
+
+
+def marker_names_one_hypothesis(
+    open_hyps: List[Hypothesis],
+    expected_delays_s: Dict[str, float],
+    marker_for_band,
+    agree_ms: float = MARKER_HYPOTHESIS_AGREE_MS,
+) -> Optional[Tuple[Hypothesis, str, float, float, tuple]]:
+    """Spec §12: does the 800 ms minute marker name exactly one of the
+    open hypotheses?
+
+    ``marker_for_band(band)`` returns that band's marker as (offset from
+    the label's minute in seconds, SNR dB) or None -- the caller owns the
+    search so it can be done once per band, over whatever audio it holds.
+
+    A marker found in a band keeps the hypotheses whose predicted marker
+    position (``marker_position_s``) it agrees with to within
+    ``agree_ms``, and of those only the ones whose station actually
+    transmits a marker (``MARKER_STATIONS``).  Exactly one survivor names
+    the station; anything else leaves every hypothesis open.
+
+    Returns (hypothesis, band, marker offset, marker SNR, stations
+    excluded because they transmit no marker) or None."""
+    bands: List[str] = []
+    for h in open_hyps:
+        for station, band, _pos, _snr in h.assignments:
+            if station in MARKER_STATIONS and band not in bands:
+                bands.append(band)
+    for band in bands:
+        mk = marker_for_band(band)
+        if mk is None:
+            continue
+        offset_s, snr_db = mk
+        agreeing: List[Tuple[Hypothesis, str]] = []
+        for h in open_hyps:
+            for station, b, _pos, _snr in h.assignments:
+                if b != band or station not in expected_delays_s:
+                    continue
+                predicted = marker_position_s(
+                    expected_delays_s[station], h.correction_s
+                )
+                if abs(wrap_half_second(offset_s - predicted)) * 1000.0 <= agree_ms:
+                    agreeing.append((h, station))
+                    break
+        keep = [(h, s) for h, s in agreeing if s in MARKER_STATIONS]
+        excluded = tuple(s for _h, s in agreeing if s not in MARKER_STATIONS)
+        if len(keep) == 1:
+            return keep[0][0], band, offset_s, snr_db, excluded
+    return None
 
 
 def integer_second_correction(
@@ -717,13 +824,48 @@ class RegistrationAcquirer:
         hyps = fit_template(best, expected_delays_s)
         self._open = [h for h in hyps if not h.unambiguous]
         winners = [h for h in hyps if h.unambiguous]
-        if not winners:
+        # One marker search per tone band per attempt, off the SAME
+        # envelopes the folds came from, over the newest buffered minute
+        # whose ±MARKER_SEARCH_HALF_S window fits inside the concatenated
+        # buffer.  The live ring hands us [minute, minute + 60 s), so the
+        # first minute's own marker has no run-up ahead of it; from the
+        # second buffered minute on there is.
+        marker_cache: Dict[str, Optional[Tuple[float, float]]] = {}
+
+        def marker_for_band(band: str) -> Optional[Tuple[float, float]]:
+            if band not in marker_cache:
+                found = None
+                env = envelopes.get(band)
+                if env is not None:
+                    for _audio, _lbl, _rtp, minute_i in reversed(self._buf):
+                        found = marker_in_envelope(
+                            env, self.sample_rate, s0, int(minute_i)
+                        )
+                        if found is not None:
+                            break
+                marker_cache[band] = found
+            return marker_cache[band]
+
+        # Task 15 / spec §12: a shared channel folding ONE 1000 Hz peak
+        # carries two hypotheses 34-37 ms apart (WWV or BPM) and no
+        # sibling can choose between them when the dedicated channels hear
+        # no tick -- AC0G-ND sat in BOOTSTRAP indefinitely that way on
+        # 2026-09-07, starving the anchor closure.  The 800 ms minute
+        # marker, which BPM does not transmit, names the station from this
+        # channel's own signal.
+        named = None
+        if not winners and self._open:
+            named = marker_names_one_hypothesis(
+                self._open, expected_delays_s, marker_for_band
+            )
+        if not winners and named is None:
             logger.info(
                 f"[{self.channel}] BOOTSTRAP: {n_sec} s folded, "
-                f"{len(best)} peaks, {len(self._open)} ambiguous hypotheses"
+                f"{len(best)} peaks, {len(self._open)} ambiguous hypotheses "
+                f"(no minute marker named one)"
             )
             return None
-        h = winners[0]
+        h = named[0] if named is not None else winners[0]
         # Spec §10 (task-11b): the winning peak must recur in an independent
         # fold of each half of the buffer, not just the full-length fold --
         # otherwise a single-station channel promotes any lone fold-lattice
@@ -736,32 +878,53 @@ class RegistrationAcquirer:
                 f"{h.assignments[0][2] * 1000:.1f} ms did not recur in both halves"
             )
             return None
-        del envelopes  # I2: not needed past the persistence gate
-        # integer second from the marker of the most recent minute, located in
-        # the OLDEST label's frame (re-labelled through RTP) so that a ring
-        # anchor refresh between minutes cannot shift the whole-second answer
+        # integer second from the minute marker, searched in the OLDEST
+        # label's frame (every minute is re-labelled onto it through RTP)
+        # so that a ring anchor refresh between minutes cannot shift the
+        # whole-second answer
         k_int = 0
-        a_last, _s_last_unused, rtp_last, minute_last = self._buf[-1]
-        s_last_in_frame0 = s0 + (rtp_last - rtp0) / self.sample_rate
         st0 = h.assignments[0][0]
-        mk = locate_minute_marker(
-            a_last,
-            self.sample_rate,
-            s_last_in_frame0,
-            BAND_OF_STATION[st0],
-            minute_last,
+        mk = marker_for_band(BAND_OF_STATION[st0])
+        # I2: the two float32 envelopes go here, the last point that reads
+        # them.  Cleared rather than `del`eted because ``marker_for_band``
+        # closes over the name (and is not called again).
+        envelopes.clear()
+        marker_agrees = mk is not None and (
+            abs(
+                wrap_half_second(
+                    mk[0] - marker_position_s(expected_delays_s[st0], h.correction_s)
+                )
+            )
+            * 1000.0
+            <= MARKER_HYPOTHESIS_AGREE_MS
         )
-        if mk is not None:
+        if mk is not None and marker_agrees:
             k_int = integer_second_correction(
                 mk[0], expected_delays_s[st0], h.correction_s
             )
+        elif mk is not None:
+            # A marker that does not stand on this station's folded ticks
+            # belongs to something else; taking a whole second from it
+            # would move the plane by a second for no reason (task 15).
+            logger.info(
+                f"[{self.channel}] minute marker at {mk[0] * 1000:+.1f} ms "
+                f"(SNR {mk[1]:.1f} dB) does not stand on {st0}'s ticks "
+                f"({marker_position_s(expected_delays_s[st0], h.correction_s) * 1000:+.1f} "
+                f"ms); whole second left at 0"
+            )
         corr = h.correction_s + k_int
+        if named is not None:
+            # The marker RESOLVED the ambiguity: the hypotheses it did not
+            # name are excluded, not still open (as on the
+            # `resolve_ambiguity` path).
+            self._open = []
         self._reg = Registration(
             counter_epoch_id=self._epoch or "unregistered",
             rtp_ref=rtp0,
             utc_ref=s0 + corr,
             sample_rate=self.sample_rate,
             sigma_ms=h.sigma_ms,
+            method="fold+template+marker" if named is not None else "fold+template",
             channel=self.channel,
             hypotheses_open=len(self._open),
             stations=tuple(sorted({a[0] for a in h.assignments})),
@@ -776,6 +939,14 @@ class RegistrationAcquirer:
         # could never be used again.  `reset` re-fills the buffer if the
         # plane is ever given up on.
         self._buf.clear()
+        if named is not None:
+            _h, m_band, m_offset, m_snr, m_excluded = named
+            excluded = ", ".join(m_excluded) or "none"
+            logger.info(
+                f"[{self.channel}] ACQUIRED: marker names {st0} "
+                f"({excluded} excluded: 800 ms tone found in the {m_band} band "
+                f"at {m_offset * 1000:+.1f} ms, SNR {m_snr:.1f} dB)"
+            )
         logger.info(
             f"[{self.channel}] ACQUIRED: correction {corr*1000:+.1f} ms "
             f"(int {k_int:+d} s), σ {h.sigma_ms:.2f} ms, support {h.support}, "

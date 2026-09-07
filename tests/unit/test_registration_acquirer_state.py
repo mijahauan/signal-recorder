@@ -117,7 +117,10 @@ def test_resolve_ambiguity_prefers_same_site_tolerance():
     # shared 10 MHz channel hears ONE 1000 Hz tick: WWV (d=0.010) or BPM (d=0.044)?
     acq = RegistrationAcquirer("SHARED_10000", SR)
     t0 = T0
-    audio = make_tick_audio(62, SR, t0, {"WWV": 0.010}, snr_db=20.0)
+    audio = make_tick_audio(
+        62, SR, t0, {"WWV": 0.010}, snr_db=20.0, marker=False
+    )  # task 15: with the 800 ms marker in reach this channel names WWV
+    # itself, and the sibling path below would never be entered
     label = label_timing(t0, 0.100, SR)  # label 100 ms late
     d = {"WWV": 0.010, "BPM": 0.044}
     assert acq.offer_minute(audio, label, 1_000_000, MIN, d, "ep-1") is None
@@ -140,7 +143,10 @@ def test_resolve_ambiguity_prefers_same_site_tolerance():
 
 def test_resolve_ambiguity_cross_site_is_looser_but_bounded():
     acq = RegistrationAcquirer("SHARED_10000", SR)
-    audio = make_tick_audio(62, SR, T0, {"WWV": 0.010}, snr_db=20.0)
+    audio = make_tick_audio(
+        62, SR, T0, {"WWV": 0.010}, snr_db=20.0, marker=False
+    )  # task 15: with the 800 ms marker in reach this channel names
+    # WWV itself, and the sibling path below would never be entered
     label = label_timing(T0, 0.100, SR)
     d = {"WWV": 0.010, "BPM": 0.044}
     acq.offer_minute(audio, label, 1_000_000, MIN, d, "ep-1")
@@ -464,8 +470,13 @@ def test_each_bands_envelope_is_derived_once_per_attempt(monkeypatch):
     assert reg is not None  # the persistence gate ran, so all three folds did
     fold_calls = [b for b in calls[: len(ra.TONE_BANDS_HZ)]]
     assert sorted(fold_calls) == sorted(ra.TONE_BANDS_HZ)
-    # the only further call is the minute-marker search, on ONE band
-    assert len(calls) == len(ra.TONE_BANDS_HZ) + 1
+    # ONE derivation per band for the whole attempt.  Task 15 brought the
+    # minute-marker search onto these same envelopes as well
+    # (``marker_in_envelope``), so the extra derivation it used to make --
+    # a full re-filter of the buffer for one band, whose result was
+    # usually thrown away unused because the search window did not fit --
+    # is gone.
+    assert len(calls) == len(ra.TONE_BANDS_HZ)
 
 
 def test_buffer_is_released_on_a_successful_acquisition():
@@ -496,7 +507,10 @@ def test_buffer_is_released_when_a_sibling_resolves_the_ambiguity():
     acq = RegistrationAcquirer("SHARED_10000", SR)
     # a shared 10 MHz channel hearing ONE 1000 Hz tick: WWV or BPM?
     delays = {"WWV": 0.010, "BPM": 0.044}
-    audio = make_tick_audio(62, SR, T0, {"WWV": 0.010}, snr_db=20.0)
+    audio = make_tick_audio(
+        62, SR, T0, {"WWV": 0.010}, snr_db=20.0, marker=False
+    )  # task 15: with the 800 ms marker in reach this channel names
+    # WWV itself, and the sibling path below would never be entered
     label = label_timing(T0, 0.100, SR)
     assert acq.offer_minute(audio, label, 1_000_000, MIN, delays, "ep-1") is None
     assert acq._buf  # still bootstrapping, buffer retained

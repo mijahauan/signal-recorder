@@ -244,3 +244,27 @@ the anchor on a T6-less station, and every consumer reads it:
    indefinitely (`chronyc sources` offsets of the pool servers stay within ±10 ms of zero), the
    `hf_acquired` verdict and FUSE agree, and `raw_pair_residual_ms` in registration.json trends
    toward zero once the ring re-anchors.
+
+## 12. Amendment 2026-09-07 — the 800 ms marker names the station (task 15)
+
+WWV and WWVH open every minute with an 800 ms tone (1000 Hz from Fort Collins, 1200 Hz from Kauai)
+and BPM transmits no minute marker at all, so a marker standing on a folded tick train's own
+position — within `MARKER_HYPOTHESIS_AGREE_MS` = 10 ms of `expected_delay − correction`, the
+position the hypothesis predicts — excludes BPM and names WWV in the 1000 Hz band, WWVH in the 1200
+Hz band. `_try_acquire` reads that rule only when no hypothesis came out unambiguous, keeps the
+promoted hypothesis under gate (a) peak persistence and gate (b) fine-search verification, and
+leaves every hypothesis open when the marker matches none of them or no marker crosses
+`MARKER_MIN_SNR_DB`; because two hypotheses built from ONE peak predict the SAME marker position,
+the position confirms only that the marker belongs to this train, and the choice between WWV and
+BPM rests entirely on BPM's silence at second 0. The search now runs over the whole concatenated
+bootstrap buffer and off the folds' own band envelopes: the live ring hands the service
+[minute, minute + 60 s), where the ±`MARKER_SEARCH_HALF_S` window has no run-up ahead of the
+minute, so the marker — and with it the whole-second correction of §4 — first comes into reach once
+a second minute has been buffered.
+
+Measured on the fixtures (2026-09-07): B4's night SHARED_10000 chunk, the designed BOOTSTRAP
+negative through task-11b, acquires `('WWV',)` at its second minute on a marker of 39.4 dB at
++81.712 ms, and the fine search on that plane reads σ₁ = 0.088 ms over n = 58 ticks. ND's
+good-window SHARED_10000 chunk, which used to need 180 s to pair two peaks as `('BPM', 'WWV')`,
+now names `('WWV',)` at 122 s on a 26.0 dB marker and lands 0.085 ms from that older two-peak
+plane — an independent cross-check of the rule.

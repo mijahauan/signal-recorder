@@ -402,6 +402,114 @@ def test_b4_night_window_wwv20000_has_no_acquirable_tick():
 
 
 @pytest.mark.skipif(
+    not (B4 / "1788742800.bin.zst").exists(),
+    reason="B4 night-window SHARED_10000 fixture not present",
+)
+def test_b4_night_shared_channel_named_by_its_minute_marker():
+    """Task 15 acceptance: B4's SHARED_10000 chunk (2026-09-07 01:00Z)
+    folds ONE 1000 Hz peak, so ``fit_template`` leaves {WWV, BPM} open 37
+    ms apart, and B4's dedicated WWV_20000 channel is dark in this window
+    (the test above) -- no sibling can choose.  This was the designed
+    BOOTSTRAP negative through task-11b.
+
+    The 800 ms minute marker resolves it without a sibling: WWV transmits
+    a 1000 Hz tone at second 0 and BPM transmits no minute marker, so an
+    800 ms tone standing on the same fold position as the ticks names WWV
+    and excludes BPM (spec §12).  The marker only becomes searchable once
+    a SECOND minute is buffered -- the +-1.5 s search needs run-up ahead
+    of the minute, and the live ring hands the acquirer [minute, minute +
+    60 s) -- so this asserts acquisition within the acquirer's 3-minute
+    bootstrap, not within one minute.
+
+    Acceptance: acquires ``('WWV',)``, and the fine search on the
+    promoted plane sees a real tick train (sigma_1 < 1 ms, n >= 40)."""
+    from hf_timestd.core import registration_acquirer as ra
+    from hf_timestd.core.buffer_timing import resolve_buffer_timing
+    from hf_timestd.core.tick_edge_detector import TickEdgeDetector
+
+    iq, meta = _load(B4, "1788742800")
+    sr = int(meta["sample_rate"])
+    got, acq, rtp, audio, delays, minute_utc, bt_true, a, k = _acquire_channel(
+        iq, meta, shift_ms=0.0, epoch_id="ep-b4-night-shared"
+    )
+    print(
+        f"\n  B4 SHARED_10000 (night, 01:00Z): {k + 1} minutes offered, "
+        f"state={acq.state}, got="
+        f"{'ACQUIRED' + str(got.stations) if got is not None else None}"
+    )
+    print(
+        "  expected delays (ms): "
+        + ", ".join(f"{s}={d * 1000:.3f}" for s, d in sorted(delays.items()))
+    )
+
+    # The marker as an independent measurement, in the same frame
+    # ``_try_acquire`` searches (the concatenated buffer, oldest label):
+    # report its offset and SNR whether or not the acquirer used it.
+    eng = _engine(meta)
+    audio_all = eng.prepare_audio(iq[: 182 * sr])
+    s0 = resolve_buffer_timing(meta, sample_rate=sr).sample0_utc
+    marker_snr = {}
+    for band in ra.TONE_BANDS_HZ:
+        for j in range(3):
+            mk = ra.locate_minute_marker(
+                audio_all, sr, s0, band, int(meta["minute_boundary"]) + 60 * j
+            )
+            print(
+                f"  marker band {band} minute +{j}: "
+                + (
+                    "None"
+                    if mk is None
+                    else f"offset={mk[0] * 1000:+.3f} ms  snr={mk[1]:.2f} dB"
+                )
+            )
+            if mk is not None:
+                marker_snr.setdefault(band, mk)
+    assert "1000" in marker_snr, (
+        "no 800 ms marker found in the 1000 band on this chunk: NEEDS_CONTEXT "
+        f"(marker search results above, fold SNR {_max_fold_snr_by_band(iq, meta, sr)})"
+    )
+
+    assert got is not None, (
+        f"no acquisition within {k + 1} minutes (state={acq.state}, "
+        f"open={len(acq._open)}) -- the marker should have named WWV"
+    )
+    assert got.stations == ("WWV",), f"marker named {got.stations}, not ('WWV',)"
+    assert got.hypotheses_open == 0
+    assert "marker" in got.method, f"method={got.method}"
+
+    # ── the fine search on the promoted plane ──
+    bt_acq = dataclasses.replace(
+        bt_true,
+        sample0_utc=got.sample0_utc_for(rtp),
+        origin_source="acquired",
+        origin_sigma_ms=got.sigma_ms,
+    )
+    res = TickEdgeDetector(sample_rate=sr).detect_edges(
+        audio_signal=audio,
+        station="WWV",
+        minute_number=minute_utc,
+        buffer_timing=bt_acq,
+        expected_delay_sec=delays["WWV"],
+        is_dedicated_channel=False,
+        iq_samples=None,
+    )
+    print(
+        f"  promoted plane: correction vs labelled plane = "
+        f"{(got.sample0_utc_for(rtp) - (bt_true.sample0_utc + a / sr)) * 1000.0:+.3f} ms  "
+        f"sigma={got.sigma_ms:.3f} ms"
+    )
+    print(
+        f"  own-plane fine search WWV: "
+        f"sigma1={res.sigma_single_ms if res else float('nan'):.3f} ms  "
+        f"n={res.n_detected if res else -1}  "
+        f"err={res.ensemble_timing_error_ms if res else float('nan'):+.3f} ms"
+    )
+    assert res is not None
+    assert res.sigma_single_ms < 1.0, f"sigma1 {res.sigma_single_ms:.3f} ms >= 1 ms"
+    assert res.n_detected >= 40, f"only {res.n_detected} ticks detected"
+
+
+@pytest.mark.skipif(
     not (B4_DAY / "shared_10000-1788717600.bin.zst").exists()
     or not (B4_DAY / "wwv_20000-1788717600.bin.zst").exists(),
     reason="B4 daytime SHARED_10000/WWV_20000 pair not present",
