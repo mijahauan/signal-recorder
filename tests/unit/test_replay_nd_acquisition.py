@@ -164,6 +164,11 @@ BAD = Path(
 B4 = Path(
     os.environ.get("HF_TIMESTD_B4_FIXTURE", "/home/mjh/hamsci/fixtures/b4-20260907")
 )
+# Real same-site sibling: B4's WWV_20000 channel, same radiod instance and
+# RTP counter as the SHARED_10000 chunk above, same 10-minute window
+# (task-11 fix round 2).  Confirmed same counter space: the two sidecars'
+# own (gps_time_ns, rtp_timesnap) pairs, extrapolated to a common RTP via
+# resolve_buffer_timing, agree to ~1.3 ms -- well inside "a few ms".
 
 
 def _load(dirpath: Path, stem: str):
@@ -226,7 +231,17 @@ def _acquire_first_minutes(iq, meta, shift_ms=0.0):
 def test_bad_window_chunk_goes_from_junk_to_ticks_without_restart():
     """Spec §8: an ND chunk from the dark window (09-06 12:00Z) must
     acquire.  Whatever the sidecar plane says, acquisition must land a
-    plane on which the fine search sees ticks."""
+    plane on which the fine search sees ticks.
+
+    Fix-round-1 finding: on this chunk the acquirer correctly locks onto
+    WWVH (`stations=('WWVH',)`) -- WWV's Fort Collins path isn't open to
+    ND at 12:00Z while WWVH's Kauai path is.  The 1000-band peak this
+    fold sees is WWVH's own tick LEAKING into the WWV/BPM band
+    (`arbitrate_bands` correctly discards it), not a real WWV tick, so a
+    fine search hard-coded to `station="WWV"` reads ~the WWV-WWVH delay
+    separation (18.7 ms predicted here) as spurious "error" against a
+    plane that was never claiming to be WWV.  Query the station the
+    acquirer actually locked (`got.stations[0]`) instead."""
     iq, meta = _load(BAD, "1788696000")
     sr = int(meta["sample_rate"])
     got, rtp, audio, delays, minute_utc, bt_true, a = _acquire_first_minutes(
@@ -235,6 +250,7 @@ def test_bad_window_chunk_goes_from_junk_to_ticks_without_restart():
     assert got is not None, "no acquisition within 180 s on the bad-window chunk"
     from hf_timestd.core.tick_edge_detector import TickEdgeDetector
 
+    station = got.stations[0]
     bt_acq = dataclasses.replace(
         bt_true,
         sample0_utc=got.sample0_utc_for(rtp),
@@ -244,74 +260,44 @@ def test_bad_window_chunk_goes_from_junk_to_ticks_without_restart():
     det = TickEdgeDetector(sample_rate=sr)
     res = det.detect_edges(
         audio_signal=audio,
-        station="WWV",
+        station=station,
         minute_number=minute_utc,
         buffer_timing=bt_acq,
-        expected_delay_sec=delays["WWV"],
+        expected_delay_sec=delays[station],
         is_dedicated_channel=False,
         iq_samples=None,
     )
     print(
-        f"\n  bad-window: sigma1={res.sigma_single_ms if res else float('nan'):.3f} ms  "
+        f"\n  bad-window: acquired stations={got.stations}  station queried={station}  "
+        f"sigma1={res.sigma_single_ms if res else float('nan'):.3f} ms  "
         f"n_detected={res.n_detected if res else -1}  "
         f"fine_err_ms={res.ensemble_timing_error_ms if res else float('nan'):+.3f}"
     )
-    assert res is not None and res.sigma_single_ms < 1.5 and res.n_detected >= 30, (
-        f"fine search on the acquired plane: sigma1={res and res.sigma_single_ms}, "
-        f"n={res and res.n_detected}"
+    assert res is not None
+    assert res.sigma_single_ms < 1.5, f"sigma1 {res.sigma_single_ms:.2f} ms >= 1.5 ms"
+    assert res.n_detected >= 30, f"only {res.n_detected} ticks detected"
+    assert abs(res.ensemble_timing_error_ms) < 2.0, (
+        f"fine search on the acquired plane for its own station ({station}) still "
+        f"shows {res.ensemble_timing_error_ms:+.2f} ms of error"
     )
 
 
 @pytest.mark.skipif(
     not (B4 / "1788742800.bin.zst").exists(), reason="B4 fixture not present"
 )
-def test_b4_shared_channel_bootstraps_then_resolves_via_sibling():
-    """Spec §4: on a shared channel (SHARED_10000, WWV and BPM both keying
-    the 1000 Hz tick band), standalone single-peak acquisition is NOT
-    expected -- the design carries the open hypotheses and lets a sibling
-    channel decide.  On B4 the dedicated WWV_20000/25000 channels do that
-    live; this fixture only has the shared channel, so the sibling is
-    synthesized here as the task-11 fix-round-1 controller ruling
-    specifies: a same-site ``Registration`` built directly from the
-    sidecar plane (task-11 report, fix round 1, item 2) -- not from a
-    real independent WWV_20000 acquisition, which this devbox has no
-    fixture for.
-
-    The sidecar's ``timing`` block carries ``judge_tier="T4"`` (a
-    host-clock-witnessed raw pair) on this chunk, not the tick-based T6
-    plane -- the T6 comparison proper belongs to Task 12's live B4
-    non-regression run.
-
-    NOTE (task-11 fix round 1 finding): on THIS fixture the sidecar/T4
-    plane sits ~77-197 ms from the real tick position that the shared
-    channel's own fold measures (see the report's B4 diagnosis) --
-    roughly consistent with the up-to-701 ms B4 pair skew this module's
-    own docstring records for 2026-09-06.  That is far outside both
-    ``SAME_SITE_AGREE_MS`` (1.5 ms) and ``CROSS_SITE_AGREE_MS`` (4.0 ms),
-    so a sibling built from the bare, unverified sidecar plane cannot
-    corroborate either hypothesis here -- ``resolve_ambiguity`` is
-    expected (and asserted) to return ``None`` on this specific fixture;
-    a real WWV_20000 sibling would carry its OWN tick-verified plane
-    (single-station, unambiguous, converges independently), not a bare
-    sidecar label, and this is flagged as an open item for the
-    controller rather than forced to pass."""
+def _acquire_channel(iq, meta, shift_ms, epoch_id, engine=None):
+    """Run the acquirer over up to 3 minutes of one channel's chunk.
+    Returns (registration_or_None, acquirer, start_rtp_of_last_minute,
+    audio, delays, minute_utc, bt_true, offset_samples, k)."""
     from hf_timestd.core.buffer_timing import resolve_buffer_timing
-    from hf_timestd.core.registration_acquirer import (
-        CROSS_SITE_AGREE_MS,
-        RegistrationAcquirer,
-        Registration,
-        SAME_SITE_AGREE_MS,
-        wrap_half_second,
-    )
-    from hf_timestd.core.tick_edge_detector import TickEdgeDetector
+    from hf_timestd.core.registration_acquirer import RegistrationAcquirer
 
-    iq, meta = _load(B4, "1788742800")
     sr = int(meta["sample_rate"])
-    eng = _engine(meta)
+    eng = engine or _engine(meta)
     acq = RegistrationAcquirer(meta["channel_name"], sr)
     bt_true = resolve_buffer_timing(meta, sample_rate=sr)
-    shift_ms = 120.0
-    got, a, label, audio, delays, minute_utc = None, 0, None, None, None, None
+    got, a, k = None, 0, 0
+    audio, delays, minute_utc = None, None, None
     for k in range(3):
         a = k * 60 * sr
         seg = iq[a : a + 62 * sr]
@@ -322,77 +308,223 @@ def test_b4_shared_channel_bootstraps_then_resolves_via_sibling():
         audio = eng.prepare_audio(seg)
         delays = eng.expected_delays_s(label.sample0_utc, minute_utc)
         start_rtp = int(meta["start_rtp_timestamp"]) + a
-        got = acq.offer_minute(audio, label, start_rtp, minute_utc, delays, "ep-replay")
+        got = acq.offer_minute(audio, label, start_rtp, minute_utc, delays, epoch_id)
         if got is not None:
             break
-
-    assert got is None, "standalone acquisition should NOT complete on a shared channel"
-    assert acq.state == RegistrationAcquirer.STATE_BOOTSTRAP
-    open_stations = {h.assignments[0][0] for h in acq._open}
-    print(
-        f"\n  B4 SHARED_10000 open hypotheses after {k + 1} minutes: {sorted(open_stations)}"
+    return (
+        got,
+        acq,
+        int(meta["start_rtp_timestamp"]) + a,
+        audio,
+        delays,
+        minute_utc,
+        bt_true,
+        a,
+        k,
     )
-    for h in acq._open:
+
+
+def _max_fold_snr_by_band(iq, meta, sr):
+    """Diagnostic-only: the best fold-peak SNR reachable in each tone band
+    using ALL available minutes (not the acquirer's 3-minute bootstrap
+    cap) -- answers "is there any usable tick signal in this chunk at
+    all," independent of window-length or label-shift choices."""
+    from hf_timestd.core import registration_acquirer as ra
+    from hf_timestd.core.buffer_timing import resolve_buffer_timing
+
+    bt_true = resolve_buffer_timing(meta, sample_rate=sr)
+    eng = _engine(meta)
+    audio_all = eng.prepare_audio(iq)
+    n_sec = min(270, len(audio_all) // sr)
+    out = {}
+    for band in ra.TONE_BANDS_HZ:
+        profile, rows = ra.fold_tick_train(
+            audio_all, sr, bt_true.sample0_utc, band, n_sec
+        )
+        if rows == 0:
+            out[band] = (0, float("nan"))
+            continue
+        baseline = np.median(profile)
+        dev = profile - baseline
+        mad = np.median(np.abs(dev)) * 1.4826
+        snr_db = 20 * np.log10(dev.max() / mad) if mad > 0 else float("nan")
+        out[band] = (rows, snr_db)
+    return out
+
+
+def test_b4_shared_channel_resolved_by_real_wwv20000_sibling():
+    """Spec §4: on a shared channel (SHARED_10000, WWV and BPM both keying
+    the 1000 Hz tick band), standalone single-peak acquisition is NOT
+    expected -- the design carries the open hypotheses and lets a sibling
+    channel decide.  On B4 the dedicated WWV_20000/25000 channels do that
+    live, and a REAL WWV_20000 chunk from the same 10-minute window (same
+    radiod, same RTP counter -- see the module-level comment above ``B4``)
+    is now on disk, replacing fix round 1's synthetic sidecar-plane
+    sibling.
+
+    The sidecar's ``timing`` block carries ``judge_tier="T4"`` (a
+    host-clock-witnessed raw pair) on this chunk, not the tick-based T6
+    plane -- the T6 comparison proper belongs to Task 12's live B4
+    non-regression run.
+
+    Fix-round-2 finding: this specific WWV_20000 window (2026-09-07
+    01:00-01:05Z) carries NO usable 20 MHz tick signal.  Its raw IQ
+    amplitude is ~35 dB below the SHARED_10000 (10 MHz) chunk from the
+    same window (RMS 2.2e-5 vs. 1.3e-3), and the fold-peak SNR in either
+    tone band never crosses the ~13 dB detection floor even integrating
+    every available minute (see the per-band dump this test prints) --
+    consistent with 20 MHz, a daytime band, having dropped below B4's MUF
+    by 01:00Z local-evening in September.  So the intended demonstration
+    (WWV_20000 acquires standalone, then resolves SHARED_10000's
+    ambiguity, then fuses) cannot run end-to-end on the fixture as
+    provided -- this is reported plainly rather than forced, with the
+    real, cross-checked numbers the controller asked for: the two
+    channels' own T4-judged pairs, extrapolated to a common RTP, agree
+    with each other to ~1.3 ms (same counter space, confirmed), while the
+    SHARED_10000 channel's own fold shows its T4 plane sits ~77 ms from
+    where the real WWV tick actually is -- a residual on the shared
+    channel's OWN ticks, not something WWV_20000 could independently
+    confirm or refute here since it has no detectable tick of its own in
+    this window."""
+    from hf_timestd.core.registration_acquirer import (
+        CROSS_SITE_AGREE_MS,
+        RegistrationAcquirer,
+        SAME_SITE_AGREE_MS,
+        wrap_half_second,
+    )
+    from hf_timestd.core.registration_store import fuse_registrations
+    from hf_timestd.core.tick_edge_detector import TickEdgeDetector
+
+    iq20, meta20 = _load(B4, "wwv20000-1788742800")
+    sr = int(meta20["sample_rate"])
+
+    # ── Step 1: acquire WWV_20000 standalone (single-station channel) ──
+    got20, acq20, rtp20, audio20, delays20, minute_utc20, bt_true20, a20, k20 = (
+        _acquire_channel(iq20, meta20, shift_ms=0.0, epoch_id="ep-b4")
+    )
+    snr_by_band = _max_fold_snr_by_band(iq20, meta20, sr)
+    print(
+        f"\n  WWV_20000 standalone: {k20 + 1} minutes offered, state={acq20.state}, "
+        f"got={'ACQUIRED' if got20 is not None else None}"
+    )
+    print(
+        "  WWV_20000 max fold SNR over all available minutes "
+        f"({'/'.join(f'{b}:{s:.1f}dB(n={n})' for b, (n, s) in snr_by_band.items())})"
+    )
+
+    if got20 is None:
+        pytest.xfail(
+            "WWV_20000 did not acquire standalone in this fixture: no tone-band "
+            "fold peak ever crosses the detection floor "
+            f"({snr_by_band}), consistent with 20 MHz being below B4's MUF at "
+            "2026-09-07 01:00Z (see docstring for the amplitude comparison) -- "
+            "not a bug in the acquirer.  The resolve_ambiguity/fuse_registrations "
+            "demonstration needs a WWV_20000/25000 window where 20 MHz is open."
+        )
+
+    # ── WWV_20000's own fine search on its own acquired plane ──
+    bt_acq20 = dataclasses.replace(
+        bt_true20,
+        sample0_utc=got20.sample0_utc_for(rtp20),
+        origin_source="acquired",
+        origin_sigma_ms=got20.sigma_ms,
+    )
+    det = TickEdgeDetector(sample_rate=sr)
+    res20 = det.detect_edges(
+        audio_signal=audio20,
+        station="WWV",
+        minute_number=minute_utc20,
+        buffer_timing=bt_acq20,
+        expected_delay_sec=delays20["WWV"],
+        is_dedicated_channel=True,
+        iq_samples=None,
+    )
+    print(
+        f"  WWV_20000 own-plane fine search: sigma={got20.sigma_ms:.3f} ms  "
+        f"sigma1={res20.sigma_single_ms if res20 else float('nan'):.3f} ms  "
+        f"n={res20.n_detected if res20 else -1}  "
+        f"err={res20.ensemble_timing_error_ms if res20 else float('nan'):+.3f} ms"
+    )
+    assert got20.stations == ("WWV",)
+
+    # ── Step 2: SHARED_10000 bootstraps with open {WWV, BPM} ──
+    iq_shared, meta_shared = _load(B4, "1788742800")
+    gotS, acqS, rtpS, audioS, delaysS, minute_utcS, bt_trueS, aS, kS = _acquire_channel(
+        iq_shared, meta_shared, shift_ms=120.0, epoch_id="ep-b4"
+    )
+    assert (
+        gotS is None
+    ), "standalone acquisition should NOT complete on a shared channel"
+    assert acqS.state == RegistrationAcquirer.STATE_BOOTSTRAP
+    open_stations = {h.assignments[0][0] for h in acqS._open}
+    print(
+        f"  SHARED_10000 open hypotheses after {kS + 1} minutes: {sorted(open_stations)}"
+    )
+    for h in acqS._open:
         print(
             f"    corr={h.correction_s * 1000:+9.3f} ms  sigma={h.sigma_ms:6.3f}  "
             f"support={h.support}  assignments={h.assignments}"
         )
     assert open_stations == {"WWV", "BPM"}
 
-    start_rtp = int(meta["start_rtp_timestamp"]) + a
-    sib = Registration(
-        counter_epoch_id="ep-replay",
-        rtp_ref=start_rtp,
-        utc_ref=bt_true.sample0_utc + a / sr,
-        sample_rate=sr,
-        sigma_ms=1.0,
-        channel="WWV_20000",
-        stations=("WWV",),
+    # measurement for Michael: how far off is the SHARED sidecar plane from
+    # the real WWV tick, per the shared channel's own (ambiguous) fold?
+    wwv_hyp = next(h for h in acqS._open if h.assignments[0][0] == "WWV")
+    shared_gap_ms = 120.0 + wwv_hyp.correction_s * 1000.0  # vs bt_trueS, unshifted
+    print(
+        f"  SHARED_10000 sidecar/T4 plane vs real WWV tick (own fold): {shared_gap_ms:+.3f} ms"
     )
-    sib_s0 = sib.sample0_utc_for(start_rtp)
-    for h in acq._open:
-        st_h = h.assignments[0][0]
-        tol = SAME_SITE_AGREE_MS if st_h in sib.stations else CROSS_SITE_AGREE_MS
-        frac_ms = (
-            wrap_half_second((label.sample0_utc + h.correction_s) - sib_s0) * 1000.0
-        )
-        print(f"    vs sibling: {st_h} frac={frac_ms:+9.3f} ms  tol={tol} ms")
-    result = acq.resolve_ambiguity(sib, start_rtp, label.sample0_utc)
-    print(f"  resolve_ambiguity -> {result}")
 
-    # See the NOTE above: on this fixture the sidecar plane's residual
-    # against the real tick position (~77-197 ms) is far outside either
-    # tolerance, so resolve_ambiguity does not resolve here.  This is the
-    # honestly-observed result, not a forced pass -- reported to the
-    # controller as an open item (task-11 report, fix round 1, item 2)
-    # rather than tuned away.
-    if result is None:
-        pytest.xfail(
-            "resolve_ambiguity did not resolve on this B4 fixture: the "
-            "sidecar/T4 plane sits far outside SAME_SITE/CROSS_SITE "
-            "tolerance of the real tick position (see task-11 report, "
-            "fix round 1, item 2) -- a bare sidecar-plane sibling is not "
-            "a valid corroboration source here; a real WWV_20000 sibling "
-            "needs its own tick-verified acquisition"
-        )
+    # ── resolve SHARED_10000's ambiguity using the REAL WWV_20000 sibling ──
+    # ``h.correction_s`` is anchored to whichever minute's label produced
+    # it; every minute's label here is built from the SAME bt_trueS base
+    # plus the same shift_ms, so it is linear in RTP and the last offered
+    # minute's (label, start_rtp) pair is as valid an anchor as the first
+    # (see fix-round-2 report for the derivation) -- use the LAST minute's
+    # label together with its own start_rtp (rtpS), matching what
+    # resolve_ambiguity expects: a (start_rtp, label_s0) pair from the SAME
+    # minute.
+    label_s0_last = bt_trueS.sample0_utc + aS / sr + 120.0 / 1000.0
+    for h in acqS._open:
+        st_h = h.assignments[0][0]
+        tol = SAME_SITE_AGREE_MS if st_h in got20.stations else CROSS_SITE_AGREE_MS
+        sib_s0 = got20.sample0_utc_for(rtpS)
+        frac_ms = wrap_half_second((label_s0_last + h.correction_s) - sib_s0) * 1000.0
+        print(f"    vs WWV_20000 sibling: {st_h} frac={frac_ms:+9.3f} ms  tol={tol} ms")
+    result = acqS.resolve_ambiguity(got20, rtpS, label_s0_last)
+    print(f"  resolve_ambiguity -> {result}")
+    assert (
+        result is not None
+    ), "resolve_ambiguity should resolve using the real WWV_20000 sibling"
     assert result.stations == ("WWV",)
-    bt_acq = dataclasses.replace(
-        bt_true,
-        sample0_utc=result.sample0_utc_for(start_rtp),
+
+    bt_acqS = dataclasses.replace(
+        bt_trueS,
+        sample0_utc=result.sample0_utc_for(rtpS),
         origin_source="acquired",
         origin_sigma_ms=result.sigma_ms,
     )
-    det = TickEdgeDetector(sample_rate=sr)
-    res = det.detect_edges(
-        audio_signal=audio,
+    resS = det.detect_edges(
+        audio_signal=audioS,
         station="WWV",
-        minute_number=minute_utc,
-        buffer_timing=bt_acq,
-        expected_delay_sec=delays["WWV"],
+        minute_number=minute_utcS,
+        buffer_timing=bt_acqS,
+        expected_delay_sec=delaysS["WWV"],
         is_dedicated_channel=False,
         iq_samples=None,
     )
-    assert res is not None
-    assert res.sigma_single_ms < 1.0
-    assert res.n_detected >= 40
-    assert abs(res.ensemble_timing_error_ms) < 2.0
+    print(
+        f"  SHARED_10000 resolved-plane fine search WWV: "
+        f"sigma1={resS.sigma_single_ms if resS else float('nan'):.3f} ms  "
+        f"n={resS.n_detected if resS else -1}  "
+        f"err={resS.ensemble_timing_error_ms if resS else float('nan'):+.3f} ms"
+    )
+    assert resS is not None
+    assert resS.sigma_single_ms < 1.0
+    assert resS.n_detected >= 40
+    assert abs(resS.ensemble_timing_error_ms) < 2.0
+
+    # ── per-radiod fusion on real data ──
+    fused = fuse_registrations([result, got20], rtpS)
+    print(f"  fuse_registrations([shared_resolved, wwv20000]) -> {fused}")
+    assert fused is not None
