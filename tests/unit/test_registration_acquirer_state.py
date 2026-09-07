@@ -149,3 +149,27 @@ def test_adopt_sibling_registration():
     acq.adopt(reg)
     assert acq.state == acq.STATE_ACQUIRED
     assert acq.registration.sample0_utc_for(5_000 + 60 * SR) == pytest.approx(T0 + 60)
+    # C1: adopt must stamp THIS channel's own name and mark the plane
+    # derived, never the donor's channel (RegistrationStore would file it
+    # under the donor's name -- e.g. "fused.json" -- losing this channel's
+    # own provenance) and never indistinguishable from fresh evidence.
+    assert acq.registration.channel == "WWV_20000"
+    assert acq.registration.method == "adopted"
+
+
+def test_corroborate_moves_the_plane_toward_truth_not_away():
+    """C2: timing_error_ms = front_edge - expected (tick_edge_detector.py):
+    a POSITIVE residual means the plane's labels ran LATE, so corroborate
+    must move the plane EARLIER, not later.  Inject a known 1.5 ms late
+    error onto a freshly-acquired (n_minutes=0) plane and feed back exactly
+    that residual; the plane must land close to truth, not twice as far."""
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    truth_s0 = acq.registration.sample0_utc_for(rtp)
+    acq.registration.utc_ref += 0.0015  # inject 1.5 ms late
+    before_ms = abs(acq.registration.sample0_utc_for(rtp) - truth_s0) * 1000.0
+    acq.corroborate({"WWV": (1.5, 0.3)})
+    after_ms = abs(acq.registration.sample0_utc_for(rtp) - truth_s0) * 1000.0
+    assert after_ms < before_ms  # moved TOWARD truth, not away
+    assert after_ms < 0.2

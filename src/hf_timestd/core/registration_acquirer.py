@@ -433,8 +433,20 @@ class RegistrationAcquirer:
         self._open.clear()
 
     def adopt(self, reg: Registration) -> None:
+        """Adopt a sibling's (usually fused) plane as this channel's own.
+
+        Stamped ``channel=self.channel`` (never the donor's -- a sibling
+        fusion carries ``channel="fused"``, and writing that verbatim would
+        make ``RegistrationStore`` file this channel's plane under
+        ``fused.json`` instead of ``<channel>.json``, silently dropping this
+        channel's own provenance) and ``method="adopted"`` so
+        ``RegistrationStore.read_siblings`` can recognise and skip a purely
+        derived plane -- otherwise an adopted echo of the fusion re-enters
+        the next fusion as if it were independent corroborating evidence,
+        understating sigma by sqrt(n_adopters+1) (T3 self-registration
+        review, C1, 2026-09-06)."""
         self._reg = Registration(
-            **{**reg.__dict__, "channel": reg.channel or self.channel}
+            **{**reg.__dict__, "channel": self.channel, "method": "adopted"}
         )
         self._epoch = reg.counter_epoch_id
         self._state = self.STATE_ACQUIRED
@@ -621,7 +633,13 @@ class RegistrationAcquirer:
         n = min(self._reg.n_minutes, self.FILTER_MEMORY_MINUTES)
         w_old = (n / max(self._reg.sigma_ms, ORIGIN_SIGMA_FLOOR_MS) ** 2) if n else 0.0
         shift_ms = (w_new * e_new) / (w_new + w_old)
-        self._reg.utc_ref += shift_ms / 1000.0
+        # tick_edge_detector.timing_error_ms = front_edge - expected: a
+        # POSITIVE residual means the plane's labels ran LATE (the edge
+        # arrived after the plane said it would), so the plane must move
+        # EARLIER to correct it -- subtract, don't add (T3 self-registration
+        # review, C2, 2026-09-06: the prior `+=` doubled the error instead
+        # of cancelling it).
+        self._reg.utc_ref -= shift_ms / 1000.0
         self._reg.n_minutes += 1
         new_sigma = (
             1.0 / np.sqrt(w_new + w_old) if (w_new + w_old) > 0 else self._reg.sigma_ms

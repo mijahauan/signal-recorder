@@ -108,6 +108,20 @@ def test_bootstrap_channel_file_has_null_sigma_and_is_not_a_sibling(tmp_path):
     assert st.read_siblings() == []
 
 
+def test_adopted_registration_is_not_a_sibling(tmp_path):
+    """C1: a channel that merely ADOPTED a sibling's (or fusion's) plane
+    must never re-enter another channel's fusion as if it were independent
+    evidence -- otherwise the same measurement gets inverse-variance
+    combined with itself and sigma is understated by sqrt(n_adopters+1)."""
+    st = RegistrationStore(tmp_path / "reg", tmp_path / "registration.json")
+    reg = Registration(
+        "ep-1", 1000, 100.0, SR, 0.9, method="adopted", channel="SHARED_10000"
+    )
+    st.write_channel(reg, "ACQUIRED", {})
+    assert st.read_siblings() == []
+    assert st.read_siblings(exclude_channel="WWV_20000") == []
+
+
 def test_read_siblings_skips_a_schema_incomplete_file(tmp_path):
     clock = [5000.0]
     st = RegistrationStore(

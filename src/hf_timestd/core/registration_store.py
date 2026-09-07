@@ -174,6 +174,12 @@ class RegistrationStore:
                 continue
             if d.get("state") != "ACQUIRED":
                 continue
+            if d.get("method") == "adopted":
+                # A purely derived plane (this channel echoing a sibling
+                # fusion back under its own name) is not new evidence;
+                # letting it re-enter fusion understates sigma by
+                # sqrt(n_adopters+1) (review C1).
+                continue
             try:
                 out.append(
                     Registration(

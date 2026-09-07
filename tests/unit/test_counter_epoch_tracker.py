@@ -37,3 +37,18 @@ def test_pair_off_by_more_than_step_opens_a_new_epoch():
     e1 = t.observe(1_000_000_000_000, 0, 24000)
     e2 = t.observe(1_000_000_000_000 + 10_000_000_000 + 700_000_000, 240_000, 24000)
     assert e2 != e1
+
+
+def test_tracker_ignores_none_pair():
+    """I1: a malformed pair (None, or anything non-int -- a
+    present-but-null metadata field) must never raise; the tracker keeps
+    whatever epoch it already holds."""
+    t = CounterEpochTracker()
+    assert t.observe(None, None, 24000) == "unregistered"
+    assert t.epoch_id == "unregistered"
+    eid = t.observe(1_000_000_000_000, 1_000_000, 24000)
+    assert eid.startswith("ep-")
+    # a later malformed observe leaves the epoch already held unchanged
+    assert t.observe(None, 5, 24000) == eid
+    assert t.observe(1_000_000_000_000, "not-an-int", 24000) == eid
+    assert t.epoch_id == eid

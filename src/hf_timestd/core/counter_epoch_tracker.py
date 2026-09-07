@@ -45,10 +45,19 @@ class CounterEpochTracker:
         COUNTER_EPOCH_STEP_S of the mapping already in force; otherwise
         opens a new epoch, named for the GPS time of its first pair.
         Returns the (possibly new) epoch id.
+
+        A malformed pair (``None``, or anything that doesn't convert to
+        ``int`` -- a present-but-null metadata field, say) is not adopted;
+        the tracker leaves the epoch it already holds unchanged and returns
+        that id rather than raising (review I1: a live-ring caller must
+        never wedge on a bad pair).
         """
-        gps = int(gps_time_ns)
-        rtp = int(rtp_timesnap)
-        sr = int(sample_rate)
+        try:
+            gps = int(gps_time_ns)
+            rtp = int(rtp_timesnap)
+            sr = int(sample_rate)
+        except (TypeError, ValueError):
+            return self.epoch_id
         prev = self._pair
         if prev is not None:
             p_gps, p_rtp, p_sr = prev
