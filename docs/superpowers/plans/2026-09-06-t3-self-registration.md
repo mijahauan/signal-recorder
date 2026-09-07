@@ -2350,7 +2350,7 @@ Claude-Session: https://claude.ai/code/session_014fxKGYhGpcPpYFsPbDj4KH"
 - Create: `scripts/replay-registration.py` (operator tool: run the acquirer over a chunk + sidecar with a label shift; prints the table)
 
 **Interfaces:**
-- Consumes: everything above. Fixture: `/home/mjh/hamsci/fixtures/nd-20260906/1788729000.bin.zst` + `.json` (complex64 little-endian IQ at 24 kHz, 600 s, zstd; sidecar keys `gps_time_ns`, `rtp_timesnap`, `start_rtp_timestamp`, `sample_rate`, `minute_boundary`, `frequency_hz`, `station` (receiver dict with lat/lon)).
+- Consumes: everything above. Fixtures (devbox only, outside the repo): `/home/mjh/hamsci/fixtures/nd-20260906/1788729000.{bin.zst,json}` (ND good window, 09-06 21:20Z), `/home/mjh/hamsci/fixtures/nd-20260906-bad/1788696000.{bin.zst,json}` (ND dark window, 09-06 12:00Z), `/home/mjh/hamsci/fixtures/b4-20260907/1788742800.{bin.zst,json}` (B4 with T6, 09-07 01:00Z). complex64 little-endian IQ at 24 kHz, zstd; sidecar keys `gps_time_ns`, `rtp_timesnap`, `start_rtp_timestamp`, `sample_rate`, `minute_boundary`, `frequency_hz`, `channel_name`, `station` (receiver dict with lat/lon), `timing` (dict).
 - Acceptance (spec §8): with the sidecar label shifted by −300, −100, +50, +250 ms, acquisition recovers the shift within ±2 ms inside 180 s, and the fine search on the acquired plane reports σ₁ under 1 ms.
 
 - [ ] **Step 1: Write the replay test**
@@ -2426,7 +2426,77 @@ def test_acquisition_recovers_a_shifted_label(chunk, shift_ms):
                            is_dedicated_channel=False, iq_samples=None)
     assert res is not None and res.anchor_source == "acquired"
     assert res.sigma_single_ms < 1.0 and res.n_detected >= 40
+
+
+BAD = Path(os.environ.get("HF_TIMESTD_ND_BAD_FIXTURE", "/home/mjh/hamsci/fixtures/nd-20260906-bad"))
+B4 = Path(os.environ.get("HF_TIMESTD_B4_FIXTURE", "/home/mjh/hamsci/fixtures/b4-20260907"))
+
+
+def _load(dirpath: Path, stem: str):
+    import zstandard
+    raw = zstandard.ZstdDecompressor().decompress((dirpath / f"{stem}.bin.zst").read_bytes(),
+                                                  max_output_size=1 << 31)
+    return np.frombuffer(raw, dtype="<c8"), json.loads((dirpath / f"{stem}.json").read_text())
+
+
+def _acquire_first_minutes(iq, meta, shift_ms=0.0):
+    """Run the acquirer over the first ≤3 minutes of a chunk with the sidecar label shifted.
+    Returns (registration, start_rtp_of_last_minute, audio, delays, minute_utc, bt_true, offset_samples)."""
+    import dataclasses
+    from hf_timestd.core.buffer_timing import resolve_buffer_timing
+    from hf_timestd.core.registration_acquirer import RegistrationAcquirer
+    sr = int(meta["sample_rate"])
+    eng = _engine(meta)
+    acq = RegistrationAcquirer(meta["channel_name"], sr)
+    bt_true = resolve_buffer_timing(meta, sample_rate=sr)
+    got, a = None, 0
+    for k in range(3):
+        a = k * 60 * sr
+        seg = iq[a:a + 62 * sr]
+        minute_utc = int(meta["minute_boundary"]) + 60 * k
+        label = dataclasses.replace(bt_true, sample0_utc=bt_true.sample0_utc + a / sr + shift_ms / 1000.0)
+        audio = eng.prepare_audio(seg)
+        delays = eng.expected_delays_s(label.sample0_utc, minute_utc)
+        got = acq.offer_minute(audio, label, int(meta["start_rtp_timestamp"]) + a, minute_utc, delays, "ep-replay")
+        if got is not None:
+            break
+    return got, int(meta["start_rtp_timestamp"]) + a, audio, delays, minute_utc, bt_true, a
+
+
+@pytest.mark.skipif(not (BAD / "1788696000.bin.zst").exists(), reason="ND bad-window fixture not present")
+def test_bad_window_chunk_goes_from_junk_to_ticks_without_restart():
+    """Spec §8: an ND chunk from the dark window (09-06 08-20Z) must acquire. The LIVE plane
+    then was the ring anchor (wrong); the sidecar plane is whatever the recorder wrote. Whatever
+    the sidecar says, acquisition must land a plane on which the fine search sees ticks."""
+    import dataclasses
+    from hf_timestd.core.tick_edge_detector import TickEdgeDetector
+    iq, meta = _load(BAD, "1788696000")
+    sr = int(meta["sample_rate"])
+    got, rtp, audio, delays, minute_utc, bt_true, a = _acquire_first_minutes(iq, meta, shift_ms=-250.0)
+    assert got is not None, "no acquisition within 180 s on the bad-window chunk"
+    bt_acq = dataclasses.replace(bt_true, sample0_utc=got.sample0_utc_for(rtp),
+                                 origin_source="acquired", origin_sigma_ms=got.sigma_ms)
+    det = TickEdgeDetector(sample_rate=sr)
+    res = det.detect_edges(audio_signal=audio, station="WWV", minute_number=minute_utc,
+                           buffer_timing=bt_acq, expected_delay_sec=delays["WWV"],
+                           is_dedicated_channel=False, iq_samples=None)
+    assert res is not None and res.sigma_single_ms < 1.5 and res.n_detected >= 30, (
+        f"fine search on the acquired plane: σ₁={res and res.sigma_single_ms}, n={res and res.n_detected}")
+
+
+@pytest.mark.skipif(not (B4 / "1788742800.bin.zst").exists(), reason="B4 fixture not present")
+def test_b4_acquired_plane_agrees_with_t6_plane():
+    """Spec §8: on B4 the answer is known from T6. The sidecar plane carries the T6-corrected
+    pair; the acquired plane must sit within 2 ms of it (the hf_acquired-vs-T6 residual)."""
+    iq, meta = _load(B4, "1788742800")
+    sr = int(meta["sample_rate"])
+    got, rtp, audio, delays, minute_utc, bt_true, a = _acquire_first_minutes(iq, meta, shift_ms=120.0)
+    assert got is not None, "no acquisition within 180 s on the B4 chunk"
+    residual_ms = (got.sample0_utc_for(rtp) - (bt_true.sample0_utc + a / sr)) * 1000.0
+    assert abs(residual_ms) <= 2.0, f"acquired vs T6 plane: {residual_ms:+.2f} ms"
 ```
+
+Before trusting the B4 assertion, read the B4 sidecar's `timing` block (`json.tool`) and confirm it records a T6 judge tier / applied offset; if the sidecar plane is the raw pair instead, the 2 ms bound is against the wrong reference — replace the assertion with a recorded measurement (print the residual, assert `abs(residual_ms) < 500`) and say so in the report; the live B4 non-regression (Task 12) then carries the T6 comparison.
 
 Match `MetrologyEngine.__init__`'s real parameter names (grep `def __init__` in `metrology_engine.py`; on 2026-09-06 the replay proof built it from the station config — if the constructor needs a config object, build it the way `replay/window_source.py` or `metrology_service.py` does and keep the helper `_engine` local to the test). The truth here is the sidecar plane, which the 2026-09-06 replay proof showed correct to +8.8 ms of WWV timing error; so "within ±2 ms of truth" means within ±2 ms of `bt_true` **after** the fine search's own residual — if the acquired plane lands consistently ~9 ms from `bt_true` but `res.ensemble_timing_error_ms` is then near 0, the acquired plane is *more* right than the sidecar and the assertion should compare `recovered_ms + res.ensemble_timing_error_ms` to the WWV timing error the proof measured (+8.8 ms). Decide from the numbers, record the ruling in the report.
 
