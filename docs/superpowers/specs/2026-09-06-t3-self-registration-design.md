@@ -278,4 +278,9 @@ surface until the summary shows `n_minutes >= ADOPT_MIN_CORROBORATED_MINUTES = 2
 (`registration_refusal` refuses an "uncorroborated" plane for the ring, §18, the sidecar and the
 FUSE feed alike, the fused plane inherits its weakest member's corroboration, and a mid-minute
 reset republishes BOOTSTRAP at once so every surface stands down in the minute the acquirer gives
-the plane up, not the minute after).
+the plane up, not the minute after).  Fusion holds a newcomer OUTSIDE the plane rather than letting
+it drag the station down with it (task 16c): whenever any kept member clears the floor, only those
+members fuse, the held-back channels appear in the summary's `waiting` list and join when they
+qualify, and a station where nobody clears it yet fuses everyone as before — ND re-acquires a
+channel several times an hour, and the minimum over every member would have stood the whole station
+down each time.

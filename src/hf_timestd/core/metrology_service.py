@@ -781,8 +781,12 @@ class MetrologyService:
         # C1: `kept` is what fusion ACTUALLY combined -- the summary's
         # `contributing` must name those channels, not every sibling read
         # off disk, or it claims corroboration the station never performed.
-        fused, kept = fuse_registrations_with_members(fusion_inputs,
-                                                      at_rtp=int(start_rtp))
+        # task 16c: `waiting` names the members the corroboration floor
+        # held back -- a channel that just re-acquired sits outside the
+        # fused plane for two minutes instead of dragging the station's
+        # own n_minutes to zero with it.
+        fused, kept, waiting = fuse_registrations_with_members(fusion_inputs,
+                                                              at_rtp=int(start_rtp))
         if fused is not None and (own is None or own_unverified_with_siblings):
             # `fused` here is built purely from `sibs` (own contributed
             # nothing to fusion_inputs in either case above) -- every one
@@ -817,6 +821,7 @@ class MetrologyService:
                 else (fused.sample0_utc_for(int(start_rtp)) - label_s0) * 1000.0
             )
             contributing = [] if fused is None else list(kept)
+            waiting_now = [] if fused is None else list(waiting)
             # task-11b fix round 3: the CANDIDATE gate must apply on T6
             # stations too.  On this path the acquired plane is never
             # applied to BufferTiming (T6 wins below), so no detector pass
@@ -852,7 +857,7 @@ class MetrologyService:
                 )
             self._publish_registration(
                 fused, contributing, label_s0, residual_vs_t6_ms, epoch,
-                state_override=witness_state,
+                state_override=witness_state, waiting=waiting_now,
                 extra_extra={
                     "witness_of": "T6",
                     "residual_vs_t6_ms": (
@@ -932,7 +937,8 @@ class MetrologyService:
         s0 = fused.sample0_utc_for(int(start_rtp))
         residual_ms = (s0 - label_s0) * 1000.0
         contributing = list(kept)
-        self._publish_registration(fused, contributing, label_s0, residual_ms, epoch)
+        self._publish_registration(fused, contributing, label_s0, residual_ms, epoch,
+                                   waiting=list(waiting))
         # task-11b fix round 1 (C1): this minute's BufferTiming really is
         # the acquired/candidate plane -- feed_back_ensembles needs this to
         # know a detector result was measured against it at all.
@@ -948,6 +954,7 @@ class MetrologyService:
                               *, state_override: Optional[str] = None,
                               channel_state_override: Optional[str] = None,
                               conflicts: Optional[List[str]] = None,
+                              waiting: Optional[List[str]] = None,
                               extra_extra: Optional[Dict[str, Any]] = None):
         """``state_override`` names BOTH the channel file's state and the
         summary's -- use it only for a state the FUSED result justifies
@@ -1005,7 +1012,11 @@ class MetrologyService:
                  "counter_epoch_id": epoch,
                  "minutes_since_acquisition": 0 if fused is None else fused.n_minutes,
                  # I6: always present, so a reader can rely on the key.
-                 "conflicts": sorted(set(conflicts)) if conflicts else []}
+                 "conflicts": sorted(set(conflicts)) if conflicts else [],
+                 # task 16c: the channels fusion held back on the
+                 # corroboration floor -- always present, empty when
+                 # nobody waits.
+                 "waiting": sorted(set(waiting)) if waiting else []}
         if extra_extra:
             extra.update(extra_extra)
         self.reg_store.write_summary(fused, sorted(set(contributing)), summary_state, extra)

@@ -192,27 +192,48 @@ def _same_counter_space(regs: List[Registration]) -> List[Registration]:
 
 def fuse_registrations_with_members(
     regs: List[Registration], at_rtp: int
-) -> Tuple[Optional[Registration], List[str]]:
-    """``(fused, channels_kept)``.
+) -> Tuple[Optional[Registration], List[str], List[str]]:
+    """``(fused, channels_kept, channels_waiting)``.
 
-    The second element is what fusion ACTUALLY kept -- the channels inside
-    the winning counter-space cluster that also survived the outlier test.
-    ``metrology_service`` publishes it as the summary's ``contributing``,
-    which previously named every sibling read from disk and so claimed
-    corroboration the station had not performed (final review, C1).
+    ``channels_kept`` is what fusion ACTUALLY combined -- the channels
+    inside the winning counter-space cluster that survived the outlier
+    test and the corroboration floor.  ``metrology_service`` publishes it
+    as the summary's ``contributing``, which previously named every
+    sibling read from disk and so claimed corroboration the station had
+    not performed (final review, C1).
+
+    ``channels_waiting`` names the members held back by the corroboration
+    floor alone (task 16c).  When ANY member clears
+    ``ADOPT_MIN_CORROBORATED_MINUTES``, fusion combines only the members
+    that clear it: a freshly re-acquired channel serves its two minutes
+    outside the plane and joins when it qualifies.  ND re-acquires a
+    channel several times an hour, and taking the minimum over every kept
+    member would otherwise drop the station's fused ``n_minutes`` to 0
+    each time and stand every surface down for two minutes.  When NOBODY
+    clears the floor -- the station bootstrapping -- every member fuses as
+    before and the summary's own gate holds the plane back instead.
     """
     if not regs:
-        return None, []
+        return None, [], []
     same = _same_counter_space(regs)
     if not same:
-        return None, []
+        return None, [], []
     utc = np.array([r.sample0_utc_for(at_rtp) for r in same])
     med = np.median(utc)
     keep = [
         (r, u) for r, u in zip(same, utc) if abs(u - med) * 1000.0 <= FUSE_OUTLIER_MS
     ]
     if not keep:
-        return None, []
+        return None, [], []
+    waiting: List[str] = []
+    corroborated = [
+        (r, u) for r, u in keep if r.n_minutes >= ADOPT_MIN_CORROBORATED_MINUTES
+    ]
+    if corroborated and len(corroborated) < len(keep):
+        waiting = [
+            r.channel for r, _ in keep if r.n_minutes < ADOPT_MIN_CORROBORATED_MINUTES
+        ]
+        keep = corroborated
     w = np.array(
         [1.0 / max(r.sigma_ms, ORIGIN_SIGMA_FLOOR_MS * 0.1) ** 2 for r, _ in keep]
     )
@@ -228,8 +249,11 @@ def fuse_registrations_with_members(
         sigma_ms=float(1.0 / np.sqrt(np.sum(w))),
         # task 16b: the WEAKEST member's corroboration, as ``verified``
         # below already takes the weakest provenance.  ``max`` let one
-        # channel's long history vouch for a sibling that had corroborated
-        # nothing, which is precisely what the adoption gate refuses.
+        # channel's long history vouch for a sibling with a shorter one.
+        # Task 16c keeps the members that fall under the floor out of
+        # ``keep`` altogether whenever anyone clears it, so this minimum
+        # runs over qualified members unless the whole station is still
+        # bootstrapping.
         n_minutes=min(r.n_minutes for r, _ in keep),
         channel="fused",
         hypotheses_open=sum(r.hypotheses_open for r, _ in keep),
@@ -250,12 +274,12 @@ def fuse_registrations_with_members(
         # the minimum (the least-late pair anyone saw) is the truest
         epoch_offset_s=min(finite) if finite else float("nan"),
     )
-    return fused, [r.channel for r, _ in keep]
+    return fused, [r.channel for r, _ in keep], waiting
 
 
 def fuse_registrations(regs: List[Registration], at_rtp: int) -> Optional[Registration]:
     """The fused plane alone -- see :func:`fuse_registrations_with_members`
-    for the channels it kept."""
+    for the channels it kept and the ones still waiting."""
     return fuse_registrations_with_members(regs, at_rtp)[0]
 
 

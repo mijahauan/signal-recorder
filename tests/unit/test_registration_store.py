@@ -1,4 +1,6 @@
 import json
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -210,7 +212,7 @@ def test_fuse_rejects_a_channel_from_a_different_counter_space():
         _reg("b", 100.0, 1.0, epoch="ep-A", epoch_offset_s=off + 0.0019),
         _reg("c", 100.0, 0.2, epoch="ep-A", epoch_offset_s=off + 69732.0),
     ]
-    fused, kept = fuse_registrations_with_members(regs, at_rtp=1000)
+    fused, kept, _waiting = fuse_registrations_with_members(regs, at_rtp=1000)
     assert [r for r in kept] == ["a", "b"]
     assert fused.sigma_ms == pytest.approx(1.0 / 2**0.5, abs=1e-6)
 
@@ -224,7 +226,7 @@ def test_fuse_offset_tie_goes_to_the_cluster_with_the_smallest_sigma():
         _reg("a", 100.0, 1.0, epoch_offset_s=off),
         _reg("b", 200.0, 0.25, epoch_offset_s=off + 4000.0),
     ]
-    fused, kept = fuse_registrations_with_members(regs, at_rtp=1000)
+    fused, kept, _waiting = fuse_registrations_with_members(regs, at_rtp=1000)
     assert kept == ["b"] and fused.utc_ref == pytest.approx(200.0)
 
 
@@ -237,7 +239,7 @@ def test_fuse_falls_back_to_the_id_string_when_offsets_are_unknown():
         _reg("b", 100.0, 1.0, "ep-2"),
         _reg("c", 5.0, 1.0, "ep-1"),
     ]
-    fused, kept = fuse_registrations_with_members(regs, at_rtp=1000)
+    fused, kept, _waiting = fuse_registrations_with_members(regs, at_rtp=1000)
     assert fused.counter_epoch_id == "ep-2" and kept == ["a", "b"]
 
 
@@ -252,7 +254,7 @@ def test_fuse_members_are_what_fusion_actually_kept():
         _reg("b", 100.0005, 0.5, epoch_offset_s=off),
         _reg("c", 100.0100, 0.5, epoch_offset_s=off),
     ]
-    fused, kept = fuse_registrations_with_members(regs, at_rtp=1000)
+    fused, kept, _waiting = fuse_registrations_with_members(regs, at_rtp=1000)
     assert kept == ["a", "b"]  # c is 10 ms off the median
     assert fused.epoch_offset_s == pytest.approx(off)
 
@@ -282,55 +284,95 @@ def test_store_writes_null_for_an_unknown_epoch_offset(tmp_path):
 # ── Task 16b: the fused plane's corroboration is its WEAKEST member's ──
 
 
+OFF = 1_000_000_000.0
+
+
+def _member(ch, utc_ref, n_minutes, sigma=1.0):
+    return Registration(
+        counter_epoch_id="ep-1",
+        rtp_ref=1000,
+        utc_ref=utc_ref,
+        sample_rate=SR,
+        sigma_ms=sigma,
+        n_minutes=n_minutes,
+        channel=ch,
+        verified=True,
+        epoch_offset_s=OFF,
+    )
+
+
 def test_fused_n_minutes_is_the_minimum_over_the_kept_members():
     """A fused plane inherits the weakest provenance among the members it
     kept -- ``verified`` already works that way (task-14c), and
     ``n_minutes`` must too.  Taking the MAXIMUM let one channel's long
-    history vouch for a sibling that had corroborated nothing, which is
-    exactly what the ADOPT_MIN_CORROBORATED_MINUTES gate exists to
-    refuse."""
-    off = 1_000_000_000.0
-    regs = [
-        Registration(
-            counter_epoch_id="ep-1",
-            rtp_ref=1000,
-            utc_ref=100.0,
-            sample_rate=SR,
-            sigma_ms=1.0,
-            n_minutes=17,
-            channel="a",
-            verified=True,
-            epoch_offset_s=off,
-        ),
-        Registration(
-            counter_epoch_id="ep-1",
-            rtp_ref=1000,
-            utc_ref=100.0005,
-            sample_rate=SR,
-            sigma_ms=1.0,
-            n_minutes=0,
-            channel="b",
-            verified=True,
-            epoch_offset_s=off,
-        ),
-    ]
-    fused, kept = fuse_registrations_with_members(regs, at_rtp=1000)
-    assert kept == ["a", "b"]
-    assert fused.n_minutes == 0
-    # and an outlier that fusion DROPS cannot hold the number down
-    regs.append(
-        Registration(
-            counter_epoch_id="ep-1",
-            rtp_ref=1000,
-            utc_ref=100.010,  # 10 ms off the median
-            sample_rate=SR,
-            sigma_ms=1.0,
-            n_minutes=0,
-            channel="c",
-            verified=True,
-            epoch_offset_s=off,
-        )
-    )
-    regs[1] = Registration(**{**regs[1].__dict__, "n_minutes": 5})
-    fused2, kept2 = fuse_registrations_with_members(regs, at_rtp=1000)
+    history vouch for a sibling with a shorter one."""
+    regs = [_member("a", 100.0, 17), _member("b", 100.0005, 5)]
+    fused, kept, waiting = fuse_registrations_with_members(regs, at_rtp=1000)
+    assert kept == ["a", "b"] and waiting == []
+    assert fused.n_minutes == 5
+    # an outlier fusion DROPS cannot hold the number down
+    regs.append(_member("c", 100.010, 3))  # 10 ms off the median
+    fused2, kept2, _w2 = fuse_registrations_with_members(regs, at_rtp=1000)
     assert kept2 == ["a", "b"] and fused2.n_minutes == 5
+
+
+# ── Task 16c: an uncorroborated newcomer waits OUTSIDE the plane ──────
+
+
+def test_an_uncorroborated_newcomer_waits_outside_the_fused_plane():
+    """ND re-acquires a channel several times an hour.  Taking the
+    minimum over every kept member would drop the whole station's fused
+    ``n_minutes`` to 0 each time and stand every surface down for two
+    minutes.  So when anyone clears
+    ``ADOPT_MIN_CORROBORATED_MINUTES``, fusion combines only those: the
+    newcomer serves its two minutes outside the plane and joins when it
+    qualifies."""
+    from hf_timestd.core.registration_store import (
+        ADOPT_MIN_CORROBORATED_MINUTES,
+        registration_is_authoritative,
+    )
+
+    five = [
+        _member("a", 100.0, 2),
+        _member("b", 100.0, 4),
+        _member("c", 100.0, 9),
+        _member("d", 100.0, 17),
+        _member("e", 100.0, 30),
+    ]
+    # the newcomer sits 2 ms away -- inside FUSE_OUTLIER_MS, so only the
+    # corroboration floor keeps it out, and its absence is measurable
+    newcomer = _member("f", 100.002, 0)
+    fused, kept, waiting = fuse_registrations_with_members(five + [newcomer], 1000)
+    assert kept == ["a", "b", "c", "d", "e"]
+    assert waiting == ["f"]
+    assert fused.utc_ref == pytest.approx(100.0, abs=1e-9)
+    assert fused.n_minutes == ADOPT_MIN_CORROBORATED_MINUTES  # min of the five
+
+    st = RegistrationStore(
+        Path(tempfile.mkdtemp()) / "reg", Path(tempfile.mkdtemp()) / "registration.json"
+    )
+    st.write_summary(fused, kept, "ACQUIRED", {"waiting": waiting})
+    import time as _time
+
+    assert registration_is_authoritative(
+        st.read_summary(), now=_time.time(), sample_rate=SR
+    )
+
+    # two minutes later the newcomer qualifies and joins
+    joined, kept2, waiting2 = fuse_registrations_with_members(
+        five + [_member("f", 100.002, ADOPT_MIN_CORROBORATED_MINUTES)], 1000
+    )
+    assert kept2 == ["a", "b", "c", "d", "e", "f"] and waiting2 == []
+    assert joined.utc_ref > fused.utc_ref  # its plane now moves the answer
+    assert joined.n_minutes == ADOPT_MIN_CORROBORATED_MINUTES
+
+
+def test_when_nobody_clears_the_floor_every_member_still_fuses():
+    """Bootstrap: no plane has corroborated anything yet.  Fusion keeps
+    combining them all -- the station-wide gate refuses the summary on
+    ``n_minutes`` anyway, so the fused plane stays a candidate rather
+    than vanishing."""
+    regs = [_member("a", 100.0, 0), _member("b", 100.0005, 1)]
+    fused, kept, waiting = fuse_registrations_with_members(regs, at_rtp=1000)
+    assert kept == ["a", "b"] and waiting == []
+    assert fused.n_minutes == 0

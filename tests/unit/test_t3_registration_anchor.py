@@ -273,13 +273,19 @@ def test_fusion_carries_verified_from_every_member_it_keeps():
             epoch_offset_s=0.0,
         )
 
-    both, kept = fuse_registrations_with_members([reg("a", True), reg("b", True)], 0)
+    both, kept, _w = fuse_registrations_with_members(
+        [reg("a", True), reg("b", True)], 0
+    )
     assert len(kept) == 2 and both.verified is True
 
-    mixed, kept = fuse_registrations_with_members([reg("a", True), reg("b", False)], 0)
+    mixed, kept, _w = fuse_registrations_with_members(
+        [reg("a", True), reg("b", False)], 0
+    )
     assert len(kept) == 2 and mixed.verified is False
 
-    neither, _ = fuse_registrations_with_members([reg("a", False), reg("b", False)], 0)
+    neither, _k, _w = fuse_registrations_with_members(
+        [reg("a", False), reg("b", False)], 0
+    )
     assert neither.verified is False
 
 
@@ -304,7 +310,7 @@ def test_the_summary_round_trips_a_verified_fused_plane(tmp_path):
         )
         for c in ("SHARED_10000", "WWV_15000")
     ]
-    fused, kept = fuse_registrations_with_members(members, 1000)
+    fused, kept, _w = fuse_registrations_with_members(members, 1000)
     store.write_summary(fused, kept, "ACQUIRED", {"counter_epoch_id": "ep-1"})
     assert store.read_summary()["verified"] is True
     holder = T3RegistrationAnchor(store=store, time_fn=lambda: clock[0])

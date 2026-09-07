@@ -923,6 +923,63 @@ def test_a_witness_plane_that_comes_back_into_agreement_is_not_reset(tmp_path):
     assert svc.acquirer.state == RegistrationAcquirer.STATE_ACQUIRED
 
 
+def test_a_waiting_channel_is_named_in_the_summary(tmp_path):
+    """16c: the newcomer's exclusion must be visible, not silent -- a
+    reader (station-web, the sidecar) sees which channels are serving
+    their two corroborated minutes outside the fused plane."""
+    from hf_timestd.core.registration_acquirer import Registration
+    from hf_timestd.core.registration_store import ADOPT_MIN_CORROBORATED_MINUTES
+
+    assert ADOPT_MIN_CORROBORATED_MINUTES == 2
+    svc = _service(tmp_path)
+    # this channel acquires and verifies its own plane first, with no
+    # sibling on disk to adopt: verified, nothing corroborated yet
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    svc.apply_registration(label_timing(T0, 0.250, SR), audio, 1_000_000, MIN, _meta(0))
+    svc.feed_back_ensembles([_good_ensemble()])
+    assert svc.acquirer.registration.verified is True
+    assert svc.acquirer.registration.n_minutes == 0
+    # NOW a long-corroborated sibling appears, same counter space
+    svc.reg_store.write_channel(
+        Registration(
+            svc.epoch_tracker.observe(**_meta(0)),
+            rtp_ref=1_000_000,
+            utc_ref=T0,
+            sample_rate=SR,
+            sigma_ms=1.0,
+            n_minutes=17,
+            channel="WWV_20000",
+            stations=("WWV",),
+            verified=True,
+        ),
+        "ACQUIRED",
+        {},
+    )
+
+    svc.apply_registration(
+        label_timing(T0 + 60, 0.250, SR),
+        make_tick_audio(62, SR, T0 + 60, {"WWV": 0.0125}, snr_db=20.0, seed=8),
+        1_000_000 + 60 * SR,
+        MIN + 60,
+        _meta(1),
+    )
+    s = svc.reg_store.read_summary()
+    assert s["waiting"] == ["SHARED_10000"], "this channel corroborated nothing yet"
+    assert s["contributing"] == ["WWV_20000"]
+    assert s["n_minutes"] == 17
+    assert s["state"] == "ACQUIRED"
+
+
+def test_every_summary_carries_a_waiting_key(tmp_path):
+    """16c: present on every summary, empty when nobody waits."""
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    svc.apply_registration(label_timing(T0, 0.0, SR), audio, 1_000_000, MIN, _meta(0))
+    assert svc.reg_store.read_summary()["waiting"] == []
+    svc.reg_store.write_summary(None, [], "BOOTSTRAP", {})
+    assert svc.reg_store.read_summary().get("waiting", []) == []
+
+
 def test_every_summary_carries_a_conflicts_key(tmp_path):
     """I6: readers (station-web, the provenance sidecar) can rely on the
     key being there, empty when nothing disagrees."""
