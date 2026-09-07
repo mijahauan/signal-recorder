@@ -102,8 +102,18 @@ def test_without_a_provider_the_legacy_block_is_unchanged():
     w._gps_time_ns_raw, w._rtp_timesnap = 1, 2
     w._time_map_provider = None
     block = w._chunk_timing_block(_verdict(), chunk_boundary_utc_ns=T0)
+    # Task 14b added the plane-provenance keys additively: which plane
+    # produced this chunk's labels, the anchor that defines it (null
+    # here -- no label plane in force), and the judge's own reading kept
+    # as a witness now that it no longer always defines the plane.
     assert set(block) == {"radiod_gps_time_ns", "radiod_rtp_timesnap", "offset_ns", "offset_sigma_ns",
-                          "judge_tier", "judge_age_s", "segment_id", "rate_ppm"}
+                          "judge_tier", "judge_age_s", "segment_id", "rate_ppm",
+                          "plane_source", "anchor_rtp", "anchor_utc_ns", "anchor_epoch_id",
+                          "judge_offset_ns", "judge_offset_sigma_ns", "judge_witness_tier"}
+    assert block["plane_source"] == "radiod_pair_judged"
+    assert block["anchor_rtp"] is None and block["anchor_utc_ns"] is None
+    # with no anchor in force the re-applied offset stays the judge's
+    assert block["offset_ns"] == block["judge_offset_ns"]
 
 
 def test_no_verdict_and_no_provider_means_no_block():

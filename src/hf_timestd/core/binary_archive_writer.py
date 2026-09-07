@@ -140,7 +140,13 @@ class MinuteBuffer:
     # block).  None when no judge verdict was applied — the sidecar then
     # omits the block entirely (legacy, raw-radiod-mapping chunk).
     judge_timing: Optional[Dict[str, Any]] = None
-    
+    # Task 14b: the (gps_time_ns, rtp_timesnap) pair this chunk's LABELS
+    # were placed with, frozen at chunk start.  Set only while a
+    # label-plane anchor is in force, in which case it is the ANCHOR's
+    # plane restated at radiod's snap counter; None means the sidecar
+    # carries radiod's raw pair as before.
+    label_pair: Optional[tuple] = None
+
     @property
     def is_complete(self) -> bool:
         return self.write_pos >= len(self.samples)
@@ -207,6 +213,10 @@ class BinaryArchiveWriter:
         # in force by more than COUNTER_EPOCH_STEP_S.
         self._counter_epoch_id: Optional[str] = None
         self._counter_epoch_pair: Optional[tuple] = None   # (gps_time_ns, rtp_timesnap, sample_rate)
+        # Task 14b: the label-plane anchor provider (the recorder's
+        # `_label_anchor_state`), or None on a station with no label
+        # plane.  See `_label_anchor` / `_label_correction_s`.
+        self._label_anchor_provider = None
         # TIMING_PROVENANCE_MODEL §3.1 — the per-chunk timing block publishes
         # the registration in force.  Late-bound by the recorder.
         self._time_map_provider = None
@@ -360,6 +370,79 @@ class BinaryArchiveWriter:
         self._bpsk_chain_delay_ns = chain_delay_ns
         self._bpsk_chain_delay_applied = bool(applied)
 
+    def set_label_anchor_provider(self, provider) -> None:
+        """Install the label-plane anchor provider (task 14b).
+
+        ``provider() -> Optional[LabelAnchor]``, the SAME object the ring
+        and authority.json §18 label from.  While it answers for this
+        channel's counter domain, the sidecar's pair and this chunk's
+        labels come from the anchor and radiod's host-stamped pair does
+        not enter.  Silence restores the judged-pair behaviour exactly.
+        """
+        self._label_anchor_provider = provider
+
+    def _label_anchor(self):
+        """The anchor valid for THIS channel's counter domain, or None.
+
+        An anchor is a ruler for one counter (``cross_channel_rtp.py``),
+        and it can only restate its plane at radiod's snap once a snap
+        exists — before timing lock there is nothing to restate.
+        """
+        provider = getattr(self, '_label_anchor_provider', None)
+        if provider is None:
+            return None
+        if self._gps_time_unix is None or self._rtp_timesnap is None:
+            return None
+        try:
+            label = provider()
+        except Exception as exc:  # noqa: BLE001 — never disturb recording
+            logger.debug(
+                f"{self.config.channel_name}: label-anchor provider "
+                f"failed: {exc}"
+            )
+            return None
+        if label is None or not label.matches_rate(self.config.sample_rate):
+            return None
+        return label
+
+    def _label_correction_s(self, verdict) -> float:
+        """The correction added to radiod's raw mapping to get labels.
+
+        With a label-plane anchor in force this is NOT the judge's
+        verdict: it is the constant that carries radiod's plane onto the
+        anchor's, measured at radiod's own snap counter by pure counter
+        arithmetic.
+
+            correction = anchor.utc(rtp_timesnap) − gps_unix(rtp_timesnap)
+
+        Both terms name the SAME sample, so the difference is a plane
+        offset and nothing else — no clock is read to compute it, and it
+        is constant across the chunk because both planes advance on the
+        one RTP ruler.  Audit G6: the ring is anchored on the same object
+        (``StreamRecorderV2._anchor_ring_from_label_plane``), so
+        ring-resolved and sidecar-resolved UTC agree exactly.
+
+        Without an anchor: the judge's offset, exactly as before.
+        """
+        label = self._label_anchor()
+        if label is not None:
+            return (label.utc_ns_at(self._rtp_timesnap) / 1e9
+                    - float(self._gps_time_unix))
+        return (verdict.offset_ns / 1e9) if verdict is not None else 0.0
+
+    def _label_pair(self, label) -> Optional[tuple]:
+        """The sidecar pair for an anchor in force: its plane at radiod's
+        snap, in radiod's GPS-epoch units so every existing reader
+        resolves it unchanged (``buffer_timing.resolve_buffer_timing``).
+        """
+        if label is None or self._rtp_timesnap is None:
+            return None
+        from .buffer_timing import unix_ns_to_gps_time_ns
+        return (
+            unix_ns_to_gps_time_ns(int(label.utc_ns_at(self._rtp_timesnap))),
+            int(self._rtp_timesnap),
+        )
+
     def set_offset_judge(self, offset_judge: Any, source_key: tuple) -> None:
         """Late-bind the Offset Judge + per-source key.
 
@@ -420,13 +503,44 @@ class BinaryArchiveWriter:
         self._time_map_provider = provider
         self._time_map_counter_space = str(counter_space)
 
-    def _legacy_timing_keys(self, verdict) -> dict:
+    def _legacy_timing_keys(self, verdict, label=None) -> dict:
+        """The spec §8 `timing` keys.
+
+        `offset_ns` is the correction a reader RE-APPLIES to the sidecar's
+        pair (`buffer_timing.resolve_buffer_timing`), so with a
+        label-plane anchor in force it must be 0.0: the pair written
+        alongside is ALREADY the anchor's plane, and a non-zero offset
+        there would apply the correction twice.  The judge's own reading
+        is preserved under `judge_offset_ns` -- it is the witness value,
+        the disagreement between radiod's pair and the plane in force,
+        and losing it would erase the evidence.
+        """
+        anchored = label is not None
         return {
             'radiod_gps_time_ns': self._gps_time_ns_raw,
             'radiod_rtp_timesnap': self._rtp_timesnap,
-            'offset_ns': float(verdict.offset_ns),
-            'offset_sigma_ns': float(verdict.sigma_ns),
-            'judge_tier': verdict.tier,
+            'offset_ns': 0.0 if anchored else float(verdict.offset_ns),
+            'offset_sigma_ns': (float(label.sigma_ns) if anchored
+                                else float(verdict.sigma_ns)),
+            'judge_tier': label.tier if anchored else verdict.tier,
+            # Additive (task 14b): which plane produced this chunk's
+            # labels, and the anchor that defines it.
+            'plane_source': (
+                ('t6_native' if label.tier == 'T6' else 't3_registration')
+                if anchored else 'radiod_pair_judged'
+            ),
+            'anchor_rtp': int(label.anchor.anchor_rtp) if anchored else None,
+            'anchor_utc_ns': (int(label.anchor.anchor_utc_ns)
+                              if anchored else None),
+            'anchor_epoch_id': label.epoch_id if anchored else None,
+            # The judge as WITNESS: what it measured against radiod's
+            # pair, whether or not it defined the plane.
+            'judge_offset_ns': (float(verdict.offset_ns)
+                                if verdict is not None else None),
+            'judge_offset_sigma_ns': (float(verdict.sigma_ns)
+                                      if verdict is not None else None),
+            'judge_witness_tier': (verdict.tier if verdict is not None
+                                   else None),
             'judge_age_s': float(verdict.judge_age_s),
             'segment_id': int(verdict.segment_id),
             # P3 (spec §10): the source's current segment rate estimate —
@@ -437,15 +551,22 @@ class BinaryArchiveWriter:
                          if getattr(verdict, 'rate_ppm', None) is not None else None),
         }
 
-    def _chunk_timing_block(self, verdict, chunk_boundary_utc_ns: int) -> Optional[dict]:
+    def _chunk_timing_block(self, verdict, chunk_boundary_utc_ns: int,
+                            label=None) -> Optional[dict]:
         """The `timing` block of a chunk's JSON sidecar.
 
         With a provider: the schema v2 `state` record (TIMING_PROVENANCE_MODEL
         §3.1) with the legacy Offset Judge keys mirrored at top level for one
         release, so hamsci-physics' timing_from_sidecar keeps reading until
         it moves to u_epoch_ns.  Without a provider: the legacy block alone.
-        Never raises."""
-        legacy = self._legacy_timing_keys(verdict) if verdict is not None else None
+        Never raises.
+
+        `label` (task 14b) names the label-plane anchor this chunk's
+        labels were placed with, if any: the block then records the
+        anchor's plane and a zero re-applied offset, and keeps the
+        judge's reading as a witness."""
+        legacy = (self._legacy_timing_keys(verdict, label)
+                  if verdict is not None else None)
         provider = self._time_map_provider
         if provider is None:
             return legacy
@@ -465,7 +586,10 @@ class BinaryArchiveWriter:
             f_s_hz=int(self.config.sample_rate),
             measured_at_utc_ns=int(chunk_boundary_utc_ns),
             gps_time_ns=gps_utc_ns, rtp_timesnap=self._rtp_timesnap,
-            judge_tier=(verdict.tier if verdict is not None else None),
+            judge_tier=(
+                label.tier if label is not None
+                else (verdict.tier if verdict is not None else None)
+            ),
             engineering=eng,
         )
         try:
@@ -717,7 +841,11 @@ class BinaryArchiveWriter:
         # When a judge verdict corrected rtp_derived_time, the same
         # offset must be removed here so sample position 0 lands on the
         # chunk boundary in CORRECTED time.
-        offset_s = (verdict.offset_ns / 1e9) if verdict is not None else 0.0
+        # Task 14b: with a label-plane anchor in force the correction is
+        # the plane offset, not the judge's verdict, so sample position 0
+        # lands on the chunk boundary in the ANCHOR's time.
+        label = self._label_anchor()
+        offset_s = self._label_correction_s(verdict)
         time_delta = chunk_boundary - offset_s - self._gps_time_unix
         rtp_delta = int(time_delta * self.config.sample_rate)
         chunk_boundary_rtp = (self._rtp_timesnap + rtp_delta) & 0xFFFFFFFF
@@ -773,7 +901,8 @@ class BinaryArchiveWriter:
         # The raw radiod pair is captured alongside so the sidecar is
         # fully self-describing (raw mapping + applied correction).
         judge_timing = self._chunk_timing_block(
-            verdict, chunk_boundary_utc_ns=int(round(float(chunk_boundary) * 1e9)))
+            verdict, chunk_boundary_utc_ns=int(round(float(chunk_boundary) * 1e9)),
+            label=label)
 
         buffer = MinuteBuffer(
             minute_boundary=chunk_boundary,
@@ -784,6 +913,7 @@ class BinaryArchiveWriter:
             timing_snapshots=[],
             scratch_path=scratch_path,
             judge_timing=judge_timing,
+            label_pair=self._label_pair(label),
         )
 
         # Transfer any pending timing snapshots to this buffer
@@ -1142,8 +1272,19 @@ class BinaryArchiveWriter:
                 'start_system_time': buffer.start_system_time,
                 # Authoritative GPS/RTP mapping from the writer — always present
                 # when timing is locked.  buffer_timing.py uses these directly.
-                'gps_time_ns': self._gps_time_ns_raw,
-                'rtp_timesnap': self._rtp_timesnap,
+                # Task 14b: with a label-plane anchor in force this is
+                # the ANCHOR's plane restated at radiod's snap counter,
+                # frozen at chunk start alongside the labels it placed;
+                # radiod's raw pair stays in the `timing` block under
+                # radiod_gps_time_ns.  Audit G6: the ring is anchored on
+                # the same object, so ring-resolved and sidecar-resolved
+                # UTC are equal by construction.
+                'gps_time_ns': (buffer.label_pair[0]
+                                if buffer.label_pair is not None
+                                else self._gps_time_ns_raw),
+                'rtp_timesnap': (buffer.label_pair[1]
+                                 if buffer.label_pair is not None
+                                 else self._rtp_timesnap),
                 'dtype': 'complex64',
                 'byte_order': 'little',
                 'compression': compression if compression != 'none' else None,
@@ -1504,7 +1645,7 @@ class BinaryArchiveWriter:
         # label(rtp) = UTC_radiod(rtp) + offset).  Judge absent ⇒ raw
         # mapping, exactly the pre-judge behavior.
         verdict = self._judge_verdict(rtp_timestamp)
-        offset_s = (verdict.offset_ns / 1e9) if verdict is not None else 0.0
+        offset_s = self._label_correction_s(verdict)
         sample_unix_time = self._rtp_to_unix_time(rtp_timestamp) + offset_s
         sample_minute = (int(sample_unix_time) // self.file_duration_sec) * self.file_duration_sec
 

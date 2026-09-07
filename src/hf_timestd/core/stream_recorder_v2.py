@@ -670,6 +670,13 @@ class StreamRecorderV2:
                 self.archive_writer.set_offset_judge(
                     self._offset_judge, self._judge_source_key
                 )
+                # Task 14b: re-push the label-plane provider too — a
+                # recreated archive writer (radiod restart) would
+                # otherwise silently fall back to the judged pair while
+                # the ring stayed on the anchor (audit G6).
+                provider = getattr(self, '_label_anchor_provider', None)
+                if provider is not None:
+                    self.archive_writer.set_label_anchor_provider(provider)
             except Exception as exc:
                 logger.warning(
                     f"{self.config.description}: offset-judge wiring failed "
@@ -780,6 +787,18 @@ class StreamRecorderV2:
         label from one object and cannot drift apart (audit G6).
         """
         self._label_anchor_provider = provider
+        # Task 14b: the archive writer labels from the SAME object, so
+        # sidecar-resolved and ring-resolved UTC cannot diverge
+        # (audit G6).  Best-effort: a wiring failure leaves the writer on
+        # the judged pair, which is the pre-task-14 behaviour.
+        if self.archive_writer is not None:
+            try:
+                self.archive_writer.set_label_anchor_provider(provider)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"{self.config.description}: sidecar label-anchor "
+                    f"wiring failed (sidecar keeps the judged pair): {exc}"
+                )
 
     def _label_anchor_state(self):
         """The label-plane anchor for this channel, or None.
