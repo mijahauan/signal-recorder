@@ -30,6 +30,96 @@ logger = logging.getLogger(__name__)
 DEFAULT_DIR = Path("/run/hf-timestd/registration")
 DEFAULT_SUMMARY = Path("/run/hf-timestd/registration.json")
 FUSE_OUTLIER_MS = 3.0
+DEFAULT_STALE_S = 300.0
+
+# The one summary state that means "acquired AND verified".
+AUTHORITATIVE_STATE = "ACQUIRED"
+
+
+def registration_refusal(
+    summary: Optional[dict],
+    *,
+    now: float,
+    stale_s: float = DEFAULT_STALE_S,
+    sample_rate: Optional[int] = None,
+) -> Optional[str]:
+    """``None`` when this summary is the station's AUTHORITATIVE plane,
+    else the name of the gate that refuses it.
+
+    THE one gate (fix round 1, review finding C-1).  Every surface that
+    lets the registration place UTC asks this function and nothing else:
+    the ring anchor, authority.json §18, the archive sidecar (all three
+    via :class:`~hf_timestd.core.t3_registration_anchor.T3RegistrationAnchor`)
+    and the FUSE chrony feed (via ``HfAcquiredBench``, whose reading
+    populates ``label_plane_anchor``).
+
+    Before this existed the FUSE feed ran a looser gate of its own --
+    ACQUIRED **or** WITNESS, and it never read ``verified`` -- so an
+    unverified plane that the other three surfaces refused was still
+    steering the host clock, and on a T6 station a stood-down WITNESS
+    plane could speak to chrony while T6 held the metrology.  A plane
+    good enough to discipline the clock is a plane good enough to label
+    the samples; there is no honest reading on which those differ.
+
+    The gates, in refusal order:
+
+    ``no_summary``
+        Nothing published.
+    ``state:<S>``
+        Not ACQUIRED.  CANDIDATE is the acquired-but-unverified plane;
+        WITNESS means a T6 station publishes the plane without it driving
+        metrology; BOOTSTRAP/CONFLICT speak for themselves.
+    ``incomplete``
+        A field the arithmetic needs is missing or unparseable.
+    ``unverified``
+        The fused plane does not claim its own verification.  Fail-closed
+        on an absent flag: an older metrology process wrote the
+        untruthful ``false`` (task 14c), and one revalidation tick of
+        legacy behaviour beats anchoring on a fold-lattice phantom.
+    ``stale``
+        ``read_summary`` returns the last file it finds however old, so a
+        dead metrology process would otherwise anchor the station
+        forever.
+    ``sample_rate_mismatch``
+        ``rtp_ref`` is stamped in ONE counter domain; relating one domain
+        to another needs a measured epoch offset nobody has here
+        (``cross_channel_rtp.py``).  Only checked when the caller names a
+        domain.
+    """
+    if not summary:
+        return "no_summary"
+    if str(summary.get("state")) != AUTHORITATIVE_STATE:
+        return f"state:{summary.get('state')}"
+    try:
+        int(summary["rtp_ref"])
+        float(summary["utc_ref"])
+        reg_rate = int(summary["sample_rate"])
+        float(summary["sigma_ms"])
+        written_at = float(summary.get("written_at", 0.0))
+    except (KeyError, TypeError, ValueError):
+        return "incomplete"
+    if summary.get("verified") is not True:
+        return "unverified"
+    if (float(now) - written_at) > float(stale_s):
+        return "stale"
+    if sample_rate is not None and reg_rate != int(sample_rate):
+        return "sample_rate_mismatch"
+    return None
+
+
+def registration_is_authoritative(
+    summary: Optional[dict],
+    *,
+    now: float,
+    stale_s: float = DEFAULT_STALE_S,
+    sample_rate: Optional[int] = None,
+) -> bool:
+    """Is this summary the station's authoritative plane?  See
+    :func:`registration_refusal` for the gates and why there is one."""
+    return (
+        registration_refusal(summary, now=now, stale_s=stale_s, sample_rate=sample_rate)
+        is None
+    )
 
 
 def _same_counter_space(regs: List[Registration]) -> List[Registration]:
@@ -147,7 +237,7 @@ class RegistrationStore:
         self,
         directory: Path = DEFAULT_DIR,
         summary_path: Path = DEFAULT_SUMMARY,
-        stale_s: float = 300.0,
+        stale_s: float = DEFAULT_STALE_S,
         time_fn: Callable[[], float] = time.time,
     ):
         self.directory = Path(directory)

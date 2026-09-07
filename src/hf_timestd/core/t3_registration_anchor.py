@@ -32,20 +32,12 @@ against the host clock:
 * a T6 native anchor that is AUTHORITATIVE owns the plane, and one
   station publishes ONE registration (mjh, 2026-09-04), so T3 stands
   down while T6 stands up;
-* the SUMMARY state must be ACQUIRED **and** the summary's own
-  ``verified`` flag must be true.  Both, not either: the state is the
-  network-wide view (metrology_service publishes ACQUIRED only when a
-  verified plane contributed) and the flag is the fused plane's own
-  provenance, made truthful by task 14c -- every member fusion kept was
-  itself verified;
-* the summary must be fresh against the store's own stale window —
-  ``read_summary`` hands back the last file it finds however old, so a
-  dead metrology process otherwise anchors the station forever;
-* the registration's ``sample_rate`` must match the channel being
-  anchored.  ``rtp_ref`` is stamped in ONE counter domain and
-  ``cross_channel_rtp.py`` documents that relating one domain to another
-  needs a measured epoch offset nobody has here.  Silence beats a wrong
-  plane.
+* every gate in :func:`registration_store.registration_refusal` --
+  state ACQUIRED, ``verified`` true, fresh against the store's own
+  stale window, counter domain matching.  That function is THE one gate
+  (fix round 1, review finding C-1): the FUSE chrony feed asks it too,
+  so a plane refused for the ring can never reach the host clock
+  instead.
 """
 
 from __future__ import annotations
@@ -57,6 +49,7 @@ from typing import Callable, Optional
 
 from .native_anchor import LabelAnchor, NativeAnchor
 from .registration_acquirer import ORIGIN_SIGMA_FLOOR_MS
+from .registration_store import DEFAULT_STALE_S, registration_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -87,36 +80,6 @@ class T3AnchorDecision:
     @property
     def in_force(self) -> bool:
         return self.anchor is not None
-
-
-def _acquired_state(summary: dict) -> bool:
-    """Is the SUMMARY in the acquired state?
-
-    The network-wide view.  ``metrology_service._publish_registration``
-    publishes summary state ACQUIRED only when a plane that is itself
-    verified contributed, and CANDIDATE when the sole contributor is this
-    channel's own not-yet-verified plane (metrology_service.py:988-996).
-    """
-    return str(summary.get("state")) == VERIFIED_STATE
-
-
-def _verified_plane(summary: dict) -> bool:
-    """Does the fused plane claim its own verification?
-
-    Task 14c made this field truthful: ``fuse_registrations_with_members``
-    now carries ``verified = all(kept members verified)``.  Before that it
-    was left at the dataclass default, so ``false`` appeared in every
-    station summary ever written and the flag had to be ignored -- the
-    verified predicate could only be inferred from the summary STATE.
-
-    Fail-closed on absence.  A summary written by an older metrology
-    process carries the untruthful ``false`` (or, older still, no key at
-    all), and both must refuse rather than anchor the station on a plane
-    whose provenance nobody asserted.  Failing closed costs one
-    revalidation tick of legacy behaviour after a deploy, while metrology
-    republishes; failing open would anchor on a fold-lattice phantom.
-    """
-    return summary.get("verified") is True
 
 
 class T3RegistrationAnchor:
@@ -197,23 +160,22 @@ class T3RegistrationAnchor:
             return T3AnchorDecision(None, None, "no_summary")
         epoch_id = summary.get("counter_epoch_id")
         epoch_id = None if epoch_id is None else str(epoch_id)
-        if not _acquired_state(summary):
-            return T3AnchorDecision(None, epoch_id, f"state:{summary.get('state')}")
-        try:
-            rtp_ref = int(summary["rtp_ref"])
-            utc_ref = float(summary["utc_ref"])
-            reg_rate = int(summary["sample_rate"])
-            written_at = float(summary.get("written_at", 0.0))
-            sigma_ms = max(float(summary["sigma_ms"]), ORIGIN_SIGMA_FLOOR_MS)
-        except (KeyError, TypeError, ValueError):
-            return T3AnchorDecision(None, epoch_id, "incomplete")
-        if not _verified_plane(summary):
-            return T3AnchorDecision(None, epoch_id, "unverified")
-        age_s = self._time() - written_at
-        if age_s > float(getattr(self._store, "stale_s", 300.0)):
-            return T3AnchorDecision(None, epoch_id, "stale")
-        if sample_rate is not None and reg_rate != int(sample_rate):
-            return T3AnchorDecision(None, epoch_id, "sample_rate_mismatch")
+        # THE one gate (fix round 1, C-1): the same predicate the FUSE
+        # feed's label-plane anchor now asks, so a plane refused here can
+        # never reach chrony instead.
+        refusal = registration_refusal(
+            summary,
+            now=self._time(),
+            stale_s=float(getattr(self._store, "stale_s", DEFAULT_STALE_S)),
+            sample_rate=sample_rate,
+        )
+        if refusal is not None:
+            return T3AnchorDecision(None, epoch_id, refusal)
+        rtp_ref = int(summary["rtp_ref"])
+        utc_ref = float(summary["utc_ref"])
+        reg_rate = int(summary["sample_rate"])
+        written_at = float(summary.get("written_at", 0.0))
+        sigma_ms = max(float(summary["sigma_ms"]), ORIGIN_SIGMA_FLOOR_MS)
         anchor = NativeAnchor(
             anchor_rtp=rtp_ref & 0xFFFFFFFF,
             anchor_utc_ns=int(round(utc_ref * 1e9)),

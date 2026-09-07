@@ -30,6 +30,7 @@ def test_bench_projects_the_registration_to_the_arrival(tmp_path):
             sample_rate=SR,
             sigma_ms=0.8,
             channel="fused",
+            verified=True,
         ),
         ["SHARED_10000"],
         "ACQUIRED",
@@ -68,6 +69,7 @@ def test_bench_answers_on_witness_state_too(tmp_path):
             sample_rate=SR,
             sigma_ms=0.8,
             channel="fused",
+            verified=True,
         ),
         ["SHARED_10000"],
         "WITNESS",
@@ -100,7 +102,7 @@ def test_bench_silent_in_bootstrap_or_when_stale(tmp_path):
     )
     assert bench.poll() is None
     st.write_summary(
-        Registration("ep-1", 1000, 100.0, SR, 0.8, channel="fused"),
+        Registration("ep-1", 1000, 100.0, SR, 0.8, channel="fused", verified=True),
         ["x"],
         "ACQUIRED",
         {},
@@ -127,6 +129,7 @@ def test_bench_silent_on_sample_rate_mismatch(tmp_path):
             sample_rate=SR,
             sigma_ms=0.8,
             channel="fused",
+            verified=True,
         ),
         ["SHARED_10000"],
         "ACQUIRED",
@@ -329,6 +332,7 @@ def _acquired_summary(tmp_path, clock, sigma_ms, utc_ref=100.0):
             sample_rate=SR,
             sigma_ms=sigma_ms,
             channel="fused",
+            verified=True,
         ),
         ["SHARED_10000", "WWV_20000"],
         "ACQUIRED",

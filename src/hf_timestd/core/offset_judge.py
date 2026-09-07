@@ -730,6 +730,19 @@ class HfAcquiredBench:
     a T6 station is publishing the acquired plane without it driving
     metrology — the bench still answers so the judge can compute the
     hf_acquired-vs-T6 residual.  BOOTSTRAP/CONFLICT/missing stay silent.
+    An UNVERIFIED plane stays silent too (fix round 1, review C-1): a
+    reading the station refuses to label samples with is not a reading
+    the judge should weigh either, and this bench feeds the FUSE chrony
+    sample.
+
+    ``detail["authoritative"]`` says whether this reading may PLACE UTC
+    (``registration_store.registration_refusal`` — THE one gate) as
+    against merely witness the plane.  Only an authoritative reading
+    becomes ``label_plane_anchor`` and so reaches chrony; a WITNESS-state
+    plane is a witness and nothing more, which on a T6 station is the
+    difference between "T6 owns the plane" and "a stood-down plane steers
+    the host clock".  ``detail["refusal"]`` names the gate when it is not
+    authoritative.
 
     ``plane="label"``: mechanistically identical to NativeAnchorBench
     (T6) — a fixed (rtp_ref, utc_ref) origin projected via pure RTP
@@ -780,6 +793,11 @@ class HfAcquiredBench:
         s = self._store.read_summary()
         if not s or s.get("state") not in self._LIVE_STATES or s.get("utc_ref") is None:
             return None
+        # Fix round 1 (C-1): an unverified plane is not a reading at all.
+        # It used to reach chrony through label_plane_anchor while the
+        # ring, §18 and the sidecar all refused it.
+        if s.get("verified") is not True:
+            return None
         reg_age = self._time() - float(s.get("written_at", 0))
         if reg_age > self.FRESHNESS_S:
             return None
@@ -807,12 +825,23 @@ class HfAcquiredBench:
         # claim; `fuse_registrations` is left reporting what its inputs
         # actually measured.
         sigma_ms = max(float(s["sigma_ms"]), ORIGIN_SIGMA_FLOOR_MS)
+        # THE one gate, asked here so the FUSE feed and the anchor
+        # surfaces cannot diverge (fix round 1, C-1).  A WITNESS plane
+        # answers as a witness and is refused authority; the judge still
+        # gets its residual, chrony never does.
+        from .registration_store import registration_refusal
+        refusal = registration_refusal(
+            s, now=self._time(),
+            stale_s=self.FRESHNESS_S, sample_rate=int(arrival_sample_rate),
+        )
         return BenchReading(
             utc=utc, mono=float(arrival_mono), sigma_ns=sigma_ms * 1e6,
             tier=self.TIER,
             detail={"bench": "hf_acquired", "counter_epoch_id": s.get("counter_epoch_id"),
                     "raw_pair_residual_ms": s.get("raw_pair_residual_ms"),
-                    "registration_age_s": round(reg_age, 1)},
+                    "registration_age_s": round(reg_age, 1),
+                    "authoritative": refusal is None,
+                    "refusal": refusal},
             plane="label",
         )
 
@@ -1867,9 +1896,21 @@ class OffsetJudge:
         Highest tier first, then the tightest sigma: T6's native anchor
         outranks the T3 registration when both stand up, which is the
         one-station-one-registration rule (mjh, 2026-09-04).
+
+        A label-plane reading that is not AUTHORITATIVE is skipped (fix
+        round 1, C-1).  ``HfAcquiredBench`` stamps
+        ``detail["authoritative"]`` from
+        ``registration_store.registration_refusal`` — THE one gate, the
+        same predicate the ring, §18 and the sidecar ask — so a plane
+        those three refuse can no longer steer the host clock instead.
+        On a T6 station a WITNESS-state registration is a witness and
+        nothing more: the FUSE feed's label plane is T6's own, or none.
+        Readings without the key (T6's ``NativeAnchorBench``) default to
+        authoritative; T6's own authority gate governs those.
         """
         labels = [r for r in readings
-                  if getattr(r, "plane", "host") == "label"]
+                  if getattr(r, "plane", "host") == "label"
+                  and (r.detail or {}).get("authoritative", True)]
         if not labels:
             self._label_anchor = None
             return
