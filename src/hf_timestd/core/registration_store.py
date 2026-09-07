@@ -35,6 +35,20 @@ DEFAULT_STALE_S = 300.0
 # The one summary state that means "acquired AND verified".
 AUTHORITATIVE_STATE = "ACQUIRED"
 
+# Corroborated minutes a plane must show before any surface acts on it
+# (task 16b).  Live on AC0G-ND, 2026-09-07 20:36Z: the shared channels
+# fit a WWV artefact 34 ms away as BPM, called the pair unambiguous,
+# verified it against its own ticks and anchored the ring, authority.json
+# §18, the sidecar and the FUSE chrony feed on it inside ONE minute
+# (n_minutes 0) -- FUSE then reported the host 23-28 ms fast against an
+# NTP consensus of 5-13 ms until corroboration reset the plane at 20:42.
+# Verification asks "do the ticks land where this plane says?" in a
+# single minute; corroboration asks it again, and again, against fresh
+# ensembles.  Two minutes of it cost two minutes of the pre-registration
+# fallback and buy the station a plane that has survived independent
+# evidence.
+ADOPT_MIN_CORROBORATED_MINUTES = 2
+
 
 def registration_refusal(
     summary: Optional[dict],
@@ -76,6 +90,12 @@ def registration_refusal(
         on an absent flag: an older metrology process wrote the
         untruthful ``false`` (task 14c), and one revalidation tick of
         legacy behaviour beats anchoring on a fold-lattice phantom.
+    ``uncorroborated``
+        Verified once, but not yet corroborated for
+        ``ADOPT_MIN_CORROBORATED_MINUTES`` minutes (task 16b).  A plane
+        verifies against the same minute of audio that acquired it; the
+        adoption hysteresis makes it survive independent evidence first.
+        Fail-closed on an absent field, as ``unverified`` does.
     ``stale``
         ``read_summary`` returns the last file it finds however old, so a
         dead metrology process would otherwise anchor the station
@@ -96,10 +116,13 @@ def registration_refusal(
         reg_rate = int(summary["sample_rate"])
         float(summary["sigma_ms"])
         written_at = float(summary.get("written_at", 0.0))
+        n_minutes = int(summary.get("n_minutes") or 0)
     except (KeyError, TypeError, ValueError):
         return "incomplete"
     if summary.get("verified") is not True:
         return "unverified"
+    if n_minutes < ADOPT_MIN_CORROBORATED_MINUTES:
+        return "uncorroborated"
     if (float(now) - written_at) > float(stale_s):
         return "stale"
     if sample_rate is not None and reg_rate != int(sample_rate):
@@ -203,7 +226,11 @@ def fuse_registrations_with_members(
         utc_ref=fused_utc,
         sample_rate=keep[0][0].sample_rate,
         sigma_ms=float(1.0 / np.sqrt(np.sum(w))),
-        n_minutes=max(r.n_minutes for r, _ in keep),
+        # task 16b: the WEAKEST member's corroboration, as ``verified``
+        # below already takes the weakest provenance.  ``max`` let one
+        # channel's long history vouch for a sibling that had corroborated
+        # nothing, which is precisely what the adoption gate refuses.
+        n_minutes=min(r.n_minutes for r, _ in keep),
         channel="fused",
         hypotheses_open=sum(r.hypotheses_open for r, _ in keep),
         stations=tuple(sorted({st for r, _ in keep for st in r.stations})),

@@ -268,3 +268,14 @@ negative through task-11b, acquires `('WWV',)` at its second minute on a marker 
 good-window SHARED_10000 chunk, which used to need 180 s to pair two peaks as `('BPM', 'WWV')`,
 now names `('WWV',)` at 122 s on a 26.0 dB marker and lands 0.085 ms from that older two-peak
 plane — an independent cross-check of the rule.
+
+**Amendment 2026-09-07, later the same day (task 16).** BPM never registers: §10 already keeps it
+out of the timing product, so `_try_acquire` strips every BPM assignment before it chooses a
+winner, and a WWV + BPM pair becomes the WWV peak alone — ambiguous, waiting for the marker or a
+sibling — because at 20:36Z on ND every shared channel read a WWV artefact 34 ms away as BPM,
+called the pair unambiguous on support 2, and anchored the station on it. And no plane governs any
+surface until the summary shows `n_minutes >= ADOPT_MIN_CORROBORATED_MINUTES = 2`
+(`registration_refusal` refuses an "uncorroborated" plane for the ring, §18, the sidecar and the
+FUSE feed alike, the fused plane inherits its weakest member's corroboration, and a mid-minute
+reset republishes BOOTSTRAP at once so every surface stands down in the minute the acquirer gives
+the plane up, not the minute after).

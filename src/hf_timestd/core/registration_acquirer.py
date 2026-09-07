@@ -370,6 +370,19 @@ def _sigma_ms_from_snr(snr_db: float) -> float:
     return max(ORIGIN_SIGMA_FLOOR_MS, rise_ms / (10 ** (snr_db / 20.0)) * 3.0)
 
 
+def _combine_pairings(
+    corrections_s: List[float], snrs_db: List[float]
+) -> Tuple[float, float]:
+    """SNR-weighted mean correction and the sigma that goes with it --
+    one formula, shared by ``fit_template`` and by
+    ``strip_non_registering_stations`` so a re-derived hypothesis weighs
+    its evidence exactly as the original fit did."""
+    w = np.array([10 ** (snr / 10.0) for snr in snrs_db])
+    corr = float(np.sum(w * np.array(corrections_s)) / np.sum(w))
+    sig = float(min(_sigma_ms_from_snr(snr) for snr in snrs_db) / np.sqrt(len(snrs_db)))
+    return wrap_half_second(corr), max(ORIGIN_SIGMA_FLOOR_MS, sig)
+
+
 def fit_template(
     peaks: List[FoldPeak],
     expected_delays_s: Dict[str, float],
@@ -417,18 +430,15 @@ def fit_template(
         for j in group:
             used[j] = True
         members = [pairings[j] for j in group]
-        w = np.array([10 ** (m[2].snr_db / 10.0) for m in members])
-        corr = float(np.sum(w * np.array([m[0] for m in members])) / np.sum(w))
-        sig = float(
-            min(_sigma_ms_from_snr(m[2].snr_db) for m in members)
-            / np.sqrt(len(members))
+        corr, sigma_ms = _combine_pairings(
+            [m[0] for m in members], [m[2].snr_db for m in members]
         )
         support = len(members)
         unamb = support >= 2 or (support == 1 and members[0][3] == 1)
         hyps.append(
             Hypothesis(
-                correction_s=wrap_half_second(corr),
-                sigma_ms=max(ORIGIN_SIGMA_FLOOR_MS, sig),
+                correction_s=corr,
+                sigma_ms=sigma_ms,
                 assignments=tuple(
                     (m[1], m[2].band, m[2].position_s, m[2].snr_db) for m in members
                 ),
@@ -438,6 +448,74 @@ def fit_template(
         )
     hyps.sort(key=lambda h: (-h.support, -sum(a[3] for a in h.assignments)))
     return hyps
+
+
+# Spec §10 already keeps BPM out of the timing product; task 16a keeps it
+# out of the registration too.  Live on AC0G-ND, 2026-09-07 20:36Z: every
+# shared channel fit two 1000 Hz peaks 34 ms apart as WWV + BPM, called
+# the pair unambiguous on support 2, verified it, and anchored the ring
+# and the FUSE feed on it -- and FUSE then told chrony the host ran 23-28
+# ms fast against an NTP consensus of 5-13 ms until corroboration reset
+# the plane six minutes later.  BPM at ND on 5/10/15 MHz in mid-afternoon
+# does not happen; the second peak was a WWV artefact wearing BPM's
+# delay.
+NON_REGISTERING_STATIONS = frozenset({"BPM"})
+
+
+def strip_non_registering_stations(
+    hyps: List[Hypothesis], expected_delays_s: Dict[str, float]
+) -> List[Hypothesis]:
+    """Drop every ``NON_REGISTERING_STATIONS`` assignment and re-derive
+    what the survivors support.
+
+    A WWV + BPM pair loses its second station and becomes a single-peak
+    WWV hypothesis, carrying the correction of the WWV peak ALONE -- not a
+    mean dragged toward the artefact.  Support and unambiguity follow from
+    what remains, and the peak's band still counts BPM among the stations
+    that COULD read it, so the lone WWV reading stays ambiguous and waits
+    for the minute marker (§12) or a sibling.  A hypothesis left with no
+    assignment at all disappears.
+
+    ``fit_template`` itself keeps fitting every station in the template,
+    BPM included: the fit is how the acquirer learns that a second reading
+    of the same peak exists, and dropping BPM from the template instead
+    would make every lone 1000 Hz peak "unambiguously WWV" by
+    construction -- the fold-lattice trap of task-11b, reopened."""
+    out: List[Hypothesis] = []
+    for h in hyps:
+        kept = tuple(a for a in h.assignments if a[0] not in NON_REGISTERING_STATIONS)
+        if not kept:
+            continue
+        if len(kept) == len(h.assignments):
+            out.append(h)
+            continue
+        corrs = [
+            wrap_half_second(expected_delays_s[st] - pos)
+            for st, _band, pos, _snr in kept
+            if st in expected_delays_s
+        ]
+        snrs = [snr for st, _band, _pos, snr in kept if st in expected_delays_s]
+        if not corrs:
+            continue
+        corr, sigma_ms = _combine_pairings(corrs, snrs)
+        # How many stations in the template could read this peak?  Two
+        # (WWV and BPM on 1000 Hz) leaves the reading ambiguous even
+        # though only one of them may register.
+        readings = max(
+            len([s for s in expected_delays_s if BAND_OF_STATION.get(s) == band])
+            for _st, band, _pos, _snr in kept
+        )
+        out.append(
+            Hypothesis(
+                correction_s=corr,
+                sigma_ms=sigma_ms,
+                assignments=kept,
+                support=len(kept),
+                unambiguous=len(kept) >= 2 or (len(kept) == 1 and readings == 1),
+            )
+        )
+    out.sort(key=lambda h: (-h.support, -sum(a[3] for a in h.assignments)))
+    return out
 
 
 MARKER_SEARCH_HALF_S = 1.5
@@ -821,7 +899,12 @@ class RegistrationAcquirer:
             for p in peaks_from_envelopes(envelopes, self.sample_rate, s0, n_sec)
             if any(BAND_OF_STATION.get(s) == p.band for s in expected_delays_s)
         ]
-        hyps = fit_template(best, expected_delays_s)
+        # Task 16a: BPM may be READ off a peak but never registers, so
+        # strip it before anything chooses a winner -- a WWV + BPM pair
+        # becomes the WWV peak alone, ambiguous, waiting for the marker.
+        hyps = strip_non_registering_stations(
+            fit_template(best, expected_delays_s), expected_delays_s
+        )
         self._open = [h for h in hyps if not h.unambiguous]
         winners = [h for h in hyps if h.unambiguous]
         # One marker search per tone band per attempt, off the SAME
@@ -941,10 +1024,14 @@ class RegistrationAcquirer:
         self._buf.clear()
         if named is not None:
             _h, m_band, m_offset, m_snr, m_excluded = named
-            excluded = ", ".join(m_excluded) or "none"
+            excluded = (
+                f"{', '.join(m_excluded)} excluded: "
+                if m_excluded
+                else "no marker-less station survived the fit; "
+            )
             logger.info(
                 f"[{self.channel}] ACQUIRED: marker names {st0} "
-                f"({excluded} excluded: 800 ms tone found in the {m_band} band "
+                f"({excluded}800 ms tone found in the {m_band} band "
                 f"at {m_offset * 1000:+.1f} ms, SNR {m_snr:.1f} dB)"
             )
         logger.info(

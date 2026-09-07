@@ -69,3 +69,63 @@ def test_sigma_from_snr_and_floor():
     assert h.sigma_ms >= 1.0
     h2 = fit_template([_pk("1000", 0.2, snr=10.0)], {"WWV": 0.010})[0]
     assert h2.sigma_ms > h.sigma_ms
+
+
+# ── Task 16a: BPM never contributes to the registration ───────────────
+
+
+def _stripped(hyps, delays):
+    from hf_timestd.core.registration_acquirer import strip_non_registering_stations
+
+    return strip_non_registering_stations(hyps, delays)
+
+
+def test_bpm_never_reaches_the_registration():
+    """Live on AC0G-ND, 2026-09-07 20:36Z: the shared channels fit two
+    1000 Hz peaks 34 ms apart as WWV + BPM, called that "unambiguous"
+    with support 2, verified it, and anchored the ring and the FUSE feed
+    on the pair.  BPM at ND on 5/10/15 MHz in mid-afternoon is not
+    credible; the second peak was a WWV artefact.  Spec §10 already
+    excludes BPM from timing, so it may not register either: the pair
+    reduces to the WWV peak alone, and the correction comes from that
+    peak by itself -- not from a mean over the two.
+
+    ``fit_template`` itself stays unchanged (the test above still pins
+    its two-peak behaviour); the stripping happens in ``_try_acquire``."""
+    d = {"WWV": 0.010, "BPM": 0.044}
+    # the second peak sits 3 ms off the delay template, so a pair fit and
+    # a WWV-alone fit give measurably different corrections
+    peaks = [_pk("1000", 0.010 + 0.050), _pk("1000", 0.044 + 0.053, snr=12.0)]
+    paired = fit_template(peaks, d)
+    assert paired[0].support == 2 and paired[0].unambiguous
+    assert paired[0].correction_s != pytest.approx(-0.050, abs=1e-5)
+
+    hyps = _stripped(paired, d)
+    assert all("BPM" not in {a[0] for a in h.assignments} for h in hyps)
+    top = hyps[0]
+    assert top.support == 1
+    assert not top.unambiguous  # band 1000 still admits BPM as a READING
+    assert top.correction_s == pytest.approx(-0.050, abs=1e-6)
+
+
+def test_a_bpm_only_hypothesis_is_dropped():
+    d = {"WWV": 0.010, "BPM": 0.044}
+    hyps = _stripped(fit_template([_pk("1000", 0.110)], d), d)
+    assert len(hyps) == 1
+    assert hyps[0].assignments[0][0] == "WWV"
+    assert not hyps[0].unambiguous
+
+
+def test_a_dedicated_wwv_hypothesis_passes_through_untouched():
+    d = {"WWV": 0.0125}
+    hyps = fit_template([_pk("1000", 0.0125 + 0.250)], d)
+    assert _stripped(hyps, d) == hyps
+
+
+def test_a_wwv_wwvh_pair_passes_through_untouched():
+    d = {"WWV": 0.010, "WWVH": 0.028, "BPM": 0.044}
+    peaks = [_pk("1000", 0.010 - 0.300), _pk("1200", 0.028 - 0.300, snr=14.0)]
+    hyps = fit_template(peaks, d)
+    kept = _stripped(hyps, d)
+    assert kept[0].support == 2 and kept[0].unambiguous
+    assert {a[0] for a in kept[0].assignments} == {"WWV", "WWVH"}

@@ -800,6 +800,11 @@ class MetrologyService:
             own = self.acquirer.registration
             own_is_adopted = True
         label_s0 = float(buffer_timing.sample0_utc)
+        # task 16b: what a mid-minute reset needs in order to republish.
+        # `feed_back_ensembles` runs AFTER this minute's publish, so a
+        # plane the acquirer gives up on there would otherwise keep
+        # labelling every surface until the next minute's publish.
+        self._publish_context = (label_s0, epoch)
 
         # C3: T6 wins.  The ring anchor already carries T6's correction
         # (offset_judge -> stream_recorder_v2 -> resolve_buffer_timing), so
@@ -1056,6 +1061,17 @@ class MetrologyService:
                 outcome = self.acquirer.corroborate(res)
             if outcome == "reacquire":
                 logger.warning(f"[{self.channel_name}] registration residual sustained; re-acquiring")
+            if self.acquirer.state != self.acquirer.STATE_ACQUIRED:
+                # task 16b: the acquirer just gave this plane up (verify
+                # "rejected" or corroborate "reacquire").  Publish the
+                # stand-down NOW: the ring anchor, authority.json §18, the
+                # sidecar and the FUSE chrony feed all read the summary,
+                # and every one of them would otherwise go on labelling
+                # from an abandoned plane for the rest of the minute.
+                ctx = getattr(self, "_publish_context", None)
+                if ctx is not None:
+                    self._publish_registration(None, [], ctx[0], None, ctx[1])
+                    self._applied_acquired_plane = False
 
     def _process_minute_data(
         self,

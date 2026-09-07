@@ -993,3 +993,102 @@ def test_process_minute_data_feeds_back_the_flat_edge_result_list(tmp_path):
         buffer_timing=label_timing(T0, 0.0, SR),
     )
     assert seen == [ensembles]
+
+
+# ── Task 16b: adoption hysteresis — two corroborated minutes ──────────
+
+
+def _good_ensemble(err_ms=0.3):
+    return SimpleNamespace(
+        station="WWV",
+        ensemble_timing_error_ms=err_ms,
+        sigma_single_ms=0.4,
+        anchor_source="acquired",
+    )
+
+
+def _run_minute(svc, k, ensembles):
+    """One live minute: publish, read the summary's verdict, feed back."""
+    import time as _time
+
+    from hf_timestd.core.registration_store import registration_refusal
+
+    audio = make_tick_audio(
+        62, SR, T0 + 60 * k, {"WWV": 0.0125}, snr_db=20.0, seed=7 + k
+    )
+    svc.apply_registration(
+        label_timing(T0 + 60 * k, 0.250, SR),
+        audio,
+        start_rtp=1_000_000 + k * 60 * SR,
+        minute_utc=MIN + 60 * k,
+        metadata=_meta(k),
+    )
+    s = svc.reg_store.read_summary()
+    verdict = (
+        s["state"],
+        s["n_minutes"],
+        registration_refusal(s, now=_time.time(), sample_rate=SR),
+    )
+    svc.feed_back_ensembles(ensembles)
+    return verdict
+
+
+def test_adoption_waits_for_two_corroborated_minutes(tmp_path):
+    """16b: on ND at 20:36Z the recorder anchored the ring and the FUSE
+    feed on a plane in its FIRST minute (n_minutes 0), and corroboration
+    only threw it out six minutes later -- by which time FUSE had told
+    chrony the host ran 23-28 ms fast.  A plane must now show
+    ADOPT_MIN_CORROBORATED_MINUTES corroborated minutes before any
+    surface may act on it."""
+    from hf_timestd.core.registration_store import (
+        ADOPT_MIN_CORROBORATED_MINUTES,
+        registration_is_authoritative,
+    )
+
+    assert ADOPT_MIN_CORROBORATED_MINUTES == 2
+    svc = _service(tmp_path)
+    seen = [_run_minute(svc, k, [_good_ensemble()]) for k in range(4)]
+    assert [v[0] for v in seen] == ["CANDIDATE", "ACQUIRED", "ACQUIRED", "ACQUIRED"]
+    assert [v[1] for v in seen] == [0, 0, 1, 2]
+    assert [v[2] for v in seen] == [
+        "state:CANDIDATE",
+        "uncorroborated",
+        "uncorroborated",
+        None,
+    ]
+    import time as _time
+
+    assert registration_is_authoritative(
+        svc.reg_store.read_summary(), now=_time.time(), sample_rate=SR
+    )
+
+
+def test_a_reset_stands_every_surface_down_the_same_minute(tmp_path):
+    """16b: a plane the acquirer gives up on must not keep labelling for
+    the rest of the minute.  The summary drops to BOOTSTRAP in the minute
+    the reset happens, and no publish along the way was authoritative."""
+    import time as _time
+
+    from hf_timestd.core.registration_store import registration_refusal
+
+    svc = _service(tmp_path)
+    far = SimpleNamespace(
+        station="WWV",
+        ensemble_timing_error_ms=40.0,  # tick-like, but 40 ms off the plane
+        sigma_single_ms=0.5,
+        anchor_source="acquired",
+    )
+    seen = [
+        _run_minute(svc, 0, [_good_ensemble()]),  # acquire -> verify
+        _run_minute(svc, 1, [far]),  # first far minute: held
+        _run_minute(svc, 2, [far]),  # second: reacquire
+    ]
+    assert [v[2] for v in seen] == [
+        "state:CANDIDATE",
+        "uncorroborated",
+        "uncorroborated",
+    ]
+    assert svc.acquirer.state == RegistrationAcquirer.STATE_BOOTSTRAP
+    s = svc.reg_store.read_summary()
+    assert s["state"] == "BOOTSTRAP", "the summary must stand down the SAME minute"
+    assert registration_refusal(s, now=_time.time()) == "state:BOOTSTRAP"

@@ -63,12 +63,15 @@ def make_recorder(*, judge=None, ring=None, sample_rate=SR, provider=None):
     return rec
 
 
-def t3_label(utc_ref=WALL0, rtp_ref=1000, sample_rate=SR, epoch="ep-1",
-             tier="T3", sigma_ns=1e6):
+def t3_label(
+    utc_ref=WALL0, rtp_ref=1000, sample_rate=SR, epoch="ep-1", tier="T3", sigma_ns=1e6
+):
     """The provider's shape: a LabelAnchor (task 14)."""
     return LabelAnchor(
         anchor=t3_anchor(utc_ref, rtp_ref, sample_rate),
-        epoch_id=epoch, tier=tier, sigma_ns=sigma_ns,
+        epoch_id=epoch,
+        tier=tier,
+        sigma_ns=sigma_ns,
     )
 
 
@@ -285,7 +288,10 @@ def _core(store, t6_auth=None):
 
 def _acquired_store(tmp_path, utc_ref=WALL0):
     from hf_timestd.core.registration_acquirer import Registration
-    from hf_timestd.core.registration_store import RegistrationStore
+    from hf_timestd.core.registration_store import (
+        ADOPT_MIN_CORROBORATED_MINUTES,
+        RegistrationStore,
+    )
 
     store = RegistrationStore(tmp_path / "reg", tmp_path / "registration.json")
     store.write_summary(
@@ -295,6 +301,8 @@ def _acquired_store(tmp_path, utc_ref=WALL0):
             utc_ref=utc_ref,
             sample_rate=SR,
             sigma_ms=1.0,
+            # task 16b: corroborated long enough for every surface to act
+            n_minutes=ADOPT_MIN_CORROBORATED_MINUTES,
             channel="fused",
             verified=True,
         ),
@@ -313,7 +321,7 @@ def test_recorder_publishes_the_registration_as_the_provider_state(tmp_path):
     assert state is not None
     assert state.epoch_id == "ep-1" and state.tier == "T3"
     assert state.anchor.captured_via_tier == "T3"
-    assert state.sigma_ns == pytest.approx(1.0e6)   # floored delay-model bound
+    assert state.sigma_ns == pytest.approx(1.0e6)  # floored delay-model bound
     assert rec._t3_native_anchor is state.anchor
 
 

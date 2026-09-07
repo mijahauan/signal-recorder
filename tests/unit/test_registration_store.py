@@ -277,3 +277,60 @@ def test_store_writes_null_for_an_unknown_epoch_offset(tmp_path):
     import math
 
     assert math.isnan(st.read_siblings()[0].epoch_offset_s)
+
+
+# ── Task 16b: the fused plane's corroboration is its WEAKEST member's ──
+
+
+def test_fused_n_minutes_is_the_minimum_over_the_kept_members():
+    """A fused plane inherits the weakest provenance among the members it
+    kept -- ``verified`` already works that way (task-14c), and
+    ``n_minutes`` must too.  Taking the MAXIMUM let one channel's long
+    history vouch for a sibling that had corroborated nothing, which is
+    exactly what the ADOPT_MIN_CORROBORATED_MINUTES gate exists to
+    refuse."""
+    off = 1_000_000_000.0
+    regs = [
+        Registration(
+            counter_epoch_id="ep-1",
+            rtp_ref=1000,
+            utc_ref=100.0,
+            sample_rate=SR,
+            sigma_ms=1.0,
+            n_minutes=17,
+            channel="a",
+            verified=True,
+            epoch_offset_s=off,
+        ),
+        Registration(
+            counter_epoch_id="ep-1",
+            rtp_ref=1000,
+            utc_ref=100.0005,
+            sample_rate=SR,
+            sigma_ms=1.0,
+            n_minutes=0,
+            channel="b",
+            verified=True,
+            epoch_offset_s=off,
+        ),
+    ]
+    fused, kept = fuse_registrations_with_members(regs, at_rtp=1000)
+    assert kept == ["a", "b"]
+    assert fused.n_minutes == 0
+    # and an outlier that fusion DROPS cannot hold the number down
+    regs.append(
+        Registration(
+            counter_epoch_id="ep-1",
+            rtp_ref=1000,
+            utc_ref=100.010,  # 10 ms off the median
+            sample_rate=SR,
+            sigma_ms=1.0,
+            n_minutes=0,
+            channel="c",
+            verified=True,
+            epoch_offset_s=off,
+        )
+    )
+    regs[1] = Registration(**{**regs[1].__dict__, "n_minutes": 5})
+    fused2, kept2 = fuse_registrations_with_members(regs, at_rtp=1000)
+    assert kept2 == ["a", "b"] and fused2.n_minutes == 5

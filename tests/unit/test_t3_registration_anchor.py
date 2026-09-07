@@ -12,7 +12,10 @@ import pytest
 
 from hf_timestd.core.native_anchor import NativeAnchor, utc_ns_at_rtp
 from hf_timestd.core.registration_acquirer import Registration
-from hf_timestd.core.registration_store import RegistrationStore
+from hf_timestd.core.registration_store import (
+    ADOPT_MIN_CORROBORATED_MINUTES,
+    RegistrationStore,
+)
 from hf_timestd.core.t3_registration_anchor import T3RegistrationAnchor
 
 SR = 24000
@@ -36,8 +39,11 @@ def _write(
     sample_rate=SR,
     epoch="ep-1",
     sigma_ms=1.0,
+    n_minutes=ADOPT_MIN_CORROBORATED_MINUTES,
     extra=None,
 ):
+    """``n_minutes`` defaults to the adoption floor (task 16b), so these
+    fixtures still describe a plane every surface may act on."""
     store.write_summary(
         Registration(
             epoch,
@@ -45,6 +51,7 @@ def _write(
             utc_ref=utc_ref,
             sample_rate=sample_rate,
             sigma_ms=sigma_ms,
+            n_minutes=n_minutes,
             channel="fused",
             verified=True,
         ),
@@ -266,19 +273,13 @@ def test_fusion_carries_verified_from_every_member_it_keeps():
             epoch_offset_s=0.0,
         )
 
-    both, kept = fuse_registrations_with_members(
-        [reg("a", True), reg("b", True)], 0
-    )
+    both, kept = fuse_registrations_with_members([reg("a", True), reg("b", True)], 0)
     assert len(kept) == 2 and both.verified is True
 
-    mixed, kept = fuse_registrations_with_members(
-        [reg("a", True), reg("b", False)], 0
-    )
+    mixed, kept = fuse_registrations_with_members([reg("a", True), reg("b", False)], 0)
     assert len(kept) == 2 and mixed.verified is False
 
-    neither, _ = fuse_registrations_with_members(
-        [reg("a", False), reg("b", False)], 0
-    )
+    neither, _ = fuse_registrations_with_members([reg("a", False), reg("b", False)], 0)
     assert neither.verified is False
 
 
@@ -290,8 +291,17 @@ def test_the_summary_round_trips_a_verified_fused_plane(tmp_path):
     clock = [WALL0]
     store = _store(tmp_path, clock)
     members = [
-        Registration("ep-1", rtp_ref=0, utc_ref=WALL0, sample_rate=SR,
-                     sigma_ms=1.0, channel=c, verified=True, epoch_offset_s=0.0)
+        Registration(
+            "ep-1",
+            rtp_ref=0,
+            utc_ref=WALL0,
+            sample_rate=SR,
+            sigma_ms=1.0,
+            n_minutes=ADOPT_MIN_CORROBORATED_MINUTES,
+            channel=c,
+            verified=True,
+            epoch_offset_s=0.0,
+        )
         for c in ("SHARED_10000", "WWV_15000")
     ]
     fused, kept = fuse_registrations_with_members(members, 1000)

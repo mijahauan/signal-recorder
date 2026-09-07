@@ -124,7 +124,10 @@ def test_resolve_ambiguity_prefers_same_site_tolerance():
     label = label_timing(t0, 0.100, SR)  # label 100 ms late
     d = {"WWV": 0.010, "BPM": 0.044}
     assert acq.offer_minute(audio, label, 1_000_000, MIN, d, "ep-1") is None
-    assert acq.state == acq.STATE_BOOTSTRAP and len(acq._open) == 2
+    # task 16a: one open hypothesis, not two -- the BPM reading of this
+    # peak is stripped before any winner is chosen, and the surviving WWV
+    # reading stays ambiguous because band 1000 admits BPM as a reading
+    assert acq.state == acq.STATE_BOOTSTRAP and len(acq._open) == 1
     # a WWV-only sibling (20 MHz) places the plane 0.8 ms from truth: same site -> 1.5 ms tolerance
     sib = Registration(
         "ep-1",

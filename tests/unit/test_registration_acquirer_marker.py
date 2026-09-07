@@ -131,7 +131,10 @@ def test_no_marker_leaves_both_hypotheses_open():
     audio, label, _t0 = _shared_channel_minute(walk_s=0.100, marker=False)
     assert acq.offer_minute(audio, label, 1_000_000, MIN, D_SHARED, "ep-1") is None
     assert acq.state == acq.STATE_BOOTSTRAP
-    assert len(acq._open) == 2
+    # task 16a: the BPM reading of the same peak no longer survives as a
+    # hypothesis; one open WWV reading remains, ambiguous because band
+    # 1000 admits BPM as a READING of that peak
+    assert len(acq._open) == 1
 
 
 def test_bpm_like_train_stays_bootstrap():
@@ -146,7 +149,10 @@ def test_bpm_like_train_stays_bootstrap():
     )
     assert acq.offer_minute(audio, label, 1_000_000, MIN, D_SHARED, "ep-1") is None
     assert acq.state == acq.STATE_BOOTSTRAP
-    assert len(acq._open) == 2
+    # task 16a: the BPM reading of the same peak no longer survives as a
+    # hypothesis; one open WWV reading remains, ambiguous because band
+    # 1000 admits BPM as a READING of that peak
+    assert len(acq._open) == 1
 
 
 def test_live_minute_geometry_needs_a_second_minute():
@@ -176,7 +182,7 @@ def test_live_minute_geometry_needs_a_second_minute():
         )
         if k == 0:
             assert got is None, "one live-geometry minute cannot reach its own marker"
-            assert len(acq._open) == 2
+            assert len(acq._open) == 1
     assert got is not None, "the second minute puts a marker inside the search window"
     assert got.stations == ("WWV",)
     assert got.sample0_utc_for(1_000_000) == pytest.approx(MIN, abs=0.003)
@@ -253,3 +259,51 @@ def test_absent_marker_names_nothing():
     assert (
         marker_names_one_hypothesis([h_wwv, h_bpm], D_SHARED, lambda band: None) is None
     )
+
+
+# ── Task 16a at the acquirer: two 1000 Hz peaks, one marker ───────────
+
+
+def _two_train_minute(marker, walk_s=0.100):
+    """One WWV train (marker optional) plus a second 1000 Hz train 34 ms
+    later carrying none -- the ND 20:36Z geometry.  The second train's
+    own call runs at 60 dB so it adds ticks without adding noise."""
+    from synth_ticks import label_timing
+
+    t0 = MIN - RUN_UP_S
+    wwv = make_tick_audio(
+        62, SR, t0, {"WWV": 0.010}, snr_db=20.0, seed=7, marker=marker
+    )
+    artefact = make_tick_audio(
+        62, SR, t0, {"BPM": 0.044}, snr_db=60.0, seed=99, marker=False
+    )
+    return wwv + artefact, label_timing(t0, walk_s, SR), t0
+
+
+def test_a_second_1000_hz_peak_never_registers_as_bpm():
+    from hf_timestd.core.registration_acquirer import RegistrationAcquirer
+
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, t0 = _two_train_minute(marker=True)
+    reg = acq.offer_minute(audio, label, 1_000_000, MIN, D_SHARED, "ep-1")
+    assert reg is not None, "the marker should have named WWV"
+    assert reg.stations == ("WWV",)
+    assert "BPM" not in reg.stations
+    # the correction comes from the WWV peak alone: -walk, not a mean
+    # pulled toward the artefact 34 ms away
+    assert reg.sample0_utc_for(1_000_000) == pytest.approx(t0, abs=0.003)
+
+
+def test_the_two_peak_pair_without_a_marker_stays_bootstrap():
+    """Before task 16a this pair called itself unambiguous with support 2
+    and anchored the station on it."""
+    from hf_timestd.core.registration_acquirer import RegistrationAcquirer
+
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, _t0 = _two_train_minute(marker=False)
+    assert acq.offer_minute(audio, label, 1_000_000, MIN, D_SHARED, "ep-1") is None
+    assert acq.state == acq.STATE_BOOTSTRAP
+    assert acq._open, "the WWV readings stay open"
+    assert all(
+        "BPM" not in {a[0] for a in h.assignments} for h in acq._open
+    ), "no open hypothesis may name BPM"

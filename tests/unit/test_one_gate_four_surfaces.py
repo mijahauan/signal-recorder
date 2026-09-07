@@ -32,6 +32,7 @@ from hf_timestd.core.offset_judge import (
 )
 from hf_timestd.core.registration_acquirer import Registration
 from hf_timestd.core.registration_store import (
+    ADOPT_MIN_CORROBORATED_MINUTES,
     RegistrationStore,
     registration_is_authoritative,
     registration_refusal,
@@ -44,7 +45,18 @@ KEY = ("hf-status.local", 0xABCD1234)
 RTP_REF = 1000
 
 
-def _store(tmp_path, clock, state, *, verified, sigma_ms=1.0):
+def _store(
+    tmp_path,
+    clock,
+    state,
+    *,
+    verified,
+    sigma_ms=1.0,
+    n_minutes=ADOPT_MIN_CORROBORATED_MINUTES,
+):
+    """task 16b: ``n_minutes`` defaults to the adoption floor, so every
+    case below still means what it meant before the corroboration gate
+    existed."""
     st = RegistrationStore(
         tmp_path / "reg",
         tmp_path / "registration.json",
@@ -57,6 +69,7 @@ def _store(tmp_path, clock, state, *, verified, sigma_ms=1.0):
             utc_ref=WALL0,
             sample_rate=SR,
             sigma_ms=sigma_ms,
+            n_minutes=n_minutes,
             channel="fused",
             verified=verified,
         ),
@@ -89,6 +102,34 @@ def test_the_gate_names_its_refusal(tmp_path, state, verified, expected):
     assert registration_is_authoritative(summary, now=WALL0, sample_rate=SR) is (
         expected is None
     )
+
+
+@pytest.mark.parametrize(
+    "n_minutes,expected",
+    [(0, "uncorroborated"), (1, "uncorroborated"), (2, None), (17, None)],
+)
+def test_the_gate_waits_for_two_corroborated_minutes(tmp_path, n_minutes, expected):
+    """task 16b: on ND at 20:36Z a plane in its FIRST minute anchored the
+    ring and steered chrony, and corroboration only threw it out six
+    minutes later.  ADOPT_MIN_CORROBORATED_MINUTES minutes of
+    corroboration now stand between an acquisition and any surface
+    acting on it."""
+    clock = [WALL0]
+    summary = _store(
+        tmp_path, clock, "ACQUIRED", verified=True, n_minutes=n_minutes
+    ).read_summary()
+    assert registration_refusal(summary, now=WALL0, sample_rate=SR) == expected
+
+
+def test_an_unparseable_n_minutes_is_incomplete(tmp_path):
+    clock = [WALL0]
+    summary = _store(tmp_path, clock, "ACQUIRED", verified=True).read_summary()
+    assert registration_refusal(dict(summary, n_minutes="soon"), now=WALL0) == (
+        "incomplete"
+    )
+    # absent entirely: fail closed on nothing corroborated
+    del summary["n_minutes"]
+    assert registration_refusal(summary, now=WALL0) == "uncorroborated"
 
 
 def test_the_gate_refuses_a_missing_stale_or_foreign_summary(tmp_path):
@@ -201,6 +242,26 @@ def test_a_witness_plane_witnesses_and_never_steers(tmp_path, verified):
         assert reading.detail["refusal"] == "state:WITNESS"
     else:
         assert reading is None  # unverified: silent
+    assert block is None
+    assert sample is None
+
+
+@pytest.mark.parametrize("n_minutes", [0, 1])
+def test_an_uncorroborated_plane_reaches_none_of_them(tmp_path, n_minutes):
+    """task 16b: verified once, corroborated less than
+    ADOPT_MIN_CORROBORATED_MINUTES times.  On ND at 20:36Z exactly this
+    plane anchored the ring and steered chrony 23-28 ms off an NTP
+    consensus of 5-13 ms."""
+    clock = [WALL0]
+    store = _store(tmp_path, clock, "ACQUIRED", verified=True, n_minutes=n_minutes)
+    label, reason = _anchor_surface(store, clock)
+    assert label is None and reason == "uncorroborated"
+    reading, block, sample = _fuse_surface(store, clock, tmp_path)
+    # the bench still answers (the judge wants the residual) but the
+    # reading is not authoritative, so no label plane and no chrony sample
+    assert reading is not None
+    assert reading.detail["authoritative"] is False
+    assert reading.detail["refusal"] == "uncorroborated"
     assert block is None
     assert sample is None
 
