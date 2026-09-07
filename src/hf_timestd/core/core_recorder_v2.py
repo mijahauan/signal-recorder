@@ -36,7 +36,7 @@ import socket
 import numpy as np
 from collections import deque
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -660,6 +660,11 @@ class CoreRecorderV2:
         except Exception as e:
             logger.error(f"T5RtpPairing init failed (T5 stays Phase-2A): {e}")
             self._t5_pairing = None
+        # HfAcquiredBench provider state (T3, task 9): (arrival_rtp,
+        # arrival_mono) of the most recently arrived sample, recorded by
+        # this recorder's own stream callback so the bench does not
+        # depend on the T6-only _t5_pairing.  None until a batch arrives.
+        self._hf_arrival: Optional[Tuple[int, float]] = None
         # P5 decoupling (2026-08-05, AC0G-B4: lb1421_enabled=true with
         # [timing.t6_pps] off left the judge stuck at T4 because the T5
         # bench only ever grounded on the T6 stream): every archive
@@ -702,13 +707,17 @@ class CoreRecorderV2:
         # lb1421 probe materialise after __init__.
         if self._offset_judge is not None:
             try:
-                from .offset_judge import NativeAnchorBench, LbeT5Bench
+                from .offset_judge import (
+                    NativeAnchorBench, LbeT5Bench, HfAcquiredBench,
+                )
                 self._offset_judge.add_bench(
                     NativeAnchorBench(provider=self._t6_bench_state))
                 self._offset_judge.add_bench(
                     LbeT5Bench(provider=self._t5_bench_state))
+                self._offset_judge.add_bench(
+                    HfAcquiredBench(provider=self._hf_acquired_bench_state))
                 logger.info("OffsetJudge: T6 (NativeAnchor) + T5 (LB-142x "
-                            "pairing) benches wired")
+                            "pairing) + T3 (hf_acquired) benches wired")
             except Exception as e:
                 logger.error(
                     f"OffsetJudge T6/T5 bench wiring failed (judge "
@@ -1858,6 +1867,13 @@ class CoreRecorderV2:
                 self._wwvb_anchor_rtp = None
             else:
                 rtp0 = int(rtp0) & 0xFFFFFFFF
+                # HfAcquiredBench provider (T3, task 9): the recorder's
+                # own latest stream arrival — (rtp of the LAST sample in
+                # this batch, monotonic now).  rtp0 above is samples[0];
+                # this stream runs independently of T6/LB-142x hardware,
+                # so it grounds the bench on stations without either.
+                self._hf_arrival = (
+                    (rtp0 + len(samples)) & 0xFFFFFFFF, time.monotonic())
                 # ---- hf-timestd#23 probe ----
                 # Does RTP advance by the number of samples we were
                 # actually handed?  The continuity check below assumes
@@ -2509,6 +2525,27 @@ class CoreRecorderV2:
             except Exception as e:  # noqa: BLE001 — bench must not die
                 logger.debug(f"T6 arrival floor estimate failed: {e}")
         return (anchor, arrival[0], arrival[1], floor)
+
+    def _hf_acquired_bench_state(self):
+        """HfAcquiredBench provider (T3, task 9): (arrival_rtp,
+        arrival_mono) of the most recently arrived sample.
+
+        Prefers this recorder's own arrival record (``_hf_arrival``,
+        fed by the WWVB stream callback) so the bench does not depend
+        on T6 hardware; falls back to the T5 pairing's arrival (which
+        only ever grounds on the T6 stream) when this recorder has not
+        seen a batch of its own yet.
+        """
+        arrival = getattr(self, '_hf_arrival', None)
+        if arrival is not None:
+            return arrival
+        pairing = getattr(self, '_t5_pairing', None)
+        if pairing is None:
+            return None
+        arrival = pairing.latest_arrival
+        if arrival is None:
+            return None
+        return (arrival[0], arrival[1])
 
     def _wire_t5_fallback_arrival(self, description: str, recorder) -> None:
         """Give an archive stream its own T5 pairing arrival tracker.

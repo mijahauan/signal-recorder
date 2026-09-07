@@ -693,6 +693,69 @@ class LbeT5Bench:
         )
 
 
+class HfAcquiredBench:
+    """T3 bench: the tick-acquired registration (spec 2026-09-06 §6).
+
+    The ONE bench that never touches the host clock: it projects the
+    acquired origin (utc_ref at rtp_ref, held on the GPSDO-locked RTP
+    counter) to the most recently arrived sample and hands that off to
+    the monotonic clock at the arrival instant, exactly as
+    NativeAnchorBench does for T6.  Its residual against the raw radiod
+    pair (carried in ``detail``) names pair skew directly.
+
+    Answers on both ACQUIRED and WITNESS summary states.  WITNESS means
+    a T6 station is publishing the acquired plane without it driving
+    metrology — the bench still answers so the judge can compute the
+    hf_acquired-vs-T6 residual.  BOOTSTRAP/CONFLICT/missing stay silent.
+
+    provider() -> Optional[(arrival_rtp, arrival_mono)] of the most
+    recently arrived sample.
+    """
+
+    TIER = "T3"
+    FRESHNESS_S = 180.0
+    ARRIVAL_MAX_AGE_S = 5.0
+    _LIVE_STATES = ("ACQUIRED", "WITNESS")
+
+    def __init__(self, provider: Callable[[], Optional[Tuple[int, float]]],
+                 store=None, mono_fn: Callable[[], float] = time.monotonic,
+                 time_fn: Callable[[], float] = time.time):
+        from .registration_store import RegistrationStore
+        self._provider = provider
+        self._store = store if store is not None else RegistrationStore()
+        self._mono = mono_fn
+        self._time = time_fn
+
+    def poll(self) -> Optional[BenchReading]:
+        try:
+            state = self._provider()
+        except Exception:  # noqa: BLE001 — provider trouble ≠ judge trouble
+            return None
+        if state is None:
+            return None
+        arrival_rtp, arrival_mono = state
+        age = self._mono() - float(arrival_mono)
+        if age < 0 or age > self.ARRIVAL_MAX_AGE_S:
+            return None
+        s = self._store.read_summary()
+        if not s or s.get("state") not in self._LIVE_STATES or s.get("utc_ref") is None:
+            return None
+        reg_age = self._time() - float(s.get("written_at", 0))
+        if reg_age > self.FRESHNESS_S:
+            return None
+        sr = float(s["sample_rate"])
+        delta_rtp = _rtp_delta_signed(int(arrival_rtp), int(s["rtp_ref"]))
+        utc = float(s["utc_ref"]) + delta_rtp / sr
+        return BenchReading(
+            utc=utc, mono=float(arrival_mono), sigma_ns=float(s["sigma_ms"]) * 1e6,
+            tier=self.TIER,
+            detail={"bench": "hf_acquired", "counter_epoch_id": s.get("counter_epoch_id"),
+                    "raw_pair_residual_ms": s.get("raw_pair_residual_ms"),
+                    "registration_age_s": round(reg_age, 1)},
+            plane="label",
+        )
+
+
 # ────────────────────────────────────────────────────────────────────
 # Verdict + per-source state
 # ────────────────────────────────────────────────────────────────────
