@@ -621,6 +621,16 @@ class CoreRecorderV2:
         # their own cadence.
         _timing_section = config.get('timing', {})
 
+        # Task 17a: is the T3 registration anchor closure in force?
+        # Resolved ONCE here, from this process's own config, and handed
+        # to every piece that needs it — the judge (§18 and the FUSE
+        # feed), the T3 anchor holder (the ring and the sidecar), and the
+        # provider below.  Reading the file per call would put I/O on the
+        # judge's tick thread and the writer's hot path, and would let
+        # two components of one process disagree about the regime.
+        from .anchor_closure import anchor_closure_enabled
+        self._anchor_closure = anchor_closure_enabled(config)
+
         # ── Offset Judge (docs/OFFSET-JUDGE-SPEC-2026-08-05.md, P1) ──
         # One judge per core-recorder process (spec §11: no new daemon).
         # It measures radiod's advertised epoch against the best bench
@@ -645,7 +655,8 @@ class CoreRecorderV2:
         if _oj_cfg.get('enabled', True):
             try:
                 from .offset_judge import OffsetJudge
-                self._offset_judge = OffsetJudge(config=_oj_cfg)
+                self._offset_judge = OffsetJudge(
+                    config=_oj_cfg, anchor_closure=self._anchor_closure)
                 self._offset_judge.start()
             except Exception as e:
                 logger.error(
@@ -744,11 +755,19 @@ class CoreRecorderV2:
             # failure here must leave the judge publishing the legacy
             # judged pair rather than nothing.
             try:
-                self._offset_judge.set_label_anchor_provider(
-                    self._label_anchor_state)
-                logger.info("OffsetJudge: label-plane anchor wired — §18 "
-                            "utc_anchor_ns states the anchor's own UTC "
-                            "(task 14a)")
+                if not self._anchor_closure:
+                    # Task 17a: nothing installed at all, so §18 reads
+                    # exactly as it did at c7b2106.
+                    logger.info(
+                        "OffsetJudge: label-plane anchor NOT wired — the "
+                        "registration anchor closure is off; §18 keeps "
+                        "radiod's judged pair (task 17a)")
+                else:
+                    self._offset_judge.set_label_anchor_provider(
+                        self._label_anchor_state)
+                    logger.info("OffsetJudge: label-plane anchor wired — §18 "
+                                "utc_anchor_ns states the anchor's own UTC "
+                                "(task 14a)")
             except Exception as e:
                 logger.error(
                     f"OffsetJudge label-anchor wiring failed (§18 keeps "
@@ -1500,7 +1519,12 @@ class CoreRecorderV2:
                 # metrology, authority.json §18 and every subscriber
                 # resolve UTC from — carries it directly rather than
                 # radiod's host-stamped pair with a correction bolted on.
-                recorder.set_label_anchor_provider(self._label_anchor_state)
+                # Task 17a: only when the station opted into the closure.
+                # Off, nothing is installed and the ring and sidecar keep
+                # radiod's pair with the judge's correction.
+                if self._anchor_closure:
+                    recorder.set_label_anchor_provider(
+                        self._label_anchor_state)
 
             logger.info(f"✓ Initialized {len(self.recorders)} archive recorders")
 
@@ -2618,7 +2642,8 @@ class CoreRecorderV2:
             holder = getattr(self, '_t3_anchor_holder', None)
             if holder is None:
                 from .t3_registration_anchor import T3RegistrationAnchor
-                holder = T3RegistrationAnchor()
+                holder = T3RegistrationAnchor(
+                    anchor_closure=getattr(self, '_anchor_closure', False))
                 self._t3_anchor_holder = holder
             holder.refresh(
                 t6_authoritative=self._t6_anchor_is_authoritative()
@@ -2687,7 +2712,16 @@ class CoreRecorderV2:
         domain — T6's anchor lives in the 96 kHz BPSK counter and cannot
         label a 24 kHz archive channel (``cross_channel_rtp.py``,
         ``time_map_context``).
+
+        Task 17a: silent while the anchor closure is off, for T6 as well
+        as T3.  At c7b2106 NO label-plane anchor existed and all three
+        surfaces resolved UTC from radiod's pair with the judge's
+        correction; standing only the T3 arm down would leave a T6
+        station on a path that commit never ran.  "Off" has to mean the
+        c7b2106 behaviour on every station, not on T6-less ones only.
         """
+        if not getattr(self, '_anchor_closure', False):
+            return None
         return self._t6_label_anchor_state() or self._t3_label_anchor_state()
 
     def _wire_t5_fallback_arrival(self, description: str, recorder,

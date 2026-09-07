@@ -19,6 +19,7 @@ from hf_timestd.core.authority_manager import (
     AuthorityManager,
     Probe,
 )
+from hf_timestd.core.anchor_closure import anchor_closure_enabled
 from hf_timestd.core.bpsk_pps_probe import BpskPpsProbe
 from hf_timestd.core.chrony_refclock_gate import ChronyRefclockGate
 from hf_timestd.core.mdns_fusion_advertiser import MdnsFusionAdvertiser
@@ -392,6 +393,9 @@ def build_authority_runner_from_config(
             withdraw_on_host_clock=bool(gate_cfg.get("withdraw_on_host_clock", True)),
             host_clock_clear_sec=float(gate_cfg.get("host_clock_clear_sec", 600.0)),
             sudo=bool(gate_cfg.get("sudo", False)),
+            # Task 17a: the anchor-direct withdrawal rule applies only
+            # while the registration anchor closure does.
+            anchor_closure=anchor_closure_enabled(config),
         )
 
     mdns_advertiser = None

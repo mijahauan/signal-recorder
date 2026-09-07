@@ -4362,6 +4362,12 @@ def run_fusion_service(
     # service so a fusion hang decays authority.json, chrony SHM reach,
     # and mDNS advertisement together.
     authority_runner = None
+    # Task 17a: is the T3 registration anchor closure in force?  Resolved
+    # once, below, from the same config the authority manager reads, so
+    # this process and the recorder cannot disagree about the regime.
+    # False until then, and False if the config cannot be read at all --
+    # a station whose regime is unknown does not hand chrony the anchor.
+    _anchor_closure = False
     try:
         from hf_timestd.core.authority_runner import build_authority_runner_from_config
         # Re-read config for the authority block (config was loaded earlier
@@ -4375,6 +4381,14 @@ def run_fusion_service(
                 _auth_config = _toml_auth.load(_auth_cfg_path)
         except Exception as _e:
             logger.warning(f"Could not re-read config for authority manager: {_e}")
+        try:
+            from hf_timestd.core.anchor_closure import anchor_closure_enabled
+            _anchor_closure = anchor_closure_enabled(_auth_config)
+        except Exception as _ac_exc:  # noqa: BLE001 — unknown regime is off
+            logger.warning(
+                f"anchor closure regime unresolved ({_ac_exc}) — the FUSE "
+                f"feed stays on fusion d_clock"
+            )
         authority_runner = build_authority_runner_from_config(config=_auth_config)
         # TIMING_PROVENANCE_MODEL §3.2: the station's chain records, for the
         # GRAPE packager.  Best-effort; the timing chain outranks its provenance.
@@ -4638,7 +4652,14 @@ def run_fusion_service(
             # feed that can only speak when fusion's own quality gates
             # pass is exactly the feed that went quiet.  The anchor's
             # own freshness bound (LABEL_ANCHOR_MAX_AGE_S) is its gate.
-            if chrony_shm_l2 and chrony_shm_l2.connected:
+            # Task 17a: only a station that opted into the closure
+            # ([timing.registration] anchor_closure) lets the anchor
+            # reach chrony.  Off, this whole block is skipped and the
+            # legacy d_clock write below runs exactly as it did at
+            # c7b2106 -- and `anchor_regime` stays False, so
+            # fusion_status.json reports the legacy regime and the
+            # refclock gate keeps its legacy rule.
+            if _anchor_closure and chrony_shm_l2 and chrony_shm_l2.connected:
                 try:
                     from hf_timestd.core.offset_judge import (
                         label_plane_chrony_sample,
@@ -4685,12 +4706,21 @@ def run_fusion_service(
                     loop_metrics.record_phase(
                         "shm_write", time.monotonic() - _shm_anchor_t0)
             if not anchor_regime and _last_feed_regime != "fusion_d_clock":
-                logger.warning(
-                    "FUSE feed: falling back to fusion d_clock -- no fresh "
-                    "label-plane anchor.  d_clock is measured against the "
-                    "ring plane, which radiod stamps from the host clock, "
-                    "so it cannot see a host-wide error (spec §11.2)."
-                )
+                if _anchor_closure:
+                    logger.warning(
+                        "FUSE feed: falling back to fusion d_clock -- no "
+                        "fresh label-plane anchor.  d_clock is measured "
+                        "against the ring plane, which radiod stamps from "
+                        "the host clock, so it cannot see a host-wide "
+                        "error (spec §11.2)."
+                    )
+                else:
+                    logger.info(
+                        "FUSE feed: fusion d_clock (the registration "
+                        "anchor closure is off -- see the "
+                        "`anchor-direct WOULD feed:` line for what it "
+                        "would have said)"
+                    )
                 _last_feed_regime = "fusion_d_clock"
 
             if result:

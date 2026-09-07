@@ -299,6 +299,36 @@ enabled = true
 # or a disposition; a Type A term carries measured_on.  `hf-timestd validate`
 # checks each override.  The fusion service publishes the result at
 # /run/hf-timestd/timing_chain.json for the GRAPE packager.
+# === The T3 registration anchor closure (spec §11, task 17a) ===
+#
+# Spec §11 closes the loop between the tick-acquired registration and the
+# surfaces that PLACE UTC: the ring, authority.json §18, the archive sidecar,
+# and the FUSE chrony feed.  With this key false (the default) the acquirer
+# still runs, the channel files and the station summary are still published,
+# and every witness still reads them -- what stands down is the right to place
+# UTC.  Each of those four surfaces then behaves exactly as it did before the
+# closure existed: the ring and the sidecar resolve UTC from radiod's pair with
+# the Offset Judge's correction, §18 states that same judged pair, and the FUSE
+# feed carries fusion's d_clock.
+#
+# ⛔ AC0G-ND, 2026-09-07.  The closure was deployed and the anchor-direct FUSE
+# feed engaged twice -- 20:41Z and 21:21Z.  Both times it reported the host
+# clock SLOW (+23..28 ms, then +60.5 ms) while four NTP witnesses put the host
+# FAST (+13, +30 ms); chrony followed FUSE and slewed the host the wrong way.
+# Corroboration reset the registration and the anchor withdrew on its own, so
+# each episode lasted one to two minutes.  The sign contradiction is not
+# understood yet.  While it is not, no station may hand the registration the
+# clock: the closure moves every surface onto one plane at once, which is
+# exactly the state in which nothing is left to disagree.
+#
+# Turn it on only on a station where you are watching, and read the
+# `anchor-direct WOULD feed:` INFO line (task 17c) first -- fusion logs it once
+# a minute whatever this key says, naming the anchor's claim, the NTP pool
+# median, and the ring plane's residual against the registration, so the sign
+# can be checked before anything acts on it.
+[timing.registration]
+anchor_closure = false
+
 [timing.provenance]
 # measurand_plane = "antenna_terminals"
 # calibration_plane = "ts1_injection_point"

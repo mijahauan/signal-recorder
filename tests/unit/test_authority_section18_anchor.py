@@ -83,6 +83,9 @@ def _judge(
         publish_path=tmp_path / "offset_judge.json",
         time_fn=lambda: host_wall,
         mono_fn=lambda: 1000.0,
+        # Task 17a: these tests are ABOUT the anchor closure, which is now
+        # opt-in and off by default, so they opt in explicitly.
+        anchor_closure=True,
     )
     if provider is not None:
         judge.set_label_anchor_provider(provider)
@@ -200,6 +203,9 @@ def test_the_anchor_publishes_even_before_the_judge_has_a_verdict(tmp_path):
         publish_path=tmp_path / "offset_judge.json",
         time_fn=lambda: WALL0,
         mono_fn=lambda: 1000.0,
+        # Task 17a: these tests are ABOUT the anchor closure, which is now
+        # opt-in and off by default, so they opt in explicitly.
+        anchor_closure=True,
     )
     judge.set_label_anchor_provider(lambda: label)
     judge.register_radiod_pair(

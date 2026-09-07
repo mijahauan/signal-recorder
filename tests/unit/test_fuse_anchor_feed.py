@@ -56,6 +56,9 @@ def _judge(tmp_path, benches, wall, mono):
         publish_path=tmp_path / "offset_judge.json",
         time_fn=lambda: wall[0],
         mono_fn=lambda: mono[0],
+        # Task 17a: these tests are ABOUT the anchor closure, which is now
+        # opt-in and off by default, so they opt in explicitly.
+        anchor_closure=True,
     )
     judge.register_radiod_pair(KEY, _unix_to_gps_ns(wall[0]), 0, SR)
     return judge

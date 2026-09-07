@@ -79,6 +79,15 @@ logger = logging.getLogger(__name__)
 PUBLISH_SCHEMA = "offset-judge-v1"
 # The additive block spec §11.2 (2026-09-07) publishes for the FUSE feed.
 LABEL_PLANE_ANCHOR_KEY = "label_plane_anchor"
+# The same statement, published under a key NO chrony path reads, while
+# the anchor closure is off (task 17a/17c).  The sign contradiction that
+# steered AC0G-ND on 2026-09-07 -- the anchor calling the host slow while
+# four NTP witnesses called it fast -- has to stay watchable, and the
+# only honest way to watch it is to publish the number and act on
+# nothing.  ``label_plane_chrony_sample`` reads
+# ``LABEL_PLANE_ANCHOR_KEY`` by default, so a caller can only reach the
+# witness by naming it.
+LABEL_PLANE_WITNESS_KEY = "label_plane_witness"
 # How old the anchor's arrival may be before the fusion process refuses
 # it.  One judge tick (10 s) + one arrival window (5 s) + one fusion
 # cycle (8 s) with margin: past this the pairing has been projected on
@@ -941,8 +950,18 @@ class OffsetJudge:
         time_fn: Callable[[], float] = time.time,
         mono_fn: Callable[[], float] = time.monotonic,
         alert_runner: Optional[Callable[..., subprocess.CompletedProcess]] = None,
+        anchor_closure: bool = False,
     ):
         cfg = dict(config or {})
+        # Task 17a: the registration anchor closure is opt-in
+        # ([timing.registration] anchor_closure).  While it is off the
+        # judge stays exactly where c7b2106 left it -- §18's
+        # ``utc_anchor_ns`` comes from radiod's pair with this judge's
+        # correction, and ``label_plane_anchor`` is never populated, so
+        # the FUSE feed has only fusion's d_clock.  The label plane's own
+        # statement is still published, under ``label_plane_witness``,
+        # for the offline analysis (task 17c).
+        self.anchor_closure = bool(anchor_closure)
         self.enabled = bool(cfg.get("enabled", True))
         self.k = float(cfg.get("k", 5.0))
         self.tick_seconds = float(cfg.get("tick_seconds", 10.0))
@@ -1243,6 +1262,10 @@ class OffsetJudge:
         channel; the T3 registration is stamped in the archive channels'
         own counter and must never label the T6 stream.
         """
+        # Task 17a: with the closure off, §18 states radiod's judged pair
+        # whatever the recorder wired in.
+        if not self.anchor_closure:
+            return None
         provider = self._label_anchor_provider
         if provider is None:
             return None
@@ -2731,7 +2754,21 @@ class OffsetJudge:
             # monotonic) statement, for the FUSE chrony feed in the
             # fusion process.  Published independently of tier
             # arbitration — see _select_label_anchor_locked.
-            LABEL_PLANE_ANCHOR_KEY: self._label_anchor_block_locked(mono_now),
+            # Task 17a: the closure is opt-in, so the block lands under
+            # ``label_plane_anchor`` (which the FUSE feed reads) only
+            # while the closure is on, and under
+            # ``label_plane_witness`` -- which nothing acts on -- while
+            # it is off.  Exactly one of the two is ever populated.
+            LABEL_PLANE_ANCHOR_KEY: (
+                self._label_anchor_block_locked(mono_now)
+                if self.anchor_closure
+                else None
+            ),
+            LABEL_PLANE_WITNESS_KEY: (
+                None
+                if self.anchor_closure
+                else self._label_anchor_block_locked(mono_now)
+            ),
             # Precision non-regression clause: a voluntary upgrade
             # currently refused because the candidate's sigma would
             # materially regress the judge's precision (None when
@@ -2908,12 +2945,19 @@ class LabelPlaneAnchorSample:
 
 def read_label_plane_anchor(
     path: os.PathLike = Path("/run/hf-timestd/offset_judge.json"),
+    *,
+    key: str = LABEL_PLANE_ANCHOR_KEY,
 ) -> Optional[Dict]:
     """The published ``label_plane_anchor`` block, or None.
 
     None on every failure mode a consumer must survive: no file, bad
     JSON, an unrecognised schema, no label plane this tick, or a block
     that does not actually claim the label plane.
+
+    ``key`` names which block to read.  It defaults to the one the FUSE
+    feed acts on, so ``LABEL_PLANE_WITNESS_KEY`` (task 17a) can only be
+    reached by a caller that asks for it by name -- the offline sign
+    analysis of task 17c, and nothing else.
     """
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -2922,7 +2966,7 @@ def read_label_plane_anchor(
         return None
     if not isinstance(data, dict) or data.get("schema") != PUBLISH_SCHEMA:
         return None
-    block = data.get(LABEL_PLANE_ANCHOR_KEY)
+    block = data.get(key)
     if not isinstance(block, dict) or not block:
         return None
     if str(block.get("plane")) != "label":
@@ -2934,6 +2978,7 @@ def label_plane_chrony_sample(
     path: os.PathLike = Path("/run/hf-timestd/offset_judge.json"),
     *,
     max_age_s: float = LABEL_ANCHOR_MAX_AGE_S,
+    key: str = LABEL_PLANE_ANCHOR_KEY,
     time_fn: Callable[[], float] = time.time,
     mono_fn: Callable[[], float] = time.monotonic,
 ) -> Optional[LabelPlaneAnchorSample]:
@@ -2950,7 +2995,7 @@ def label_plane_chrony_sample(
     slews, so a long projection re-imports the very frequency error the
     sample is meant to measure.
     """
-    block = read_label_plane_anchor(path)
+    block = read_label_plane_anchor(path, key=key)
     if block is None:
         return None
     try:

@@ -90,13 +90,24 @@ class T3RegistrationAnchor:
     anchor, which is the pre-amendment behaviour.
     """
 
-    def __init__(self, store=None, time_fn: Callable[[], float] = time.time):
+    def __init__(
+        self,
+        store=None,
+        time_fn: Callable[[], float] = time.time,
+        *,
+        anchor_closure: bool = False,
+    ):
         if store is None:
             from .registration_store import RegistrationStore
 
             store = RegistrationStore()
         self._store = store
         self._time = time_fn
+        # Task 17a: the closure is opt-in, and OFF is the default here as
+        # well as in the config.  A future call site that forgets to pass
+        # the flag gets the safe regime, not the one that steered
+        # AC0G-ND's clock the wrong way on 2026-09-07.
+        self._closure = bool(anchor_closure)
         self._decision = T3AnchorDecision(None, None, "not_evaluated")
 
     # ── the current answer ───────────────────────────────────────────
@@ -150,6 +161,11 @@ class T3RegistrationAnchor:
         and leaves per-channel matching to the consumer, which knows its
         own configured rate (``StreamRecorderV2._label_anchor_state``).
         """
+        # Task 17a, ahead of every other gate: the operator needs to see
+        # that the closure itself is off, not the name of a gate that was
+        # never consulted.
+        if not self._closure:
+            return T3AnchorDecision(None, None, "closure_disabled")
         if t6_authoritative:
             return T3AnchorDecision(None, None, "t6_authoritative")
         try:

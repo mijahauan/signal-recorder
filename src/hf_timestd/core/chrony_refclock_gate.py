@@ -44,6 +44,13 @@ verdict says the witnesses disagree with each other, and then no source
 in this station's frame should steer anything.  Under the legacy regime,
 and when the regime cannot be read at all, behaviour is unchanged.
 
+Task 17a made the closure opt-in, and this rule opt-in with it:
+``anchor_closure=False`` (the default) never reads the regime at all and
+keeps the legacy withdrawal rule exactly as c7b2106 wrote it.  The
+regime is a fact about the OTHER process's last cycle; a
+fusion_status.json left behind by an earlier enabled run would otherwise
+disarm the legacy rule on a station that never opted in.
+
 This is the runtime-mutable half of the chrony integration. Stratum,
 refid, and precision remain static per-install (chrony does not expose
 runtime setters for those) and follow the install-time convention
@@ -109,6 +116,7 @@ class ChronyRefclockGate:
         now_fn: Callable[[], float] = time.monotonic,
         sudo: bool = False,
         feed_regime_fn: Optional[Callable[[], Optional[str]]] = None,
+        anchor_closure: bool = False,
     ):
         self.refid = refid
         self.chronyc_bin = chronyc_bin or shutil.which("chronyc") or "chronyc"
@@ -136,6 +144,12 @@ class ChronyRefclockGate:
         # every cycle.
         self._feed_regime_fn = feed_regime_fn or self._default_feed_regime
         self._last_regime: Optional[str] = None
+        # Task 17a: the anchor-direct rule exists only for the anchor
+        # closure, so it applies only while the closure does.  A
+        # fusion_status.json left behind by an earlier enabled run can
+        # still read ``anchor``; believing it would leave the legacy
+        # withdrawal rule off on a station that never opted in.
+        self.anchor_closure = bool(anchor_closure)
 
     @property
     def host_clock_withdrawn(self) -> bool:
@@ -164,7 +178,7 @@ class ChronyRefclockGate:
         if not self.withdraw_on_host_clock or verdict is None:
             return None
         self._hc_verdict = verdict
-        regime = self._feed_regime()
+        regime = self._feed_regime() if self.anchor_closure else None
         if regime == self.ANCHOR_REGIME:
             return self._update_host_clock_anchor_direct(verdict)
         if self._last_regime == self.ANCHOR_REGIME:

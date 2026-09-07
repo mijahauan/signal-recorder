@@ -53,6 +53,9 @@ def _gate(regime, clock=None, **kw):
         runner=_Runner() if "runner" not in kw else kw.pop("runner"),
         feed_regime_fn=(regime if callable(regime) else (lambda: regime)),
         now_fn=(lambda: clock[0]) if clock else (lambda: 0.0),
+        # Task 17a: the anchor-direct rule is opt-in with the closure;
+        # this file tests that rule, so it opts in.
+        anchor_closure=kw.pop("anchor_closure", True),
         **kw,
     )
 
@@ -182,7 +185,9 @@ def test_the_gate_reads_the_regime_the_writer_publishes(tmp_path, monkeypatch):
     assert fsw.read_feed_regime(path) == "fusion_d_clock"
     runner = _Runner()
     g = ChronyRefclockGate(
-        runner=runner, feed_regime_fn=lambda: fsw.read_feed_regime(path)
+        runner=runner,
+        feed_regime_fn=lambda: fsw.read_feed_regime(path),
+        anchor_closure=True,
     )
     assert g.apply("T3", "suspect").target_state == "disabled"
 
@@ -227,6 +232,6 @@ def test_a_raising_regime_reader_never_breaks_the_gate():
         raise RuntimeError("nope")
 
     runner = _Runner()
-    g = ChronyRefclockGate(runner=runner, feed_regime_fn=boom)
+    g = ChronyRefclockGate(runner=runner, feed_regime_fn=boom, anchor_closure=True)
     # unreadable regime == legacy behaviour
     assert g.apply("T3", "suspect").target_state == "disabled"
