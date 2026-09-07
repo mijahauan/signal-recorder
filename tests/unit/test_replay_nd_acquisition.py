@@ -671,30 +671,42 @@ def test_nd_shared_channel_resolved_by_real_same_site_siblings(chunk):
     same RTP counter, are the first real data for that path.
 
     **Fix-round-4 finding -- neither sibling can do the job in this
-    window, and one of them is actively dangerous:**
+    window, and one of them USED TO BE actively dangerous:**
 
     * ``WWV_20000`` carries no acquirable tick.  Fold-peak SNR never
       crosses the ~13 dB floor at any fold length (1000-band 10.9 dB at
       60 s, 10.1 at 180 s, 9.7 at 540 s), and the acquirer stays
       BOOTSTRAP through every offered minute -- correct behaviour on a
       closed band.
-    * ``WWV_25000`` DOES acquire, unambiguously, as ``('WWV',)`` -- and
-      the plane it acquires is **~497 ms wrong**.  It comes from a single
-      13.7 dB fold peak at 502.54 ms that exists only at the one fold
-      length the acquirer happened to use (122 s); folds of 60/180/540 s
-      over the same chunk find no peak at all in either band.  A WWV tick
-      cannot arrive half a second late -- the whole ionospheric delay
-      budget is tens of milliseconds -- so this is a fold-lattice phantom,
-      and the fine search on the resulting plane says so plainly:
-      sigma_1 = 14.6 ms (vs. 0.40 ms for SHARED_10000's real tick), well
-      past ``TIMING_SIGMA_MAX_MS`` = 6 ms, the design's own "tick-like
-      ensemble" bound.
-      The mechanism matters beyond this fixture: on a single-station
+    * ``WWV_25000`` used to acquire, unambiguously, as ``('WWV',)``, on a
+      plane **~497 ms wrong** -- a single 13.7 dB fold peak at 502.54 ms
+      that existed only at the one fold length the acquirer happened to
+      use (122 s); folds of 60/180/540 s over the same chunk find no peak
+      at all in either band.  A WWV tick cannot arrive half a second late
+      -- the whole ionospheric delay budget is tens of milliseconds -- so
+      this was a fold-lattice phantom, and the fine search on the
+      resulting plane said so plainly: sigma_1 = 14.6 ms (vs. 0.40 ms for
+      SHARED_10000's real tick), well past ``TIMING_SIGMA_MAX_MS`` = 6 ms,
+      the design's own "tick-like ensemble" bound.
+      The mechanism mattered beyond this fixture: on a single-station
       channel ``fit_template`` marks a lone peak unambiguous by
       construction (there is no second station to confuse it with), so a
-      DEDICATED channel on a closed band self-registers on noise with no
-      corroboration -- the design's strongest-looking input is its
-      weakest when the band is shut.
+      DEDICATED channel on a closed band would self-register on noise
+      with no corroboration -- the design's strongest-looking input was
+      its weakest when the band was shut.
+
+      **task-11b closes this**: ``_try_acquire`` now requires the winning
+      peak to recur, within ``PEAK_PERSISTENCE_MS``, in an independent
+      fold of the FIRST half and the SECOND half of the buffer (spec
+      §10).  A fold-lattice phantom is absent from at least one half (it
+      only ever crossed the detection floor at the one fold length the
+      acquirer happened to land on); a genuine tick, present every
+      second, survives the halving.  On this exact chunk, WWV_25000 now
+      stays BOOTSTRAP outright -- gate (a) alone stops the phantom, never
+      reaching the fine-search verification gate (b) at all.  The loop
+      below asserts BOOTSTRAP and, defensively, still runs the (b) path
+      by hand (feeding the fine-search result to ``verify()``) in the
+      event it ever does acquire on different data.
 
     Everything the fixture CAN establish is asserted; the sibling-resolved
     assertions run only behind a real, tick-like sibling plane, and the
@@ -784,10 +796,39 @@ def test_nd_shared_channel_resolved_by_real_same_site_siblings(chunk):
                 + " -- band closed, acquirer correctly stays BOOTSTRAP"
             )
             assert acqS.state == RegistrationAcquirer.STATE_BOOTSTRAP
+            if name == "WWV_25000":
+                # task-11b, gate (a): this used to be the phantom -- confirm
+                # it now stays BOOTSTRAP outright, never even reaching the
+                # fine-search verification gate (b).
+                print(
+                    "    -> gate (a) [peak persistence, spec §10] stopped the "
+                    "fold-lattice phantom before any fine-search verification "
+                    "was needed"
+                )
             continue
         res = _own_plane_fine(
             meta_s, gotS, rtpS, audioS, delaysS, muS, btS, gotS.stations[0]
         )
+        if name == "WWV_25000":
+            # task-11b, gate (b) run BY HAND: defensive fallback in case this
+            # chunk (or different data) ever acquires despite gate (a) --
+            # feeding the fine-search result into verify() must reject it.
+            outcome = acqS.verify(
+                {
+                    gotS.stations[0]: (
+                        res.ensemble_timing_error_ms if res else 0.0,
+                        res.sigma_single_ms if res else float("inf"),
+                    )
+                }
+            )
+            print(
+                f"  WWV_25000 acquired despite gate (a) (sigma1="
+                f"{res.sigma_single_ms if res else float('nan'):.3f} ms); "
+                f"gate (b) verify() -> {outcome}"
+            )
+            assert outcome == "rejected"
+            assert acqS.state == RegistrationAcquirer.STATE_BOOTSTRAP
+            continue
         s0 = gotS.sample0_utc_for(common_rtp)
         sibling_planes[name] = s0
         acquired_siblings.append((name, gotS))
@@ -915,15 +956,16 @@ def test_nd_shared_channel_resolved_by_real_same_site_siblings(chunk):
         pytest.skip(
             "no ND same-site sibling supplies a trustworthy plane in this window: "
             "WWV_20000 has no acquirable tick (fold SNR under the ~13 dB floor at "
-            "every fold length) and WWV_25000 acquires a fold-lattice PHANTOM -- a "
-            "single 13.7 dB peak at 502.54 ms, absent from 60/180/540 s folds of the "
-            "same chunk, giving a plane ~497 ms from the labelled plane and a fine "
-            "search sigma1 of 14.6 ms (> TIMING_SIGMA_MAX_MS = 6 ms).  The "
+            "every fold length) and WWV_25000's fold-lattice phantom (a single "
+            "13.7 dB peak at 502.54 ms, absent from 60/180/540 s folds of the same "
+            "chunk, which used to reach a ~497 ms wrong plane with fine-search "
+            "sigma1 14.6 ms > TIMING_SIGMA_MAX_MS = 6 ms) is now stopped by "
+            "task-11b's peak-persistence gate (a) before it ever acquires.  The "
             "cross-channel machinery was still exercised above and behaved "
             "correctly: no phantom was offered as a sibling, and fuse_registrations "
             "did not silently average a bad plane in.  The sibling-resolved "
             "assertions below need a window where 20 or 25 MHz is actually open at "
-            "ND -- see the task-11 report, fix round 4."
+            "ND -- see the task-11 report, fix round 4, and the task-11b report."
         )
 
     # ── With a real, tick-like sibling: the design's own claims ──

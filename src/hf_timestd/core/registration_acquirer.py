@@ -49,6 +49,13 @@ FOLD_SKIP_SECONDS = frozenset({59, 0, 1, 28, 29, 30})
 # with a fixed 25 ms exclusion regardless of width.
 PEAK_MIN_SEPARATION_MS = 8.0
 PEAK_MAX_WIDTH_MS = 25.0
+# Spec §10 (task-11b): a fold-lattice phantom -- real noise that only crosses
+# ACQ_MIN_FOLD_SNR_DB at one particular fold length -- is absent from a fold
+# of either half of the same buffer; a genuine tick recurs every second, so
+# it survives the halving even when weak.  3.0 ms is generous next to a
+# tick's own ~5 ms half-max width; it only needs to reject a peak that moved
+# to a DIFFERENT lattice line, not to demand sub-millisecond repeatability.
+PEAK_PERSISTENCE_MS = 3.0
 ENVELOPE_LPF_HZ = 400.0
 ORIGIN_SIGMA_FLOOR_MS = 1.0
 
@@ -209,6 +216,25 @@ def arbitrate_bands(
     return kept
 
 
+def _fold_and_arbitrate(
+    audio: np.ndarray, sample_rate: int, sample0_utc_label: float, n_seconds: int
+) -> List[FoldPeak]:
+    """Fold every tone band over ``n_seconds`` and arbitrate the leaks
+    between them -- the full ``fold_tick_train``/``find_fold_peaks``/
+    ``arbitrate_bands`` pipeline, shared by the full-buffer fold and the
+    peak-persistence half-folds below (task-11b) so both apply exactly the
+    same detection threshold."""
+    by_band: Dict[str, List[FoldPeak]] = {}
+    for band in TONE_BANDS_HZ:
+        profile, rows = fold_tick_train(
+            audio, sample_rate, sample0_utc_label, band, n_seconds
+        )
+        if rows == 0:
+            continue
+        by_band[band] = find_fold_peaks(profile, sample_rate, band)
+    return arbitrate_bands(by_band)
+
+
 @dataclass(frozen=True)
 class Hypothesis:
     correction_s: float
@@ -222,6 +248,47 @@ def wrap_half_second(x_s: float) -> float:
     """Wrap into (-0.5, 0.5]."""
     y = (x_s + 0.5) % 1.0 - 0.5
     return 0.5 if y == -0.5 else y
+
+
+def _peak_persists_in_both_halves(
+    audio_all: np.ndarray,
+    sample_rate: int,
+    s0: float,
+    n_sec: int,
+    h: "Hypothesis",
+) -> bool:
+    """Spec §10 (task-11b): fold the FIRST half and the SECOND half of the
+    same buffer separately and require that, for at least one assignment in
+    ``h``, a peak in the same band lies within ``PEAK_PERSISTENCE_MS`` of
+    that assignment's ``position_s`` in BOTH halves.  A fold-lattice
+    phantom -- a peak that only crosses the detection floor at the one
+    fold length the acquirer happened to use -- is absent from a shorter
+    fold on either side; a genuine tick, present every second, survives
+    the halving even at reduced SNR."""
+    half = n_sec // 2
+    if half < 1:
+        return False
+    half_samples = half * sample_rate
+    first = _fold_and_arbitrate(audio_all, sample_rate, s0, half)
+    second = _fold_and_arbitrate(
+        audio_all[half_samples:], sample_rate, s0 + half, n_sec - half
+    )
+    for _station, band, position_s, _snr in h.assignments:
+        in_first = any(
+            p.band == band
+            and abs(wrap_half_second(position_s - p.position_s)) * 1000.0
+            <= PEAK_PERSISTENCE_MS
+            for p in first
+        )
+        in_second = any(
+            p.band == band
+            and abs(wrap_half_second(position_s - p.position_s)) * 1000.0
+            <= PEAK_PERSISTENCE_MS
+            for p in second
+        )
+        if in_first and in_second:
+            return True
+    return False
 
 
 def _sigma_ms_from_snr(snr_db: float) -> float:
@@ -393,6 +460,12 @@ class Registration:
     channel: str = ""
     hypotheses_open: int = 0
     stations: tuple = ()
+    # task-11b: an acquired-but-unverified plane is a CANDIDATE, not yet
+    # trusted -- ``_try_acquire``/``resolve_ambiguity`` always create one
+    # with ``verified=False``; ``adopt`` copies whatever value the donor
+    # carries (a fused plane built purely from already-ACQUIRED, hence
+    # already-verified, siblings is verified).
+    verified: bool = False
 
     def sample0_utc_for(self, start_rtp: int) -> float:
         return self.utc_ref + (int(start_rtp) - int(self.rtp_ref)) / float(
@@ -412,6 +485,10 @@ class RegistrationAcquirer:
     FILTER_MEMORY_MINUTES = 30
     # TickEdgeDetector.LABEL_ANCHOR_MAX_SIGMA_MS = 6.0: tick-like ensembles only.
     TIMING_SIGMA_MAX_MS = TickEdgeDetector.LABEL_ANCHOR_MAX_SIGMA_MS
+    # task-11b: consecutive minutes with no ensemble at all for this
+    # registration's stations (host-label-anchored minute, filter skipped
+    # them, ...) before an unverified plane is given up on and reset.
+    VERIFY_MAX_MINUTES = 3
 
     def __init__(self, channel: str, sample_rate: int):
         self.channel = channel
@@ -424,6 +501,7 @@ class RegistrationAcquirer:
         )  # (audio, label_s0, start_rtp, minute)
         self._bad_minutes = 0
         self._open: List[Hypothesis] = []
+        self._verify_pending = 0
 
     @property
     def state(self) -> str:
@@ -440,6 +518,7 @@ class RegistrationAcquirer:
         self._buf.clear()
         self._bad_minutes = 0
         self._open.clear()
+        self._verify_pending = 0
 
     def adopt(self, reg: Registration) -> None:
         """Adopt a sibling's (usually fused) plane as this channel's own.
@@ -461,6 +540,7 @@ class RegistrationAcquirer:
         self._state = self.STATE_ACQUIRED
         self._buf.clear()
         self._bad_minutes = 0
+        self._verify_pending = 0
 
     # ── acquisition ────────────────────────────────────────────────
     def offer_minute(
@@ -507,19 +587,11 @@ class RegistrationAcquirer:
             pieces.append(audio)
         audio_all = np.concatenate(pieces)
         n_sec = min(180, len(audio_all) // self.sample_rate)
-        by_band: Dict[str, List[FoldPeak]] = {}
-        for band in TONE_BANDS_HZ:
-            # fold EVERY band, even one with no eligible station: the leak of a
-            # 1200 Hz tick into 900-1100 Hz is only recognisable by comparison
-            profile, rows = fold_tick_train(
-                audio_all, self.sample_rate, s0, band, n_sec
-            )
-            if rows == 0:
-                continue
-            by_band[band] = find_fold_peaks(profile, self.sample_rate, band)
+        # fold EVERY band, even one with no eligible station: the leak of a
+        # 1200 Hz tick into 900-1100 Hz is only recognisable by comparison
         best = [
             p
-            for p in arbitrate_bands(by_band)
+            for p in _fold_and_arbitrate(audio_all, self.sample_rate, s0, n_sec)
             if any(BAND_OF_STATION.get(s) == p.band for s in expected_delays_s)
         ]
         hyps = fit_template(best, expected_delays_s)
@@ -532,6 +604,20 @@ class RegistrationAcquirer:
             )
             return None
         h = winners[0]
+        # Spec §10 (task-11b): the winning peak must recur in an independent
+        # fold of each half of the buffer, not just the full-length fold --
+        # otherwise a single-station channel promotes any lone fold-lattice
+        # phantom to "unambiguous" by construction (a lone peak has no second
+        # station to disagree with it), self-registering on noise with no
+        # corroboration.
+        if not _peak_persists_in_both_halves(
+            audio_all, self.sample_rate, s0, n_sec, h
+        ):
+            logger.info(
+                f"[{self.channel}] BOOTSTRAP: winning peak at "
+                f"{h.assignments[0][2] * 1000:.1f} ms did not recur in both halves"
+            )
+            return None
         # integer second from the marker of the most recent minute, located in
         # the OLDEST label's frame (re-labelled through RTP) so that a ring
         # anchor refresh between minutes cannot shift the whole-second answer
@@ -563,6 +649,7 @@ class RegistrationAcquirer:
         )
         self._state = self.STATE_ACQUIRED
         self._bad_minutes = 0
+        self._verify_pending = 0
         logger.info(
             f"[{self.channel}] ACQUIRED: correction {corr*1000:+.1f} ms "
             f"(int {k_int:+d} s), σ {h.sigma_ms:.2f} ms, support {h.support}, "
@@ -605,19 +692,66 @@ class RegistrationAcquirer:
         self._state = self.STATE_ACQUIRED
         self._open.clear()
         self._bad_minutes = 0
+        self._verify_pending = 0
         logger.info(
             f"[{self.channel}] ACQUIRED via sibling {sibling.channel}: "
             f"hypothesis {h.assignments[0][0]} agrees within {abs(frac)*1000:.2f} ms"
         )
         return self._reg
 
+    # ── verification ───────────────────────────────────────────────
+    def verify(self, residuals_ms: Dict[str, Tuple[float, float]]) -> str:
+        """Confirm a freshly-acquired (CANDIDATE) plane against the tick
+        detector before it may be trusted as ACQUIRED (spec §10, task-11b).
+
+        ``residuals_ms``: same shape as ``corroborate`` -- station ->
+        (ensemble timing error vs the acquired plane, per-tick sigma) --
+        for the ensembles the service saw this minute, restricted here to
+        this registration's own stations.
+
+        * Any station in ``self._reg.stations`` with a tick-like ensemble
+          (``sigma_single_ms <= TIMING_SIGMA_MAX_MS``) confirms the plane:
+          ``verified = True``, returns "verified".
+        * Ensembles for those stations arrived but none is tick-like: the
+          acquired plane is a fold-lattice phantom, not a tick lock --
+          reset to BOOTSTRAP, returns "rejected".
+        * No ensemble at all for those stations (host-label-anchored
+          minute, filter skipped them, ...): keep waiting, returns
+          "pending"; after ``VERIFY_MAX_MINUTES`` consecutive pending
+          minutes, give up -- reset, returns "rejected"."""
+        if self._reg is None:
+            return "pending"
+        relevant = {
+            s: r for s, r in residuals_ms.items() if s in self._reg.stations
+        }
+        if not relevant:
+            self._verify_pending += 1
+            if self._verify_pending >= self.VERIFY_MAX_MINUTES:
+                self.reset(
+                    f"acquired plane got no ensemble for {self._reg.stations} "
+                    f"within {self.VERIFY_MAX_MINUTES} minutes"
+                )
+                return "rejected"
+            return "pending"
+        if any(sig <= self.TIMING_SIGMA_MAX_MS for _err, sig in relevant.values()):
+            self._reg.verified = True
+            self._verify_pending = 0
+            return "verified"
+        self.reset("acquired plane failed fine-search verification")
+        return "rejected"
+
     # ── corroboration ──────────────────────────────────────────────
     def corroborate(self, residuals_ms: Dict[str, Tuple[float, float]]) -> str:
         """``residuals_ms``: station -> (ensemble timing error vs the
         ACQUIRED plane, per-tick sigma).  Only tick-like ensembles
-        (sigma ≤ TIMING_SIGMA_MAX_MS) count."""
+        (sigma ≤ TIMING_SIGMA_MAX_MS) count.
+
+        An unverified (CANDIDATE) registration must pass ``verify`` first
+        (task-11b); routed here rather than tightened blindly."""
         if self._reg is None:
             return "held"
+        if not self._reg.verified:
+            return self.verify(residuals_ms)
         good = {
             s: r for s, r in residuals_ms.items() if r[1] <= self.TIMING_SIGMA_MAX_MS
         }

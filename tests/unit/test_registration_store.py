@@ -108,6 +108,18 @@ def test_bootstrap_channel_file_has_null_sigma_and_is_not_a_sibling(tmp_path):
     assert st.read_siblings() == []
 
 
+def test_candidate_state_file_is_not_a_sibling(tmp_path):
+    """task-11b: RegistrationStore.read_siblings already filters on
+    ``state == "ACQUIRED"`` -- confirm a channel file written with the new
+    CANDIDATE state (an own plane not yet verified by the tick detector)
+    is not picked up as a sibling."""
+    st = RegistrationStore(tmp_path / "reg", tmp_path / "registration.json")
+    st.write_channel(_reg("WWV_25000", 100.0, 3.116), "CANDIDATE", {})
+    text = (tmp_path / "reg" / "WWV_25000.json").read_text()
+    assert json.loads(text)["state"] == "CANDIDATE"
+    assert st.read_siblings() == []
+
+
 def test_adopted_registration_is_not_a_sibling(tmp_path):
     """C1: a channel that merely ADOPTED a sibling's (or fusion's) plane
     must never re-enter another channel's fusion as if it were independent

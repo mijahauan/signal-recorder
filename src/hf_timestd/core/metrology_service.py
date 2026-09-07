@@ -724,7 +724,17 @@ class MetrologyService:
         fusion_inputs = sibs if own_is_adopted else (([own] if own else []) + sibs)
         fused = fuse_registrations(fusion_inputs, at_rtp=int(start_rtp))
         if own is None and fused is not None:
-            self.acquirer.adopt(fused)          # a sibling already placed the second
+            # `fused` here is built purely from `sibs` (own contributed
+            # nothing to fusion_inputs when own is None) -- every one of
+            # those siblings came from read_siblings, which only returns
+            # state=="ACQUIRED" files, and (task-11b) only a VERIFIED
+            # registration is ever published as ACQUIRED.  So a plane
+            # fused entirely from ACQUIRED siblings is itself verified;
+            # fuse_registrations doesn't carry that through on its own
+            # (its output defaults verified=False like any fresh
+            # Registration), so it is stamped here rather than by
+            # touching fuse_registrations itself.
+            self.acquirer.adopt(dataclasses.replace(fused, verified=True))
         label_s0 = float(buffer_timing.sample0_utc)
 
         # C3: T6 wins.  The ring anchor already carries T6's correction
@@ -827,7 +837,17 @@ class MetrologyService:
         # `self.acquirer.registration` out from under the caller's `own`
         # (review M5).
         current = self.acquirer.registration
-        state = state_override if state_override is not None else self.acquirer.state
+        # task-11b: an ACQUIRED-state channel file is a CANDIDATE until this
+        # channel's own registration is verified against the tick detector
+        # (RegistrationAcquirer.verify) -- publishing it as ACQUIRED before
+        # that let a single-station channel self-register on a fold-lattice
+        # phantom and offer it to siblings as trustworthy evidence.
+        if state_override is not None:
+            state = state_override
+        elif self.acquirer.state == self.acquirer.STATE_ACQUIRED:
+            state = "ACQUIRED" if (current is not None and current.verified) else "CANDIDATE"
+        else:
+            state = self.acquirer.state
         if current is not None:
             self.reg_store.write_channel(current, state, {
                 "label_sample0_utc": label_s0,
@@ -837,9 +857,21 @@ class MetrologyService:
                 Registration(counter_epoch_id=epoch, rtp_ref=0, utc_ref=0.0,
                              sample_rate=self.engine.sample_rate, sigma_ms=float("inf"),
                              channel=self.channel_name), state, {"label_sample0_utc": label_s0})
+        # The summary is the network-wide view: CANDIDATE only when the
+        # SOLE contributor is this channel's own not-yet-verified plane --
+        # real corroboration from an ACQUIRED sibling (which is, by the
+        # same invariant, itself verified) is trusted immediately, whether
+        # or not this channel has independently verified its own signal.
+        only_own_unverified = (
+            fused is not None
+            and contributing == [self.channel_name]
+            and current is not None
+            and not current.verified
+        )
         summary_state = (
             state_override if state_override is not None
-            else ("ACQUIRED" if fused is not None else "BOOTSTRAP")
+            else ("CANDIDATE" if only_own_unverified
+                  else ("ACQUIRED" if fused is not None else "BOOTSTRAP"))
         )
         extra = {"raw_pair_residual_ms": None if residual_ms is None else round(residual_ms, 3),
                  "counter_epoch_id": epoch,
@@ -867,7 +899,16 @@ class MetrologyService:
                 continue
             res[str(r.station)] = (float(r.ensemble_timing_error_ms), float(r.sigma_single_ms))
         if res:
-            outcome = self.acquirer.corroborate(res)
+            # task-11b: an unverified (CANDIDATE) plane must be confirmed by
+            # the tick detector before it is trusted enough to tighten --
+            # RegistrationAcquirer.corroborate() also routes this itself,
+            # but the service decides it explicitly too so the intent is
+            # visible at the call site.
+            reg = self.acquirer.registration
+            if reg is not None and not reg.verified:
+                outcome = self.acquirer.verify(res)
+            else:
+                outcome = self.acquirer.corroborate(res)
             if outcome == "reacquire":
                 logger.warning(f"[{self.channel_name}] registration residual sustained; re-acquiring")
 

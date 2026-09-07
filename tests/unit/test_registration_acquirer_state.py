@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from hf_timestd.core.registration_acquirer import (
@@ -41,14 +42,23 @@ def test_weak_signal_extends_the_fold_to_three_minutes():
     # detector at this depth.  Stepping snr_db up in 2 dB increments (the
     # opposite direction from the brief's fallback, which anticipated the
     # first minute acquiring too early rather than never crossing the sill):
-    # -25/-23/-21/-19 all still fail to acquire by 180 s; -19 measures 8.8 /
-    # 10.5 / 11.3 dB (still under threshold at 162 rows); -17 measures 9.2 /
-    # 14.3 / 15.2 dB, crossing between 54 and 108 rows and holding through
-    # 162 -- the first minute misses, the fold does the work by the second.
+    # -25/-23/-21/-19 all still fail to acquire by 180 s.
+    #
+    # task-11b's peak-persistence gate (spec §10) additionally folds the
+    # FIRST and SECOND HALF of the acquiring buffer independently and
+    # requires the winning peak to cross the same ACQ_MIN_FOLD_SNR_DB floor
+    # in BOTH -- so at -17 dB (measured 9.2 / 14.3 / 15.2 dB at 54/108/162
+    # rows) the full 162-row fold clears the floor at 15.2 dB, but each
+    # ~81-row HALF only reaches ~12.2-12.7 dB, under the ~13.4 dB effective
+    # threshold, and the gate correctly refuses to acquire on a signal this
+    # weak.  -16 dB (measured 17.2 dB full, 14.8 / 14.4 dB per half) clears
+    # the floor in both halves while still failing at one minute (54 rows,
+    # no peak at all) -- keeping the "one minute must NOT suffice" half of
+    # this test meaningful.
     acq = RegistrationAcquirer("SHARED_10000", SR)
     outcomes = []
     for k in range(3):
-        audio, label, rtp, m = _minute(k, walk_s=-0.300, snr_db=-17.0)
+        audio, label, rtp, m = _minute(k, walk_s=-0.300, snr_db=-16.0)
         outcomes.append(acq.offer_minute(audio, label, rtp, m, D, "ep-1"))
     assert (
         outcomes[0] is None
@@ -81,6 +91,11 @@ def test_corroborate_tightens_and_flags_sustained_residual():
     acq = RegistrationAcquirer("SHARED_10000", SR)
     audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
     acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    # task-11b: corroborate only tightens a VERIFIED plane (unverified ->
+    # routes to verify instead); this test is about corroborate's own
+    # tightening/reacquire logic, so mark verified directly rather than
+    # spending a call on verify().
+    acq.registration.verified = True
     s0 = acq.registration.sigma_ms
     assert acq.corroborate({"WWV": (0.4, 0.5)}) == "tightened"
     assert acq.registration.sigma_ms <= s0
@@ -166,6 +181,7 @@ def test_corroborate_moves_the_plane_toward_truth_not_away():
     acq = RegistrationAcquirer("SHARED_10000", SR)
     audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
     acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    acq.registration.verified = True  # task-11b: corroborate needs a verified plane
     truth_s0 = acq.registration.sample0_utc_for(rtp)
     acq.registration.utc_ref += 0.0015  # inject 1.5 ms late
     before_ms = abs(acq.registration.sample0_utc_for(rtp) - truth_s0) * 1000.0
@@ -173,3 +189,75 @@ def test_corroborate_moves_the_plane_toward_truth_not_away():
     after_ms = abs(acq.registration.sample0_utc_for(rtp) - truth_s0) * 1000.0
     assert after_ms < before_ms  # moved TOWARD truth, not away
     assert after_ms < 0.2
+
+
+# ── Task 11b: peak persistence (spec §10) + verification gate ─────────
+
+
+def test_lone_transient_peak_does_not_acquire():
+    """A single one-off burst (RFI, not a recurring tick) folds to a lone
+    peak that a single-station channel would otherwise promote straight to
+    "unambiguous" -- exactly the ND WWV_25000 phantom mechanism (task-11b
+    brief).  62 s of quiet noise (no ticks at all) plus ONE 40 ms burst of
+    1000 Hz at an arbitrary position in second 12, amplitude 5x a normal
+    tick's (a plausible transient, not an exotic one): with the current
+    ~13.4 dB effective detection floor and 54-row averaging, this single
+    occurrence is strong enough to cross the floor at the one fold length
+    the acquirer uses -- confirmed directly against the unpatched acquirer
+    to acquire before this fix (task-11b, gate a).  The peak-persistence
+    gate must refuse it: the burst is absent from whichever half of the
+    buffer it did not land in."""
+    sr = SR
+    n = 62 * sr
+    rng = np.random.default_rng(11)
+    audio = 0.05 * rng.standard_normal(n)
+    burst_start_s = 12.37  # arbitrary offset within second 12, well clear
+    # of either half's boundary (half = 31 s)
+    i0 = int(burst_start_s * sr)
+    i1 = i0 + int(0.040 * sr)  # 40 ms burst
+    t = np.arange(i1 - i0) / sr
+    audio[i0:i1] += 5.0 * np.cos(2 * np.pi * 1000.0 * t)
+    label = label_timing(T0, 0.0, sr)
+    acq = RegistrationAcquirer("SHARED_10000", sr)
+    result = acq.offer_minute(audio, label, 1_000_000, MIN, {"WWV": 0.010}, "ep-1")
+    assert result is None
+    assert acq.state == acq.STATE_BOOTSTRAP
+
+
+def test_verify_confirms_a_tick_like_ensemble():
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    assert acq.registration.verified is False
+    assert acq.verify({"WWV": (0.5, 0.4)}) == "verified"
+    assert acq.state == acq.STATE_ACQUIRED
+    assert acq.registration.verified is True
+
+
+def test_verify_rejects_a_non_tick_like_ensemble():
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    assert acq.verify({"WWV": (2.0, 14.6)}) == "rejected"
+    assert acq.state == acq.STATE_BOOTSTRAP
+
+
+def test_verify_pending_then_rejects_after_max_minutes():
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    assert acq.verify({}) == "pending"
+    assert acq.verify({}) == "pending"
+    assert acq.verify({}) == "rejected"
+    assert acq.state == acq.STATE_BOOTSTRAP
+
+
+def test_corroborate_on_unverified_registration_routes_to_verify():
+    """(b): corroborate must not tighten an unverified (CANDIDATE) plane --
+    it routes to verify instead, whichever outcome that produces."""
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, rtp, m = _minute(0, walk_s=0.0, snr_db=20.0)
+    acq.offer_minute(audio, label, rtp, m, D, "ep-1")
+    assert acq.registration.verified is False
+    assert acq.corroborate({"WWV": (0.4, 0.5)}) == "verified"
+    assert acq.registration.verified is True

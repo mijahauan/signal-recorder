@@ -53,6 +53,10 @@ def _meta(k):
 
 
 def test_first_minute_bootstraps_then_acquires(tmp_path):
+    """task-11b: an own acquisition with no ACQUIRED siblings is a
+    CANDIDATE until the tick detector verifies it -- the plane is still
+    applied to BufferTiming (origin_source="acquired") in the meantime,
+    but the published state is CANDIDATE, not ACQUIRED."""
     svc = _service(tmp_path)
     audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
     label = label_timing(T0, 0.250, SR)  # radiod pair 250 ms late
@@ -63,9 +67,91 @@ def test_first_minute_bootstraps_then_acquires(tmp_path):
     assert bt.sample0_utc == pytest.approx(T0, abs=0.002)
     assert bt.origin_sigma_ms >= 1.0 and bt.counter_epoch_id.startswith("ep-")
     s = svc.reg_store.read_summary()
-    assert s["state"] == "ACQUIRED" and s["raw_pair_residual_ms"] == pytest.approx(
+    assert s["state"] == "CANDIDATE" and s["raw_pair_residual_ms"] == pytest.approx(
         -250.0, abs=2.0
     )
+    assert svc.acquirer.registration.verified is False
+
+
+def test_verified_plane_publishes_acquired_next_minute(tmp_path):
+    """task-11b: feed_back_ensembles with a tick-like ensemble for the
+    acquired-plane's own station verifies it; the NEXT apply_registration
+    then publishes ACQUIRED instead of CANDIDATE."""
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    label = label_timing(T0, 0.250, SR)
+    svc.apply_registration(
+        label, audio, start_rtp=1_000_000, minute_utc=MIN, metadata=_meta(0)
+    )
+    assert svc.reg_store.read_summary()["state"] == "CANDIDATE"
+    r = SimpleNamespace(
+        station="WWV",
+        ensemble_timing_error_ms=0.3,
+        sigma_single_ms=0.4,
+        anchor_source="acquired",
+    )
+    svc.feed_back_ensembles([r])
+    assert svc.acquirer.registration.verified is True
+    bt2 = svc.apply_registration(
+        label_timing(T0 + 60, 0.250, SR),
+        audio,
+        start_rtp=1_000_000 + 60 * SR,
+        minute_utc=MIN + 60,
+        metadata=_meta(1),
+    )
+    assert bt2.origin_source == "acquired"
+    s = svc.reg_store.read_summary()
+    assert s["state"] == "ACQUIRED"
+
+
+def test_unverifiable_plane_publishes_bootstrap_next_minute(tmp_path):
+    """task-11b: a junk (non-tick-like) ensemble fails verification and
+    resets the acquirer -- the next minute publishes BOOTSTRAP."""
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    label = label_timing(T0, 0.250, SR)
+    svc.apply_registration(
+        label, audio, start_rtp=1_000_000, minute_utc=MIN, metadata=_meta(0)
+    )
+    r = SimpleNamespace(
+        station="WWV",
+        ensemble_timing_error_ms=2.0,
+        sigma_single_ms=14.6,  # far past TIMING_SIGMA_MAX_MS -- not tick-like
+        anchor_source="acquired",
+    )
+    svc.feed_back_ensembles([r])
+    assert svc.acquirer.state == RegistrationAcquirer.STATE_BOOTSTRAP
+    rng = np.random.default_rng(4)
+    noise = 0.1 * rng.standard_normal(62 * SR)
+    bt2 = svc.apply_registration(
+        label_timing(T0 + 60, 0.250, SR),
+        noise,
+        start_rtp=1_000_000 + 60 * SR,
+        minute_utc=MIN + 60,
+        metadata=_meta(1),
+    )
+    assert bt2.origin_source == "label"
+    assert svc.reg_store.read_summary()["state"] == "BOOTSTRAP"
+
+
+def test_candidate_file_written_by_channel_a_is_not_adopted_by_channel_b(tmp_path):
+    """task-11b: RegistrationStore.read_siblings already skips any file
+    whose state isn't ACQUIRED -- confirm a CANDIDATE file (channel A's own
+    unverified plane) is not picked up as a sibling by channel B."""
+    svc_a = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    svc_a.apply_registration(
+        label_timing(T0, 0.250, SR), audio, 1_000_000, MIN, _meta(0)
+    )
+    assert svc_a.reg_store.read_summary()["state"] == "CANDIDATE"
+    channel_file = tmp_path / "reg" / "SHARED_10000.json"
+    assert json.loads(channel_file.read_text())["state"] == "CANDIDATE"
+
+    svc_b = _service(tmp_path)
+    svc_b.channel_name = "WWV_20000"
+    svc_b.acquirer = RegistrationAcquirer("WWV_20000", SR)
+    sibs = svc_b.reg_store.read_siblings(exclude_channel="WWV_20000")
+    assert sibs == []
 
 
 def test_bootstrap_leaves_the_label_plane_marked(tmp_path):
@@ -139,9 +225,15 @@ def test_shared_channel_ambiguity_resolved_by_same_site_sibling(tmp_path):
 
 
 def test_feed_back_reacquires_on_sustained_residual(tmp_path):
+    """task-11b: feed_back_ensembles routes an unverified plane's first
+    good ensemble to verify() rather than corroborate(); this test is
+    about corroborate's OWN sustained-residual/reacquire logic, so mark
+    the plane verified directly rather than spending one of the two calls
+    on verification."""
     svc = _service(tmp_path)
     audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
     svc.apply_registration(label_timing(T0, 0.0, SR), audio, 1_000_000, MIN, _meta(0))
+    svc.acquirer.registration.verified = True
     r = SimpleNamespace(
         station="WWV",
         ensemble_timing_error_ms=40.0,
