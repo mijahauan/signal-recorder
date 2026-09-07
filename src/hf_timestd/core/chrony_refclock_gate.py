@@ -25,6 +25,25 @@ re-offers the refclock only after ``ok`` has held for
 does not step the clock; it removes the source that would have kept
 chrony from following the witnesses that can.
 
+That rule assumed a feed that FOLLOWED the host clock, and spec §11.2
+(2026-09-07) replaced it.  The anchor-direct FUSE sample carries no host
+frame at all: it states the anchor's UTC of an arrival against what the
+host clock read at that instant, so it reports the very error the
+verdict reports.  Worse, the change makes the pair witness read the FULL
+host error instead of ~0 -- the witness compares the host against the
+rtp-frame active tier, whose plane moved from "radiod's pair plus a judge
+offset" to "the registration".  So the verdict STAYS ``suspect``, and the
+old rule would keep ``+noselect`` on the one refclock that could fix it
+(review finding C-2, fix round 1).
+
+So the gate reads ``chrony_gate.feed_regime`` from fusion_status.json.
+While it reads ``anchor``, a ``suspect`` verdict does NOT withdraw the
+refclock -- suspect is the normal state of a clock that needs correcting,
+and the refclock IS the correction.  ``fault`` still withdraws: a faulted
+verdict says the witnesses disagree with each other, and then no source
+in this station's frame should steer anything.  Under the legacy regime,
+and when the regime cannot be read at all, behaviour is unchanged.
+
 This is the runtime-mutable half of the chrony integration. Stratum,
 refid, and precision remain static per-install (chrony does not expose
 runtime setters for those) and follow the install-time convention
@@ -71,6 +90,12 @@ class ChronyRefclockGate:
     ENABLED_T_LEVELS = ("T3", "T6")
     # Host-clock verdicts that withdraw the refclock whatever the tier.
     WITHDRAW_VERDICTS = ("suspect", "fault")
+    # ...and the subset that still withdraws under the anchor-direct
+    # feed, where "suspect" is the expected reading of a clock being
+    # corrected.  A FAULT is the witnesses disagreeing with each other,
+    # which no plane can answer (review C-2).
+    ANCHOR_DIRECT_WITHDRAW_VERDICTS = ("fault",)
+    ANCHOR_REGIME = "anchor"
 
     def __init__(
         self,
@@ -83,6 +108,7 @@ class ChronyRefclockGate:
         host_clock_clear_sec: float = 600.0,
         now_fn: Callable[[], float] = time.monotonic,
         sudo: bool = False,
+        feed_regime_fn: Optional[Callable[[], Optional[str]]] = None,
     ):
         self.refid = refid
         self.chronyc_bin = chronyc_bin or shutil.which("chronyc") or "chronyc"
@@ -104,11 +130,33 @@ class ChronyRefclockGate:
         self._hc_withdrawn: bool = False
         self._hc_ok_since: Optional[float] = None
         self._hc_verdict: Optional[str] = None
+        # Which FUSE feed regime is live (spec §11.2).  Injectable for
+        # tests; by default read from fusion_status.json, which the
+        # fusion process -- the same process that owns this gate -- writes
+        # every cycle.
+        self._feed_regime_fn = feed_regime_fn or self._default_feed_regime
+        self._last_regime: Optional[str] = None
 
     @property
     def host_clock_withdrawn(self) -> bool:
         """True while the host-clock verdict is keeping the refclock withdrawn."""
         return self._hc_withdrawn
+
+    @staticmethod
+    def _default_feed_regime() -> Optional[str]:
+        """``chrony_gate.feed_regime`` from fusion_status.json, or None."""
+        try:
+            from .fusion_status_writer import read_feed_regime
+            return read_feed_regime()
+        except Exception:  # noqa: BLE001 — an unreadable regime is None
+            return None
+
+    def _feed_regime(self) -> Optional[str]:
+        try:
+            return self._feed_regime_fn()
+        except Exception as e:  # noqa: BLE001 — never break the gate
+            log.debug("feed regime unavailable: %s", e)
+            return None
 
     def _update_host_clock(self, verdict: Optional[str]) -> Optional[str]:
         """Advance the withdrawal latch; return a reason fragment when the
@@ -116,6 +164,16 @@ class ChronyRefclockGate:
         if not self.withdraw_on_host_clock or verdict is None:
             return None
         self._hc_verdict = verdict
+        regime = self._feed_regime()
+        if regime == self.ANCHOR_REGIME:
+            return self._update_host_clock_anchor_direct(verdict)
+        if self._last_regime == self.ANCHOR_REGIME:
+            log.info(
+                "Chrony refclock gate: FUSE feed left anchor-direct "
+                "(regime=%s) — the host-clock withdrawal rule applies "
+                "again", regime,
+            )
+        self._last_regime = regime
         if verdict in self.WITHDRAW_VERDICTS:
             self._hc_withdrawn = True
             self._hc_ok_since = None
@@ -133,6 +191,48 @@ class ChronyRefclockGate:
         # "unwitnessed" (or any other value) holds whatever state we have.
         if self._hc_withdrawn:
             return f"host_clock:held ({verdict})"
+        return None
+
+    def _update_host_clock_anchor_direct(
+        self, verdict: str
+    ) -> Optional[str]:
+        """The anchor-direct rule (review C-2).
+
+        The sample chrony holds carries no host frame, and the verdict
+        reports the error this refclock exists to remove — so ``suspect``
+        is the EXPECTED reading of a clock that is being corrected, and
+        withdrawing on it would refuse the correction.  A latch inherited
+        from the legacy regime is released here for the same reason:
+        otherwise a station that switches to anchor-direct while already
+        withdrawn would stay withdrawn forever, since ``suspect`` no
+        longer starts the 600 s clearing window.
+
+        ``fault`` still withdraws.  A faulted verdict means the witnesses
+        disagree with EACH OTHER; no plane in this station's frame can
+        answer that, and the honest move is to hand chrony back to its
+        NTP sources.
+        """
+        if verdict in self.ANCHOR_DIRECT_WITHDRAW_VERDICTS:
+            self._hc_withdrawn = True
+            self._hc_ok_since = None
+            self._last_regime = self.ANCHOR_REGIME
+            return f"host_clock:{verdict}"
+        released = self._hc_withdrawn
+        self._hc_withdrawn = False
+        self._hc_ok_since = None
+        if self._last_regime != self.ANCHOR_REGIME or released:
+            log.info(
+                "Chrony refclock gate: anchor-direct feed, host %s is "
+                "expected while correcting — FUSE stays selectable%s",
+                verdict,
+                " (released a legacy withdrawal)" if released else "",
+            )
+        self._last_regime = self.ANCHOR_REGIME
+        if verdict in self.WITHDRAW_VERDICTS:
+            return (f"host_clock:{verdict} (anchor-direct"
+                    + (", released)" if released else ")"))
+        if released:
+            return "host_clock:released (anchor-direct)"
         return None
 
     def apply(

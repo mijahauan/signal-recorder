@@ -62,6 +62,41 @@ log = logging.getLogger(__name__)
 SCHEMA_VERSION = "v1"
 
 
+ANCHOR_REGIME = "anchor"
+LEGACY_REGIME = "fusion_d_clock"
+DEFAULT_STATUS_PATH = Path("/run/hf-timestd/fusion_status.json")
+
+
+def read_feed_regime(
+    path: Path = DEFAULT_STATUS_PATH,
+) -> Optional[str]:
+    """Which regime last fed the FUSE refclock, or None.
+
+    ``"anchor"`` — the sample chrony holds came from the label-plane
+    anchor and carries no host frame at all (spec §11.2).
+    ``"fusion_d_clock"`` — the legacy host-relative sample.
+    ``None`` — no file, unreadable, or a writer too old to say; every
+    caller must then behave exactly as it did before the regime existed.
+
+    Read by :class:`~hf_timestd.core.chrony_refclock_gate.ChronyRefclockGate`
+    (fix round 1, review finding C-2): the host-clock withdrawal rule was
+    written for a feed that FOLLOWED the host clock, and the anchor-direct
+    feed does not.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != SCHEMA_VERSION:
+        return None
+    gate = data.get("chrony_gate")
+    if not isinstance(gate, dict):
+        return None
+    regime = gate.get("feed_regime")
+    return str(regime) if isinstance(regime, str) else None
+
+
 class FusionStatusWriter:
     """Writes fusion_status.json atomically every fusion cycle."""
 
@@ -135,8 +170,8 @@ class FusionStatusWriter:
             # "anchor": the sample handed to chrony came from the
             # label-plane anchor (T3 registration or T6 native anchor).
             # "fusion_d_clock": the legacy host-relative sample.
-            "feed_regime": "anchor" if anchor_sample is not None
-            else "fusion_d_clock",
+            "feed_regime": (ANCHOR_REGIME if anchor_sample is not None
+                            else LEGACY_REGIME),
             "anchor_bench": (
                 anchor_sample.bench if anchor_sample is not None else None
             ),
