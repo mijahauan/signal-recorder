@@ -30,6 +30,7 @@ The archive writer in the recorder handles long-term .bin.zst chunks
 independently of metrology latency.
 """
 
+import dataclasses
 import fcntl
 import logging
 import os
@@ -51,6 +52,9 @@ from hf_timestd.core.ring_buffer import (
     RingBufferOverrunError,
 )
 from hf_timestd.core.ring_buffer_reader import RingBufferReader
+from hf_timestd.core.counter_epoch_tracker import CounterEpochTracker
+from hf_timestd.core.registration_acquirer import RegistrationAcquirer, Registration
+from hf_timestd.core.registration_store import RegistrationStore, fuse_registrations
 
 from hf_timestd.core.wwv_constants import (
     TEST_SIGNAL_MINUTES, station_for_test_minute,
@@ -216,7 +220,13 @@ class MetrologyService:
             enable_physics_products=self._physics_products,
             bcd_leap_notice=bool(_metrology_cfg.get('bcd_leap_notice', True)),
         )
-        
+
+        # T3 self-registration (spec 2026-09-06): the ticks place the second.
+        self.acquirer = RegistrationAcquirer(self.channel_name, self.engine.sample_rate)
+        self.reg_store = RegistrationStore()
+        self.epoch_tracker = CounterEpochTracker()
+        self._last_registration_meta: Dict[str, Any] = {}
+
         # Storage backend selection. Phase 1 of the HDF5 → SQLite
         # migration (see docs/HDF5-TO-SQLITE-MIGRATION.md): each writer
         # is constructed via make_data_product_writer, which returns
@@ -595,6 +605,10 @@ class MetrologyService:
                     )
                     next_minute += 60
                     continue
+
+                buffer_timing = self.apply_registration(
+                    buffer_timing, samples, metadata.get("start_rtp_timestamp", 0),
+                    next_minute, metadata)
                 system_time = buffer_timing.sample0_utc
                 rtp_timestamp = int(metadata.get('start_rtp_timestamp', 0))
 
@@ -634,6 +648,72 @@ class MetrologyService:
                 )
                 time.sleep(1.0)
 
+    def apply_registration(self, buffer_timing, iq_samples: np.ndarray, start_rtp: int,
+                           minute_utc: int, metadata: Dict[str, Any]):
+        """Replace the label ORIGIN with the acquired one (rate untouched).
+        Returns the BufferTiming to hand the engine."""
+        if buffer_timing is None or buffer_timing.source == 'no_timing':
+            return buffer_timing
+        epoch = self.epoch_tracker.observe(metadata.get("gps_time_ns", 0),
+                                           metadata.get("rtp_timesnap", 0),
+                                           metadata.get("sample_rate", self.engine.sample_rate))
+        audio = self.engine.prepare_audio(iq_samples)
+        delays = self.engine.expected_delays_s(buffer_timing.sample0_utc, int(minute_utc))
+        own = self.acquirer.offer_minute(audio, buffer_timing, int(start_rtp), int(minute_utc),
+                                         delays, epoch)
+        sibs = self.reg_store.read_siblings(exclude_channel=self.channel_name)
+        if own is None and sibs:
+            # a shared channel's open hypotheses: let the siblings' plane name the station
+            sib_plane = fuse_registrations(sibs, at_rtp=int(start_rtp))
+            if sib_plane is not None:
+                own = self.acquirer.resolve_ambiguity(sib_plane, int(start_rtp),
+                                                      float(buffer_timing.sample0_utc))
+        fused = fuse_registrations(([own] if own else []) + sibs, at_rtp=int(start_rtp))
+        if own is None and fused is not None:
+            self.acquirer.adopt(fused)          # a sibling already placed the second
+        label_s0 = float(buffer_timing.sample0_utc)
+        if fused is None:
+            self._publish_registration(None, [], label_s0, None, epoch)
+            return dataclasses.replace(buffer_timing, origin_source="label",
+                                       counter_epoch_id=epoch)
+        s0 = fused.sample0_utc_for(int(start_rtp))
+        residual_ms = (s0 - label_s0) * 1000.0
+        self._publish_registration(fused, [r.channel for r in sibs] + ([self.channel_name] if own else []),
+                                   label_s0, residual_ms, epoch)
+        return dataclasses.replace(buffer_timing, sample0_utc=s0, origin_source="acquired",
+                                   origin_sigma_ms=fused.sigma_ms, counter_epoch_id=epoch)
+
+    def _publish_registration(self, fused, contributing, label_s0, residual_ms, epoch):
+        own = self.acquirer.registration
+        state = self.acquirer.state
+        if own is not None:
+            self.reg_store.write_channel(own, state, {
+                "label_sample0_utc": label_s0,
+                "correction_ms": None if residual_ms is None else round(residual_ms, 3)})
+        else:
+            self.reg_store.write_channel(
+                Registration(counter_epoch_id=epoch, rtp_ref=0, utc_ref=0.0,
+                             sample_rate=self.engine.sample_rate, sigma_ms=float("inf"),
+                             channel=self.channel_name), state, {"label_sample0_utc": label_s0})
+        self.reg_store.write_summary(fused, sorted(set(contributing)),
+                                     "ACQUIRED" if fused is not None else "BOOTSTRAP",
+                                     {"raw_pair_residual_ms": None if residual_ms is None else round(residual_ms, 3),
+                                      "counter_epoch_id": epoch,
+                                      "minutes_since_acquisition": 0 if fused is None else fused.n_minutes})
+
+    def feed_back_ensembles(self, results) -> None:
+        """Hand this minute's acquired-plane ensembles to the acquirer
+        (spec §5 corroborate / correct)."""
+        res = {}
+        for r in results or []:
+            if getattr(r, "anchor_source", None) != "acquired":
+                continue
+            res[str(r.station)] = (float(r.ensemble_timing_error_ms), float(r.sigma_single_ms))
+        if res:
+            outcome = self.acquirer.corroborate(res)
+            if outcome == "reacquire":
+                logger.warning(f"[{self.channel_name}] registration residual sustained; re-acquiring")
+
     def _process_minute_data(
         self,
         minute_boundary: int,
@@ -656,10 +736,14 @@ class MetrologyService:
                 rtp_timestamp=rtp_timestamp,
                 buffer_timing=buffer_timing
             )
-            
+
+            edge_results = getattr(self.engine, "last_edge_results", None)
+            if edge_results:
+                self.feed_back_ensembles(edge_results)
+
             # NOTE (2026-02-03): Bootstrap functionality migrated into MetrologyEngine.
             # The engine's fusion_state handles timing refinement internally.
-            
+
             # Write Results
             for res in results:
                 # Convert Pydantic model to dict for writer

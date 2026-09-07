@@ -297,7 +297,12 @@ class MetrologyEngine:
         
         # Edge detection results (per-second onset timing)
         self._last_edge_results: Dict[str, Any] = {}
-        
+
+        # Every EdgeEnsembleResult produced this minute, flat (not keyed by
+        # station) -- the acquirer's feed-back path (T3 self-registration
+        # spec §5) reads this list; reset at the top of each process_minute.
+        self.last_edge_results: List[Any] = []
+
         
         # NOTE (§3.4 Low): a `bpm_calibration` dict + `_load_calibration`
         # / `_save_calibration` JSON round-trip lived here.  The dict was
@@ -500,6 +505,38 @@ class MetrologyEngine:
                 sample_rate=self.sample_rate
             )
             logger.info(f"{self.channel_name}: WWV/WWVH/BPM tick filters initialized (57+57+59 ticks/min)")
+
+    def prepare_audio(self, iq_samples: np.ndarray) -> np.ndarray:
+        """The real envelope with DC removed — the detector's and the
+        acquirer's common input (one measurand, one ruler)."""
+        envelope = np.abs(iq_samples)
+        return envelope - np.mean(envelope)
+
+    def expected_delays_s(self, system_time: float, minute_utc: int) -> Dict[str, float]:
+        """Geometric expected delays (seconds) for the stations that can be
+        on the air at this minute on this frequency — the same set and the
+        same numbers the tick search uses.  ``minute_utc`` is the minute
+        boundary in Unix seconds; ``eligible_candidates`` wants minute-of-
+        hour and hour-of-day, derived here."""
+        from hf_timestd.core.station_arrival_gate import eligible_candidates
+        delays_ms: Dict[str, float] = {}
+        for station in _live_station_names():
+            expected_delay_ms, _dist_km, _unc = self._predict_geometric_delay(station, system_time)
+            if expected_delay_ms > 0:
+                delays_ms[station] = expected_delay_ms
+        utc_hour = (int(minute_utc) // 3600) % 24
+        bpm_hours = getattr(getattr(self, "bpm_discriminator", None), "active_hours", None)
+        try:
+            from hf_timestd.core.wwv_constants import STATION_CATALOG as _CAT
+            st_freqs = {n: list(_CAT.get(n).frequencies_mhz) for n in _live_station_names()
+                        if _CAT.get(n) is not None}
+        except Exception:  # noqa: BLE001
+            st_freqs = None
+        eligible = eligible_candidates(delays_ms, utc_minute=(int(minute_utc) // 60) % 60,
+                                       utc_hour=utc_hour, bpm_active_hours=bpm_hours,
+                                       frequency_mhz=self.frequency_mhz,
+                                       station_frequencies=st_freqs)
+        return {s: d / 1000.0 for s, d in eligible.items()}
 
     def _validate_input(self, iq_samples: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Validate and normalize input samples."""
@@ -1378,6 +1415,10 @@ class MetrologyEngine:
             buffer_timing: BufferTiming object mapping samples to UTC.
                           If provided, overrides system_time for all timing.
         """
+        # Every EdgeEnsembleResult produced this minute (T3 self-registration
+        # spec §5 feed-back); reset before the per-station loop below.
+        self.last_edge_results = []
+
         # Derive the minute boundary from the authoritative timing source
         # (M-M6).  `system_time` is the writer's start-of-buffer wall-clock
         # estimate from its OWN (possibly stale) GPS/RTP mapping; if a
@@ -1434,7 +1475,7 @@ class MetrologyEngine:
         #
         # The raw IQ (iq_samples) is still passed to the edge detector for
         # carrier phase / Doppler extraction, which correctly uses IQ mixing.
-        audio_signal = envelope - np.mean(envelope)
+        audio_signal = self.prepare_audio(iq_samples)
         
         # Compute expected delays and uncertainties for all stations using physics model
         expected_delays_by_station = {}
@@ -1662,7 +1703,8 @@ class MetrologyEngine:
                 
                 if edge_result is not None:
                     edge_results[station_name] = edge_result
-                    
+                    self.last_edge_results.append(edge_result)
+
                     # If this station had NO correlation detection but the
                     # edge ensemble has sufficient confidence, create a
                     # synthetic measurement from the ensemble.
