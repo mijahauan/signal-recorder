@@ -847,3 +847,66 @@ def test_contributing_names_only_what_fusion_kept(tmp_path):
     s = svc.reg_store.read_summary()
     assert sorted(s["contributing"]) == ["SHARED_10000", "WWV_20000"]
     assert "WWV_25000" not in s["contributing"]
+
+
+# ── I4 (final review): an unverified witness plane must re-acquire ────
+
+
+def test_witness_plane_that_disagrees_with_t6_reacquires(tmp_path):
+    """I4: on the T6 path the service set ``own.verified`` from the
+    residual and published CANDIDATE when that failed -- but never reset
+    the acquirer.  ``offer_minute`` short-circuits on ACQUIRED and
+    ``feed_back_ensembles`` returns immediately because
+    ``_applied_acquired_plane`` stays False all minute on the witness
+    path, so a plane disagreeing with T6 by more than
+    VERIFY_MAX_RESIDUAL_MS stayed in ACQUIRED-but-unverified with no route
+    back to BOOTSTRAP until a counter-epoch change.  That defeats the
+    ``hf_acquired``-vs-T6 residual spec §8 names as B4's acceptance
+    measurement.  After VERIFY_MAX_MINUTES of disagreement, reset."""
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    for k in range(RegistrationAcquirer.VERIFY_MAX_MINUTES):
+        label = label_timing(T0 + 60 * k, 0.040, SR)  # T6 says +40 ms
+        label.judge_tier = "T6"
+        svc.apply_registration(
+            label, audio, 1_000_000 + k * 60 * SR, MIN + 60 * k, _meta(k)
+        )
+        s = svc.reg_store.read_summary()
+        assert s["state"] == "CANDIDATE"
+        assert abs(s["residual_vs_t6_ms"]) > RegistrationAcquirer.VERIFY_MAX_RESIDUAL_MS
+    # the last minute's publish is honest about what it measured, and THEN
+    # the plane is given up on
+    assert svc.acquirer.state == RegistrationAcquirer.STATE_BOOTSTRAP
+    assert svc.acquirer.registration is None
+
+
+def test_witness_plane_that_agrees_with_t6_is_never_reset(tmp_path):
+    """The companion case: a verified witness plane must survive
+    indefinitely -- the residual against T6 is the free measurement of the
+    acquisition method's accuracy that spec §6 asks for."""
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    for k in range(RegistrationAcquirer.VERIFY_MAX_MINUTES + 2):
+        label = label_timing(T0 + 60 * k, 0.0008, SR)  # T6 says +0.8 ms
+        label.judge_tier = "T6"
+        svc.apply_registration(
+            label, audio, 1_000_000 + k * 60 * SR, MIN + 60 * k, _meta(k)
+        )
+        assert svc.reg_store.read_summary()["state"] == "WITNESS"
+    assert svc.acquirer.state == RegistrationAcquirer.STATE_ACQUIRED
+
+
+def test_a_witness_plane_that_comes_back_into_agreement_is_not_reset(tmp_path):
+    """The counter is CONSECUTIVE minutes: one minute of disagreement
+    followed by agreement must not accumulate toward a reset (a single
+    bad T6 residual is not evidence the plane is wrong)."""
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    walks = [0.040, 0.0008] * RegistrationAcquirer.VERIFY_MAX_MINUTES
+    for k, walk in enumerate(walks):
+        label = label_timing(T0 + 60 * k, walk, SR)
+        label.judge_tier = "T6"
+        svc.apply_registration(
+            label, audio, 1_000_000 + k * 60 * SR, MIN + 60 * k, _meta(k)
+        )
+    assert svc.acquirer.state == RegistrationAcquirer.STATE_ACQUIRED

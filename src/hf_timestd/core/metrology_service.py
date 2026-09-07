@@ -229,6 +229,9 @@ class MetrologyService:
         self.acquirer = RegistrationAcquirer(self.channel_name, self.engine.sample_rate)
         self.reg_store = RegistrationStore()
         self.epoch_tracker = CounterEpochTracker()
+        # I4: consecutive minutes an unverified WITNESS plane has
+        # disagreed with T6 (see _apply_registration_unsafe).
+        self._t6_witness_unverified_minutes = 0
         # task-11b fix round 1 (C1): whether THIS minute's BufferTiming was
         # actually built from the acquired/candidate plane (origin_source
         # "acquired") -- feed_back_ensembles needs this to know whether a
@@ -826,6 +829,22 @@ class MetrologyService:
             witness_state = (
                 "WITNESS" if (own is not None and own.verified) else "CANDIDATE"
             )
+            # I4 (final review): an unverified witness plane used to park
+            # forever.  `offer_minute` short-circuits on ACQUIRED, and
+            # `feed_back_ensembles` returns immediately here because
+            # `_applied_acquired_plane` stays False all minute on this path,
+            # so nothing ever reset the acquirer -- and the
+            # hf_acquired-vs-T6 residual is exactly the measurement spec §8
+            # names as B4's acceptance number.  Count CONSECUTIVE
+            # disagreeing minutes; give the plane up after
+            # VERIFY_MAX_MINUTES of them, which is the same patience
+            # `verify()` shows an unconfirmed plane on the non-T6 path.
+            if own is None or own.verified:
+                self._t6_witness_unverified_minutes = 0
+            else:
+                self._t6_witness_unverified_minutes = (
+                    getattr(self, "_t6_witness_unverified_minutes", 0) + 1
+                )
             self._publish_registration(
                 fused, contributing, label_s0, residual_vs_t6_ms, epoch,
                 state_override=witness_state,
@@ -836,6 +855,17 @@ class MetrologyService:
                     ),
                 },
             )
+            # After the publish, so the record of the minute that ran out
+            # of patience still carries the residual it measured (I4).
+            if (self._t6_witness_unverified_minutes
+                    >= RegistrationAcquirer.VERIFY_MAX_MINUTES):
+                by = (
+                    "no measurable residual" if residual_vs_t6_ms is None
+                    else f"{residual_vs_t6_ms:+.1f} ms")
+                self.acquirer.reset(
+                    f"witness plane disagrees with T6 ({by}) for "
+                    f"{self._t6_witness_unverified_minutes} minutes")
+                self._t6_witness_unverified_minutes = 0
             return dataclasses.replace(buffer_timing, counter_epoch_id=epoch)
 
         # I2: this channel already has its own ACQUIRED plane, but nothing
