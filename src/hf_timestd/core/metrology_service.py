@@ -904,8 +904,14 @@ class MetrologyService:
                     f"channel's own plane ({deltas}); reverting to the label plane "
                     f"this minute")
                 involved = sorted({self.channel_name, *(r.channel for r in sibs)})
-                self._publish_registration(None, involved, label_s0, None, epoch,
-                                           state_override="CONFLICT")
+                # I6: CONFLICT is a PER-CHANNEL verdict.  It belongs in this
+                # channel's file; the station summary carries the channels
+                # involved under `conflicts` and keeps a state derived from
+                # the fused result, so one channel's disagreement no longer
+                # overwrites the station's state for every reader.
+                self._publish_registration(None, [], label_s0, None, epoch,
+                                           channel_state_override="CONFLICT",
+                                           conflicts=involved)
                 return dataclasses.replace(buffer_timing, origin_source="label",
                                            counter_epoch_id=epoch)
             # else: a genuinely self-acquired `own` with zero siblings and
@@ -935,7 +941,15 @@ class MetrologyService:
 
     def _publish_registration(self, fused, contributing, label_s0, residual_ms, epoch,
                               *, state_override: Optional[str] = None,
+                              channel_state_override: Optional[str] = None,
+                              conflicts: Optional[List[str]] = None,
                               extra_extra: Optional[Dict[str, Any]] = None):
+        """``state_override`` names BOTH the channel file's state and the
+        summary's -- use it only for a state the FUSED result justifies
+        (WITNESS / CANDIDATE on the T6 path).  ``channel_state_override``
+        names a PER-CHANNEL state that must not reach the summary
+        (CONFLICT); pass ``conflicts`` alongside it so the summary can name
+        the channels involved (final review, I6)."""
         # NOTE: this "current" registration is the ACQUIRER's own state as of
         # right now (post adopt/acquire this minute) -- a distinct quantity
         # from the caller's "own" (this minute's fresh offer_minute /
@@ -949,7 +963,9 @@ class MetrologyService:
         # (RegistrationAcquirer.verify) -- publishing it as ACQUIRED before
         # that let a single-station channel self-register on a fold-lattice
         # phantom and offer it to siblings as trustworthy evidence.
-        if state_override is not None:
+        if channel_state_override is not None:
+            state = channel_state_override
+        elif state_override is not None:
             state = state_override
         elif self.acquirer.state == self.acquirer.STATE_ACQUIRED:
             state = "ACQUIRED" if (current is not None and current.verified) else "CANDIDATE"
@@ -982,7 +998,9 @@ class MetrologyService:
         )
         extra = {"raw_pair_residual_ms": None if residual_ms is None else round(residual_ms, 3),
                  "counter_epoch_id": epoch,
-                 "minutes_since_acquisition": 0 if fused is None else fused.n_minutes}
+                 "minutes_since_acquisition": 0 if fused is None else fused.n_minutes,
+                 # I6: always present, so a reader can rely on the key.
+                 "conflicts": sorted(set(conflicts)) if conflicts else []}
         if extra_extra:
             extra.update(extra_extra)
         self.reg_store.write_summary(fused, sorted(set(contributing)), summary_state, extra)

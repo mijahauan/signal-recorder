@@ -472,9 +472,17 @@ def test_apply_registration_failure_keeps_the_label_plane(tmp_path, monkeypatch)
 
 def test_sibling_conflict_reverts_to_label_and_flags_conflict(tmp_path):
     """I2: this channel's own ACQUIRED plane disagreeing with its sibling
-    (nothing within FUSE_OUTLIER_MS of the combined median) must publish
-    ONE state ("CONFLICT", not channel=ACQUIRED/summary=BOOTSTRAP) and
-    revert to the label plane, with a warning naming the disagreement.
+    (nothing within FUSE_OUTLIER_MS of the combined median) must revert to
+    the label plane and say CONFLICT, with a warning naming the
+    disagreement.
+
+    final review I6: CONFLICT is a per-CHANNEL verdict, and
+    registration.json is one file that N independent processes rewrite each
+    minute.  Publishing CONFLICT as the STATION's state let one channel out
+    of six flap the summary that HfAcquiredBench and authority.json both
+    read.  So the channel file says CONFLICT, and the summary names the
+    channels involved under `conflicts` while its own state stays derived
+    from the fused result.
 
     fuse_registrations' median can only return an empty "keep" set for an
     EVEN total (an odd count always keeps at least the middle value, which
@@ -514,9 +522,12 @@ def test_sibling_conflict_reverts_to_label_and_flags_conflict(tmp_path):
         _meta(1),
     )
     assert bt.origin_source == "label"
+    ch = json.loads((tmp_path / "reg" / "SHARED_10000.json").read_text())
+    assert ch["state"] == "CONFLICT"
     s = svc.reg_store.read_summary()
-    assert s["state"] == "CONFLICT"
-    assert "SHARED_10000" in s["contributing"] and "WWV_20000" in s["contributing"]
+    assert s["state"] == "BOOTSTRAP"  # no fused plane this minute
+    assert s["conflicts"] == ["SHARED_10000", "WWV_20000"]
+    assert s["contributing"] == []
 
 
 def test_candidate_own_defers_to_verified_sibling_no_conflict(tmp_path):
@@ -910,3 +921,36 @@ def test_a_witness_plane_that_comes_back_into_agreement_is_not_reset(tmp_path):
             label, audio, 1_000_000 + k * 60 * SR, MIN + 60 * k, _meta(k)
         )
     assert svc.acquirer.state == RegistrationAcquirer.STATE_ACQUIRED
+
+
+def test_every_summary_carries_a_conflicts_key(tmp_path):
+    """I6: readers (station-web, the provenance sidecar) can rely on the
+    key being there, empty when nothing disagrees."""
+    svc = _service(tmp_path)
+    audio = make_tick_audio(62, SR, T0, {"WWV": 0.0125}, snr_db=20.0)
+    svc.apply_registration(label_timing(T0, 0.0, SR), audio, 1_000_000, MIN, _meta(0))
+    assert svc.reg_store.read_summary()["conflicts"] == []
+
+
+def test_conflict_does_not_hide_the_summary_state_from_the_bench(tmp_path):
+    """I6: HfAcquiredBench is unchanged -- it answers on ACQUIRED and
+    WITNESS and stays silent on anything else.  A CONFLICT summary used to
+    silence it for the whole station because of one channel; now the state
+    it reads is the one the fused result justifies, and the conflict is
+    named beside it."""
+    from hf_timestd.core.offset_judge import HfAcquiredBench
+
+    svc = _service(tmp_path)
+    svc.reg_store.write_summary(
+        None, [], "BOOTSTRAP", {"conflicts": ["SHARED_10000", "WWV_20000"]}
+    )
+    bench = HfAcquiredBench(
+        provider=lambda: (1_000_000, 1000.0, SR),
+        store=svc.reg_store,
+        mono_fn=lambda: 1000.0,
+    )
+    assert bench.poll() is None
+    assert svc.reg_store.read_summary()["conflicts"] == [
+        "SHARED_10000",
+        "WWV_20000",
+    ]
