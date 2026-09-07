@@ -213,3 +213,33 @@ sweep that killed two recorders on 2026-09-06 runs here from now on.
 | BPM shares WWV's 1000 Hz tick | Template fit uses the 34 ms separation; BPM stays excluded from timing as today |
 | Whole-second ambiguity if the pair is off by more than a second | The recorder announces counter-epoch changes past 0.5 s; the minute marker's 800 ms tone resolves the second within the minute |
 | The slow filter follows a drifting plane into error | It only integrates tick-like ensembles; the correction rule re-acquires on a sustained 3 σ residual |
+
+## 11. Amendment 2026-09-07 — the registration must reach the anchor (mjh)
+
+Live on AC0G-ND, 2026-09-07 11:32Z onward: six channels acquired and verified a registration
+~20 ms from radiod's pair and held it to a millisecond, while the host clock walked 150 ms from
+four NTP witnesses and psk decodes died. The ticks and the 800 ms marker corrected the metrology's
+plane every minute; nothing carried that correction to the anchor the clients read. §6's "radiod's
+pair keeps the whole-second role" and §9's deferral of the ring anchor left two registrations on
+one station, which violates the one-registration rule (mjh, 2026-09-04).
+
+Michael's statement of the requirement: psk, wspr, meteor-scatter — every client keys off UTC;
+without TS-1, T5 or T4, T3 carries the burden and must beat WAN NTP; what must not drift is the
+alignment of the RTP counter with UTC. The verified, marker-corroborated registration is therefore
+the anchor on a T6-less station, and every consumer reads it:
+
+1. **Judge precedence within T3.** The `hf_acquired` bench outranks `FusionBench` within tier T3
+   whenever it answers (its reading is host-clock-free and registration-verified; FusionBench's
+   d_clock is measured against the anchor and certifies the anchor, not UTC). Same-tier adoption
+   is immediate and ungated, so the judge's verdict becomes the acquired plane's residual and
+   `_update_ring_anchor` re-registers the ring — and with it authority.json §18 and every
+   subscriber — within one revalidation tick. The σ floor of §6 stands; precedence, not σ, decides.
+2. **The chrony feed carries the host error.** The FUSE SHM sample is `system_time − (judge_offset
+   + d_clock)` when the judge's best bench is a label-plane (host-clock-free) bench, read from
+   `/run/hf-timestd/offset_judge.json`; otherwise as today. Fusion's d_clock, measured on the
+   re-registered plane, then reports the residual, and the judge's offset reports the host's
+   error against the tick-aligned UTC. FUSE's own view of host frequency stops being host-locked.
+3. **Acceptance.** On ND, the T3-anchored UTC holds within the NTP witnesses' own scatter
+   indefinitely (`chronyc sources` offsets of the pool servers stay within ±10 ms of zero), the
+   `hf_acquired` verdict and FUSE agree, and `raw_pair_residual_ms` in registration.json trends
+   toward zero once the ring re-anchors.
