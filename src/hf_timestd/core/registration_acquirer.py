@@ -699,6 +699,107 @@ def integer_second_correction(
     return int(round(total - fractional_correction_s))
 
 
+# Task 17b (review W2/C2).  Moving a station's UTC by a whole second is
+# the one error this system has no other detector for: ticks are 1 s
+# periodic and ``TickEdgeDetector`` searches ±20 ms, so a plane wrong by
+# exactly ±1 s produces a fine-search residual of ~0 -- gate (b) passes,
+# ``corroborate`` tightens, and the station publishes the error as
+# authoritative T3.  ``MARKER_MIN_SNR_DB`` (6 dB) is the bar for NAMING a
+# station, where a wrong answer costs the WWV-vs-BPM delay difference,
+# ~37 ms.  Moving the second costs 1000 ms, so it gets its own bar, at
+# the observed evidence rather than at the detection floor: the measured
+# markers ran 26-39 dB (review I3).
+MARKER_INT_SECOND_MIN_SNR_DB = 20.0
+# ...and it may move the second by at most ONE.  The marker search spans
+# [centre − 1.5 s, centre + 2.3 s], so k ∈ {−2, −1, 0, +1} is reachable;
+# a two-second claim describes a marker the search should not have
+# reached, not a two-second walk.
+MARKER_INT_SECOND_MAX_K = 1
+# Attempts an acquisition will WAIT for a second minute to confirm a
+# non-zero whole second before giving up and registering without it.
+# The whole second is the only quantity here worth a delay: the fold
+# plane is available immediately and is what c7b2106 shipped, so waiting
+# costs the pre-marker behaviour for a minute or two and buys the one
+# correction that cannot be checked afterwards.
+WHOLE_SECOND_HOLD_MAX_MINUTES = 2
+
+
+@dataclass(frozen=True)
+class WholeSecondDecision:
+    """What the minute marker is allowed to do to the whole second.
+
+    ``k_raw`` is the whole second the marker IMPLIES, always measured and
+    always reported; ``k_int`` is the one actually applied to the plane.
+    They differ exactly when a gate refused, and then ``unresolved`` is
+    true and the registration says so (``whole_second_unresolved``).
+    """
+
+    k_int: int
+    k_raw: int
+    agrees: bool
+    unresolved: bool
+    reason: str
+
+
+def whole_second_from_marker(
+    marker_offset_s: float,
+    marker_snr_db: float,
+    expected_delay_s: float,
+    fractional_correction_s: float,
+    *,
+    confirmed_k: Optional[int] = None,
+    agree_ms: float = MARKER_HYPOTHESIS_AGREE_MS,
+    min_snr_db: float = MARKER_INT_SECOND_MIN_SNR_DB,
+    max_k: int = MARKER_INT_SECOND_MAX_K,
+) -> WholeSecondDecision:
+    """Bound and unwrap the marker's whole-second claim (task 17b).
+
+    The agreement test compares WITHOUT wrapping::
+
+        |marker_offset − marker_position| ≤ agree_ms
+
+    At 7a99e21 it wrapped, and the wrap discarded exactly the quantity
+    ``integer_second_correction`` then acted on -- so a marker landing a
+    whole second from the fold position both promoted the hypothesis and
+    moved the plane by a second (review W2, with B4's own numbers:
+    d_WWV = 4.027 ms, fold peak 80.79 ms, a marker at +1080.790 ms
+    "agreeing" and shifting the plane -1076.8 ms).
+
+    ``confirmed_k`` is the whole second the marker implied on the
+    IMMEDIATELY PRECEDING minute, or None when there was no such minute
+    or it implied something else.  A whole second moves the plane only
+    when two consecutive minutes of an independent fold agree on it; the
+    review measured the marker at +81.712 and +81.837 ms on consecutive
+    minutes, so that evidence is already in hand on a healthy channel.
+
+    ``reason`` names the outcome, and one value is actionable: on
+    ``"unconfirmed"`` a second minute can still supply the confirmation,
+    so the caller may wait.  Every other refusal is final for this fold.
+    """
+    predicted_s = marker_position_s(expected_delay_s, fractional_correction_s)
+    agrees = abs(float(marker_offset_s) - predicted_s) * 1000.0 <= float(agree_ms)
+    k_raw = integer_second_correction(
+        marker_offset_s, expected_delay_s, fractional_correction_s
+    )
+    if k_raw == 0:
+        # Nothing to gate: the fold's fractional correction is the whole
+        # answer, which is also what c7b2106 always did.
+        return WholeSecondDecision(0, 0, agrees, False, "zero")
+    if not agrees:
+        reason = "disagrees"
+    elif not (float(marker_snr_db) >= float(min_snr_db)):
+        # `not (x >= y)` and not `x < y`: a NaN SNR passes `<` (review
+        # M1) and must not pass here.
+        reason = "snr"
+    elif abs(k_raw) > int(max_k):
+        reason = "magnitude"
+    elif confirmed_k is None or int(confirmed_k) != k_raw:
+        reason = "unconfirmed"
+    else:
+        return WholeSecondDecision(k_raw, k_raw, agrees, False, "confirmed")
+    return WholeSecondDecision(0, k_raw, agrees, True, reason)
+
+
 @dataclass
 class Registration:
     """The acquired origin, held in the RTP frame: utc(sample at rtp) =
@@ -726,6 +827,16 @@ class Registration:
     # one physical epoch can spell ``counter_epoch_id`` differently (final
     # review, C1).  NaN when the writer never saw a valid pair.
     epoch_offset_s: float = float("nan")
+    # task 17b: the minute marker implied a non-zero whole second and a
+    # gate refused it, so this plane's SECOND rests on the label frame
+    # (radiod's host-stamped pair) rather than on the marker -- exactly
+    # where it rested at c7b2106, when the marker search could not reach
+    # a live minute at all.  Provenance, not a refusal: the fractional
+    # correction is unaffected and the plane is as good as the pre-marker
+    # one.  Published in the channel file and the station summary so the
+    # offline analysis and the operator can both see which planes carry a
+    # second nothing independent has confirmed.
+    whole_second_unresolved: bool = False
 
     def sample0_utc_for(self, start_rtp: int) -> float:
         return self.utc_ref + (int(start_rtp) - int(self.rtp_ref)) / float(
@@ -774,6 +885,12 @@ class RegistrationAcquirer:
         self._open: List[Hypothesis] = []
         self._verify_pending = 0
         self._epoch_offset_s = float("nan")
+        # task 17b: (minute_utc, k_raw) of the last attempt that found a
+        # marker, and how many attempts have already been spent waiting
+        # for a second consecutive minute to confirm a non-zero whole
+        # second.  Both live only inside one BOOTSTRAP episode.
+        self._marker_k_seen: Optional[Tuple[int, int]] = None
+        self._marker_k_holds = 0
 
     @property
     def state(self) -> str:
@@ -791,6 +908,8 @@ class RegistrationAcquirer:
         self._bad_minutes = 0
         self._open.clear()
         self._verify_pending = 0
+        self._marker_k_seen = None
+        self._marker_k_holds = 0
 
     def adopt(self, reg: Registration) -> None:
         """Adopt a sibling's (usually fused) plane as this channel's own.
@@ -966,35 +1085,87 @@ class RegistrationAcquirer:
         # so that a ring anchor refresh between minutes cannot shift the
         # whole-second answer
         k_int = 0
+        whole_second_unresolved = False
         st0 = h.assignments[0][0]
         mk = marker_for_band(BAND_OF_STATION[st0])
         # I2: the two float32 envelopes go here, the last point that reads
         # them.  Cleared rather than `del`eted because ``marker_for_band``
         # closes over the name (and is not called again).
         envelopes.clear()
-        marker_agrees = mk is not None and (
-            abs(
-                wrap_half_second(
-                    mk[0] - marker_position_s(expected_delays_s[st0], h.correction_s)
+        if mk is not None:
+            # Task 17b: bounded and UNWRAPPED (review W2).  The previous
+            # test wrapped, so a marker a whole second from the fold
+            # position "agreed" and moved the plane by a second -- and
+            # nothing downstream could see it, because a plane wrong by
+            # exactly 1 s leaves the 1 s-periodic tick search a residual
+            # of ~0.
+            minute_now = int(self._buf[-1][3])
+            prev = self._marker_k_seen
+            confirmed_k = (
+                prev[1] if (prev is not None and minute_now - prev[0] == 60) else None
+            )
+            dec = whole_second_from_marker(
+                mk[0],
+                mk[1],
+                expected_delays_s[st0],
+                h.correction_s,
+                confirmed_k=confirmed_k,
+            )
+            self._marker_k_seen = (minute_now, dec.k_raw)
+            predicted_ms = (
+                marker_position_s(expected_delays_s[st0], h.correction_s) * 1000.0
+            )
+            if dec.reason == "unconfirmed":
+                # The ONE refusal a second minute can lift.  Waiting costs
+                # the pre-marker behaviour for a minute; registering on one
+                # minute's evidence risks a silent 1 s UTC error, which is
+                # the one fault this system has no other detector for.
+                if self._marker_k_holds < WHOLE_SECOND_HOLD_MAX_MINUTES:
+                    self._marker_k_holds += 1
+                    logger.warning(
+                        f"[{self.channel}] BOOTSTRAP: minute marker at "
+                        f"{mk[0] * 1000:+.1f} ms (SNR {mk[1]:.1f} dB) asks "
+                        f"for a whole second {dec.k_raw:+d} s on {st0}'s "
+                        f"ticks ({predicted_ms:+.1f} ms); waiting for a "
+                        f"second consecutive minute to say the same "
+                        f"({self._marker_k_holds}/"
+                        f"{WHOLE_SECOND_HOLD_MAX_MINUTES})"
+                    )
+                    return None
+                logger.warning(
+                    f"[{self.channel}] minute marker asked for "
+                    f"{dec.k_raw:+d} s and no second minute confirmed it "
+                    f"in {self._marker_k_holds} attempts; registering with "
+                    f"the whole second UNRESOLVED"
                 )
-            )
-            * 1000.0
-            <= MARKER_HYPOTHESIS_AGREE_MS
-        )
-        if mk is not None and marker_agrees:
-            k_int = integer_second_correction(
-                mk[0], expected_delays_s[st0], h.correction_s
-            )
-        elif mk is not None:
-            # A marker that does not stand on this station's folded ticks
-            # belongs to something else; taking a whole second from it
-            # would move the plane by a second for no reason (task 15).
-            logger.info(
-                f"[{self.channel}] minute marker at {mk[0] * 1000:+.1f} ms "
-                f"(SNR {mk[1]:.1f} dB) does not stand on {st0}'s ticks "
-                f"({marker_position_s(expected_delays_s[st0], h.correction_s) * 1000:+.1f} "
-                f"ms); whole second left at 0"
-            )
+            k_int = dec.k_int
+            whole_second_unresolved = dec.unresolved
+            if dec.reason == "disagrees":
+                # A marker that does not stand on this station's folded
+                # ticks belongs to something else; taking a whole second
+                # from it would move the plane for no reason (task 15).
+                # After 17b this also catches the W2 case -- a marker a
+                # whole second away -- which used to be indistinguishable
+                # from a marker on the ticks.
+                logger.warning(
+                    f"[{self.channel}] minute marker at {mk[0] * 1000:+.1f} "
+                    f"ms (SNR {mk[1]:.1f} dB) does not stand on {st0}'s "
+                    f"ticks ({predicted_ms:+.1f} ms); it implies "
+                    f"{dec.k_raw:+d} s and gets none — whole second "
+                    f"UNRESOLVED"
+                )
+            elif dec.unresolved:
+                logger.warning(
+                    f"[{self.channel}] minute marker implies {dec.k_raw:+d} "
+                    f"s (SNR {mk[1]:.1f} dB); refused on {dec.reason} — "
+                    f"whole second UNRESOLVED"
+                )
+            elif dec.k_int:
+                logger.info(
+                    f"[{self.channel}] minute marker moves the whole "
+                    f"second by {dec.k_int:+d} s, confirmed on two "
+                    f"consecutive minutes (SNR {mk[1]:.1f} dB)"
+                )
         corr = h.correction_s + k_int
         if named is not None:
             # The marker RESOLVED the ambiguity: the hypotheses it did not
@@ -1012,6 +1183,7 @@ class RegistrationAcquirer:
             hypotheses_open=len(self._open),
             stations=tuple(sorted({a[0] for a in h.assignments})),
             epoch_offset_s=self._epoch_offset_s,
+            whole_second_unresolved=whole_second_unresolved,
         )
         self._state = self.STATE_ACQUIRED
         self._bad_minutes = 0

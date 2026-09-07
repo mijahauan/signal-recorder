@@ -273,6 +273,14 @@ def fuse_registrations_with_members(
         # the cluster's own offset: its members agree to the pair skew, so
         # the minimum (the least-late pair anyone saw) is the truest
         epoch_offset_s=min(finite) if finite else float("nan"),
+        # task 17b: ``any``, as ``verified`` takes the weakest
+        # provenance.  One member whose second rests on the label frame
+        # makes the fused plane's second rest on it too -- the members
+        # agree to the pair skew, so they share whatever whole second
+        # the label frame gave them.
+        whole_second_unresolved=any(
+            bool(getattr(r, "whole_second_unresolved", False)) for r, _ in keep
+        ),
     )
     return fused, [r.channel for r, _ in keep], waiting
 
@@ -335,6 +343,7 @@ class RegistrationStore:
                 "hypotheses_open": 0,
                 "verified": None,
                 "epoch_offset_s": None,
+                "whole_second_unresolved": None,
             }
         # strict JSON: a BOOTSTRAP channel file carries sigma inf -> null
         sigma = float(reg.sigma_ms) if math.isfinite(reg.sigma_ms) else None
@@ -359,6 +368,11 @@ class RegistrationStore:
             "epoch_offset_s": (
                 float(reg.epoch_offset_s) if math.isfinite(reg.epoch_offset_s) else None
             ),
+            # task 17b: the marker implied a whole second and a gate
+            # refused it, so this plane's second rests on the label
+            # frame.  Provenance for the offline analysis; no gate reads
+            # it, because the plane is exactly the one c7b2106 published.
+            "whole_second_unresolved": bool(reg.whole_second_unresolved),
         }
 
     def write_channel(self, reg: Registration, state: str, extra: dict) -> None:
@@ -432,6 +446,12 @@ class RegistrationStore:
                             float(d["epoch_offset_s"])
                             if d.get("epoch_offset_s") is not None
                             else float("nan")
+                        ),
+                        # task 17b: absent (an older file) reads as
+                        # False -- the pre-17b acquirer could not refuse
+                        # a whole second, so it never had one to flag.
+                        whole_second_unresolved=bool(
+                            d.get("whole_second_unresolved") or False
                         ),
                     )
                 )

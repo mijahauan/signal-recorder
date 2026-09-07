@@ -307,3 +307,301 @@ def test_the_two_peak_pair_without_a_marker_stays_bootstrap():
     assert all(
         "BPM" not in {a[0] for a in h.assignments} for h in acq._open
     ), "no open hypothesis may name BPM"
+
+
+# ── Task 17b: the whole-second correction, bounded and unwrapped ──────
+#
+# Review finding W2/C2 (task-15-16-review.md): ``marker_agrees`` and
+# ``marker_names_one_hypothesis`` both tested
+# ``abs(wrap_half_second(offset - predicted)) <= 10 ms``, and the wrap
+# discards exactly the quantity ``integer_second_correction`` then acts
+# on.  A marker landing a WHOLE SECOND from the fold position therefore
+# "agreed", and the plane moved by a second.  Nothing downstream could
+# see it: ticks are 1 s periodic and ``TickEdgeDetector`` searches
+# ±20 ms, so a plane wrong by exactly ±1 s produces err ≈ 0, gate (b)
+# passes, ``corroborate`` tightens, and the station publishes a silent
+# 1 s UTC error as authoritative T3.
+#
+# The numbers below are B4's own measured values, quoted from the review.
+
+D_WWV_B4 = 0.004027  # measured expected delay, s
+FOLD_PEAK_B4 = 0.08079  # measured fold position, s
+CORR_B4 = D_WWV_B4 - FOLD_PEAK_B4  # -76.763 ms
+
+
+def _decide(marker_offset_s, snr_db=30.0, confirmed_k=None):
+    from hf_timestd.core.registration_acquirer import whole_second_from_marker
+
+    return whole_second_from_marker(
+        marker_offset_s,
+        snr_db,
+        D_WWV_B4,
+        CORR_B4,
+        confirmed_k=confirmed_k,
+    )
+
+
+def test_the_predicted_marker_position_is_b4s_measured_fold_peak():
+    """Anchors the fixture: the review's +80.790 ms."""
+    from hf_timestd.core.registration_acquirer import marker_position_s
+
+    assert marker_position_s(D_WWV_B4, CORR_B4) == pytest.approx(FOLD_PEAK_B4)
+
+
+def test_a_marker_on_the_fold_peak_agrees_and_asks_for_no_whole_second():
+    d = _decide(FOLD_PEAK_B4)
+    assert d.agrees is True
+    assert d.k_raw == 0
+    assert d.k_int == 0
+    assert d.unresolved is False
+
+
+@pytest.mark.parametrize(
+    "marker_offset_s,k_raw",
+    [
+        (FOLD_PEAK_B4 + 1.0, -1),  # the review's +1080.790 ms
+        (FOLD_PEAK_B4 - 1.0, +1),  # the review's  -919.210 ms
+    ],
+)
+def test_a_marker_a_whole_second_off_no_longer_agrees(marker_offset_s, k_raw):
+    """W2, closed.  The comparison is unwrapped, so a second is a second.
+
+    At 7a99e21 both of these returned ``agrees=True`` and shifted the
+    plane by ∓1 s — the +1080.8 ms case moved it -1076.8 ms.
+    """
+    d = _decide(marker_offset_s)
+    assert d.agrees is False
+    assert d.k_raw == k_raw, "the whole second the marker implies is still measured"
+    assert d.k_int == 0, "...and still refused"
+    assert d.unresolved is True
+    assert d.reason == "disagrees"
+
+
+def test_a_marker_a_whole_second_off_is_refused_even_when_confirmed():
+    """Agreement is a gate in its own right, not one vote among four."""
+    d = _decide(FOLD_PEAK_B4 + 1.0, snr_db=40.0, confirmed_k=-1)
+    assert d.k_int == 0 and d.unresolved is True
+
+
+# The bounds on a whole second that DOES stand on the ticks.
+#
+# The unwrapped agreement test does most of the work by itself: agreement
+# forces ``k_raw`` to equal the wrap ``marker_position_s`` itself applied,
+# which is 0 unless ``expected_delay − correction`` fell outside
+# (−0.5, 0.5].  So an AGREEING non-zero whole second is exactly the case
+# the marker exists for -- a fold whose fractional correction wrapped and
+# hid a second -- and it is narrow.  D = 12 ms with a fold correction of
+# −0.49 s is such a case: the marker at −0.498 s says the label is 0.51 s
+# out, the fold wrapped that to −0.49 s, and k = +1 recovers it.
+
+D_WRAP = 0.012
+FRAC_WRAP = -0.49
+MARKER_WRAP = -0.498  # within 10 ms of marker_position_s(D_WRAP, FRAC_WRAP)
+
+
+def _decide_wrapped(snr_db=30.0, confirmed_k=None, frac=FRAC_WRAP):
+    from hf_timestd.core.registration_acquirer import whole_second_from_marker
+
+    return whole_second_from_marker(
+        MARKER_WRAP, snr_db, D_WRAP, frac, confirmed_k=confirmed_k
+    )
+
+
+def test_the_hidden_second_case_agrees_and_asks_for_one_second():
+    d = _decide_wrapped()
+    assert d.agrees is True
+    assert d.k_raw == 1
+
+
+def test_a_confirmed_one_second_correction_is_applied():
+    d = _decide_wrapped(snr_db=25.0, confirmed_k=1)
+    assert d.k_int == 1
+    assert d.unresolved is False
+    assert d.reason == "confirmed"
+
+
+def test_an_unconfirmed_one_second_correction_waits():
+    """One minute of evidence is not enough to move UTC by a second.
+
+    The review measured the marker at +81.712 and +81.837 ms on
+    consecutive minutes, so a second minute is evidence a healthy channel
+    already has in hand.
+    """
+    d = _decide_wrapped(snr_db=25.0, confirmed_k=None)
+    assert d.k_int == 0 and d.unresolved is True
+    assert d.reason == "unconfirmed"
+
+
+def test_a_different_k_on_the_previous_minute_does_not_confirm():
+    d = _decide_wrapped(snr_db=25.0, confirmed_k=-1)
+    assert d.k_int == 0 and d.reason == "unconfirmed"
+
+
+def test_a_weak_marker_may_not_move_the_whole_second():
+    """MARKER_MIN_SNR_DB = 6 dB promotes; 20 dB is needed to move UTC.
+
+    The measured markers ran 26-39 dB, so the bar sits well below the
+    evidence and well above the promotion floor (review I3).
+    """
+    from hf_timestd.core.registration_acquirer import (
+        MARKER_INT_SECOND_MIN_SNR_DB,
+    )
+
+    assert MARKER_INT_SECOND_MIN_SNR_DB == 20.0
+    d = _decide_wrapped(snr_db=19.9, confirmed_k=1)
+    assert d.k_int == 0 and d.unresolved is True and d.reason == "snr"
+    assert _decide_wrapped(snr_db=20.0, confirmed_k=1).k_int == 1
+
+
+def test_more_than_one_second_is_never_applied():
+    """|k_int| <= 1, as a belt on the agreement test's own algebra.
+
+    Agreement can only ever imply |k| <= 1 while ``correction`` really is
+    fractional.  This passes a correction that is not (−1.49 s, as an
+    unwrapped caller would), and the magnitude bound catches the two
+    seconds that follows.
+    """
+    d = _decide_wrapped(snr_db=30.0, confirmed_k=2, frac=-1.49)
+    assert d.agrees is True
+    assert d.k_raw == 2
+    assert d.k_int == 0 and d.unresolved is True and d.reason == "magnitude"
+
+
+def test_a_nan_snr_never_passes_the_whole_second_gate():
+    """M1: ``nan < 6.0`` is False, so a NaN SNR passes the promotion
+    floor.  It must not also pass this one."""
+    d = _decide_wrapped(snr_db=float("nan"), confirmed_k=1)
+    assert d.k_int == 0 and d.reason == "snr"
+
+
+# ── the acquirer, end to end ─────────────────────────────────────────
+
+
+def test_the_acquirer_publishes_whole_second_unresolved():
+    """A registration whose whole second was refused says so.
+
+    Not a refusal: the plane is the fold plane, whose whole second comes
+    from the label frame exactly as it did before the marker search was
+    reachable at all (c7b2106 pinned k_int at 0 on every live minute).
+    The flag is provenance — "this plane's second rests on the host's
+    frame, not on the marker" — and it reaches the channel file so the
+    offline analysis and the operator can both see it.
+    """
+    from hf_timestd.core.registration_acquirer import Registration
+
+    r = Registration(
+        counter_epoch_id="ep-1",
+        rtp_ref=0,
+        utc_ref=0.0,
+        sample_rate=SR,
+        sigma_ms=1.0,
+    )
+    assert r.whole_second_unresolved is False
+
+
+def test_the_flag_round_trips_through_the_channel_file(tmp_path):
+    from hf_timestd.core.registration_acquirer import Registration
+    from hf_timestd.core.registration_store import RegistrationStore
+
+    store = RegistrationStore(
+        directory=tmp_path / "reg",
+        summary_path=tmp_path / "registration.json",
+        time_fn=lambda: 1_800_000_000.0,
+    )
+    reg = Registration(
+        counter_epoch_id="ep-1",
+        rtp_ref=1_000_000,
+        utc_ref=1_800_000_000.0,
+        sample_rate=SR,
+        sigma_ms=1.0,
+        channel="WWV_10000",
+        n_minutes=5,
+        verified=True,
+        whole_second_unresolved=True,
+    )
+    store.write_channel(reg, "ACQUIRED", {})
+    import json
+
+    payload = json.loads((tmp_path / "reg" / "WWV_10000.json").read_text())
+    assert payload["whole_second_unresolved"] is True
+    back = store.read_siblings()
+    assert len(back) == 1 and back[0].whole_second_unresolved is True
+
+
+def test_the_fused_plane_inherits_an_unresolved_second(tmp_path):
+    """``any``: one member whose second rests on the host's frame makes
+    the fused plane's second rest on it too."""
+    from hf_timestd.core.registration_acquirer import Registration
+    from hf_timestd.core.registration_store import fuse_registrations
+
+    def _r(channel, unresolved):
+        return Registration(
+            counter_epoch_id="ep-1",
+            rtp_ref=1_000_000,
+            utc_ref=1_800_000_000.0,
+            sample_rate=SR,
+            sigma_ms=1.0,
+            channel=channel,
+            n_minutes=5,
+            verified=True,
+            epoch_offset_s=0.0,
+            whole_second_unresolved=unresolved,
+        )
+
+    clean = fuse_registrations([_r("a", False), _r("b", False)], 1_000_000)
+    assert clean.whole_second_unresolved is False
+    mixed = fuse_registrations([_r("a", False), _r("b", True)], 1_000_000)
+    assert mixed.whole_second_unresolved is True
+
+
+def test_a_marker_one_second_off_no_longer_moves_the_acquired_plane(monkeypatch):
+    """The W2 regression, end to end through ``_try_acquire``.
+
+    The real marker sits at d + walk = +110 ms, exactly where the fold
+    puts WWV's ticks.  Displace the SEARCH result by a whole second — a
+    sidelobe of the 800 ms tone a second away, a neighbouring minute's
+    marker reached by the ±1.5 s window — and at 7a99e21 the plane moved
+    -1 s and the station published it as authoritative T3 inside three
+    minutes.  Now the plane lands on truth and says its second is
+    unresolved.
+    """
+    from hf_timestd.core import registration_acquirer as ra
+
+    real = ra.marker_in_envelope
+
+    def displaced(env, sample_rate, sample0_utc_label, minute_utc):
+        got = real(env, sample_rate, sample0_utc_label, minute_utc)
+        return None if got is None else (got[0] + 1.0, 30.0)
+
+    monkeypatch.setattr(ra, "marker_in_envelope", displaced)
+
+    acq = ra.RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, t0 = _shared_channel_minute(walk_s=0.100, marker=True)
+    reg = acq.offer_minute(audio, label, 1_000_000, MIN, D_SHARED, "ep-1")
+    assert reg is not None, "the marker still NAMES the station"
+    assert reg.stations == ("WWV",)
+    # The plane is the fold plane: on truth, not a second away from it.
+    assert reg.sample0_utc_for(1_000_000) == pytest.approx(t0, abs=0.003)
+    assert reg.whole_second_unresolved is True
+
+
+def test_a_marker_on_the_ticks_leaves_the_second_resolved():
+    """The same audio, undisplaced: nothing to resolve, nothing flagged."""
+    from hf_timestd.core.registration_acquirer import RegistrationAcquirer
+
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    audio, label, t0 = _shared_channel_minute(walk_s=0.100, marker=True)
+    reg = acq.offer_minute(audio, label, 1_000_000, MIN, D_SHARED, "ep-1")
+    assert reg is not None
+    assert reg.whole_second_unresolved is False
+    assert reg.sample0_utc_for(1_000_000) == pytest.approx(t0, abs=0.003)
+
+
+def test_the_hold_state_clears_on_reset():
+    from hf_timestd.core.registration_acquirer import RegistrationAcquirer
+
+    acq = RegistrationAcquirer("SHARED_10000", SR)
+    acq._marker_k_seen = (MIN, -1)
+    acq._marker_k_holds = 2
+    acq.reset("test")
+    assert acq._marker_k_seen is None and acq._marker_k_holds == 0
