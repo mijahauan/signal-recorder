@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from hf_timestd.core.mdns_fusion_advertiser import MdnsFusionAdvertiser
     from hf_timestd.io.authority_snapshot_store import AuthoritySnapshotStore
     from hf_timestd.core.frontend_probe import FrontendProbe
+    from hf_timestd.core.registration_store import RegistrationStore
 
 log = logging.getLogger(__name__)
 
@@ -973,6 +974,16 @@ class AuthorityManager:
             if governor:
                 payload["governor_radiod"] = str(governor)
 
+        # Additive v1 extension: the T3 registration's provenance (spec §7).
+        # Computed once per publish; a RegistrationStore failure (missing
+        # file, unreadable JSON, unwritable /run) must never block
+        # authority.json itself, so it's caught and the block just falls
+        # back to its no-summary shape.
+        try:
+            payload["registration"] = registration_block()
+        except Exception as e:
+            log.debug("registration_block raised: %s", e)
+
         try:
             self.output_path.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
@@ -1159,3 +1170,45 @@ def _flatten_t3(snapshot: Dict[str, Any], r: Optional[ProbeResult]) -> None:
 
 def _iso_z(dt: datetime) -> str:
     return dt.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def registration_block(store: Optional["RegistrationStore"] = None) -> dict:
+    """The T3 origin's provenance for authority.json (spec §7).
+
+    ACQUIRED names the tick train itself as the source
+    (``source="hf_acquired"``): the second boundary comes from the
+    station's own fold+template estimate, held in the RTP frame.
+    Every other state — including WITNESS, where T6's plane is the one
+    in force and the acquired plane only corroborates it — reports
+    ``source="label"``, because a labelled boundary (or T6's) still
+    governs the published offset.  WITNESS additionally carries
+    ``residual_vs_t6_ms`` when the summary has it, so a station can be
+    seen agreeing with T6 without its plane replacing T6's.
+    """
+    from .registration_store import RegistrationStore as _RegistrationStore
+
+    s = (store or _RegistrationStore()).read_summary()
+    if not s:
+        return {
+            "source": "label",
+            "state": "UNKNOWN",
+            "sigma_ms": None,
+            "counter_epoch_id": None,
+            "raw_pair_residual_ms": None,
+            "contributing": [],
+            "stations": [],
+        }
+    state = s.get("state", "UNKNOWN")
+    acquired = state == "ACQUIRED" and s.get("utc_ref") is not None
+    block = {
+        "source": "hf_acquired" if acquired else "label",
+        "state": state,
+        "sigma_ms": s.get("sigma_ms"),
+        "counter_epoch_id": s.get("counter_epoch_id"),
+        "raw_pair_residual_ms": s.get("raw_pair_residual_ms"),
+        "contributing": list(s.get("contributing", [])),
+        "stations": list(s.get("stations", [])),
+    }
+    if state == "WITNESS" and "residual_vs_t6_ms" in s:
+        block["residual_vs_t6_ms"] = s.get("residual_vs_t6_ms")
+    return block

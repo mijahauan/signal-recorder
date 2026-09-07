@@ -100,6 +100,13 @@ def publish_chains(chains: List[Chain], path: Path = DEFAULT_PATH) -> None:
     doc = {"schema": SCHEMA,
            "written_utc": datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
            "chains": [c.to_record() for c in chains]}
+    # Same provenance block as authority.json (spec §7): a RegistrationStore
+    # failure must not stop the chain record from publishing.
+    try:
+        from hf_timestd.core.authority_manager import registration_block
+        doc["registration"] = registration_block()
+    except Exception as exc:
+        logger.debug("registration_block raised: %s", exc)
     try:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
