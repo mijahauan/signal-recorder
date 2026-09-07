@@ -21,6 +21,7 @@ sample against the GPSDO ruler; chrony never sees it and never sets it.
 """
 
 import logging
+import math
 import subprocess
 import re
 import time
@@ -28,6 +29,8 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +117,84 @@ def _run_chronyc(args: List[str], timeout: float = 5.0) -> Optional[str]:
     except Exception as e:
         logger.debug(f"chronyc {' '.join(args)} error: {e}")
         return None
+
+
+@dataclass(frozen=True)
+class CsvSource:
+    """One row of ``chronyc -c sources``.
+
+    The CSV form is the machine-readable one: mode, state, address,
+    stratum, poll, reach, last-Rx, adjusted offset, measured offset,
+    margin of error.  Its offsets are seconds, signed in the sense
+    ``source − local`` — the same sense as the label-plane anchor's
+    ``reference − system`` — so the two can be compared without a
+    conversion step, which is the whole point of reading it here
+    (task 17c).
+    """
+
+    mode: str
+    state: str
+    address: str
+    reach: int
+    offset_s: float
+
+
+# Modes that are an INDEPENDENT witness of the host clock.  '#' (a local
+# reference clock) is excluded deliberately: FUSE is one, and letting the
+# registration vote in the consensus it is being checked against is the
+# circularity task 17c exists to break.
+WITNESS_MODES = ("^", "=")
+
+
+def parse_csv_sources(output: str) -> List[CsvSource]:
+    """Parse ``chronyc -c sources`` into the rows that WITNESS the host.
+
+    Keeps server and peer rows that have actually been heard from
+    (``reach`` non-zero); drops refclocks, unreachable sources, and any
+    row whose fields do not parse.  A malformed line is skipped rather
+    than raised on: this feeds a diagnostic log line, and losing the line
+    to an exception inside the fusion loop would be a worse outcome than
+    losing one witness.
+    """
+    rows: List[CsvSource] = []
+    for line in (output or "").splitlines():
+        parts = line.strip().split(",")
+        if len(parts) < 8:
+            continue
+        try:
+            mode, state, address = parts[0], parts[1], parts[2]
+            reach = int(parts[5])
+            offset_s = float(parts[7])
+        except (TypeError, ValueError):
+            continue
+        if mode not in WITNESS_MODES or reach == 0:
+            continue
+        if not math.isfinite(offset_s):
+            continue
+        rows.append(CsvSource(mode, state, address, reach, offset_s))
+    return rows
+
+
+def pool_median_offset_ms(output: Optional[str] = None) -> Optional[float]:
+    """The NTP consensus: median witness offset in ms, or None.
+
+    ``reference − system`` in sign, so a positive value says the pool
+    reads LATER than the host clock — the host is slow.  None when no
+    witness answered, which is not the same as a consensus of zero: on
+    2026-09-07 a zero would have read as "the pool agrees the host is
+    fine", the one thing the pool did not say.
+
+    Pass ``output`` to parse a captured ``chronyc -c sources``; omit it
+    to run the command.
+    """
+    if output is None:
+        output = _run_chronyc(["-c", "sources"])
+        if output is None:
+            return None
+    rows = parse_csv_sources(output)
+    if not rows:
+        return None
+    return float(np.median([r.offset_s for r in rows])) * 1000.0
 
 
 def parse_sources(output: str) -> List[ChronySource]:

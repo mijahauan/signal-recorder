@@ -162,6 +162,7 @@ REVISION HISTORY
 """
 
 import ctypes
+import math
 import logging
 import json
 import os
@@ -4222,6 +4223,60 @@ class MultiBroadcastFusion:
         }
 
 
+# ── Task 17c: the sign contradiction, stated and not acted on ────────
+#
+# AC0G-ND, 2026-09-07: the anchor-direct FUSE feed engaged at 20:41Z and
+# 21:21Z and both times called the host clock SLOW (+23..28 ms, then
+# +60.5 ms) while four NTP witnesses called it FAST (+13, +30 ms).  chrony
+# followed FUSE and slewed the host the wrong way.  Which of the two is
+# right is not known, and the closure cannot settle it: it moves every
+# surface onto one plane at once, so nothing is left to disagree.
+#
+# Fusion therefore states the three numbers side by side once a minute,
+# at INFO, whether or not the closure is on.  All three carry the SAME
+# sign convention -- reference minus system, positive meaning the host
+# clock reads EARLY of the reference -- so the contradiction is the gap
+# between the first two, and no reader has to invert anything.
+
+# How often the line is written, seconds.  The fusion cycle is 60 s by
+# default, so this is one line per cycle; the limiter exists for a
+# station running a shorter interval.
+ANCHOR_SIGN_LOG_INTERVAL_S = 60.0
+
+
+def _ms_or_na(value: Optional[float]) -> str:
+    if value is None or not math.isfinite(float(value)):
+        return "n/a"
+    return f"{float(value):+.1f} ms"
+
+
+def anchor_sign_line(
+    anchor_offset_ms: float,
+    pool_median_ms: Optional[float],
+    d_clock_fused_ms: Optional[float],
+) -> str:
+    """The one-line statement of the three planes.
+
+    ``anchor_offset_ms`` is the anchor's own ``reference − system``.
+    ``pool_median_ms`` is the NTP consensus in the same sense
+    (``chrony_stats.pool_median_offset_ms``).  The third term is their
+    DIFFERENCE with fusion's d_clock -- ``d_clock − anchor`` -- which is
+    the ring plane's residual against the registration: d_clock measures
+    the host against the ring plane, the anchor measures it against the
+    registration, and one host cancels.  Never their sum; summing them
+    double-counts the host (offset_judge §11.2).
+    """
+    ring_vs_reg: Optional[float] = None
+    if d_clock_fused_ms is not None and math.isfinite(float(d_clock_fused_ms)):
+        ring_vs_reg = float(d_clock_fused_ms) - float(anchor_offset_ms)
+    return (
+        f"anchor-direct WOULD feed: reference−system = "
+        f"{_ms_or_na(anchor_offset_ms)}; NTP consensus (chronyc sources, "
+        f"pool median) = {_ms_or_na(pool_median_ms)}; ring plane vs "
+        f"registration = {_ms_or_na(ring_vs_reg)}"
+    )
+
+
 def run_fusion_service(
     data_root: Path,
     interval_sec: float = 60.0,
@@ -4286,6 +4341,9 @@ def run_fusion_service(
     # Spec §11.2: which regime last fed chrony, so the regime change is
     # logged once rather than every cycle.
     _last_feed_regime = None
+    # Task 17c: when the sign-contradiction line was last written
+    # (monotonic), so it comes out once a minute rather than once a cycle.
+    _last_anchor_sign_log = 0.0
     # The arrival last handed to chrony, so one measurement is offered
     # once however many fusion cycles see it.
     _last_anchor_mono = None
@@ -4722,6 +4780,40 @@ def run_fusion_service(
                         "would have said)"
                     )
                 _last_feed_regime = "fusion_d_clock"
+
+            # ── Task 17c: the sign contradiction, watched ────────────
+            # Written whatever the regime, so the closure can be judged
+            # on evidence from a station that is not being steered by
+            # it.  Reads the block the judge actually published: the
+            # anchor block when the closure is on (the very sample fed
+            # above), the witness block when it is off -- and the
+            # witness block reaches no chrony path at all.
+            try:
+                from hf_timestd.core.offset_judge import (
+                    LABEL_PLANE_ANCHOR_KEY,
+                    LABEL_PLANE_WITNESS_KEY,
+                    label_plane_chrony_sample,
+                )
+                _sign_sample = anchor_sample or label_plane_chrony_sample(
+                    key=(LABEL_PLANE_ANCHOR_KEY if _anchor_closure
+                         else LABEL_PLANE_WITNESS_KEY),
+                )
+                _now_mono = time.monotonic()
+                if (_sign_sample is not None
+                        and _now_mono - _last_anchor_sign_log
+                        >= ANCHOR_SIGN_LOG_INTERVAL_S):
+                    _last_anchor_sign_log = _now_mono
+                    from hf_timestd.core.chrony_stats import (
+                        pool_median_offset_ms,
+                    )
+                    logger.info(anchor_sign_line(
+                        _sign_sample.offset_s * 1e3,
+                        pool_median_offset_ms(),
+                        (result_l2.d_clock_fused_ms
+                         if result_l2 is not None else None),
+                    ))
+            except Exception as _sign_exc:  # noqa: BLE001 — a diagnostic
+                logger.debug(f"anchor sign line unavailable: {_sign_exc}")
 
             if result:
                 # Log summary
