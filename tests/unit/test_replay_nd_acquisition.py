@@ -166,9 +166,21 @@ B4 = Path(
 )
 # Real same-site sibling: B4's WWV_20000 channel, same radiod instance and
 # RTP counter as the SHARED_10000 chunk above, same 10-minute window
-# (task-11 fix round 2).  Confirmed same counter space: the two sidecars'
-# own (gps_time_ns, rtp_timesnap) pairs, extrapolated to a common RTP via
-# resolve_buffer_timing, agree to ~1.3 ms -- well inside "a few ms".
+# (task-11 fix round 2, night: 2026-09-07 01:00Z).  Confirmed same counter
+# space: the two sidecars' own (gps_time_ns, rtp_timesnap) pairs,
+# extrapolated to a common RTP via resolve_buffer_timing, agree to
+# ~1.3 ms -- well inside "a few ms".
+B4_DAY = Path(
+    os.environ.get(
+        "HF_TIMESTD_B4_DAY_FIXTURE", "/home/mjh/hamsci/fixtures/b4-20260906-day"
+    )
+)
+# Daytime B4 pair (task-11 fix round 3): 2026-09-06 18:00-18:05Z, same
+# radiod/RTP-counter relationship as B4_DAY, confirmed via
+# hf_timestd.core.cross_channel_rtp.same_counter_space (agrees to
+# ~1.1 ms).  Different filename convention from the night pair
+# ("shared_10000-..." / "wwv_20000-..." with underscores, vs.
+# "1788742800" / "wwv20000-1788742800" for the night pair).
 
 
 def _load(dirpath: Path, stem: str):
@@ -282,13 +294,12 @@ def test_bad_window_chunk_goes_from_junk_to_ticks_without_restart():
     )
 
 
-@pytest.mark.skipif(
-    not (B4 / "1788742800.bin.zst").exists(), reason="B4 fixture not present"
-)
-def _acquire_channel(iq, meta, shift_ms, epoch_id, engine=None):
-    """Run the acquirer over up to 3 minutes of one channel's chunk.
-    Returns (registration_or_None, acquirer, start_rtp_of_last_minute,
-    audio, delays, minute_utc, bt_true, offset_samples, k)."""
+def _acquire_channel(iq, meta, shift_ms, epoch_id, engine=None, max_k=3):
+    """Run the acquirer over up to ``max_k`` minutes of one channel's
+    chunk, 60 s apart, each a 62 s buffer (matches ``offer_minute``'s own
+    62 s-per-minute convention).  Returns (registration_or_None, acquirer,
+    start_rtp_of_last_minute, audio, delays, minute_utc, bt_true,
+    offset_samples, k)."""
     from hf_timestd.core.buffer_timing import resolve_buffer_timing
     from hf_timestd.core.registration_acquirer import RegistrationAcquirer
 
@@ -298,7 +309,7 @@ def _acquire_channel(iq, meta, shift_ms, epoch_id, engine=None):
     bt_true = resolve_buffer_timing(meta, sample_rate=sr)
     got, a, k = None, 0, 0
     audio, delays, minute_utc = None, None, None
-    for k in range(3):
+    for k in range(max_k):
         a = k * 60 * sr
         seg = iq[a : a + 62 * sr]
         minute_utc = int(meta["minute_boundary"]) + 60 * k
@@ -352,40 +363,79 @@ def _max_fold_snr_by_band(iq, meta, sr):
     return out
 
 
+@pytest.mark.skipif(
+    not (B4 / "wwv20000-1788742800.bin.zst").exists(),
+    reason="B4 night-window WWV_20000 fixture not present",
+)
+def test_b4_night_window_wwv20000_has_no_acquirable_tick():
+    """Documents a real, negative finding (task-11 fix rounds 2-3), not a
+    bug: B4's WWV_20000 channel (20 MHz) carries no acquirable tick at
+    2026-09-07 01:00Z.  The fold-peak SNR in both tone bands never
+    crosses the ~13 dB detection floor even integrating every available
+    minute of the 5-minute chunk, and the raw IQ amplitude is ~35 dB
+    below the SHARED_10000 (10 MHz) chunk from the identical window --
+    checked three ways in the fix-round-2 report (amplitude, PSD, file
+    integrity) to rule out a decode bug.  The acquirer's response is
+    correct: it stays BOOTSTRAP rather than manufacturing a registration
+    from noise.  No xfail here -- this is the expected, documented
+    behaviour of a dark channel, asserted directly."""
+    iq, meta = _load(B4, "wwv20000-1788742800")
+    sr = int(meta["sample_rate"])
+    got, acq, rtp, audio, delays, minute_utc, bt_true, a, k = _acquire_channel(
+        iq, meta, shift_ms=0.0, epoch_id="ep-b4-night"
+    )
+    snr_by_band = _max_fold_snr_by_band(iq, meta, sr)
+    print(
+        f"\n  WWV_20000 (night, 01:00Z): {k + 1} minutes offered, state={acq.state}, "
+        f"got={'ACQUIRED' if got is not None else None}"
+    )
+    print(
+        "  WWV_20000 max fold SNR over all available minutes "
+        f"({'/'.join(f'{b}:{s:.1f}dB(n={n})' for b, (n, s) in snr_by_band.items())})"
+    )
+    assert got is None, "WWV_20000 should NOT acquire in this dark window"
+    assert acq.state == acq.STATE_BOOTSTRAP
+
+
+@pytest.mark.skipif(
+    not (B4_DAY / "shared_10000-1788717600.bin.zst").exists()
+    or not (B4_DAY / "wwv_20000-1788717600.bin.zst").exists(),
+    reason="B4 daytime SHARED_10000/WWV_20000 pair not present",
+)
 def test_b4_shared_channel_resolved_by_real_wwv20000_sibling():
     """Spec §4: on a shared channel (SHARED_10000, WWV and BPM both keying
     the 1000 Hz tick band), standalone single-peak acquisition is NOT
     expected -- the design carries the open hypotheses and lets a sibling
     channel decide.  On B4 the dedicated WWV_20000/25000 channels do that
-    live, and a REAL WWV_20000 chunk from the same 10-minute window (same
-    radiod, same RTP counter -- see the module-level comment above ``B4``)
-    is now on disk, replacing fix round 1's synthetic sidecar-plane
-    sibling.
+    live.  The night-window WWV_20000 chunk (see the test above) was dark;
+    this daytime pair (2026-09-06 18:00-18:05Z, same radiod/RTP counter --
+    confirmed via ``cross_channel_rtp.same_counter_space``, ~1.1 ms
+    agreement) was supplied so the sibling path could run on real signal
+    instead of a synthesized sibling.
 
-    The sidecar's ``timing`` block carries ``judge_tier="T4"`` (a
-    host-clock-witnessed raw pair) on this chunk, not the tick-based T6
-    plane -- the T6 comparison proper belongs to Task 12's live B4
-    non-regression run.
+    Fix-round-3 finding: WWV_20000 is ALSO dark in this daytime window
+    (fold SNR 10.2/12.0 dB across the two tone bands, still under the
+    ~13 dB floor) -- and its raw amplitude (RMS 2.15e-5) is essentially
+    UNCHANGED from the night chunk's (2.22e-5), while SHARED_10000's
+    amplitude swings 3x between the two chunks (0.00037 day vs. 0.00113
+    night) as real HF propagation should.  A channel whose amplitude
+    stays pinned at the same low floor regardless of time-of-day, while
+    its sibling channel's amplitude moves with real propagation, is not
+    behaving like a channel tracking an antenna -- this looks like a
+    receive-chain issue specific to WWV_20000 at B4 (antenna, filter, or
+    gain), not a day/night propagation effect, and is flagged here for
+    Michael rather than silently worked around.
 
-    Fix-round-2 finding: this specific WWV_20000 window (2026-09-07
-    01:00-01:05Z) carries NO usable 20 MHz tick signal.  Its raw IQ
-    amplitude is ~35 dB below the SHARED_10000 (10 MHz) chunk from the
-    same window (RMS 2.2e-5 vs. 1.3e-3), and the fold-peak SNR in either
-    tone band never crosses the ~13 dB detection floor even integrating
-    every available minute (see the per-band dump this test prints) --
-    consistent with 20 MHz, a daytime band, having dropped below B4's MUF
-    by 01:00Z local-evening in September.  So the intended demonstration
-    (WWV_20000 acquires standalone, then resolves SHARED_10000's
-    ambiguity, then fuses) cannot run end-to-end on the fixture as
-    provided -- this is reported plainly rather than forced, with the
-    real, cross-checked numbers the controller asked for: the two
-    channels' own T4-judged pairs, extrapolated to a common RTP, agree
-    with each other to ~1.3 ms (same counter space, confirmed), while the
-    SHARED_10000 channel's own fold shows its T4 plane sits ~77 ms from
-    where the real WWV tick actually is -- a residual on the shared
-    channel's OWN ticks, not something WWV_20000 could independently
-    confirm or refute here since it has no detectable tick of its own in
-    this window."""
+    SHARED_10000 in this window does NOT stay ambiguous either: it
+    acquires UNAMBIGUOUSLY on its own as WWVH (not the {WWV, BPM} case),
+    which the controller's ruling anticipated as a valid outcome ("or the
+    WWVH band, that is fine too").  Both branches after that point --
+    resolve_ambiguity against a {WWV, BPM} ambiguity, or fuse_registrations
+    against an already-unambiguous SHARED plane -- need WWV_20000's own
+    Registration, which this fixture cannot produce, so this test runs
+    Step 1, prints the full diagnosis, and calls ``pytest.skip`` (never
+    xfail) when it is not met -- both later branches are implemented and
+    exercised whenever a fixture supplies a real WWV_20000 registration."""
     from hf_timestd.core.registration_acquirer import (
         CROSS_SITE_AGREE_MS,
         RegistrationAcquirer,
@@ -395,17 +445,17 @@ def test_b4_shared_channel_resolved_by_real_wwv20000_sibling():
     from hf_timestd.core.registration_store import fuse_registrations
     from hf_timestd.core.tick_edge_detector import TickEdgeDetector
 
-    iq20, meta20 = _load(B4, "wwv20000-1788742800")
+    iq20, meta20 = _load(B4_DAY, "wwv_20000-1788717600")
     sr = int(meta20["sample_rate"])
 
     # ── Step 1: acquire WWV_20000 standalone (single-station channel) ──
     got20, acq20, rtp20, audio20, delays20, minute_utc20, bt_true20, a20, k20 = (
-        _acquire_channel(iq20, meta20, shift_ms=0.0, epoch_id="ep-b4")
+        _acquire_channel(iq20, meta20, shift_ms=0.0, epoch_id="ep-b4day", max_k=4)
     )
     snr_by_band = _max_fold_snr_by_band(iq20, meta20, sr)
     print(
-        f"\n  WWV_20000 standalone: {k20 + 1} minutes offered, state={acq20.state}, "
-        f"got={'ACQUIRED' if got20 is not None else None}"
+        f"\n  WWV_20000 (day, 18:00Z) standalone: {k20 + 1} minutes offered, "
+        f"state={acq20.state}, got={'ACQUIRED' if got20 is not None else None}"
     )
     print(
         "  WWV_20000 max fold SNR over all available minutes "
@@ -413,13 +463,14 @@ def test_b4_shared_channel_resolved_by_real_wwv20000_sibling():
     )
 
     if got20 is None:
-        pytest.xfail(
-            "WWV_20000 did not acquire standalone in this fixture: no tone-band "
-            "fold peak ever crosses the detection floor "
-            f"({snr_by_band}), consistent with 20 MHz being below B4's MUF at "
-            "2026-09-07 01:00Z (see docstring for the amplitude comparison) -- "
-            "not a bug in the acquirer.  The resolve_ambiguity/fuse_registrations "
-            "demonstration needs a WWV_20000/25000 window where 20 MHz is open."
+        pytest.skip(
+            "WWV_20000 did not acquire standalone on this daytime fixture either: "
+            f"no tone-band fold peak crosses the detection floor ({snr_by_band}); "
+            "see the docstring's amplitude comparison -- this looks like a "
+            "receive-chain issue specific to WWV_20000 at B4, not a day/night "
+            "effect and not a bug in the acquirer.  The resolve_ambiguity/"
+            "fuse_registrations paths below are implemented but need a fixture "
+            "where WWV_20000 actually acquires to run."
         )
 
     # ── WWV_20000's own fine search on its own acquired plane ──
@@ -447,62 +498,77 @@ def test_b4_shared_channel_resolved_by_real_wwv20000_sibling():
     )
     assert got20.stations == ("WWV",)
 
-    # ── Step 2: SHARED_10000 bootstraps with open {WWV, BPM} ──
-    iq_shared, meta_shared = _load(B4, "1788742800")
+    # ── Step 2: SHARED_10000 -- may bootstrap ambiguous, or acquire on its
+    # own (the controller's ruling treats either as a valid daytime outcome)
+    iq_shared, meta_shared = _load(B4_DAY, "shared_10000-1788717600")
     gotS, acqS, rtpS, audioS, delaysS, minute_utcS, bt_trueS, aS, kS = _acquire_channel(
-        iq_shared, meta_shared, shift_ms=120.0, epoch_id="ep-b4"
+        iq_shared, meta_shared, shift_ms=120.0, epoch_id="ep-b4day", max_k=4
     )
-    assert (
-        gotS is None
-    ), "standalone acquisition should NOT complete on a shared channel"
-    assert acqS.state == RegistrationAcquirer.STATE_BOOTSTRAP
-    open_stations = {h.assignments[0][0] for h in acqS._open}
     print(
-        f"  SHARED_10000 open hypotheses after {kS + 1} minutes: {sorted(open_stations)}"
+        f"  SHARED_10000 (day) after {kS + 1} minutes: state={acqS.state}, "
+        f"got={'ACQUIRED(' + str(gotS.stations) + ')' if gotS is not None else None}"
     )
-    for h in acqS._open:
+
+    label_s0_last = bt_trueS.sample0_utc + aS / sr + 120.0 / 1000.0
+
+    if gotS is None:
+        # ambiguous branch: resolve via the real WWV_20000 sibling
+        assert acqS.state == RegistrationAcquirer.STATE_BOOTSTRAP
+        open_stations = {h.assignments[0][0] for h in acqS._open}
+        print(f"  SHARED_10000 open hypotheses: {sorted(open_stations)}")
+        for h in acqS._open:
+            print(
+                f"    corr={h.correction_s * 1000:+9.3f} ms  sigma={h.sigma_ms:6.3f}  "
+                f"support={h.support}  assignments={h.assignments}"
+            )
+        for h in acqS._open:
+            st_h = h.assignments[0][0]
+            tol = SAME_SITE_AGREE_MS if st_h in got20.stations else CROSS_SITE_AGREE_MS
+            sib_s0 = got20.sample0_utc_for(rtpS)
+            frac_ms = (
+                wrap_half_second((label_s0_last + h.correction_s) - sib_s0) * 1000.0
+            )
+            print(
+                f"    vs WWV_20000 sibling: {st_h} frac={frac_ms:+9.3f} ms  tol={tol} ms"
+            )
+        resolved = acqS.resolve_ambiguity(got20, rtpS, label_s0_last)
+        print(f"  resolve_ambiguity -> {resolved}")
+        assert (
+            resolved is not None
+        ), "resolve_ambiguity should resolve using the real WWV_20000 sibling"
+        assert resolved.stations == ("WWV",)
+        shared_plane_rtp, shared_plane_reg = rtpS, resolved
+    else:
+        # unambiguous branch: SHARED already has its own plane (WWV+BPM
+        # together, or WWVH alone) -- fuse it with the WWV_20000 sibling
+        # instead of resolving an ambiguity that doesn't exist.
+        diff_ms = (gotS.sample0_utc_for(rtpS) - got20.sample0_utc_for(rtpS)) * 1000.0
         print(
-            f"    corr={h.correction_s * 1000:+9.3f} ms  sigma={h.sigma_ms:6.3f}  "
-            f"support={h.support}  assignments={h.assignments}"
+            f"  SHARED_10000 vs WWV_20000 acquired-plane difference: {diff_ms:+.3f} ms"
         )
-    assert open_stations == {"WWV", "BPM"}
+        fused = fuse_registrations([gotS, got20], rtpS)
+        print(f"  fuse_registrations([shared, wwv20000]) -> {fused}")
+        assert (
+            fused is not None
+        ), "fuse_registrations should not reject same-site planes"
+        shared_plane_rtp, shared_plane_reg = rtpS, fused
 
     # measurement for Michael: how far off is the SHARED sidecar plane from
-    # the real WWV tick, per the shared channel's own (ambiguous) fold?
-    wwv_hyp = next(h for h in acqS._open if h.assignments[0][0] == "WWV")
-    shared_gap_ms = 120.0 + wwv_hyp.correction_s * 1000.0  # vs bt_trueS, unshifted
+    # the real tick, whichever station SHARED's own signal names?
+    gap_ms = (
+        shared_plane_reg.sample0_utc_for(shared_plane_rtp)
+        - (bt_trueS.sample0_utc + aS / sr)
+    ) * 1000.0
     print(
-        f"  SHARED_10000 sidecar/T4 plane vs real WWV tick (own fold): {shared_gap_ms:+.3f} ms"
+        f"  SHARED_10000 sidecar/T4 plane vs resolved/fused real plane: {gap_ms:+.3f} ms"
     )
 
-    # ── resolve SHARED_10000's ambiguity using the REAL WWV_20000 sibling ──
-    # ``h.correction_s`` is anchored to whichever minute's label produced
-    # it; every minute's label here is built from the SAME bt_trueS base
-    # plus the same shift_ms, so it is linear in RTP and the last offered
-    # minute's (label, start_rtp) pair is as valid an anchor as the first
-    # (see fix-round-2 report for the derivation) -- use the LAST minute's
-    # label together with its own start_rtp (rtpS), matching what
-    # resolve_ambiguity expects: a (start_rtp, label_s0) pair from the SAME
-    # minute.
-    label_s0_last = bt_trueS.sample0_utc + aS / sr + 120.0 / 1000.0
-    for h in acqS._open:
-        st_h = h.assignments[0][0]
-        tol = SAME_SITE_AGREE_MS if st_h in got20.stations else CROSS_SITE_AGREE_MS
-        sib_s0 = got20.sample0_utc_for(rtpS)
-        frac_ms = wrap_half_second((label_s0_last + h.correction_s) - sib_s0) * 1000.0
-        print(f"    vs WWV_20000 sibling: {st_h} frac={frac_ms:+9.3f} ms  tol={tol} ms")
-    result = acqS.resolve_ambiguity(got20, rtpS, label_s0_last)
-    print(f"  resolve_ambiguity -> {result}")
-    assert (
-        result is not None
-    ), "resolve_ambiguity should resolve using the real WWV_20000 sibling"
-    assert result.stations == ("WWV",)
-
+    # ── Either way: fine search for WWV on the resolved/fused plane ──
     bt_acqS = dataclasses.replace(
         bt_trueS,
-        sample0_utc=result.sample0_utc_for(rtpS),
+        sample0_utc=shared_plane_reg.sample0_utc_for(shared_plane_rtp),
         origin_source="acquired",
-        origin_sigma_ms=result.sigma_ms,
+        origin_sigma_ms=shared_plane_reg.sigma_ms,
     )
     resS = det.detect_edges(
         audio_signal=audioS,
@@ -514,7 +580,7 @@ def test_b4_shared_channel_resolved_by_real_wwv20000_sibling():
         iq_samples=None,
     )
     print(
-        f"  SHARED_10000 resolved-plane fine search WWV: "
+        f"  SHARED_10000 resolved/fused-plane fine search WWV: "
         f"sigma1={resS.sigma_single_ms if resS else float('nan'):.3f} ms  "
         f"n={resS.n_detected if resS else -1}  "
         f"err={resS.ensemble_timing_error_ms if resS else float('nan'):+.3f} ms"
@@ -523,8 +589,3 @@ def test_b4_shared_channel_resolved_by_real_wwv20000_sibling():
     assert resS.sigma_single_ms < 1.0
     assert resS.n_detected >= 40
     assert abs(resS.ensemble_timing_error_ms) < 2.0
-
-    # ── per-radiod fusion on real data ──
-    fused = fuse_registrations([result, got20], rtpS)
-    print(f"  fuse_registrations([shared_resolved, wwv20000]) -> {fused}")
-    assert fused is not None
