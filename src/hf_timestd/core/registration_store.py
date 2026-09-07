@@ -205,3 +205,11 @@ class RegistrationStore:
             return json.loads(self.summary_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
+
+    def summary_age_s(self, summary: dict) -> float:
+        """Seconds since ``summary`` (as returned by :meth:`read_summary`)
+        was written, per this store's own clock. A caller compares this
+        against ``self.stale_s`` to tell a live summary from one whose
+        writer died — ``read_summary`` returns the last file it finds
+        exactly as written, however old (review F1/F2, task 10)."""
+        return self._time() - float(summary.get("written_at", 0))

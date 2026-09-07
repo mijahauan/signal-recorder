@@ -1184,10 +1184,24 @@ def registration_block(store: Optional["RegistrationStore"] = None) -> dict:
     governs the published offset.  WITNESS additionally carries
     ``residual_vs_t6_ms`` when the summary has it, so a station can be
     seen agreeing with T6 without its plane replacing T6's.
+
+    ``read_summary()`` returns the last summary file it finds exactly as
+    written, however old — it has no staleness check of its own (unlike
+    ``read_siblings``, which does).  A dead metrology writer would
+    otherwise leave this block reporting the writer's last live state
+    (``source="hf_acquired"`` included) forever.  So this function applies
+    the store's own window itself: once ``summary_age_s`` exceeds
+    ``store.stale_s`` the block reports ``state="STALE"`` and
+    ``source="label"``, while still carrying the last summary's
+    ``counter_epoch_id``/``sigma_ms``/``contributing``/``stations`` so a
+    reader can see what died and when (review F1/F2, task 10).  Every
+    returned block, in every state, carries ``age_s`` — ``None`` only when
+    there is no summary at all.
     """
     from .registration_store import RegistrationStore as _RegistrationStore
 
-    s = (store or _RegistrationStore()).read_summary()
+    st = store or _RegistrationStore()
+    s = st.read_summary()
     if not s:
         return {
             "source": "label",
@@ -1197,18 +1211,22 @@ def registration_block(store: Optional["RegistrationStore"] = None) -> dict:
             "raw_pair_residual_ms": None,
             "contributing": [],
             "stations": [],
+            "age_s": None,
         }
+    age_s = st.summary_age_s(s)
     state = s.get("state", "UNKNOWN")
-    acquired = state == "ACQUIRED" and s.get("utc_ref") is not None
+    stale = age_s > st.stale_s
+    acquired = state == "ACQUIRED" and s.get("utc_ref") is not None and not stale
     block = {
         "source": "hf_acquired" if acquired else "label",
-        "state": state,
+        "state": "STALE" if stale else state,
         "sigma_ms": s.get("sigma_ms"),
         "counter_epoch_id": s.get("counter_epoch_id"),
         "raw_pair_residual_ms": s.get("raw_pair_residual_ms"),
         "contributing": list(s.get("contributing", [])),
         "stations": list(s.get("stations", [])),
+        "age_s": age_s,
     }
-    if state == "WITNESS" and "residual_vs_t6_ms" in s:
+    if state == "WITNESS" and not stale and "residual_vs_t6_ms" in s:
         block["residual_vs_t6_ms"] = s.get("residual_vs_t6_ms")
     return block
