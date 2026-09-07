@@ -1521,8 +1521,11 @@ class CoreRecorderV2:
                 # radiod's host-stamped pair with a correction bolted on.
                 # Task 17a: only when the station opted into the closure.
                 # Off, nothing is installed and the ring and sidecar keep
-                # radiod's pair with the judge's correction.
-                if self._anchor_closure:
+                # radiod's pair with the judge's correction.  getattr,
+                # because `_init_channels` is also reached on a recorder
+                # built without `__init__` (the fast-path completeness
+                # test), and an unknown regime is the off one.
+                if getattr(self, '_anchor_closure', False):
                     recorder.set_label_anchor_provider(
                         self._label_anchor_state)
 
