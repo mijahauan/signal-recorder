@@ -770,10 +770,14 @@ class StreamRecorderV2:
     def set_label_anchor_provider(self, provider) -> None:
         """Install the label-plane anchor provider (spec §11, 2026-09-07).
 
-        ``provider() -> Optional[(NativeAnchor, epoch_id)]``.  While it
-        answers with an anchor in THIS channel's counter domain, that
-        anchor — not radiod's host-stamped pair — registers the ring.
-        Silence restores the pre-amendment behaviour exactly.
+        ``provider() -> Optional[LabelAnchor]``.  While it answers with an
+        anchor in THIS channel's counter domain, that anchor — not
+        radiod's host-stamped pair — registers the ring.  Silence
+        restores the pre-amendment behaviour exactly.
+
+        Task 14: the SAME provider feeds authority.json §18 (through the
+        judge) and the archive writer's sidecar, so all three surfaces
+        label from one object and cannot drift apart (audit G6).
         """
         self._label_anchor_provider = provider
 
@@ -797,12 +801,11 @@ class StreamRecorderV2:
             return None
         if state is None:
             return None
-        anchor, epoch_id = state
-        if int(anchor.sample_rate_hz) != int(self.config.sample_rate):
+        if not state.matches_rate(self.config.sample_rate):
             return None
-        return (anchor, epoch_id)
+        return state
 
-    def _anchor_ring_from_label_plane(self, anchor, epoch_id) -> bool:
+    def _anchor_ring_from_label_plane(self, label) -> bool:
         """Write the label plane itself into the ring's anchor pair.
 
         The ring's (gps_time_ns, rtp_timesnap) is resolved by readers as
@@ -816,6 +819,7 @@ class StreamRecorderV2:
         every consumer reads it").
         """
         from .buffer_timing import unix_ns_to_gps_time_ns
+        anchor = label.anchor
         gps_time_ns = unix_ns_to_gps_time_ns(int(anchor.anchor_utc_ns))
         rtp_timesnap = int(anchor.anchor_rtp) & 0xFFFFFFFF
         try:
@@ -827,12 +831,13 @@ class StreamRecorderV2:
                 f"{self.config.description}: ring update_anchor failed: {exc}"
             )
             return False
-        self._ring_label_anchor = (anchor, epoch_id)
+        self._ring_label_anchor = label
         logger.info(
             f"{self.config.description}: ring anchored on the "
-            f"{anchor.captured_via_tier} registration "
+            f"{label.tier} label plane "
             f"(rtp_ref={rtp_timesnap}, "
-            f"utc_ref={anchor.anchor_utc_ns / 1e9:.6f}, epoch={epoch_id})"
+            f"utc_ref={anchor.anchor_utc_ns / 1e9:.6f}, "
+            f"sigma={label.sigma_ns / 1e6:.3f} ms, epoch={label.epoch_id})"
         )
         return True
 
@@ -867,7 +872,7 @@ class StreamRecorderV2:
             self._ring_anchor_state = (
                 int(gps_time_ns), int(rtp_timesnap), 0.0
             )
-            if self._anchor_ring_from_label_plane(*label):
+            if self._anchor_ring_from_label_plane(label):
                 return
         offset_ns = self._current_judge_offset_ns(int(rtp_timesnap))
         try:
@@ -951,27 +956,24 @@ class StreamRecorderV2:
                 )
                 self._update_ring_anchor(state[0], state[1])
             return True
-        anchor, epoch_id = label
         if applied is None:
-            self._anchor_ring_from_label_plane(anchor, epoch_id)
+            self._anchor_ring_from_label_plane(label)
             return True
-        applied_anchor, applied_epoch = applied
-        if (epoch_id != applied_epoch
-                or int(anchor.sample_rate_hz)
-                != int(applied_anchor.sample_rate_hz)):
-            self._anchor_ring_from_label_plane(anchor, epoch_id)
+        applied_anchor = applied.anchor
+        if (label.epoch_id != applied.epoch_id
+                or label.sample_rate_hz != applied.sample_rate_hz):
+            self._anchor_ring_from_label_plane(label)
             return True
-        from .native_anchor import utc_ns_at_rtp
         shift_ns = (
-            utc_ns_at_rtp(int(applied_anchor.anchor_rtp) & 0xFFFFFFFF, anchor)
+            label.utc_ns_at(applied_anchor.anchor_rtp)
             - int(applied_anchor.anchor_utc_ns)
         )
         if abs(shift_ns) > self.RING_REANCHOR_MIN_DELTA_NS:
             logger.info(
-                f"{self.config.description}: registration moved "
+                f"{self.config.description}: {label.tier} plane moved "
                 f"{shift_ns / 1e9:+.6f}s — re-registering the ring"
             )
-            self._anchor_ring_from_label_plane(anchor, epoch_id)
+            self._anchor_ring_from_label_plane(label)
         return True
 
     # A re-observed radiod pair that disagrees with the adopted mapping

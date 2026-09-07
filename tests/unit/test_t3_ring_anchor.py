@@ -17,7 +17,7 @@ import types
 import pytest
 
 from hf_timestd.core import buffer_timing as btm
-from hf_timestd.core.native_anchor import NativeAnchor, utc_ns_at_rtp
+from hf_timestd.core.native_anchor import LabelAnchor, NativeAnchor, utc_ns_at_rtp
 from hf_timestd.core.offset_judge import OffsetVerdict
 from hf_timestd.core.stream_recorder_v2 import StreamRecorderV2
 
@@ -63,6 +63,15 @@ def make_recorder(*, judge=None, ring=None, sample_rate=SR, provider=None):
     return rec
 
 
+def t3_label(utc_ref=WALL0, rtp_ref=1000, sample_rate=SR, epoch="ep-1",
+             tier="T3", sigma_ns=1e6):
+    """The provider's shape: a LabelAnchor (task 14)."""
+    return LabelAnchor(
+        anchor=t3_anchor(utc_ref, rtp_ref, sample_rate),
+        epoch_id=epoch, tier=tier, sigma_ns=sigma_ns,
+    )
+
+
 def t3_anchor(utc_ref=WALL0, rtp_ref=1000, sample_rate=SR):
     return NativeAnchor(
         anchor_rtp=rtp_ref,
@@ -94,12 +103,13 @@ def test_ring_resolves_the_registration_plane(caplog):
     make that pair irrelevant to the ring — no judge offset, no host
     comparison, no residual 150 ms.
     """
-    anchor = t3_anchor()
+    label = t3_label()
+    anchor = label.anchor
     ring = FakeRing()
     rec = make_recorder(
         judge=StubJudge(OffsetVerdict(-150e6, 1e6, "T3", 1.0, 1, False)),
         ring=ring,
-        provider=lambda: (anchor, "ep-1"),
+        provider=lambda: label,
     )
     # radiod's own pair, host-stamped and 150 ms fast.
     raw_gps_ns = btm.unix_ns_to_gps_time_ns(int(round((WALL0 + 0.150) * 1e9)))
@@ -116,9 +126,10 @@ def test_ring_resolves_the_registration_plane(caplog):
 def test_the_ring_anchor_is_the_registrations_own_pair():
     """No arithmetic beyond the GPS-epoch change of variable: the stored
     rtp_timesnap IS rtp_ref and the stored gps_time_ns IS utc_ref."""
-    anchor = t3_anchor(utc_ref=WALL0 + 0.4321, rtp_ref=7_777_777)
+    label = t3_label(utc_ref=WALL0 + 0.4321, rtp_ref=7_777_777)
+    anchor = label.anchor
     ring = FakeRing()
-    rec = make_recorder(ring=ring, provider=lambda: (anchor, "ep-1"))
+    rec = make_recorder(ring=ring, provider=lambda: label)
     rec._update_ring_anchor(12345, 999)
     gps_ns, snap = ring.anchors[-1]
     assert snap == 7_777_777
@@ -160,7 +171,7 @@ def test_a_foreign_counter_domain_is_refused():
         judge=StubJudge(OffsetVerdict(0.0, 1e6, "T4", 1.0, 1, False)),
         ring=ring,
         sample_rate=96000,
-        provider=lambda: (t3_anchor(), "ep-1"),
+        provider=lambda: t3_label(),
     )
     rec._update_ring_anchor(raw_gps_ns, 5000)
     assert ring.anchors == [(raw_gps_ns, 5000)]
@@ -185,24 +196,23 @@ def test_a_broken_provider_never_disturbs_the_ring():
 
 
 def test_plane_moves_inside_hysteresis_leave_the_ring_alone():
-    state = {"anchor": t3_anchor(), "epoch": "ep-1"}
+    state = {"label": t3_label()}
     ring = FakeRing()
-    rec = make_recorder(ring=ring, provider=lambda: (state["anchor"], state["epoch"]))
+    rec = make_recorder(ring=ring, provider=lambda: state["label"])
     rec._update_ring_anchor(1_400_000_000_000_000_000, 1000)
     assert len(ring.anchors) == 1
     # 2 ms — inside RING_REANCHOR_MIN_DELTA_NS.
-    state["anchor"] = t3_anchor(utc_ref=WALL0 + 0.002)
+    state["label"] = t3_label(utc_ref=WALL0 + 0.002)
     rec._reanchor_ring_if_offset_drifted()
     assert len(ring.anchors) == 1
 
 
 def test_a_moved_plane_re_registers_the_ring():
-    state = {"anchor": t3_anchor(), "epoch": "ep-1"}
+    state = {"label": t3_label()}
     ring = FakeRing()
-    rec = make_recorder(ring=ring, provider=lambda: (state["anchor"], state["epoch"]))
+    rec = make_recorder(ring=ring, provider=lambda: state["label"])
     rec._update_ring_anchor(1_400_000_000_000_000_000, 1000)
-    moved = t3_anchor(utc_ref=WALL0 + 0.050)
-    state["anchor"] = moved
+    state["label"] = t3_label(utc_ref=WALL0 + 0.050)
     rec._reanchor_ring_if_offset_drifted()
     assert len(ring.anchors) == 2
     assert ring_utc(ring.anchors[-1], 1000) == pytest.approx(WALL0 + 0.050, abs=1e-6)
@@ -212,12 +222,12 @@ def test_a_new_counter_epoch_re_registers_even_at_the_same_plane():
     """A counter-epoch change invalidates rtp_ref outright: the plane
     comparison would be arithmetic across two different counters, so the
     epoch alone forces the re-registration."""
-    state = {"anchor": t3_anchor(), "epoch": "ep-1"}
+    state = {"label": t3_label()}
     ring = FakeRing()
-    rec = make_recorder(ring=ring, provider=lambda: (state["anchor"], state["epoch"]))
+    rec = make_recorder(ring=ring, provider=lambda: state["label"])
     rec._update_ring_anchor(1_400_000_000_000_000_000, 1000)
-    state["anchor"] = t3_anchor(rtp_ref=555_000)  # same utc_ref, new counter
-    state["epoch"] = "ep-2"
+    # same utc_ref, new counter epoch
+    state["label"] = t3_label(rtp_ref=555_000, epoch="ep-2")
     rec._reanchor_ring_if_offset_drifted()
     assert len(ring.anchors) == 2
     assert ring.anchors[-1][1] == 555_000
@@ -228,13 +238,13 @@ def test_a_withdrawn_registration_falls_back_to_the_judged_pair():
     silent and the ring must return to radiod's pair with the judge's
     correction rather than freeze on a plane nobody is maintaining."""
     state = {"live": True}
-    anchor = t3_anchor()
+    label = t3_label()
     ring = FakeRing()
     raw_gps_ns = btm.unix_ns_to_gps_time_ns(int(round((WALL0 + 0.150) * 1e9)))
     rec = make_recorder(
         judge=StubJudge(OffsetVerdict(-150e6, 1e6, "T3", 1.0, 1, False)),
         ring=ring,
-        provider=lambda: ((anchor, "ep-1") if state["live"] else None),
+        provider=lambda: (label if state["live"] else None),
     )
     rec._update_ring_anchor(raw_gps_ns, 1000)
     assert len(ring.anchors) == 1
@@ -266,6 +276,7 @@ def _core(store, t6_auth=None):
 
     rec = CoreRecorderV2.__new__(CoreRecorderV2)
     rec._t6_native_anchor = None if t6_auth is None else t3_anchor()
+    rec._t6_authority_last_decision = None
     rec._t6_authority_status = lambda: t6_auth
     rec._t3_native_anchor = None
     rec._t3_anchor_holder = T3RegistrationAnchor(store=store)
@@ -285,6 +296,7 @@ def _acquired_store(tmp_path, utc_ref=WALL0):
             sample_rate=SR,
             sigma_ms=1.0,
             channel="fused",
+            verified=True,
         ),
         ["SHARED_10000"],
         "ACQUIRED",
@@ -299,9 +311,10 @@ def test_recorder_publishes_the_registration_as_the_provider_state(tmp_path):
     rec._refresh_t3_native_anchor()
     state = rec._t3_label_anchor_state()
     assert state is not None
-    anchor, epoch = state
-    assert epoch == "ep-1" and anchor.captured_via_tier == "T3"
-    assert rec._t3_native_anchor is anchor
+    assert state.epoch_id == "ep-1" and state.tier == "T3"
+    assert state.anchor.captured_via_tier == "T3"
+    assert state.sigma_ns == pytest.approx(1.0e6)   # floored delay-model bound
+    assert rec._t3_native_anchor is state.anchor
 
 
 def test_recorder_stands_down_while_t6_is_authoritative(tmp_path):

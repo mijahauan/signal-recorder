@@ -32,9 +32,12 @@ against the host clock:
 * a T6 native anchor that is AUTHORITATIVE owns the plane, and one
   station publishes ONE registration (mjh, 2026-09-04), so T3 stands
   down while T6 stands up;
-* the SUMMARY state must be ACQUIRED.  See ``_verified_state`` for why
-  that string, and not the summary's own ``verified`` field, is the
-  verified predicate the amendment asks for;
+* the SUMMARY state must be ACQUIRED **and** the summary's own
+  ``verified`` flag must be true.  Both, not either: the state is the
+  network-wide view (metrology_service publishes ACQUIRED only when a
+  verified plane contributed) and the flag is the fused plane's own
+  provenance, made truthful by task 14c -- every member fusion kept was
+  itself verified;
 * the summary must be fresh against the store's own stale window —
   ``read_summary`` hands back the last file it finds however old, so a
   dead metrology process otherwise anchors the station forever;
@@ -52,7 +55,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from .native_anchor import NativeAnchor
+from .native_anchor import LabelAnchor, NativeAnchor
+from .registration_acquirer import ORIGIN_SIGMA_FLOOR_MS
 
 logger = logging.getLogger(__name__)
 
@@ -71,32 +75,48 @@ class T3AnchorDecision:
     anchor: Optional[NativeAnchor]
     epoch_id: Optional[str]
     reason: str
+    # What the plane honestly claims, ns.  The registration's own
+    # sigma_ms floored at ORIGIN_SIGMA_FLOOR_MS: the fused sigma is the
+    # plane's REPEATABILITY, while a consumer publishing §18 acts on it
+    # as an ACCURACY claim, and the accuracy of an
+    # ``expected_delay - fold_position`` origin is bounded by the delay
+    # model -- common-mode across channels, so fusing N does not shrink
+    # it (the same floor HfAcquiredBench applies).
+    sigma_ns: float = 0.0
 
     @property
     def in_force(self) -> bool:
         return self.anchor is not None
 
 
-def _verified_state(summary: dict) -> bool:
-    """Is this summary's plane acquired AND verified?
+def _acquired_state(summary: dict) -> bool:
+    """Is the SUMMARY in the acquired state?
 
-    The amendment asks for "state ACQUIRED with verified=true".  The
-    summary's own ``verified`` field cannot carry that: the FUSED
-    Registration is built by ``fuse_registrations_with_members``
-    (registration_store.py:107) without carrying ``verified`` over from
-    its members, so ``RegistrationStore._payload`` writes ``false`` into
-    every station summary ever produced.
-
-    The verified predicate lives in the STATE instead.  ``metrology_
-    service._publish_registration`` (metrology_service.py:988-996)
+    The network-wide view.  ``metrology_service._publish_registration``
     publishes summary state ACQUIRED only when a plane that is itself
     verified contributed, and CANDIDATE when the sole contributor is this
-    channel's own not-yet-verified plane.  So ACQUIRED **in the summary**
-    is exactly "acquired and verified".  A summary that ever grows a
-    truthful ``verified`` field will satisfy this predicate too, since
-    ACQUIRED is a precondition of it; nothing here needs changing then.
+    channel's own not-yet-verified plane (metrology_service.py:988-996).
     """
     return str(summary.get("state")) == VERIFIED_STATE
+
+
+def _verified_plane(summary: dict) -> bool:
+    """Does the fused plane claim its own verification?
+
+    Task 14c made this field truthful: ``fuse_registrations_with_members``
+    now carries ``verified = all(kept members verified)``.  Before that it
+    was left at the dataclass default, so ``false`` appeared in every
+    station summary ever written and the flag had to be ignored -- the
+    verified predicate could only be inferred from the summary STATE.
+
+    Fail-closed on absence.  A summary written by an older metrology
+    process carries the untruthful ``false`` (or, older still, no key at
+    all), and both must refuse rather than anchor the station on a plane
+    whose provenance nobody asserted.  Failing closed costs one
+    revalidation tick of legacy behaviour after a deploy, while metrology
+    republishes; failing open would anchor on a fold-lattice phantom.
+    """
+    return summary.get("verified") is True
 
 
 class T3RegistrationAnchor:
@@ -126,18 +146,22 @@ class T3RegistrationAnchor:
     def anchor(self) -> Optional[NativeAnchor]:
         return self._decision.anchor
 
-    def state(self):
-        """``(anchor, epoch_id)`` while an anchor is in force, else None.
+    def state(self) -> Optional[LabelAnchor]:
+        """The :class:`LabelAnchor` in force, or None.
 
-        This is the provider shape ``StreamRecorderV2`` consumes: the
-        epoch id travels with the anchor because a counter-epoch change
-        invalidates ``anchor_rtp`` outright, and a plane comparison
-        across two epochs is arithmetic on two different counters.
+        This is the provider shape every consumer takes -- the ring, §18
+        and the archive sidecar -- so all three label from one object
+        (task 14).
         """
         d = self._decision
         if d.anchor is None:
             return None
-        return (d.anchor, d.epoch_id)
+        return LabelAnchor(
+            anchor=d.anchor,
+            epoch_id=d.epoch_id,
+            tier="T3",
+            sigma_ns=float(d.sigma_ns),
+        )
 
     # ── evaluation ──────────────────────────────────────────────────
 
@@ -173,15 +197,18 @@ class T3RegistrationAnchor:
             return T3AnchorDecision(None, None, "no_summary")
         epoch_id = summary.get("counter_epoch_id")
         epoch_id = None if epoch_id is None else str(epoch_id)
-        if not _verified_state(summary):
+        if not _acquired_state(summary):
             return T3AnchorDecision(None, epoch_id, f"state:{summary.get('state')}")
         try:
             rtp_ref = int(summary["rtp_ref"])
             utc_ref = float(summary["utc_ref"])
             reg_rate = int(summary["sample_rate"])
             written_at = float(summary.get("written_at", 0.0))
+            sigma_ms = max(float(summary["sigma_ms"]), ORIGIN_SIGMA_FLOOR_MS)
         except (KeyError, TypeError, ValueError):
             return T3AnchorDecision(None, epoch_id, "incomplete")
+        if not _verified_plane(summary):
+            return T3AnchorDecision(None, epoch_id, "unverified")
         age_s = self._time() - written_at
         if age_s > float(getattr(self._store, "stale_s", 300.0)):
             return T3AnchorDecision(None, epoch_id, "stale")
@@ -200,7 +227,7 @@ class T3RegistrationAnchor:
             captured_at_utc_ns=int(round(written_at * 1e9)),
             captured_via_tier="T3",
         )
-        return T3AnchorDecision(anchor, epoch_id, "acquired")
+        return T3AnchorDecision(anchor, epoch_id, "acquired", sigma_ns=sigma_ms * 1e6)
 
     # ── logging ─────────────────────────────────────────────────────
 

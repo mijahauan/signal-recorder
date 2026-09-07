@@ -117,6 +117,18 @@ def fuse_registrations_with_members(
         channel="fused",
         hypotheses_open=sum(r.hypotheses_open for r, _ in keep),
         stations=tuple(sorted({st for r, _ in keep for st in r.stations})),
+        # task-14c: the fused plane is verified exactly when EVERY member
+        # it kept is verified.  This field used to be left at its
+        # ``False`` default, which made ``verified`` false in every station
+        # summary ever written -- so a reader that believed the field
+        # could never see a verified registration, and the whole verified
+        # predicate had to be inferred from the summary STATE instead
+        # (metrology_service publishes ACQUIRED only when a verified plane
+        # contributed).  ``all`` and not ``any``: a fused plane inherits
+        # the weakest provenance among its members, because an unverified
+        # member's origin could be a fold-lattice phantom and
+        # inverse-variance combination cannot detect that.
+        verified=all(bool(r.verified) for r, _ in keep),
         # the cluster's own offset: its members agree to the pair skew, so
         # the minimum (the least-late pair anyone saw) is the truest
         epoch_offset_s=min(finite) if finite else float("nan"),

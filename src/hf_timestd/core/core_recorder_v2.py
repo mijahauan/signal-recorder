@@ -739,6 +739,20 @@ class CoreRecorderV2:
                     f"OffsetJudge T6/T5 bench wiring failed (judge "
                     f"continues on P1 benches): {e}", exc_info=True,
                 )
+            # Task 14a: §18's utc_anchor_ns comes from the label-plane
+            # anchor when one is in force.  Its own guard — a wiring
+            # failure here must leave the judge publishing the legacy
+            # judged pair rather than nothing.
+            try:
+                self._offset_judge.set_label_anchor_provider(
+                    self._label_anchor_state)
+                logger.info("OffsetJudge: label-plane anchor wired — §18 "
+                            "utc_anchor_ns states the anchor's own UTC "
+                            "(task 14a)")
+            except Exception as e:
+                logger.error(
+                    f"OffsetJudge label-anchor wiring failed (§18 keeps "
+                    f"the judged radiod pair): {e}")
             # P3: the T6 residual-walk rate observable rides its own
             # guard — bench failure above must not cost the rate feed.
             if self._t6_rate_est is not None:
@@ -1486,7 +1500,7 @@ class CoreRecorderV2:
                 # metrology, authority.json §18 and every subscriber
                 # resolve UTC from — carries it directly rather than
                 # radiod's host-stamped pair with a correction bolted on.
-                recorder.set_label_anchor_provider(self._t3_label_anchor_state)
+                recorder.set_label_anchor_provider(self._label_anchor_state)
 
             logger.info(f"✓ Initialized {len(self.recorders)} archive recorders")
 
@@ -2614,14 +2628,67 @@ class CoreRecorderV2:
             logger.debug(f"T3 anchor refresh failed: {exc}")
 
     def _t3_label_anchor_state(self):
-        """``StreamRecorderV2`` provider: ``(NativeAnchor, epoch_id)``.
-
-        Cached state only — no I/O on the caller's thread.  Each
-        recorder refuses an anchor from another counter domain before
-        using it (``StreamRecorderV2._label_anchor_state``).
-        """
+        """The T3 registration as a :class:`LabelAnchor`, or None."""
         holder = getattr(self, '_t3_anchor_holder', None)
         return None if holder is None else holder.state()
+
+    def _t6_label_anchor_state(self):
+        """T6's native anchor as a :class:`LabelAnchor`, or None.
+
+        Only while the authority says AUTHORITATIVE with no violations —
+        the same predicate that stands T3 down.  Sigma is T6's own
+        published value (live or holdover); before the publish path has
+        run once there is no honest number, so the transport bound
+        NativeAnchorBench falls back to is used rather than a claim
+        nobody measured.
+        """
+        if not self._t6_anchor_is_authoritative():
+            return None
+        anchor = getattr(self, '_t6_native_anchor', None)
+        if anchor is None:
+            return None
+        try:
+            from .native_anchor import LabelAnchor
+            from .offset_judge import NativeAnchorBench
+            sigma = None
+            try:
+                sigma = (self._t6_authority_status() or {}).get('sigma_ns')
+            except Exception:  # noqa: BLE001
+                sigma = None
+            if not isinstance(sigma, (int, float)):
+                sigma = NativeAnchorBench.LATENCY_SIGMA_FLOOR_NS
+            return LabelAnchor(
+                anchor=anchor,
+                # T6's anchor carries no registration epoch id; its
+                # identity IS the (rtp, utc) pairing, which is frozen for
+                # the anchor's whole life and replaced (never mutated) at
+                # the next first-lock.
+                epoch_id=f"t6-{int(anchor.anchor_rtp)}-"
+                         f"{int(anchor.anchor_utc_ns)}",
+                tier="T6",
+                sigma_ns=float(sigma),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"T6 label anchor unavailable: {exc}")
+            return None
+
+    def _label_anchor_state(self):
+        """THE label-plane anchor provider (task 14 ruling).
+
+        One object, consumed by all three published surfaces — the ring
+        (``StreamRecorderV2``), authority.json §18 (through the judge's
+        snapshot) and the archive writer's sidecar — so they cannot drift
+        apart (audit G6).  T6 first when it is authoritative, else the T3
+        registration; None when neither stands.
+
+        Cached state only, no I/O: safe to call from the judge's tick
+        thread and from the writer's hot path.  Each consumer applies its
+        own counter-domain guard, because an anchor is a ruler for ONE
+        domain — T6's anchor lives in the 96 kHz BPSK counter and cannot
+        label a 24 kHz archive channel (``cross_channel_rtp.py``,
+        ``time_map_context``).
+        """
+        return self._t6_label_anchor_state() or self._t3_label_anchor_state()
 
     def _wire_t5_fallback_arrival(self, description: str, recorder,
                                    sample_rate: int) -> None:

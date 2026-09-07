@@ -1086,6 +1086,12 @@ class OffsetJudge:
         # judge adopted it (hf_acquired stays a witness in the tier
         # arbitration).  See _select_label_anchor_locked.
         self._label_anchor: Optional[BenchReading] = None
+        # Task 14a: the label-plane ANCHOR provider (the recorder's
+        # `_label_anchor_state`).  Distinct from `_label_anchor` above,
+        # which is a bench READING: this is the anchor object itself, and
+        # it is what §18's utc_anchor_ns is computed from.  None on a
+        # station with no label plane.
+        self._label_anchor_provider: Optional[Callable] = None
         self._dissent = None
         from .witness_dissent import DissentWatch
         self._dissent_watch = DissentWatch()
@@ -1184,6 +1190,41 @@ class OffsetJudge:
         registration order is irrelevant."""
         with self._lock:
             self.benches.append(bench)
+
+    def set_label_anchor_provider(self, provider: Optional[Callable]) -> None:
+        """Install the label-plane anchor provider (task 14a).
+
+        ``provider() -> Optional[LabelAnchor]``, cached state only (the
+        recorder refreshes it on its own tick).  While it answers for a
+        source's counter domain, that anchor — not radiod's host-stamped
+        pair plus this judge's correction — is what §18's
+        ``utc_anchor_ns`` states.  The judge stays a WITNESS: its verdict
+        still measures the pair and still drives violation/escalation,
+        but it no longer defines the published plane.
+        """
+        with self._lock:
+            self._label_anchor_provider = provider
+
+    def _label_anchor_for_locked(self, st: "_SourceState"):
+        """The label anchor valid for one source's counter domain, or None.
+
+        The domain guard is not optional: an anchor is a ruler for ONE
+        counter (``cross_channel_rtp.py``).  T6's anchor lives in the
+        96 kHz BPSK counter and must never label a 24 kHz archive
+        channel; the T3 registration is stamped in the archive channels'
+        own counter and must never label the T6 stream.
+        """
+        provider = self._label_anchor_provider
+        if provider is None:
+            return None
+        try:
+            label = provider()
+        except Exception as e:  # noqa: BLE001 — provenance never breaks the judge
+            logger.debug(f"OffsetJudge label-anchor provider failed: {e}")
+            return None
+        if label is None or not label.matches_rate(st.sample_rate):
+            return None
+        return label
 
     def set_t6_rate_provider(
         self, provider: Callable[[], Optional[RateEstimate]]
@@ -2527,22 +2568,57 @@ class OffsetJudge:
             sust = self._escalation_sustained_locked(st, mono_now)
             # §18 subscriber surface (client contract v0.7) — field
             # names verbatim per CLAUDE.md / ARCHITECTURE-FIRST-
-            # PRINCIPLES.md.  utc_anchor_ns is the JUDGE-corrected UTC
-            # of rtp_anchor_sample; null (with tier/sigma) until the
-            # judge has a verdict, so a subscriber can never mistake a
-            # raw radiod mapping for a judged one.
-            contract_sources[self._key_str(key)] = {
-                "utc_anchor_ns": (
+            # PRINCIPLES.md.
+            #
+            # Task 14a (mjh, 2026-09-07): where a label-plane native
+            # anchor is in force, THAT ANCHOR is the only source of
+            # RTP→UTC on every published surface, and §18 is a published
+            # surface.  So utc_anchor_ns is the anchor's own UTC for
+            # rtp_anchor_sample, by pure counter arithmetic, and
+            # tier/sigma_ns report the ANCHOR's provenance and claim.
+            # radiod's host-stamped pair does not enter, and neither does
+            # this judge's correction — the judge is a witness here.
+            #
+            # Legacy (no label plane): the judge-corrected pair as
+            # before, null until a verdict exists so a subscriber can
+            # never mistake a raw radiod mapping for a judged one.  With
+            # an anchor in force the value is published whether or not a
+            # verdict exists: the anchor does not need the judge to be
+            # true.  plane_source (additive) names which of the two a
+            # subscriber is reading.
+            label = self._label_anchor_for_locked(st)
+            if label is not None:
+                utc_anchor_ns = int(label.utc_ns_at(st.rtp_timesnap))
+                anchor_tier = label.tier
+                anchor_sigma_ns = round(float(label.sigma_ns), 1)
+                anchor_rate = int(label.sample_rate_hz)
+                plane_source = ("t6_native" if label.tier == "T6"
+                                else "t3_registration")
+            else:
+                utc_anchor_ns = (
                     int(round(st.gps_unix * 1e9 + v.offset_ns))
                     if v is not None else None
-                ),
-                "tier": v.tier if v is not None else None,
-                "sigma_ns": round(v.sigma_ns, 1) if v is not None else None,
+                )
+                anchor_tier = v.tier if v is not None else None
+                anchor_sigma_ns = (
+                    round(v.sigma_ns, 1) if v is not None else None
+                )
+                anchor_rate = st.sample_rate
+                plane_source = "radiod_pair_judged"
+            contract_sources[self._key_str(key)] = {
+                "utc_anchor_ns": utc_anchor_ns,
+                "tier": anchor_tier,
+                "sigma_ns": anchor_sigma_ns,
                 "snapshot_age_s": (
                     round(v.judge_age_s, 3) if v is not None else None
                 ),
                 "rtp_anchor_sample": st.rtp_timesnap,
-                "rate_samples_per_utc_sec": st.sample_rate,
+                "rate_samples_per_utc_sec": anchor_rate,
+                # Additive (task 14a): "t3_registration" | "t6_native" |
+                # "radiod_pair_judged" — which plane produced
+                # utc_anchor_ns.  A subscriber that cares whether it is
+                # reading a host-clock-free plane reads this.
+                "plane_source": plane_source,
                 "radiod_id": self._radiod_id(key[0]),
                 "host_monotonic_at_anchor": st.mono_at_pair,
                 "offset_ns": (
@@ -2679,8 +2755,11 @@ class OffsetJudge:
             "contract_v07": {
                 "_doc": (
                     "Client-contract v0.7 §18 timing-authority subscriber "
-                    "surface: utc_anchor_ns is the judge-corrected UTC of "
-                    "rtp_anchor_sample (null until a verdict exists); "
+                    "surface: utc_anchor_ns is the label-plane anchor's "
+                    "own UTC of rtp_anchor_sample when one is in force "
+                    "(plane_source t3_registration | t6_native), else the "
+                    "judge-corrected radiod pair (plane_source "
+                    "radiod_pair_judged, null until a verdict exists); "
                     "rate_samples_per_utc_sec is the trusted nominal RTP "
                     "rate (spec §11: measured rate_ppm is recorded "
                     "alongside, never applied).  Additive advice only — "

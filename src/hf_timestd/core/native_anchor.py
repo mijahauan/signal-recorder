@@ -95,6 +95,45 @@ class NativeAnchor:
         )
 
 
+@dataclass(frozen=True)
+class LabelAnchor:
+    """The label-plane anchor in force, with what it claims about itself.
+
+    Task 14 ruling (mjh, 2026-09-07): wherever a label-plane native anchor
+    is in force -- the T3 registration, or T6's own -- that anchor is the
+    ONLY source of RTP->UTC for every published surface: the ring's
+    anchor pair, ``authority.json`` §18's ``utc_anchor_ns``, and the
+    archive writer's sidecar.  One anchor, one plane, one answer.
+
+    So the anchor cannot travel alone: a consumer publishing a §18 record
+    also has to state the TIER and SIGMA of the plane it used, and those
+    are properties of the anchor's provenance rather than of the
+    ``NativeAnchor`` arithmetic.  ``epoch_id`` travels too, because a
+    counter-epoch change invalidates ``anchor_rtp`` outright and no plane
+    comparison across two epochs means anything.
+
+    Every consumer applies the same domain guard before using one: an
+    anchor is a ruler for ONE counter domain (``cross_channel_rtp.py``),
+    so ``sample_rate_hz`` must match the channel being labelled.
+    """
+
+    anchor: NativeAnchor
+    epoch_id: Optional[str]
+    tier: str                # "T3" | "T6" -- the plane's provenance tier
+    sigma_ns: float          # what the plane honestly claims
+
+    @property
+    def sample_rate_hz(self) -> int:
+        return int(self.anchor.sample_rate_hz)
+
+    def utc_ns_at(self, rtp: int) -> int:
+        """The anchor's UTC for one RTP counter value.  Pure arithmetic."""
+        return utc_ns_at_rtp(int(rtp) & 0xFFFFFFFF, self.anchor)
+
+    def matches_rate(self, sample_rate: int) -> bool:
+        return int(self.anchor.sample_rate_hz) == int(sample_rate)
+
+
 def utc_ns_at_rtp(
     rtp: int,
     anchor: NativeAnchor,

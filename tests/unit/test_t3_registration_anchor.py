@@ -46,6 +46,7 @@ def _write(
             sample_rate=sample_rate,
             sigma_ms=sigma_ms,
             channel="fused",
+            verified=True,
         ),
         ["SHARED_10000", "WWV_15000"],
         state,
@@ -189,4 +190,112 @@ def test_station_wide_refresh_accepts_the_registrations_own_domain(tmp_path):
     decision = holder.refresh(t6_authoritative=False)
     assert decision.reason == "acquired"
     assert decision.anchor.sample_rate_hz == 96000
-    assert holder.state() == (decision.anchor, "ep-1")
+    label = holder.state()
+    assert label.anchor is decision.anchor and label.epoch_id == "ep-1"
+    assert label.tier == "T3" and label.matches_rate(96000)
+
+
+# ── task 14c: the summary's `verified` flag is truthful, and gates ────
+
+
+def test_an_unverified_plane_is_refused_even_in_the_acquired_state(tmp_path):
+    """Both conditions, not either.  The STATE is the network-wide view;
+    the FLAG is the fused plane's own provenance.  Before task 14c the
+    flag was left at its dataclass default, so `false` appeared in every
+    station summary ever written and had to be ignored."""
+    clock = [WALL0]
+    store = _store(tmp_path, clock)
+    store.write_summary(
+        Registration(
+            "ep-1",
+            rtp_ref=1000,
+            utc_ref=WALL0,
+            sample_rate=SR,
+            sigma_ms=1.0,
+            channel="fused",
+            verified=False,
+        ),
+        ["SHARED_10000"],
+        "ACQUIRED",
+        {"counter_epoch_id": "ep-1"},
+    )
+    holder = T3RegistrationAnchor(store=store, time_fn=lambda: clock[0])
+    decision = holder.refresh(t6_authoritative=False)
+    assert decision.anchor is None and decision.reason == "unverified"
+
+
+def test_a_summary_with_no_verified_key_fails_closed(tmp_path):
+    """An older metrology process, or a schema-incomplete write.  One
+    revalidation tick of legacy behaviour beats anchoring the station on
+    a plane whose provenance nobody asserted."""
+
+    class _Old:
+        stale_s = 300.0
+
+        def read_summary(self):
+            return {
+                "state": "ACQUIRED",
+                "counter_epoch_id": "ep-1",
+                "rtp_ref": 1000,
+                "utc_ref": WALL0,
+                "sample_rate": SR,
+                "sigma_ms": 1.0,
+                "written_at": WALL0,
+            }
+
+    holder = T3RegistrationAnchor(store=_Old(), time_fn=lambda: WALL0)
+    assert holder.refresh(t6_authoritative=False).reason == "unverified"
+
+
+def test_fusion_carries_verified_from_every_member_it_keeps():
+    """task 14c: `all`, not `any`.  A fused plane inherits the weakest
+    provenance among its members -- an unverified member's origin could
+    be a fold-lattice phantom, and inverse-variance combination cannot
+    detect that."""
+    from hf_timestd.core.registration_store import fuse_registrations_with_members
+
+    def reg(channel, verified, utc_ref=WALL0):
+        return Registration(
+            "ep-1",
+            rtp_ref=0,
+            utc_ref=utc_ref,
+            sample_rate=SR,
+            sigma_ms=1.0,
+            channel=channel,
+            verified=verified,
+            epoch_offset_s=0.0,
+        )
+
+    both, kept = fuse_registrations_with_members(
+        [reg("a", True), reg("b", True)], 0
+    )
+    assert len(kept) == 2 and both.verified is True
+
+    mixed, kept = fuse_registrations_with_members(
+        [reg("a", True), reg("b", False)], 0
+    )
+    assert len(kept) == 2 and mixed.verified is False
+
+    neither, _ = fuse_registrations_with_members(
+        [reg("a", False), reg("b", False)], 0
+    )
+    assert neither.verified is False
+
+
+def test_the_summary_round_trips_a_verified_fused_plane(tmp_path):
+    """End to end through the file: fusion sets it, the store writes it,
+    the anchor gate reads it."""
+    from hf_timestd.core.registration_store import fuse_registrations_with_members
+
+    clock = [WALL0]
+    store = _store(tmp_path, clock)
+    members = [
+        Registration("ep-1", rtp_ref=0, utc_ref=WALL0, sample_rate=SR,
+                     sigma_ms=1.0, channel=c, verified=True, epoch_offset_s=0.0)
+        for c in ("SHARED_10000", "WWV_15000")
+    ]
+    fused, kept = fuse_registrations_with_members(members, 1000)
+    store.write_summary(fused, kept, "ACQUIRED", {"counter_epoch_id": "ep-1"})
+    assert store.read_summary()["verified"] is True
+    holder = T3RegistrationAnchor(store=store, time_fn=lambda: clock[0])
+    assert holder.refresh(t6_authoritative=False).reason == "acquired"
