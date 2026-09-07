@@ -661,10 +661,17 @@ class CoreRecorderV2:
             logger.error(f"T5RtpPairing init failed (T5 stays Phase-2A): {e}")
             self._t5_pairing = None
         # HfAcquiredBench provider state (T3, task 9): (arrival_rtp,
-        # arrival_mono) of the most recently arrived sample, recorded by
-        # this recorder's own stream callback so the bench does not
-        # depend on the T6-only _t5_pairing.  None until a batch arrives.
-        self._hf_arrival: Optional[Tuple[int, float]] = None
+        # arrival_mono, arrival_sample_rate) of the most recently arrived
+        # sample, recorded ONLY from the generic per-archive-channel tap
+        # (_wire_t5_fallback_arrival's _note_arrival_tap) — the same
+        # channel/counter domain RegistrationAcquirer runs on.  Fix round
+        # 1 (task 9 review F1/F2): the WWVB (4 kHz) and T6 (96 kHz)
+        # streams are DIFFERENT RTP counter domains from the 24 kHz
+        # archive channel the registration's rtp_ref was stamped
+        # against, so neither may feed this — the carried sample_rate
+        # lets HfAcquiredBench refuse a domain mismatch outright rather
+        # than publish a wrong utc.  None until an archive batch arrives.
+        self._hf_arrival: Optional[Tuple[int, float, int]] = None
         # P5 decoupling (2026-08-05, AC0G-B4: lb1421_enabled=true with
         # [timing.t6_pps] off left the judge stuck at T4 because the T5
         # bench only ever grounded on the T6 stream): every archive
@@ -1459,7 +1466,7 @@ class CoreRecorderV2:
                 # ground the LB-142x NMEA-vs-RTP pairing when the T6
                 # stream is absent (never raises; wiring failure just
                 # leaves this stream out of the fallback set).
-                self._wire_t5_fallback_arrival(description, recorder)
+                self._wire_t5_fallback_arrival(description, recorder, sample_rate)
 
             logger.info(f"✓ Initialized {len(self.recorders)} archive recorders")
 
@@ -1867,13 +1874,16 @@ class CoreRecorderV2:
                 self._wwvb_anchor_rtp = None
             else:
                 rtp0 = int(rtp0) & 0xFFFFFFFF
-                # HfAcquiredBench provider (T3, task 9): the recorder's
-                # own latest stream arrival — (rtp of the LAST sample in
-                # this batch, monotonic now).  rtp0 above is samples[0];
-                # this stream runs independently of T6/LB-142x hardware,
-                # so it grounds the bench on stations without either.
-                self._hf_arrival = (
-                    (rtp0 + len(samples)) & 0xFFFFFFFF, time.monotonic())
+                # NOTE (fix round 1, task 9 review F1/F2): this stream is
+                # WWVB at a DIFFERENT configured sample rate (4 kHz) than
+                # the 24 kHz archive channels RegistrationAcquirer runs
+                # on — its RTP counter is a different domain and must
+                # NOT feed HfAcquiredBench.  self._hf_arrival is now fed
+                # exclusively from the generic per-archive-channel tap
+                # in _wire_t5_fallback_arrival, which runs on the same
+                # channel/counter domain the registration was acquired
+                # against (and carries its own sample_rate so the bench
+                # can refuse a domain mismatch outright).
                 # ---- hf-timestd#23 probe ----
                 # Does RTP advance by the number of samples we were
                 # actually handed?  The continuity check below assumes
@@ -2528,27 +2538,26 @@ class CoreRecorderV2:
 
     def _hf_acquired_bench_state(self):
         """HfAcquiredBench provider (T3, task 9): (arrival_rtp,
-        arrival_mono) of the most recently arrived sample.
+        arrival_mono, arrival_sample_rate) of the most recently arrived
+        archive-channel sample, or None.
 
-        Prefers this recorder's own arrival record (``_hf_arrival``,
-        fed by the WWVB stream callback) so the bench does not depend
-        on T6 hardware; falls back to the T5 pairing's arrival (which
-        only ever grounds on the T6 stream) when this recorder has not
-        seen a batch of its own yet.
+        Fix round 1 (review F1/F2): sourced EXCLUSIVELY from
+        ``_hf_arrival``, fed by the generic per-archive-channel tap in
+        ``_wire_t5_fallback_arrival`` — the same 24 kHz channel/counter
+        domain ``RegistrationAcquirer`` runs on.  Deliberately NOT the
+        WWVB stream (4 kHz) or the T6-grounded ``_t5_pairing`` (96 kHz):
+        both are different RTP counter domains from the registration's
+        ``rtp_ref``, and ``cross_channel_rtp.py`` documents that
+        relating one counter domain to another needs a *measured* epoch
+        offset this bench does not have. Silence beats a wrong ``utc``.
         """
-        arrival = getattr(self, '_hf_arrival', None)
-        if arrival is not None:
-            return arrival
-        pairing = getattr(self, '_t5_pairing', None)
-        if pairing is None:
-            return None
-        arrival = pairing.latest_arrival
-        if arrival is None:
-            return None
-        return (arrival[0], arrival[1])
+        return getattr(self, '_hf_arrival', None)
 
-    def _wire_t5_fallback_arrival(self, description: str, recorder) -> None:
-        """Give an archive stream its own T5 pairing arrival tracker.
+    def _wire_t5_fallback_arrival(self, description: str, recorder,
+                                   sample_rate: int) -> None:
+        """Give an archive stream its own T5 pairing arrival tracker, AND
+        (fix round 1, task 9 review F1/F2) feed HfAcquiredBench's
+        ``_hf_arrival`` from the same tap.
 
         P5 decoupling: the NMEA-vs-RTP pairing behind the judge's T5
         bench only needs SOME live stream's (gps_time, rtp_timesnap,
@@ -2562,6 +2571,17 @@ class CoreRecorderV2:
         the archive write, so a flush-delayed batch notes a late
         arrival; the pairing's latency sigma floor and MAD spread carry
         that honestly.  Never raises.
+
+        This is also the ONLY site that writes ``self._hf_arrival``: it
+        is called once per archive channel, unconditionally, regardless
+        of [wwvb]/[timing.t6_pps] config, so it is the one hook that
+        actually runs on a T6-less, WWVB-less station — and it is the
+        same 24 kHz channel/counter domain ``RegistrationAcquirer`` runs
+        on (``metrology_service.py``), unlike the WWVB (4 kHz) or T6
+        (96 kHz) streams.  The channel's own ``sample_rate`` rides along
+        in the stored triple so ``HfAcquiredBench`` can refuse to answer
+        if a later archive channel's tap overwrote it with a mismatched
+        rate before the bench's next poll.
         """
         fallbacks = getattr(self, '_t5_fallback_pairings', None)
         if fallbacks is None:
@@ -2575,10 +2595,13 @@ class CoreRecorderV2:
                 f"T5 fallback pairing init failed for {description}: {e}")
             return
 
-        def _note_arrival_tap(samples, quality, _p=pairing):
+        def _note_arrival_tap(samples, quality, _p=pairing,
+                               _sr=int(sample_rate)):
             rtp = getattr(quality, 'last_rtp_timestamp', None)
             if rtp is not None:
                 _p.note_arrival(rtp)
+                last_rtp = (int(rtp) + len(samples)) & 0xFFFFFFFF
+                self._hf_arrival = (last_rtp, time.monotonic(), _sr)
 
         try:
             recorder.add_tap(_note_arrival_tap)

@@ -1,6 +1,12 @@
-from hf_timestd.core.offset_judge import HfAcquiredBench
+from hf_timestd.core.offset_judge import (
+    BenchReading,
+    HfAcquiredBench,
+    OffsetJudge,
+    gps_time_ns_to_unix,
+)
 from hf_timestd.core.registration_acquirer import Registration
 from hf_timestd.core.registration_store import RegistrationStore
+from hf_timestd.core.core_recorder_v2 import CoreRecorderV2
 
 SR = 24000
 
@@ -28,7 +34,7 @@ def test_bench_projects_the_registration_to_the_arrival(tmp_path):
         {"raw_pair_residual_ms": 16.7},
     )
     bench = HfAcquiredBench(
-        provider=lambda: (1000 + 10 * SR, 42.0),
+        provider=lambda: (1000 + 10 * SR, 42.0, SR),
         store=st,
         mono_fn=lambda: 42.5,
         time_fn=lambda: clock[0],
@@ -40,6 +46,7 @@ def test_bench_projects_the_registration_to_the_arrival(tmp_path):
     assert (
         r.detail["bench"] == "hf_acquired" and r.detail["raw_pair_residual_ms"] == 16.7
     )
+    assert r.plane == "label"
 
 
 def test_bench_answers_on_witness_state_too(tmp_path):
@@ -62,7 +69,7 @@ def test_bench_answers_on_witness_state_too(tmp_path):
         {"raw_pair_residual_ms": 4.2},
     )
     bench = HfAcquiredBench(
-        provider=lambda: (1000 + 10 * SR, 42.0),
+        provider=lambda: (1000 + 10 * SR, 42.0, SR),
         store=st,
         mono_fn=lambda: 42.5,
         time_fn=lambda: clock[0],
@@ -81,7 +88,7 @@ def test_bench_silent_in_bootstrap_or_when_stale(tmp_path):
     st = _store(tmp_path, clock)
     st.write_summary(None, [], "BOOTSTRAP", {})
     bench = HfAcquiredBench(
-        provider=lambda: (1, 1.0),
+        provider=lambda: (1, 1.0, SR),
         store=st,
         mono_fn=lambda: 1.0,
         time_fn=lambda: clock[0],
@@ -96,3 +103,159 @@ def test_bench_silent_in_bootstrap_or_when_stale(tmp_path):
     clock[0] += 200.0
     assert bench.poll() is None
     assert HfAcquiredBench(provider=lambda: None, store=st).poll() is None
+
+
+def test_bench_silent_on_sample_rate_mismatch(tmp_path):
+    """Fix round 1 (task 9 review F1/F2): the registration was acquired
+    on a 24 kHz archive channel.  An arrival stamped from a DIFFERENT
+    counter domain (e.g. the 4 kHz WWVB stream, or the 96 kHz T6
+    stream) must not be projected against rtp_ref -- the naive
+    delta-rtp/sample_rate arithmetic would silently publish a wrong
+    utc.  Silence beats a wrong answer."""
+    clock = [5000.0]
+    st = _store(tmp_path, clock)
+    st.write_summary(
+        Registration(
+            "ep-1",
+            rtp_ref=1000,
+            utc_ref=100.0,
+            sample_rate=SR,
+            sigma_ms=0.8,
+            channel="fused",
+        ),
+        ["SHARED_10000"],
+        "ACQUIRED",
+        {"raw_pair_residual_ms": 16.7},
+    )
+    # WWVB-shaped arrival: same nominal rtp delta, WRONG (4 kHz) domain.
+    bench = HfAcquiredBench(
+        provider=lambda: (1000 + 10 * SR, 42.0, 4000),
+        store=st,
+        mono_fn=lambda: 42.5,
+        time_fn=lambda: clock[0],
+    )
+    assert bench.poll() is None
+
+    # T6-shaped arrival: WRONG (96 kHz) domain.
+    bench_t6 = HfAcquiredBench(
+        provider=lambda: (1000 + 10 * SR, 42.0, 96000),
+        store=st,
+        mono_fn=lambda: 42.5,
+        time_fn=lambda: clock[0],
+    )
+    assert bench_t6.poll() is None
+
+    # Sanity: the SAME arrival at the matching rate does answer.
+    bench_ok = HfAcquiredBench(
+        provider=lambda: (1000 + 10 * SR, 42.0, SR),
+        store=st,
+        mono_fn=lambda: 42.5,
+        time_fn=lambda: clock[0],
+    )
+    assert bench_ok.poll() is not None
+
+
+def _unix_to_gps_ns(unix_s: float) -> int:
+    """Invert gps_time_ns_to_unix without hardcoding the leap count."""
+    guess = int((unix_s - 315964800) * 1e9)
+    back = gps_time_ns_to_unix(guess)
+    return guess + int(round((unix_s - back) * 1e9))
+
+
+class _FixedBench:
+    """A bench stub whose poll() always returns the same BenchReading."""
+
+    def __init__(self, reading):
+        self._reading = reading
+
+    def poll(self):
+        return self._reading
+
+
+def test_same_tier_arbitration_prefers_smaller_sigma(tmp_path):
+    """F3 (task 9 review): FusionBench and HfAcquiredBench both publish
+    tier "T3".  _select_bench_locked's sort used to be a plain
+    tier-rank sort, so Python's stable sort silently preferred whichever
+    bench was constructed/registered FIRST on every tie -- FusionBench,
+    since it is part of the judge's default bench list and
+    HfAcquiredBench is always add_bench()'d afterward.  The documented
+    rule (CLAUDE.md: "tier rank never substitutes for demonstrated
+    precision") is that the tighter reading wins regardless of
+    registration order.  Here the LOOSE reading is registered first
+    (FusionBench-shaped) and the TIGHT one later (HfAcquiredBench-shaped,
+    via add_bench) -- the tight, later one must still be selected."""
+    wall0 = 1_800_000_000.0
+    clock = {"wall": wall0, "mono": 1000.0}
+
+    loose = BenchReading(tier="T3", utc=wall0, sigma_ns=25_000_000.0, mono=1000.0)
+    tight = BenchReading(tier="T3", utc=wall0, sigma_ns=1_000_000.0, mono=1000.0)
+
+    judge = OffsetJudge(
+        config={"enabled": True},
+        benches=[_FixedBench(loose)],  # registered FIRST, looser
+        publish_path=tmp_path / "offset_judge.json",
+        time_fn=lambda: clock["wall"],
+        mono_fn=lambda: clock["mono"],
+    )
+    judge.add_bench(_FixedBench(tight))  # registered LATER, tighter
+
+    key = ("hf-status.local", 0xABCD1234)
+    judge.register_radiod_pair(key, _unix_to_gps_ns(wall0), 0, SR)
+    judge.tick()
+
+    verdict = judge.offset_for(key, 0)
+    assert verdict is not None
+    assert verdict.tier == "T3"
+    assert verdict.sigma_ns == tight.sigma_ns
+
+
+class _FakeStreamRecorder:
+    """Stands in for StreamRecorderV2: only add_tap() is exercised by
+    _wire_t5_fallback_arrival."""
+
+    def __init__(self):
+        self.tap = None
+
+    def add_tap(self, callback):
+        self.tap = callback
+
+
+class _FakeQuality:
+    def __init__(self, last_rtp_timestamp):
+        self.last_rtp_timestamp = last_rtp_timestamp
+
+
+def test_wire_t5_fallback_arrival_feeds_hf_arrival_from_the_real_tap():
+    """Recorder-level coverage (task 9 review ruling: cover the
+    provider from the ACTUAL production hook when it can be built
+    cheaply).  CoreRecorderV2 cannot be constructed via its normal
+    __init__ in a unit test (radiod/ka9q/config dependencies), so this
+    uses the same __new__-bypass pattern already established in this
+    test suite (see test_wwvb_rtp_probe.py) -- but exercises the REAL
+    _wire_t5_fallback_arrival + the REAL tap it installs, with only the
+    StreamRecorderV2 and StreamQuality objects faked out.  This is the
+    one and only site that writes self._hf_arrival (fix round 1)."""
+    recorder = CoreRecorderV2.__new__(CoreRecorderV2)
+    fake_stream = _FakeStreamRecorder()
+
+    recorder._wire_t5_fallback_arrival("SHARED_10000", fake_stream, SR)
+    assert fake_stream.tap is not None
+
+    samples = [0.0] * 240
+    fake_stream.tap(samples, _FakeQuality(last_rtp_timestamp=1000))
+
+    arrival = recorder._hf_acquired_bench_state()
+    assert arrival is not None
+    arrival_rtp, arrival_mono, arrival_sr = arrival
+    assert arrival_rtp == 1000 + 240
+    assert arrival_sr == SR
+    assert isinstance(arrival_mono, float) and arrival_mono > 0
+
+
+def test_wwvb_stream_no_longer_writes_hf_arrival():
+    """Fix round 1 (F1/F2): the WWVB (4 kHz) path must NOT feed
+    _hf_arrival -- it is a different RTP counter domain than the 24 kHz
+    archive channel the registration is acquired against.  A bare
+    recorder (no archive tap ever wired) has no _hf_arrival at all."""
+    recorder = CoreRecorderV2.__new__(CoreRecorderV2)
+    assert recorder._hf_acquired_bench_state() is None

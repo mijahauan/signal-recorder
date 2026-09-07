@@ -708,8 +708,24 @@ class HfAcquiredBench:
     metrology — the bench still answers so the judge can compute the
     hf_acquired-vs-T6 residual.  BOOTSTRAP/CONFLICT/missing stay silent.
 
-    provider() -> Optional[(arrival_rtp, arrival_mono)] of the most
-    recently arrived sample.
+    ``plane="label"``: mechanistically identical to NativeAnchorBench
+    (T6) — a fixed (rtp_ref, utc_ref) origin projected via pure RTP
+    counter arithmetic to a later arrival, then handed to monotonic at
+    that arrival instant.  Never reads the host clock.  This is
+    unlike LbeT5Bench (T5), which is also host-clock-free but answers
+    with a freshly *attested* per-arrival GPS truth rather than a fixed
+    historical origin projected forward, so it keeps the "host" default
+    (review task-9-review.md, finding "Minor, needs an explicit
+    decision" — resolved: label plane, T6 precedent, fix round 1 F4).
+
+    provider() -> Optional[(arrival_rtp, arrival_mono, arrival_sample_rate)]
+    of the most recently arrived sample, in the SAME RTP counter domain
+    the registration's ``rtp_ref``/``sample_rate`` were stamped in.
+    Fix round 1 (task 9 review F1/F2): the RTP counter is per-channel
+    and NOT interchangeable across channels running at different
+    configured rates (``cross_channel_rtp.py``) — the provider must
+    name its own sample rate so ``poll`` can refuse a domain mismatch
+    outright rather than publish a wrong ``utc``.
     """
 
     TIER = "T3"
@@ -717,7 +733,8 @@ class HfAcquiredBench:
     ARRIVAL_MAX_AGE_S = 5.0
     _LIVE_STATES = ("ACQUIRED", "WITNESS")
 
-    def __init__(self, provider: Callable[[], Optional[Tuple[int, float]]],
+    def __init__(self,
+                 provider: Callable[[], Optional[Tuple[int, float, int]]],
                  store=None, mono_fn: Callable[[], float] = time.monotonic,
                  time_fn: Callable[[], float] = time.time):
         from .registration_store import RegistrationStore
@@ -733,7 +750,7 @@ class HfAcquiredBench:
             return None
         if state is None:
             return None
-        arrival_rtp, arrival_mono = state
+        arrival_rtp, arrival_mono, arrival_sample_rate = state
         age = self._mono() - float(arrival_mono)
         if age < 0 or age > self.ARRIVAL_MAX_AGE_S:
             return None
@@ -744,6 +761,13 @@ class HfAcquiredBench:
         if reg_age > self.FRESHNESS_S:
             return None
         sr = float(s["sample_rate"])
+        # Fix round 1 F1/F2: the arrival's RTP counter must be the SAME
+        # domain rtp_ref was stamped in — an archive channel running at
+        # a different configured rate (WWVB 4 kHz, T6 96 kHz) is a
+        # different counter entirely and the naive rtp-delta arithmetic
+        # below would silently name the wrong utc.  Refuse instead.
+        if int(s["sample_rate"]) != int(arrival_sample_rate):
+            return None
         delta_rtp = _rtp_delta_signed(int(arrival_rtp), int(s["rtp_ref"]))
         utc = float(s["utc_ref"]) + delta_rtp / sr
         return BenchReading(
@@ -1365,13 +1389,29 @@ class OffsetJudge:
         one of those ticks — a gate failure restarts the advance window
         cleanly.  Single-bench sites: no lower tier, gate vacuously
         passes (unchanged behavior).
+
+        Same-tier arbitration (fix round 1, task 9 review F3): TIER_ORDER
+        is the primary key, but two benches CAN share a tier string
+        (FusionBench and HfAcquiredBench both publish "T3") and
+        `add_bench` has no uniqueness constraint.  Without a tie-break,
+        Python's stable sort silently prefers whichever bench happens to
+        be registered first — an emergent artifact of construction
+        order, not a documented rule, and it let a host-clock-dependent
+        FusionBench reading permanently shadow a host-clock-FREE
+        HfAcquiredBench reading whenever both answered.  Repo doctrine
+        (CLAUDE.md: "tier rank never substitutes for demonstrated
+        precision") says the tighter reading should win instead, so
+        sigma_ns is the secondary sort key within one tier.
         """
         if not readings:
             self._candidate_tier = None
             self._candidate_count = 0
             return None
         mono_now = self._mono()
-        by_rank = sorted(readings, key=lambda r: self._tier_rank(r.tier))
+        by_rank = sorted(
+            readings,
+            key=lambda r: (self._tier_rank(r.tier), float(r.sigma_ns)),
+        )
         best = by_rank[0]
         active_tier = self._best.tier if self._best is not None else None
         active_rank = self._tier_rank(active_tier)
