@@ -1495,6 +1495,17 @@ from hf_timestd.estimator.solution import (
 F_NOM = 24000
 
 
+def f_meas_for(ppm: float) -> float:
+    """The published rate, exactly, as the estimator derives it.
+
+    NOT F_NOM * (1 + ppm/1e6). At 60 ppm that linearisation lands 3.6 ns off
+    the projection it is supposed to reproduce, which fails the tolerance
+    below and, worse, would put two arithmetics in the one place this library
+    exists to have one (controller ruling R13, 2026-09-08).
+    """
+    return F_NOM * 1e9 / (1e9 + (-ppm * 1000.0))
+
+
 def make(**kw) -> TimingSolution:
     args = dict(
         rtp_ref=1_000_000,
@@ -1503,7 +1514,7 @@ def make(**kw) -> TimingSolution:
         sigma_phase_ns=1.0e6,
         rate_ppm=+0.03,
         sigma_rate_ppm=0.05,
-        rate_samples_per_utc_sec=F_NOM * (1 + 0.03e-6),
+        rate_samples_per_utc_sec=f_meas_for(+0.03),
         covariance=(1.0e12, 0.0, 2.5e-3),
         verdict=VERDICT_PUBLISH,
         refusal=None,
@@ -1520,7 +1531,7 @@ def make(**kw) -> TimingSolution:
 
 
 def test_a_solution_projects_through_its_own_measured_rate():
-    sol = make(rate_ppm=+60.0, rate_samples_per_utc_sec=F_NOM * (1 + 60e-6))
+    sol = make(rate_ppm=+60.0, rate_samples_per_utc_sec=f_meas_for(+60.0))
     span = sol.utc_ns_at(1_000_000 + F_NOM) - sol.utc_ns_at(1_000_000)
     assert span == pytest.approx(1_000_000_000 * (1 - 60e-6), rel=1e-9)
 
@@ -2069,8 +2080,10 @@ Fill each verb per the behaviour list. Points that the tests pin down and that a
 wrong:
 
 - `advance(rtp)` computes `tau = state.elapsed_s(self._last_rtp, rtp)`, refuses a negative tau by
-  returning without change, then calls `state.predict(tau, self._noise)`, adds tau to
-  `_ruler_s`, and sets `_last_rtp = rtp`.
+  returning without change, then calls `state.advance_to(rtp, self._noise)`, which both predicts
+  and moves the plane in one step, adds the returned tau to `_ruler_s`, and sets
+  `_last_rtp = rtp`. There is no separate `predict` or `rebase`: ruling R13 collapsed them,
+  because two extrapolation mechanisms counted the rate twice.
 - `observe` on a `PhaseObservation` first advances to `obs.rtp` when the state exists, then
   computes `z = obs.utc_ns - state.utc_ns_at(obs.rtp) + state.phase_ns`, because the filter's
   phase state lives against the plane and the observation speaks in absolute UTC.

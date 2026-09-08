@@ -55,25 +55,54 @@ so a projection that divides by the nominal rate over-reads elapsed time, so the
 that repairs it grows more negative. One thousand nanoseconds per second equals one part per
 million, which matches the judge's `PPM_PER_NS_PER_S = 1.0/1000.0`.
 
-**One convention for elapsed time, everywhere in this package.** Elapsed time always means
-sample count divided by the *measured* rate:
+**One convention for elapsed time, everywhere in this package.** Elapsed time means sample
+count divided by the *nominal* rate, on exactly one line, and the ruler's actual rate enters
+through the phase state:
 
-    f_meas = f_nom * (1 + y)
-    tau(delta_n) = delta_n / f_meas
+    tau(delta_n) = delta_n / f_nom          # the one nominal division
 
-One line in the package touches `f_nom`, the line that forms `f_meas`. A test greps the package
-and fails on any other appearance of the nominal rate underneath a division. This
-single rule removes the defect that walked ND, and stating it once removes the sign confusion
-that made the evening's contradiction unreadable.
+That choice is not free. The two-state clock model and the Allan-variance process noise of §6
+belong together, and they assume phase integrates the rate. A projection that ALSO divided by a
+rate-derived sample rate would apply the rate twice. §1.1 records how nearly that shipped.
 
 **The published projection.** The estimator carries a reference plane as two integers, and
-projects:
+projects with a single extrapolation:
 
-    utc_ns(n) = utc_ref_ns + round(phase_ns) + round(1e9 * (n - rtp_ref) / f_meas)
+    utc_ns(n) = utc_ref_ns + round(phase_ns + (1e9 + rate_ns_per_s) * tau(n - rtp_ref))
 
 The host clock appears nowhere in that expression, nor in the filter's time base. The filter
 advances on sample count. A station whose host clock stopped entirely would keep producing
 correct UTC from this estimator until its witnesses went stale.
+
+**What a consumer divides by.** A consumer holds no phase state and cannot integrate anything, so
+the solution publishes a sample rate for it to divide by, and that rate resolves exactly to the
+projection above:
+
+    rate_samples_per_utc_sec = f_nom * 1e9 / (1e9 + rate_ns_per_s)
+
+Not `f_nom * (1 + y)`. That linearisation disagrees with the projection at second order, and
+second order is where one arithmetic quietly becomes two: measured, the gap reaches 36 microseconds
+over an hour on a ruler running 100 parts per million, while the exact form agrees to the
+nanosecond. `rate_ppm` keeps the linear convention the rest of the instrument uses,
+`-rate_ns_per_s / 1000`, so an observed figure round-trips through the state unchanged. Two
+fields, two purposes, both published.
+
+## 1.1 · Amendment 2026-09-08 — the rate was very nearly applied twice
+
+The first draft of §1 declared the opposite: that elapsed time always meant sample count over the
+MEASURED rate, and that nothing in the package divided by the nominal rate. The implementation
+followed it faithfully, and a task review then measured the result. On a ruler running ten parts
+per million, advancing the filter and then folding the plane overshot by ten microseconds every
+second, the whole rate error, compounding on every solve.
+
+The cause was mixing two self-consistent designs. Projecting with the measured rate and holding
+phase constant works. Projecting with the nominal rate and letting phase carry the rate works.
+Doing both counts the rate twice. The process noise settled which one survives, because the Q of
+§6 is the Q of the standard clock model.
+
+The episode belongs in the spec rather than in a commit message, because the instrument's whole
+history is variations on this one fault: two quantities that each looked right, describing the
+same thing twice.
 
 ---
 
