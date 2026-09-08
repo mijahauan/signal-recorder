@@ -253,12 +253,32 @@ already established. Seven of them:
 | order | reason | condition |
 |---|---|---|
 | 1 | `not_finite` | any numeric input the caller supplied is not a finite number |
-| 2 | `no_phase_witness` | no phase observation has ever been accepted |
-| 3 | `stale_phase` | newest accepted phase observation older than 300 s |
-| 4 | `step_pending` | a concordant quorum dwells, per §4 |
-| 5 | `variance` | phase sigma above the publish ceiling, 5 ms by default |
-| 6 | `coarse_disagreement` | a wide-angle witness disagrees beyond three combined sigmas |
-| 7 | `rate_disagreement` | independent rate estimates differ by more than 1 ppm |
+| 2 | `counter_ambiguous` | the sample delta aliased, so the plane can no longer be trusted |
+| 3 | `no_phase_witness` | no phase observation has ever been accepted |
+| 4 | `stale_phase` | newest accepted phase observation older than 300 s |
+| 5 | `step_pending` | a concordant quorum dwells, per §4 |
+| 6 | `variance` | phase sigma above the publish ceiling, 5 ms by default |
+| 7 | `coarse_disagreement` | a wide-angle witness disagrees beyond three combined sigmas |
+| 8 | `rate_disagreement` | independent rate estimates differ by more than 1 ppm |
+
+One more refusal reaches a solution without passing through this table. The estimator raises
+`rate_not_positive` itself, because the gates never see the measured sample rate and cannot judge
+it. Nine refusals therefore exist, eight of them ordered here and one standing outside.
+
+`not_finite` and `rate_not_positive` share a privilege the other seven lack: a solution carrying
+either may hold non-finite numbers, so the record can report the unusable number that caused it
+rather than substituting a plausible one.
+
+### 5.1 · Amendment 2026-09-08 — this table fell two refusals behind its own code
+
+`counter_ambiguous` arrived with ruling R33 and `rate_not_positive` with R37, and I amended the
+code both times without amending this table. Task 11's writer caught it while trying to document
+the refusals and found the spec saying seven where the code said eight, and §7 saying six over a
+tuple of eight.
+
+Worth recording rather than quietly fixing, because the whole purpose of a spec that names its own
+amendments is to stay ahead of the code, and twice in one day it did not. A ruling that changes
+behaviour has to change this document in the same breath.
 
 `not_finite` arrived on 2026-09-08, from a task review that probed the gates with NaN. Every
 comparison against NaN evaluates false, so a NaN cleared all six original refusals and published a
@@ -392,7 +412,7 @@ That test defends the deferral of integration, which otherwise erodes one conven
       clock_state.py      the two-state predict and scalar update, and the rebase
       process_noise.py    Allan deviation to q1 and q2, with the stand-in fallback
       admission.py        innovation test, rejection counts, quorum and dwell
-      gates.py            the six refusals, in order
+      gates.py            the eight ordered refusals
       solution.py         TimingSolution, frozen, with utc_ns_at
       estimator.py        StationTimingEstimator: observe, advance, solve
 
