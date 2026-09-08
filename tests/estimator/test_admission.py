@@ -91,6 +91,42 @@ def test_opposite_directions_prove_nothing():
     assert a.step(now_s=10.0) is None
 
 
+def test_the_sign_test_refuses_a_pair_the_spread_test_would_have_passed():
+    """Isolates the sign check, which nothing else reaches.
+
+    The test above pairs +50 ms with -50 ms against 1 ms sigmas. That
+    spread of 100 ms runs sixteen times the concordance tolerance, so
+    ``_concordant`` refuses on spread and returns before it ever looks at
+    the signs: delete the sign test and that test still passes.
+
+    Here the two dissents sit 4 ms apart against 10 ms sigmas -- well
+    inside a tolerance of 60 ms -- so the spread test passes them and only
+    their opposite directions stand between the pair and a step. The second
+    half proves the tolerance really was generous enough, by pushing the
+    same two magnitudes into the same direction and watching a proposal
+    ripen.
+    """
+    opposed = Admitter(AdmissionPolicy(dwell_s=0.0))
+    for tier, nu in (("T3", +2.0 * MS), ("T5", -2.0 * MS)):
+        opposed.judge(
+            nu=nu,
+            s=(0.1 * MS) ** 2,
+            obs=obs(tier, sigma_ns=10.0 * MS),
+            now_s=0.0,
+        )
+    assert opposed.step(now_s=10.0) is None
+
+    agreed = Admitter(AdmissionPolicy(dwell_s=0.0))
+    for tier, nu in (("T3", +2.0 * MS), ("T5", +6.0 * MS)):
+        agreed.judge(
+            nu=nu,
+            s=(0.1 * MS) ** 2,
+            obs=obs(tier, sigma_ns=10.0 * MS),
+            now_s=0.0,
+        )
+    assert agreed.step(now_s=10.0) is not None
+
+
 def test_a_dissolved_quorum_expires_and_moves_nothing():
     a = Admitter(AdmissionPolicy(dwell_s=120.0, freshness_s=60.0))
     for tier in ("T3", "T5"):

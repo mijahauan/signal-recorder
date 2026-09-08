@@ -57,6 +57,31 @@ def test_the_reference_sample_reads_back_the_plane():
     assert sol.utc_ns_at(1_000_000) == 1_788_729_000_000_000_000
 
 
+def test_the_published_projection_carries_the_phase_residual():
+    """Every other test here uses a phase of 0.25 ns or of nothing.
+
+    Drop ``phase_ns`` from ``utc_ns_at`` entirely and they all still pass,
+    because a quarter of a nanosecond rounds to zero. The residual is the
+    correction the whole plane exists to carry, so one test asserts it at a
+    size a reader can see.
+    """
+    sol = make(phase_ns=5.0e6)
+    assert sol.utc_ns_at(1_000_000) == 1_788_729_000_000_000_000 + 5_000_000
+
+
+def test_the_projection_rounds_once_on_the_sum():
+    """Spec section 1 rounds once. Two roundings cost up to a nanosecond.
+
+    Two samples at exactly 24 kHz span 83,333.333 ns. Add 0.3 ns of phase
+    and the sum rounds to 83,334; round the two parts separately and the
+    phase vanishes first, leaving 83,333.
+    """
+    sol = make(
+        phase_ns=0.3, rate_ppm=0.0, rate_samples_per_utc_sec=float(F_NOM)
+    )
+    assert sol.utc_ns_at(1_000_002) - sol.utc_ref_ns == 83_334
+
+
 def test_a_withheld_solution_still_carries_its_numbers_and_its_reason():
     sol = make(verdict=VERDICT_WITHHOLD, refusal="rate_disagreement")
     assert sol.refusal == "rate_disagreement"

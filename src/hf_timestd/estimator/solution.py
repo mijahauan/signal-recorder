@@ -121,7 +121,15 @@ class TimingSolution:
         )
 
     def utc_ns_at(self, rtp: int) -> int:
-        """UTC at sample ``rtp`` through plane and measured rate."""
+        """UTC at sample ``rtp`` through plane and measured rate.
+
+        One rounding, on the sum, because spec section 1 writes one:
+        ``utc_ref_ns + round(phase_ns + ...)``. Rounding the phase and the
+        projection separately discards up to half a nanosecond from each
+        and can land a whole nanosecond away from the single-rounded
+        answer, which ``ClockState.utc_ns_at`` -- the same projection, on
+        the estimator's side -- has always computed.
+        """
         delta = signed_rtp_delta(self.rtp_ref, rtp)
         projection = _NS_PER_S * delta / self.rate_samples_per_utc_sec
-        return self.utc_ref_ns + round(self.phase_ns) + round(projection)
+        return self.utc_ref_ns + round(self.phase_ns + projection)
