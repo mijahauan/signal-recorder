@@ -83,9 +83,15 @@ projection above:
 Not `f_nom * (1 + y)`. That linearisation disagrees with the projection at second order, and
 second order is where one arithmetic quietly becomes two: measured, the gap reaches 36 microseconds
 over an hour on a ruler running 100 parts per million, while the exact form agrees to the
-nanosecond. `rate_ppm` keeps the linear convention the rest of the instrument uses,
-`-rate_ns_per_s / 1000`, so an observed figure round-trips through the state unchanged. Two
-fields, two purposes, both published.
+nanosecond. `rate_ppm` publishes `y` itself, the fractional frequency offset §1 defines, in parts per
+million, so the two published fields cannot disagree:
+
+    rate_ppm = (rate_samples_per_utc_sec / f_nom - 1) * 1e6
+
+§1.2 records why that reverses an earlier decision. A rate OBSERVATION still converts its
+parts-per-million figure linearly on the way in, `-ppm * 1000` nanoseconds per second, because at
+60 parts per million the difference reaches 0.0036 ppm against an observation sigma no better than
+0.15 ppm. A conversion buried inside its own uncertainty is not a second arithmetic.
 
 ## 1.1 · Amendment 2026-09-08 — the rate was very nearly applied twice
 
@@ -103,6 +109,20 @@ Doing both counts the rate twice. The process noise settled which one survives, 
 The episode belongs in the spec rather than in a commit message, because the instrument's whole
 history is variations on this one fault: two quantities that each looked right, describing the
 same thing twice.
+
+---
+
+## 1.2 · Amendment 2026-09-08 — one meaning for parts per million
+
+§1 first published `rate_ppm` as `-rate_ns_per_s / 1000`, the linear convention the rest of the
+instrument uses, so that an observed figure would round-trip through the state unchanged. A task
+review then found the consequence: the two published fields disagreed, by 0.0036 parts per million
+at 60, and a test demanding they agree could not pass.
+
+The definition settles it. §1 defines `y` as `(f_true - f_nom) / f_nom`, so `y` in parts per
+million IS what a reader of `rate_ppm` expects, and the linear form only ever approximated it. The
+exact round-trip of an input was a convenience; one meaning for one name is the whole lesson of
+§1.1. So `rate_ppm` means `y`, everywhere the instrument publishes or reads it as a diagnostic.
 
 ---
 
@@ -293,11 +313,31 @@ coefficients from the ruler's declared discipline state, using the stand-in sigm
 measurement model already tabulates, and replaces them with measured values once the span
 supports a fit. The solution publishes which of the two it used.
 
+**Wander and seed accuracy name different quantities.** The stand-in table below says how much a
+ruler's rate MOVES. It says nothing about how far from nominal that rate might already sit when
+the estimator first opens its eyes, and the two differ by orders of magnitude. A free-running
+oscillator wanders by a part per million or two; an RX888 whose GPSDO never reaches it can sit
+hundreds of parts per million away, and the measurement model records AC0G-ND at roughly 350 ppm
+on an LBE-Mini at its 8 mA drive floor.
+
+So the initial rate variance is its own number, and a generous one. Seeded from the 2 ppm wander
+stand-in, the filter puts that documented 350 ppm fault 175 sigma outside its belief, rejects
+almost every witness that would correct it, and converges on nothing: measured, it recovered
+-0.43 ppm against a true -60 and threw away nine witnesses in ten. Seeded at 100 ppm it recovers
+-59.985 and rejects none, flat from 50 ppm to 500. §6.1 amends this into the design.
+
 | ruler state | fractional sigma | provenance |
 |---|---|---|
 | disciplined, measured | 0.0004 ppm | measured on AC0G-B4, 2026-08-16 |
 | disciplined, stand-in | 0.01 ppm | `t6_holdover.UNMEASURED_RATE_SIGMA_PPM` |
 | undisciplined, stand-in | 2.0 ppm | `UNMEASURED_RATE_SIGMA_PPM_A0` |
+
+### 6.1 · Amendment 2026-09-08 — the seed is not the wander
+
+`EstimatorConfig.seed_rate_sigma_ppm` defaults to 100 parts per million and seeds `P[1,1]`. It
+exists because the first draft seeded the rate variance from the wander stand-in, which cannot
+represent a hardware fault this instrument has actually suffered. A filter whose prior excludes
+the failure it was built to survive is not conservative; it is blind.
 
 **The A-level describes, it does not switch.** The solution publishes an A-level and the
 ruler's provenance as diagnosis. Nothing in the code branches on either. That inverts today's
