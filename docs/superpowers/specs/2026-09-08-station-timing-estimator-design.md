@@ -344,20 +344,46 @@ JSON under `tests/data/estimator/`. The traces, not the fixtures, enter the test
 library's tests stay fast and depend on nothing outside the repository. The script's output gets
 committed; the script itself carries no production role.
 
+**What the corpus can and cannot establish.** The generator measures the fold peak's position
+in each block, which gives phase against the ruler up to one unknown constant: the propagation
+delay plus the station's identity offset. That constant cancels in a slope, so the corpus
+measures rate honestly and measures absolute phase not at all. Absolute phase needs the
+propagation model, which §9 leaves in the acquirer's hands. The acceptance rows below therefore
+test rate, self-consistency and refusal behaviour, and never absolute UTC.
+
+**Amendment 2026-09-08: no saved fixture carries the ND rate fault.** Before writing the plan I
+measured the tick-fold drift in the fixtures directly, using the acquirer's own band envelopes
+over twenty-second blocks. The strong band in each fixture gives:
+
+| fixture | strong band | measured ruler | fit residual |
+|---|---|---|---|
+| `nd-20260906` | 1000 Hz | +0.03 ppm | 0.15 ms over 600 s |
+| `nd-20260906-bad` | 1200 Hz | +0.12 ppm | 0.07 ms over 600 s |
+| `b4-20260906-day` | 1000 Hz | -0.16 ppm | 0.05 ms over 300 s |
+
+The method's own slope uncertainty sits near 0.15 ppm at these spans, so all three readings mean
+one thing: a governed ruler. The `nd-20260906` figure also corroborates that fixture's sidecar,
+which recorded -0.043 ppm. A ruler fifty parts per million off would have dragged the fold peak
+30 ms across the window, against a residual of 0.15 ms, so the fixtures exclude that decisively.
+
+The 2026-09-07 figures of -51 ppm from the judge and -84 ppm from the anchor-term series
+therefore describe either a fault that arrived after the sixth, or a quantity other than the
+ruler. §10 records that as an open question. The acceptance table cannot ask for the recovery of
+a rate no fixture contains, so a controlled resampling supplies the known truth instead.
+
 Acceptance, stated as numbers the run must produce:
 
-| fixture | requirement |
+| corpus | requirement |
 |---|---|
-| `nd-20260906-bad` | recovers a rate between -40 and -95 ppm, with a sigma excluding zero |
-| `nd-20260906` | phase self-consistent within 2 ms; rate agrees with the bad-night figure |
-| `b4-20260906-day` | rate within 0.05 ppm of nominal, the governed ruler |
-| `b4-20260907` | rate within 0.05 ppm of nominal; phase agrees with the sidecar's T6 plane |
-| all four | lattice steps of 18.7, 34 and 50 ms injected on one tier never move the plane |
+| `nd-20260906` | rate within 0.2 ppm of +0.03; phase self-consistent within 2 ms |
+| `nd-20260906-bad` | rate within 0.2 ppm of +0.12, and the band disagreement raises no rate alarm |
+| `b4-20260906-day` | rate within 0.2 ppm of -0.16, the governed ruler |
+| `nd-20260906` resampled by -60 ppm | recovers -60 ppm within 1 ppm from ten minutes of signal |
+| every corpus | lattice steps of 18.7, 34 and 50 ms injected on one tier never move the plane |
 
-The ND figures come from two independent measurements on the night itself. The judge's rate
-witness read -51 ppm, sustained, and the anchor-term series between 01:41Z and 01:59Z gave a
-slope of -84 ppm. An estimator that cannot recover that band from the samples has not earned a
-station.
+The resampled row carries the weight the ND night was meant to carry. Resampling a real fixture
+by an exact factor keeps the real signal, the real noise and the real fading, and adds a truth
+the recorded night never held.
 
 ---
 
@@ -379,9 +405,15 @@ Naming these keeps them from arriving as surprises, and each one names its own s
 5. **The hypothesis bank.** Approach B from the brainstorm. Station identity stays in the
    acquirer, which already holds open hypotheses and a resolver. The witness interface admits a
    bank later without changing anything published.
-6. **ND's converter lock.** The GPSDO needs to drive the RX888 at 27 MHz and 32 mA. No software
+6. **The replica correlator.** Michael raised Phil Karn's `wwvsim` on 2026-09-08. Correlating the
+   received signal against a locally generated broadcast would supply two things this station
+   lacks: a rate observation from the signal itself, since a ruler error stretches the received
+   program against the replica, and a station discriminant, since WWV and WWVH differ in
+   structure rather than only in a tick's arrival. Both arrive through the witness interface this
+   document already defines, so the correlator needs its own spec and changes nothing here.
+7. **ND's converter lock.** The GPSDO needs to drive the RX888 at 27 MHz and 32 mA. No software
    substitutes for that, and this estimator only stops the station lying about it.
-7. **Whether T6 should feed chrony at all.** The measurement model §11.7 leaves it open and this
+8. **Whether T6 should feed chrony at all.** The measurement model §11.7 leaves it open and this
    document does not close it.
 
 ---
@@ -404,6 +436,16 @@ perfectly. The 800 ms marker addresses identity and lives in the acquirer, so th
 quorum defends against a lone confident witness and not against a shared delusion. Approach B
 answers it; §9 defers it; the coarse network gate of §5 catches the gross case, which covers the
 50 ms lattice but not a 1 ms one.
+
+**The ND rate fault has no fixture and now no confirmed cause.** The fixtures of 2026-09-06
+show a governed ruler, and the incident of the following night measured tens of parts per
+million twice, by two paths. Three readings fit: the converter lost lock between the sixth and
+the seventh, which a marginal drive level would explain, since ND once ran 350 ppm at the
+LBE-Mini's 8 mA floor and locked at 32 mA; or the judge's offset-slope rode a host-plane bench
+and measured the host walking rather than the ruler drifting; or the anchor-term series projected
+a stale reference forward and measured its own staleness. This library cannot settle it, and the
+resampled corpus row means it does not have to. Settling it needs a fresh capture from ND while
+the fault stands, which belongs to integration.
 
 **One convention, stated once, still has to hold.** Two conventions in one file caused the
 unreadable contradiction of 2026-09-07 evening, where the ticks called the plane 37 ms early
