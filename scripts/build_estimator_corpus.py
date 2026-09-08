@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import zstandard
@@ -51,6 +51,16 @@ def resample_ppm(iq: np.ndarray, ppm: float) -> np.ndarray:
     return (real + 1j * imag).astype(np.complex64)
 
 
+def _sample_of_second(second: int, label0: float, fs: int) -> int:
+    """Absolute sample index (relative to sample 0) where ``second`` begins.
+
+    The same nominal-rate arithmetic ``fold_envelope`` uses internally for
+    its own ``first_sec``/``i0``, generalised to an arbitrary integer second
+    so the caller needs no access to its internals.
+    """
+    return round((second - label0) * fs)
+
+
 def trace(
     iq: np.ndarray, meta: Dict[str, Any], fixture: str, block_s: int = BLOCK_S
 ) -> List[Dict[str, Any]]:
@@ -60,6 +70,12 @@ def trace(
     channel = str(meta["channel_name"])
     out: List[Dict[str, Any]] = []
     block_len = block_s * fs
+    # One (rtp, second) per band, carried across blocks so each new row
+    # can be checked against the last for the whole-second ambiguity
+    # below. ``second``, not ``utc_ns``: it is the trustworthy half of
+    # the pair, and storing it lets the next row compare against a
+    # reference that was never itself adjusted.
+    last_by_band: Dict[str, Tuple[int, int]] = {}
     for b in range(len(iq) // block_len):
         start = b * block_len
         end = start + block_len
@@ -91,9 +107,51 @@ def trace(
             # one, since the average is symmetric around it -- and ``peak``
             # belongs entirely on that second's sample index.
             second = int(np.floor(label0 + b * block_s + block_s // 2))
-            sample_of_second = round((second - label0) * fs)
-            rtp = rtp0 + sample_of_second + peak
+
+            # ``second`` is a LABEL, read straight off the block's own
+            # position and independent of ``peak`` -- it is reliable on its
+            # own (block ``b`` always names its middle nominal second the
+            # same way, drift or none). ``peak`` is the opposite: it is a
+            # measurement, in [0, fs), of where the tick sits WITHIN
+            # whichever second it belongs to, and that reduction mod one
+            # second is exactly what makes it ambiguous BETWEEN seconds --
+            # unable to say by itself whether the tick landed a moment
+            # before ``second`` began or a moment after. At a governed
+            # station the WWV/WWVH/BPM minute marker (an 800 ms pulse once
+            # a minute) resolves that same ambiguity by giving a witness an
+            # unambiguous anchor to count seconds from. A recording has no
+            # marker to lean on, but it has something the live acquirer
+            # never does: it is read end to end, so each new row can be
+            # checked against the last one instead of a marker. A real
+            # ruler drifts at most tens of parts per million, so the sample
+            # count implied by the ALREADY-TRUSTED ``second`` labels of two
+            # rows predicts the RTP advance between them to within a few
+            # samples even across a 20 s gap -- nowhere near the roughly
+            # ``fs`` samples (one whole second) a genuine one-cycle
+            # ambiguity would move ``peak`` by. So a ``rtp`` that disagrees
+            # with that prediction by close to a whole multiple of ``fs``
+            # is not real drift, it is the SAME tick's ``peak`` measured
+            # one cycle early or late. Only ``rtp`` moves to correct it,
+            # by that whole multiple of ``fs`` -- ``second`` stays
+            # exactly what the block already said, so the fix never
+            # bleeds into how any later row is labelled.
+            sample_naive = _sample_of_second(second, label0, fs)
+            rtp = rtp0 + sample_naive + peak
+            prev = last_by_band.get(band)
+            if prev is not None:
+                last_rtp, last_second = prev
+                # ``second`` never moves -- it is already trustworthy. Only
+                # ``rtp`` (through ``peak``) carries the cycle ambiguity, so
+                # only ``rtp`` is corrected, by whole multiples of ``fs``,
+                # and the correction stays local to this one row: the next
+                # row reads its own fresh, independently reliable ``second``
+                # rather than inheriting this one.
+                expected_delta = (second - last_second) * fs
+                wraps = round((rtp - last_rtp - expected_delta) / fs)
+                rtp -= wraps * fs
+
             utc_ns = second * 1_000_000_000
+            last_by_band[band] = (rtp, second)
             out.append(
                 {
                     "tier": "T3",

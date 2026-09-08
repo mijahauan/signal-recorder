@@ -3,6 +3,17 @@
 Each row tests rate, self-consistency or refusal behaviour. None tests
 absolute UTC, because the corpus carries an unknown constant offset by
 construction: propagation delay plus the station's identity.
+
+No test here exercises a step, on purpose. Every row carries ``tier="T3"``
+throughout, because a corpus drawn from one band of one channel IS one
+witness by construction -- one antenna, one measurement chain, nothing this
+tool could split into a second independent tier without fabricating one.
+``Admitter._concordant`` needs a quorum of at least two DISTINCT tiers
+before a step may ripen and move the plane, and rightly so: a lone witness
+moving the plane however confident is exactly the failure this library
+exists to prevent (spec section 4). So a single-tier corpus can never
+license a step here, and that is the real constraint working as intended,
+not a gap this suite works around by staying quiet about it.
 """
 
 import json
