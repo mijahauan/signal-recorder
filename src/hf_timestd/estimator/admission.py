@@ -106,20 +106,12 @@ class Admitter:
 
     def step(self, now_s: float) -> StepProposal | None:
         """A concordant quorum that has dwelled long enough, or nothing."""
-        now = float(now_s)
-        if self._last_now_s is not None and now < self._last_now_s:
-            raise ValueError(
-                f"step went backwards in ruler time, {now} after"
-                f" {self._last_now_s}"
-            )
-        self._last_now_s = now
-
-        agreed = self._concordant(now)
+        agreed = self._concordant(now_s)
         if agreed is None:
             return None
         if self._candidate_since is None:
             return None
-        if (now - self._candidate_since) < self.policy.dwell_s:
+        if (float(now_s) - self._candidate_since) < self.policy.dwell_s:
             return None
         return agreed
 
