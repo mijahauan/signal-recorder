@@ -8,7 +8,10 @@ chosen sigma. Everything the estimator learns, it learns from those reports.
 import numpy as np
 import pytest
 
-from hf_timestd.estimator.estimator import StationTimingEstimator
+from hf_timestd.estimator.estimator import (
+    RESIDUAL_CAP,
+    StationTimingEstimator,
+)
 from hf_timestd.estimator.observations import (
     PLANE_HOST,
     PLANE_LABEL,
@@ -289,3 +292,100 @@ def test_the_process_noise_source_turns_measured_once_the_span_allows():
         est.observe(st.phase(rtp, sigma_ns=0.5 * MS, rng=rng))
         est.advance(rtp)
     assert est.solve(minute_marks(90)[-1]).q_source == "measured"
+
+
+# ---- ruling R31: the rate path carries the same innovation test ----------
+
+
+def settled(ppm: float = 0.0, n_minutes: int = 11):
+    """A station and an estimator that has watched it for ``n_minutes``."""
+    st = Station(ppm=ppm)
+    est = StationTimingEstimator(f_nom=F_NOM)
+    for rtp in minute_marks(n_minutes):
+        est.observe(st.phase(rtp))
+        est.advance(rtp)
+    return st, est, minute_marks(n_minutes)[-1]
+
+
+def rate_obs(ppm: float, sigma_ppm: float, tier: str = "T6", **kw):
+    args = dict(
+        tier=tier,
+        ppm=ppm,
+        sigma_ppm=sigma_ppm,
+        span_s=900.0,
+        n=900,
+        plane=PLANE_LABEL,
+        source=f"{tier}-witness",
+    )
+    args.update(kw)
+    return RateObservation(**args)  # type: ignore[arg-type]
+
+
+def test_a_wild_rate_witness_is_rejected_and_moves_the_rate_not_at_all():
+    st, est, rtp = settled()
+    before = est.solve(rtp)
+
+    verdict = est.observe(rate_obs(ppm=+50.0, sigma_ppm=0.01))
+    after = est.solve(rtp)
+
+    assert verdict.accepted is False
+    assert verdict.reason == "outlier"
+    assert after.rate_ppm == pytest.approx(before.rate_ppm, abs=1e-9)
+    assert after.witnesses["T6"]["rejected"] == 1
+
+
+def test_a_reasonable_rate_witness_is_accepted_and_moves_the_rate():
+    st, est, rtp = settled()
+    before = est.solve(rtp)
+
+    verdict = est.observe(rate_obs(ppm=+0.5, sigma_ppm=0.2))
+    after = est.solve(rtp)
+
+    assert verdict.accepted is True
+    assert verdict.reason == "accepted"
+    assert after.witnesses["T6"]["accepted"] == 1
+    assert after.rate_ppm > before.rate_ppm
+
+
+def test_rejected_rate_witnesses_never_license_a_step_of_the_plane():
+    """A rate dissent is not a phase step, however concordant it looks."""
+    st, est, rtp = settled()
+    before = est.solve(rtp)
+
+    for minute in range(11, 20):
+        far = minute_marks(minute + 1)[-1]
+        for tier in ("T6", "T5"):
+            est.observe(rate_obs(ppm=+50.0, sigma_ppm=0.01, tier=tier))
+        est.observe(st.phase(far))
+        est.advance(far)
+    after = est.solve(minute_marks(20)[-1])
+
+    assert after.refusal != "step_pending"
+    assert after.utc_ns_at(st.rtp0) == pytest.approx(
+        before.utc_ns_at(st.rtp0), abs=1.0 * MS
+    )
+    assert after.witnesses["T5"]["rejected"] == 9
+    assert after.witnesses["T5"]["accepted"] == 0
+
+
+# ---- ruling R32: the residual series is bounded -------------------------
+
+
+def ten_second_marks(n: int, rtp0: int = 1_000_000):
+    """Marks close enough together that ``n`` of them clear no wrap."""
+    return [rtp0 + m * 10 * F_NOM for m in range(n)]
+
+
+def test_the_residual_series_stops_at_its_cap_and_still_fits_after():
+    st = Station(ppm=0.0)
+    est = StationTimingEstimator(f_nom=F_NOM, ruler_provenance="observed")
+    rng = np.random.default_rng(7)
+    marks = ten_second_marks(RESIDUAL_CAP + 300)
+    for rtp in marks:
+        est.observe(st.phase(rtp, sigma_ns=0.5 * MS, rng=rng))
+        est.advance(rtp)
+
+    # Reaching past the public surface on purpose: the cap exists to stop
+    # unbounded growth, and only the length can witness that.
+    assert len(est._residuals) == RESIDUAL_CAP
+    assert est.solve(marks[-1]).q_source == "measured"

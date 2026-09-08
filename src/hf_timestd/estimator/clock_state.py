@@ -76,20 +76,11 @@ class ClockState:
     def rate_ns_per_s(self) -> float:
         return float(self.x[RATE])
 
-    @property
-    def rate_ppm(self) -> float:
-        """Positive when the converter samples fast (spec section 1)."""
-        return -self.rate_ns_per_s / _NS_PER_S_PER_PPM
+    def _utc_ns_per_ruler_s(self) -> float:
+        """How many nanoseconds of UTC one nominal second of ruler spans.
 
-    @property
-    def f_meas(self) -> float:
-        """The measured sample rate, exactly.
-
-        NOT ``f_nom * (1 + rate_ppm / 1e6)``. That linearisation and the
-        projection in ``_offset_ns_at`` disagree at second order, which is
-        how one arithmetic quietly becomes two: over an hour at 100 ppm the
-        gap reaches 36 microseconds. A consumer dividing by this value
-        reproduces ``utc_ns_at`` to the nanosecond.
+        The denominator both ``f_meas`` and ``rate_ppm`` are built on, so the
+        two carry one guard and one arithmetic between them.
 
         Refuses a rate at or past -1e9 ns/s: that stops or reverses the
         clock, which only a diverged filter reaches, and dividing by the
@@ -101,7 +92,43 @@ class ClockState:
             raise ValueError(
                 f"rate {self.rate_ns_per_s!r} ns/s stops or reverses the clock"
             )
-        return self.f_nom * _NS_PER_S / denom
+        return denom
+
+    @property
+    def rate_ppm(self) -> float:
+        """The ruler's fractional frequency offset, in parts per million.
+
+        This is ``y``, which spec section 1 defines as the measured rate's
+        excess over the nominal rate taken as a fraction of it. So a reader
+        of this name cannot find two answers to one question. The linear
+        ``-rate_ns_per_s / 1000`` only ever approximated it and disagreed by
+        0.0036 ppm at 60 (controller ruling R29, 2026-09-08). Positive when
+        the converter samples fast.
+
+        Written as ``-rate_ns_per_s * 1e6 / (1e9 + rate_ns_per_s)``, which
+        is that ratio rearranged, for two reasons. The nominal rate cancels
+        out of the identity exactly, so naming it would spend the package's
+        one sanctioned nominal division on a division that need not happen.
+        And subtracting one from a ratio sitting within a hundred parts per
+        million of unity throws away five significant digits to
+        cancellation, where this form keeps them all.
+
+        ``sigma_rate_ppm`` stays linear beside it: a sigma's second-order
+        correction carries no meaning.
+        """
+        return -self.rate_ns_per_s * 1.0e6 / self._utc_ns_per_ruler_s()
+
+    @property
+    def f_meas(self) -> float:
+        """The measured sample rate, exactly.
+
+        NOT ``f_nom * (1 + rate_ppm / 1e6)``. That linearisation and the
+        projection in ``_offset_ns_at`` disagree at second order, which is
+        how one arithmetic quietly becomes two: over an hour at 100 ppm the
+        gap reaches 36 microseconds. A consumer dividing by this value
+        reproduces ``utc_ns_at`` to the nanosecond.
+        """
+        return self.f_nom * _NS_PER_S / self._utc_ns_per_ruler_s()
 
     @property
     def sigma_phase_ns(self) -> float:

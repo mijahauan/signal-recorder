@@ -32,7 +32,9 @@ def test_one_second_of_samples_advances_utc_by_one_second():
 def test_a_fast_converter_makes_a_second_of_samples_arrive_early():
     """+10ppm converter: 24000 samples take LESS than 1 s to arrive."""
     st = fresh(rate_ns_per_s=-10.0 * 1000.0)  # -y*1e9 with y = +10 ppm
-    assert st.rate_ppm == pytest.approx(+10.0)
+    # The exact definition reads 10.000100 where the linear one read
+    # 10.0 (controller ruling R29).
+    assert st.rate_ppm == pytest.approx(+10.0, abs=1e-3)
     span = st.utc_ns_at(1_000_000 + F_NOM) - st.utc_ns_at(1_000_000)
     assert span == pytest.approx(1_000_000_000 * (1 - 10e-6), rel=1e-9)
 

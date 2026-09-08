@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -63,6 +64,15 @@ _NS_PER_S_PER_PPM = 1000.0
 # range, so the constant buys diffuseness rather than tuning.
 SEED_RATE_SIGMA_PPM = 100.0
 
+# The accepted-residual series the Allan fit reads. Bounded because this
+# object is meant to run for months and an unbounded list is a leak: at one
+# accepted witness a minute, 4096 entries hold about 68 hours, which is far
+# more span than any Allan fit here needs and comfortably past the hours a
+# random-walk coefficient wants (controller ruling R32, 2026-09-08). Once it
+# is full the oldest residuals fall off the back, so the fit tracks the
+# recent ruler rather than averaging in a day that has already ended.
+RESIDUAL_CAP = 4096
+
 A_LEVEL_GOVERNED = "A1"
 A_LEVEL_FREE = "A0"
 
@@ -70,26 +80,7 @@ REASON_SEEDED = "seeded"
 REASON_NO_PLANE = "no_plane"
 REASON_HOST_PLANE = "host_plane"
 REASON_ACCEPTED = "accepted"
-
-
-def _fractional_ppm(rate_ns_per_s: float) -> float:
-    """The ruler's fractional frequency offset, in parts per million.
-
-    Exactly the offset the published ``rate_samples_per_utc_sec`` implies:
-    the measured rate over the nominal one, less one, times a million --
-    written here in a form that never divides by the nominal rate, so the
-    package keeps its single sanctioned nominal division.
-    ``ClockState.rate_ppm`` is the phase-slope convention,
-    ``-rate_ns_per_s / 1000``, which equals this only to first order and
-    lands 0.0036 ppm away at 60 ppm. Publishing both would put two
-    arithmetics on the one quantity this library exists to have one of, so
-    the solution publishes this one and the two published rate fields stay
-    two spellings of a single number.
-    """
-    denom = _NS_PER_S + float(rate_ns_per_s)
-    if denom == 0.0:
-        return math.nan
-    return -float(rate_ns_per_s) * 1.0e6 / denom
+REASON_OUTLIER = "outlier"
 
 
 @dataclass(frozen=True)
@@ -127,10 +118,13 @@ class StationTimingEstimator:
         self._last_phase_at_s: float | None = None
         self._n_updates = 0
         self._seed_s = 0.0
-        self._residuals: list[tuple[float, float]] = []
+        self._residuals: deque[tuple[float, float]] = deque(
+            maxlen=RESIDUAL_CAP
+        )
         self._since_refit = 0
         self._coarse: tuple[float, float] | None = None
         self._rates: dict[str, float] = {}
+        self._rate_counts: dict[str, dict[str, int]] = {}
         self._sigma_by_tier: dict[str, float] = {}
         self._surviving_rate: tuple[float, float] | None = None
 
@@ -203,6 +197,7 @@ class StationTimingEstimator:
         self._residuals.clear()
         self._since_refit = 0
         self._sigma_by_tier.clear()
+        self._rate_counts.clear()
         # Rate observations describe the oscillator, which the epoch change
         # did not touch, so the rate-spread gate keeps its witnesses.
         self._admitter.reset(why)
@@ -241,25 +236,65 @@ class StationTimingEstimator:
         return verdict
 
     def _observe_rate(self, obs: RateObservation) -> Verdict:
+        # ``ns_per_s`` and ``sigma_ns_per_s`` convert a witness's parts per
+        # million linearly, at 1000 ns/s per ppm. That is the first-order
+        # form of the exact definition ``rate_ppm`` now publishes, and the
+        # two differ by 0.0036 ppm at 60 against a rate witness whose sigma
+        # is no better than 0.15 ppm. A conversion buried forty times inside
+        # its own uncertainty is not a second arithmetic, so the input stays
+        # linear where the output is exact (controller ruling R29).
         r = float(obs.sigma_ns_per_s) ** 2
         if not obs.is_label_plane:
             # A host-plane rate witness imports host error as ruler rate.
             # That path helped walk ND on 2026-09-07.
             return Verdict(False, REASON_HOST_PLANE, 0.0, r)
 
+        # Recorded before the gate, deliberately. The rate-spread gate
+        # alarms on what witnesses CLAIM, and a witness this filter just
+        # rejected is exactly the disagreement worth publishing.
         self._rates[obs.source] = float(obs.ppm)
         state = self._state
         if state is None:
             return Verdict(False, REASON_NO_PLANE, 0.0, r)
 
         nu, s = state.innovation(obs.ns_per_s, RATE, r)
+        tally = self._rate_counts.setdefault(
+            obs.tier, {"accepted": 0, "rejected": 0}
+        )
+        # Spec section 4's innovation test says "for each observation", and
+        # one wild rate witness moving the rate state unchecked is the
+        # rate-side twin of the failure this library exists to stop. Applied
+        # inline rather than through ``Admitter.judge``, because that method
+        # is shaped for phase observations and a rate dissent is NOT a phase
+        # step: a rejected rate witness must never reach the dissent or
+        # quorum machinery, where it would help license a plane step
+        # (controller ruling R31, 2026-09-08).
+        if not (s > 0.0 and math.isfinite(s)):
+            tally["rejected"] += 1
+            return Verdict(False, REASON_OUTLIER, nu, s)
+        if abs(nu) > self.config.admission.k_accept * math.sqrt(s):
+            tally["rejected"] += 1
+            return Verdict(False, REASON_OUTLIER, nu, s)
+
+        tally["accepted"] += 1
         state.update(obs.ns_per_s, RATE, r)
+        self._n_updates += 1
         return Verdict(True, REASON_ACCEPTED, nu, s)
 
     def _seed(self, obs: PhaseObservation) -> None:
         """Set the plane exactly where the first witness put it."""
         if self._surviving_rate is None:
             rate = 0.0
+            # The seed's rate variance is NOT the stand-in sigma of
+            # ``process_noise``. That number says how far a rate MOVES over
+            # an hour; this one says how far from nominal the ruler may
+            # already sit before anybody has measured it, and the two differ
+            # by orders of magnitude. The measurement model records this very
+            # station near 350 ppm on an LBE-Mini held at its 8 mA drive
+            # floor -- 175 sigma outside a 2 ppm seed. A prior that excludes
+            # the documented failure this library was built to survive is
+            # blind, not conservative, so the default is generous (spec
+            # section 6.1).
             rate_var = (
                 float(self.config.seed_rate_sigma_ppm) * _NS_PER_S_PER_PPM
             ) ** 2
@@ -345,6 +380,21 @@ class StationTimingEstimator:
             self._n_updates += 1
         return self._admitter.dwelling
 
+    def _witness_counts(self) -> dict[str, dict[str, int]]:
+        """Every witness this estimator judged, phase and rate alike.
+
+        The admitter tallies phase observations; the rate path tallies its
+        own, because a rejected rate witness must stay out of the quorum
+        machinery. A tier that speaks both ways appears once, and its tally
+        counts observations rather than kinds (controller ruling R31).
+        """
+        counts = self._admitter.counts()
+        for tier, tally in self._rate_counts.items():
+            merged = counts.setdefault(tier, {"accepted": 0, "rejected": 0})
+            merged["accepted"] += tally["accepted"]
+            merged["rejected"] += tally["rejected"]
+        return counts
+
     def _rate_spread_ppm(self) -> float | None:
         if len(self._rates) < 2:
             return None
@@ -363,13 +413,15 @@ class StationTimingEstimator:
     ) -> TimingSolution:
         try:
             f_meas = state.f_meas
+            rate_ppm = state.rate_ppm
         except ValueError:
-            # A rate at or past -1e9 ns/s stops the clock. Only a diverged
-            # filter reaches it, and the honest report of a diverged filter
-            # is a refusal that names the divergence, not an exception out
-            # of the one call a consumer makes every cycle.
+            # A rate at or past -1e9 ns/s stops the clock, and both of those
+            # properties refuse it through the one guard they share. Only a
+            # diverged filter reaches it, and the honest report of a diverged
+            # filter is a refusal that names the divergence, not an exception
+            # out of the one call a consumer makes every cycle.
             f_meas = math.nan
-        rate_ppm = _fractional_ppm(state.rate_ns_per_s)
+            rate_ppm = math.nan
         sigma_rate_ppm = state.sigma_rate_ppm
         covariance = (
             float(state.p[PHASE, PHASE]),
@@ -418,7 +470,7 @@ class StationTimingEstimator:
             covariance=covariance,
             verdict=VERDICT_WITHHOLD if reason else VERDICT_PUBLISH,
             refusal=reason,
-            witnesses=self._admitter.counts(),
+            witnesses=self._witness_counts(),
             a_level=self._a_level(rate_ppm, sigma_rate_ppm),
             ruler_provenance=self.ruler_provenance,
             q_source=self._noise.source,
