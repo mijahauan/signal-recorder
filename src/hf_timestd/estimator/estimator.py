@@ -85,6 +85,17 @@ SEED_RATE_SIGMA_PPM = 100.0
 # is full the oldest residuals fall off the back, so the fit tracks the
 # recent ruler rather than averaging in a day that has already ended.
 RESIDUAL_CAP = 4096
+# Accepted (rtp, utc_ns) rows retained for the fit-quality gate. Bounded so a
+# long-lived estimator carries a fixed cost; the gate wants recent evidence,
+# not the whole history the Allan feed keeps.
+FIT_ROWS_CAP = 64
+# A two-state fit through two witnesses passes exactly through both, so three
+# rows is the fewest that can leave any residue at all to measure.
+FIT_SCATTER_MIN_ROWS = 3
+# Rows further behind the plane than this are dropped rather than projected:
+# past half a wrap ``signed_rtp_delta`` aliases silently, and half of that
+# again (about 12.4 hours at 24 kHz) keeps the projection well clear.
+FIT_ROW_HORIZON_SAMPLES = 2**30
 
 # How far the widest gap in the residual series may stray from the median
 # before an Allan fit means nothing. Three is loose enough to tolerate the
@@ -156,6 +167,12 @@ class StationTimingEstimator:
         self._residuals: deque[tuple[float, float, float]] = deque(
             maxlen=RESIDUAL_CAP
         )
+        # (rtp, utc_ns) of every witness ``_n_updates`` counts, seed
+        # included, for the fit-quality gate. Kept apart from ``_residuals``
+        # deliberately: that feed serves the Allan fit against a plane fixed
+        # at the seed, and this one asks a different question -- do the
+        # witnesses agree with the plane AS IT STANDS NOW.
+        self._fit_rows: deque[tuple[int, int]] = deque(maxlen=FIT_ROWS_CAP)
         self._since_refit = 0
         # (delta_ns, sigma_ns, ruler_s) and {source: (ppm, ruler_s)}.
         # Both carry a stamp so a dead source's last claim cannot vote
@@ -281,6 +298,7 @@ class StationTimingEstimator:
         self._n_updates = 0
         self._coarse = None
         self._residuals.clear()
+        self._fit_rows.clear()
         self._adev_seed_rtp = None
         self._adev_seed_utc_ns = 0
         self._since_refit = 0
@@ -350,6 +368,7 @@ class StationTimingEstimator:
             state.update(z, PHASE, r)
             self._last_phase_at_s = self._ruler_s
             self._n_updates += 1
+            self._fit_rows.append((int(obs.rtp), int(obs.utc_ns)))
             self._note_residual(state, obs)
         return verdict
 
@@ -435,6 +454,15 @@ class StationTimingEstimator:
         self._seed_s = self._ruler_s
         self._last_phase_at_s = self._ruler_s
         self._n_updates = 1
+        # The seed belongs in the fit-quality population, and not merely for
+        # symmetry with ``_n_updates``. It sits at the far end of the span, so
+        # it carries the longest lever arm against the rate: a plane rotating
+        # under a wrong rate departs from the OLDEST witness first. Measured
+        # on ND's own 1200 Hz series -- a -3.24 ppm fit walks 1.9 ms across
+        # 580 s, which shows as 4.5 ms of scatter with the seed and only
+        # 1.1 ms without it, the difference between refusing and publishing.
+        self._fit_rows.clear()
+        self._fit_rows.append((int(obs.rtp), int(obs.utc_ns)))
         self._sigma_by_tier[obs.tier] = float(obs.sigma_ns)
 
     # ---- process noise from the ruler's own residuals -------------------
@@ -626,6 +654,15 @@ class StationTimingEstimator:
             # ripens into a step and is refused for the rejecting.
             self._last_phase_at_s = self._ruler_s
             self._n_updates += 1
+            # Every retained row was accepted against the plane this
+            # reseed just replaced. Displacing them all by one step would
+            # cost nothing on its own -- the scatter is measured about
+            # their median, where a common offset cancels -- but rows
+            # accepted AFTER the reseed sit on the new plane, and the
+            # mixture of the two groups disagrees by the step's own width.
+            # That reads as scatter and would refuse every later solution
+            # over a disagreement this estimator has already resolved.
+            self._fit_rows.clear()
         return self._admitter.dwelling
 
     def _witness_counts(self) -> dict[str, dict[str, float]]:
@@ -690,6 +727,30 @@ class StationTimingEstimator:
             return None
         return max(fresh) - min(fresh)
 
+    def _fit_scatter_ns(self, state: ClockState) -> float | None:
+        """Spread of the accepted witnesses about the plane they produced.
+
+        The widest departure from the median, so one witness carrying a wrong
+        whole-second cycle choice shows up rather than being averaged away.
+        ``None`` while too few rows survive to leave any residue: a two-state
+        filter fits two witnesses exactly, and reporting the zero that follows
+        as agreement would invert the gate's meaning. ``thin_fit`` refuses
+        that case on the update count instead.
+        """
+        if len(self._fit_rows) < FIT_SCATTER_MIN_ROWS:
+            return None
+        residuals = []
+        for rtp, utc_ns in self._fit_rows:
+            delta = signed_rtp_delta(state.rtp_ref, rtp)
+            if delta > 0 or delta < -FIT_ROW_HORIZON_SAMPLES:
+                continue
+            residuals.append(float(utc_ns - state.utc_ns_at(rtp)))
+        if len(residuals) < FIT_SCATTER_MIN_ROWS:
+            return None
+        residuals.sort()
+        median = residuals[len(residuals) // 2]
+        return max(abs(r - median) for r in residuals)
+
     def _q_source(self) -> str:
         """Where the coefficient CURRENTLY IN USE came from.
 
@@ -753,6 +814,8 @@ class StationTimingEstimator:
             coarse_delta_ns=None if coarse is None else coarse[0],
             coarse_sigma_ns=None if coarse is None else coarse[1],
             rate_spread_ppm=self._rate_spread_ppm(),
+            n_updates=self._n_updates,
+            fit_scatter_ns=self._fit_scatter_ns(state),
         )
         # The gates read what the caller supplied; these are what this class
         # derived, and a NaN in any of them is the same fault under the same

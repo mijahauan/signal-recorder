@@ -16,6 +16,8 @@ REFUSAL_ORDER = (
     "no_phase_witness",
     "stale_phase",
     "step_pending",
+    "thin_fit",
+    "fit_scatter",
     "variance",
     "coarse_disagreement",
     "rate_disagreement",
@@ -30,6 +32,16 @@ class GateConfig:
     # Matches rate_alarm_ppm in core/offset_judge.py, so one station does not
     # carry two opinions about what a rate disagreement means.
     rate_alarm_ppm: float = 1.0
+    # A two-state (phase, rate) filter fed two witnesses fits both exactly,
+    # so it reports a confident rate that no residue contradicts. Measured on
+    # AC0G-ND's own recordings: 2 of 25 witnesses accepted, 0.019 ms scatter,
+    # and a published rate of -46.8 ppm on a governed ruler. Redundancy, not
+    # confidence, is what makes a fit answerable.
+    min_updates: int = 8
+    # The scatter of accepted witnesses about the fitted plane. Every
+    # trustworthy series in the ND/B4 corpus sits at 0.15 to 0.70 ms; every
+    # series carrying a wrong whole-second cycle choice sits at 2.8 ms and up.
+    fit_scatter_max_ns: float = 2.0e6
 
 
 @dataclass(frozen=True)
@@ -42,6 +54,8 @@ class GateInputs:
     coarse_delta_ns: float | None
     coarse_sigma_ns: float | None
     rate_spread_ppm: float | None
+    n_updates: int
+    fit_scatter_ns: float | None
 
 
 def refusal(inputs: GateInputs, config: GateConfig) -> str | None:
@@ -60,6 +74,7 @@ def refusal(inputs: GateInputs, config: GateConfig) -> str | None:
             inputs.coarse_delta_ns,
             inputs.coarse_sigma_ns,
             inputs.rate_spread_ppm,
+            inputs.fit_scatter_ns,
         )
         if v is not None
     ]
@@ -83,6 +98,21 @@ def refusal(inputs: GateInputs, config: GateConfig) -> str | None:
 
     if inputs.step_pending:
         return "step_pending"
+
+    # Before ``variance``, because a fit this thin EXPLAINS a wide sigma. Two
+    # witnesses determine a two-parameter plane exactly, so what such a filter
+    # reports comes from the witness floor rather than from any agreement
+    # between witnesses. Naming the variance instead would report the symptom
+    # and bury the cause.
+    if inputs.n_updates < config.min_updates:
+        return "thin_fit"
+
+    # ``None`` means too few rows to measure a scatter at all, which
+    # ``thin_fit`` above has already refused. Silence here rather than a
+    # refusal of its own keeps one fault under one name.
+    scatter = inputs.fit_scatter_ns
+    if scatter is not None and float(scatter) > config.fit_scatter_max_ns:
+        return "fit_scatter"
 
     if inputs.sigma_phase_ns > config.publish_sigma_max_ns:
         return "variance"

@@ -215,10 +215,12 @@ def test_a_host_plane_witness_never_enters_the_state():
 def test_a_wildly_disagreeing_coarse_witness_withdraws_the_solution():
     st = Station(ppm=0.0)
     est = StationTimingEstimator(f_nom=F_NOM)
-    for rtp in minute_marks(6):
+    # Eight witnesses, not six: below ``min_updates`` the fit-quality gate
+    # refuses first and this test never reaches the gate it is about.
+    for rtp in minute_marks(8):
         est.observe(st.phase(rtp))
         est.advance(rtp)
-    rtp = minute_marks(6)[-1]
+    rtp = minute_marks(8)[-1]
     est.observe(
         PhaseObservation(
             tier="T2",
@@ -237,7 +239,8 @@ def test_a_wildly_disagreeing_coarse_witness_withdraws_the_solution():
 def test_two_rate_witnesses_that_disagree_withdraw_the_solution():
     st = Station(ppm=0.0)
     est = StationTimingEstimator(f_nom=F_NOM)
-    for rtp in minute_marks(6):
+    # Eight, so ``thin_fit`` does not answer for ``rate_disagreement``.
+    for rtp in minute_marks(8):
         est.observe(st.phase(rtp))
         est.advance(rtp)
     for ppm, source in ((+0.0, "t6-residual"), (+5.0, "fold-drift")):
@@ -252,7 +255,7 @@ def test_two_rate_witnesses_that_disagree_withdraw_the_solution():
                 source=source,
             )
         )
-    sol = est.solve(minute_marks(6)[-1])
+    sol = est.solve(minute_marks(8)[-1])
     assert sol.verdict == VERDICT_WITHHOLD
     assert sol.refusal == "rate_disagreement"
 
@@ -541,9 +544,17 @@ def test_an_announced_epoch_change_clears_the_ambiguity():
     assert est.solve(rtp).refusal == "counter_ambiguous"
 
     est.note_counter_epoch_change("recorder announced a new counter space")
+    # An epoch change drops the plane, so the new counter space has to earn a
+    # fit of its own before anything publishes. What this test asserts is that
+    # the LATCH cleared -- ``counter_ambiguous`` is gone from the first
+    # witness onward, and publishing resumes once the fit is thick enough.
     st2 = Station(ppm=0.0, rtp0=5_000_000)
     est.observe(st2.phase(st2.rtp0))
-    assert est.solve(st2.rtp0).refusal is None
+    assert est.solve(st2.rtp0).refusal == "thin_fit"
+    for rtp in minute_marks(8, rtp0=st2.rtp0)[1:]:
+        est.observe(st2.phase(rtp))
+        est.advance(rtp)
+    assert est.solve(minute_marks(8, rtp0=st2.rtp0)[-1]).refusal is None
 
 
 # ---- an out-of-order arrival is not an aliased gap ----------------------
@@ -630,9 +641,17 @@ def test_an_epoch_change_clears_a_latch_set_by_an_observation():
     assert est.solve(rtp).refusal == "counter_ambiguous"
 
     est.note_counter_epoch_change("recorder announced a new counter space")
+    # An epoch change drops the plane, so the new counter space has to earn a
+    # fit of its own before anything publishes. What this test asserts is that
+    # the LATCH cleared -- ``counter_ambiguous`` is gone from the first
+    # witness onward, and publishing resumes once the fit is thick enough.
     st2 = Station(ppm=0.0, rtp0=5_000_000)
     est.observe(st2.phase(st2.rtp0))
-    assert est.solve(st2.rtp0).refusal is None
+    assert est.solve(st2.rtp0).refusal == "thin_fit"
+    for rtp in minute_marks(8, rtp0=st2.rtp0)[1:]:
+        est.observe(st2.phase(rtp))
+        est.advance(rtp)
+    assert est.solve(minute_marks(8, rtp0=st2.rtp0)[-1]).refusal is None
 
 
 # ---- ruling R35: a dead witness stops voting ----------------------------
@@ -647,19 +666,19 @@ def age_out(st, est, from_minute: int, to_minute: int) -> int:
 
 
 def test_a_stale_rate_disagreement_expires_and_publishing_resumes():
-    st, est, rtp = settled(n_minutes=6)
+    st, est, rtp = settled(n_minutes=8)
     for ppm, source in ((+0.0, "t6-residual"), (+5.0, "fold-drift")):
         est.observe(rate_obs(ppm=ppm, sigma_ppm=0.1, source=source))
     assert est.solve(rtp).refusal == "rate_disagreement"
 
-    last = age_out(st, est, 6, 12)
+    last = age_out(st, est, 8, 14)
     sol = est.solve(last)
     assert sol.refusal is None
     assert sol.verdict == VERDICT_PUBLISH
 
 
 def test_a_stale_coarse_disagreement_expires_and_publishing_resumes():
-    st, est, rtp = settled(n_minutes=6)
+    st, est, rtp = settled(n_minutes=8)
     est.observe(
         PhaseObservation(
             tier="T2",
@@ -672,7 +691,7 @@ def test_a_stale_coarse_disagreement_expires_and_publishing_resumes():
     )
     assert est.solve(rtp).refusal == "coarse_disagreement"
 
-    last = age_out(st, est, 6, 12)
+    last = age_out(st, est, 8, 14)
     sol = est.solve(last)
     assert sol.refusal is None
     assert sol.verdict == VERDICT_PUBLISH
@@ -835,3 +854,93 @@ def test_a_quiet_ruler_with_fine_witnesses_is_not_flattered_by_the_floor():
 
     assert est.solve(minute_marks(160)[-1]).q_source == "standin"
     assert est._noise is est._standin
+
+
+def test_two_witnesses_never_publish_a_rate():
+    """A two-state filter fed two witnesses fits both exactly.
+
+    It then reports a confident rate that no residue contradicts, which is
+    how AC0G-ND's WWV_20000 series published -46.8 ppm off two accepted
+    witnesses with 0.019 ms of scatter (devbox shadow run, 2026-09-08).
+    Redundancy, not confidence, makes a fit answerable.
+    """
+    st = Station(ppm=-0.05)
+    est = StationTimingEstimator(f_nom=F_NOM)
+    marks = minute_marks(2)
+    for rtp in marks:
+        est.observe(st.phase(rtp))
+        est.advance(rtp)
+    sol = est.solve(marks[-1])
+    assert sol.verdict == VERDICT_WITHHOLD
+    assert sol.refusal == "thin_fit"
+
+
+def test_the_eighth_witness_earns_a_published_rate():
+    st = Station(ppm=-0.05)
+    est = StationTimingEstimator(f_nom=F_NOM)
+    marks = minute_marks(8)
+    for rtp in marks:
+        est.observe(st.phase(rtp))
+        est.advance(rtp)
+    sol = est.solve(marks[-1])
+    assert sol.verdict == VERDICT_PUBLISH
+    assert sol.refusal is None
+
+
+def test_witnesses_scattered_about_the_plane_withhold():
+    """Alternating half-second errors cannot fit any plane at all."""
+    st = Station(ppm=0.0)
+    est = StationTimingEstimator(f_nom=F_NOM)
+    marks = minute_marks(14)
+    for i, rtp in enumerate(marks):
+        # Wide sigma so the innovation gate ADMITS the scatter rather than
+        # rejecting it: this test measures the scatter gate, not admission.
+        error = (500.0 * MS) if i % 2 else 0.0
+        est.observe(st.phase(rtp, sigma_ns=400.0 * MS, error_ns=error))
+        est.advance(rtp)
+    sol = est.solve(marks[-1])
+    assert sol.verdict == VERDICT_WITHHOLD
+    assert sol.refusal == "fit_scatter"
+
+
+def test_a_settled_step_does_not_leave_the_scatter_poisoned():
+    """A plane that legitimately MOVED must not refuse itself forever.
+
+    The damage needs a MIXED population, which is why this drives a solve on
+    every cycle the way a consumer does. Witnesses accepted before the step
+    sit a step's width off the plane that replaced them, and witnesses
+    accepted after it sit on that new plane; together the two groups disagree
+    by the step's own width and read as scatter. Retaining them would refuse
+    every later solution over a disagreement the estimator itself resolved.
+
+    A uniformly displaced population would NOT show this, because the scatter
+    is measured about the median and a common offset cancels there. Removing
+    the ``_fit_rows.clear()`` in ``_settle_step`` is what this test catches:
+    without the mid-run solves it passes either way.
+    """
+    st = Station(ppm=-20.0)
+    est = StationTimingEstimator(f_nom=F_NOM)
+    for rtp in minute_marks(8):
+        est.observe(st.phase(rtp, tier="T3"))
+        est.advance(rtp)
+        est.solve(rtp)
+
+    # Two tiers agree the plane sits 40 ms out, long enough to ripen. The
+    # solve on each cycle is what lets the step settle here rather than at
+    # the very end, so later witnesses land on the plane it established.
+    for rtp in minute_marks(14)[8:]:
+        for tier in ("T3", "T5"):
+            est.observe(st.phase(rtp, tier=tier, error_ns=40.0 * MS))
+        est.advance(rtp)
+        est.solve(rtp)
+
+    # Witnesses on the plane the step established. These are accepted, so
+    # the retained rows would now straddle both planes.
+    for rtp in minute_marks(22)[14:]:
+        for tier in ("T3", "T5"):
+            est.observe(st.phase(rtp, tier=tier, error_ns=40.0 * MS))
+        est.advance(rtp)
+    last = minute_marks(22)[-1]
+    sol = est.solve(last)
+    assert sol.refusal != "fit_scatter"
+    assert sol.verdict == VERDICT_PUBLISH

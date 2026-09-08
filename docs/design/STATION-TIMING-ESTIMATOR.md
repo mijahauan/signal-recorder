@@ -3,8 +3,11 @@
 `src/hf_timestd/estimator/` holds one estimator that maps a sample index to Coordinated
 Universal Time (UTC). It runs on the sample counter alone. No host clock reaches it, no service
 constructs it, and neither AC0G-ND nor AC0G-B4 receives anything from it. It ships as a library
-with 199 tests and no consumers, deliberately, so that its arithmetic and its refusals could be
-proven against recorded failure before any of it touched a live plane.
+with 225 tests and no consumers, deliberately, so that its arithmetic and its refusals could be
+proven against recorded failure before any of it touched a live plane. The first shadow run
+against real station signal, on 2026-09-08, earned its keep on exactly that principle: it found
+the library publishing rates wrong by three orders of magnitude, and §4 records what closed the
+gap.
 
 Its companion, the design spec at
 [`docs/superpowers/specs/2026-09-08-station-timing-estimator-design.md`](../superpowers/specs/2026-09-08-station-timing-estimator-design.md),
@@ -183,7 +186,7 @@ second and its sigma in parts per million, and filing those under names that mea
 would put two units under one word.
 
 Refusals resolve in order, first match winning, following the shape `registration_refusal`
-already established. Eight of them sit in `gates.REFUSAL_ORDER`:
+already established. Ten of them sit in `gates.REFUSAL_ORDER`:
 
 1. `not_finite` — some number the caller supplied, or some number the estimator derived from
    it, is not a finite value. The record carries the actual NaN rather than a zero dressed up
@@ -198,27 +201,75 @@ already established. Eight of them sit in `gates.REFUSAL_ORDER`:
 5. `step_pending` — a concordant quorum dwells, per §5. The old plane still stands and is
    withheld on purpose. It clears within the 120 s dwell, one way or the other, so a caller
    should wait rather than act.
-6. `variance` — the phase sigma sits above the publish ceiling, 5 ms by default. The answer
+6. `thin_fit` — fewer than eight witnesses have been accepted. A two-state filter fed two
+   witnesses passes exactly through both of them, so it reports a confident rate that no
+   residue anywhere contradicts. Redundancy, not confidence, makes a fit answerable. Expected
+   at start-up and after an announced counter-epoch change, both of which begin a fit from
+   nothing; a caller should alarm only when it persists past the time eight witnesses take to
+   arrive. Named BEFORE `variance`, because a fit this thin explains a wide sigma, and naming
+   the sigma would report the symptom while burying the cause.
+7. `fit_scatter` — the accepted witnesses depart from the plane they themselves produced by
+   more than 2 ms, measured as the widest departure from their median so that one witness
+   carrying a wrong whole-second cycle choice shows up rather than averaging away. The
+   witnesses disagree with each other, so no plane fits them and the rate drawn through them
+   means nothing. A caller should look at the acquirer's cycle choices, not at the filter.
+8. `variance` — the phase sigma sits above the publish ceiling, 5 ms by default. The answer
    is honest but too wide to use. A consumer should hold its last good plane.
-7. `coarse_disagreement` — a wide-angle witness disagrees with the state beyond three
+9. `coarse_disagreement` — a wide-angle witness disagrees with the state beyond three
    combined sigmas. Alarm loudly. Wide-angle network time and the WWV ticks both trace to
    GPS, so when they disagree by more than the network's own budget the fault lies with this
    instrument.
-8. `rate_disagreement` — two fresh rate witnesses differ by more than 1 ppm. Alarm. The
+10. `rate_disagreement` — two fresh rate witnesses differ by more than 1 ppm. Alarm. The
    threshold matches the judge's existing `rate_alarm_ppm` default, so a station does not
    carry two different opinions about what a rate disagreement means.
-A ninth refusal stands outside that order. The estimator checks `rate_not_positive` itself,
+An eleventh refusal stands outside that order. The estimator checks `rate_not_positive` itself,
 second, before the gates run at all, because the gates never see the measured sample rate and
 cannot judge it.
 
-That ninth cannot fire today. A non-positive measured rate needs a rate state at or beyond a
+That eleventh cannot fire today. A non-positive measured rate needs a rate state at or beyond a
 stopped clock, and `ClockState.f_meas` raises on that denominator first, which the estimator
 reports as `not_finite`. It stays as defence in depth against a future change to that guard. So
 the honest caller guidance runs the other way: nobody will meet it, and whoever does should
 suspect the estimator's own invariants before anything else, because the guard upstream has
 changed.
 
-`not_finite` and `rate_not_positive` share a privilege the other seven lack. A solution carrying
+`thin_fit` and `fit_scatter` arrived last, from the first shadow run against real station
+signal. That run drove all sixteen committed corpus series through the estimator on the devbox,
+touching no station. Five behaved. Nine published a rate wrong by one to three orders of
+magnitude, and every gate above stayed silent, because the chain bounded no rate's absolute
+magnitude at all: `rate_disagreement` tests only the spread BETWEEN rate sources, and a single
+tier supplying no rate observation leaves that spread unmeasured. AC0G-ND's own 20 MHz series
+published −46.8 ppm on a governed ruler this way.
+
+The run separated two mechanisms, and each defeats the other's obvious guard. An
+exactly-determined fit — two accepted witnesses on a two-state filter — leaves no residue, so
+it shows 0.019 ms of scatter behind that −46.8 ppm answer and no scatter test can see it. A
+scattered fit with redundancy — eleven to fifteen accepted, departing 2.8 to 4.9 ms from their
+own plane — passes any test that only counts witnesses. Only the conjunction separates all
+sixteen series, across two stations and two days, and it still passes the fixture resampled by
+an exact −60 ppm, which an absolute-rate bound would wrongly refuse.
+
+Tightening the rate prior does NOT substitute for either. Declaring the ruler governed moves
+the stand-in sigma 200-fold, from 2.0 ppm to 0.01, and moves that −46.8348 ppm answer to
+−46.8343. A one-millisecond witness sigma across a ten-minute span caps rate resolution near
+1.7 ppm whatever the prior claims, so the measurement noise governs and the prior cannot reach.
+
+The seed witness counts toward both gates. It sits at the far end of the span and therefore
+carries the longest lever arm against the rate, since a plane rotating under a wrong rate
+departs from its oldest witness first. On ND's 1200 Hz series the same fit reads 4.5 ms of
+scatter with the seed and 1.1 ms without it — the difference between refusing and publishing.
+A ripened step clears the retained rows in the same breath as it moves the plane. The reason
+takes one more step of care than it first appears: displacing every retained row by one step
+would cost nothing, because the scatter is measured about their own median and a common offset
+cancels there. What does the damage is the MIXTURE. Rows accepted after the reseed sit on the
+new plane, the older ones sit a step's width away, and the two groups together read as scatter
+of exactly that width — which would refuse every later solution over a disagreement the
+estimator itself had resolved. A mutation run found this: the first version of the test drove no
+solve until the end, so the step ripened only once, the retained rows were uniformly displaced,
+and the test passed whether or not the code cleared them. Driving a solve on every cycle, the
+way a consumer does, is what gives it teeth.
+
+`not_finite` and `rate_not_positive` share a privilege the other nine lack. A solution carrying
 either may hold non-finite numbers, so the record reports the unusable number that caused the
 refusal rather than substituting a plausible one.
 
@@ -234,7 +285,7 @@ Both records now carry a ruler timestamp and expire at the admission policy's fr
 180 s. Silence from a witness is not agreement, so the gate must not treat it as disagreement
 either; noticing that a witness died belongs to whoever wired it.
 
-`not_finite` arrived last among the original seven, from a review that probed the gates with
+`not_finite` arrived last among the original eight, from a review that probed the gates with
 NaN. Every comparison against NaN evaluates false, so a NaN cleared all six earlier refusals
 and published a clean verdict. The path was real rather than hypothetical: the rate observation
 validated its sigma and never validated its parts-per-million value, so one NaN at the boundary
