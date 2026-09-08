@@ -2492,6 +2492,40 @@ git commit -m "test(estimator): the acceptance table, executable against the sav
 
 ---
 
+## Amendment 2026-09-08 — two defects in Tasks 9 and 10, found by executing them
+
+Recorded here rather than by rewriting the code blocks above, which stay as the argument the plan
+made; git holds what shipped.
+
+**Ruling R45 — the corpus paired the wrong sample.** Task 9's generator paired each observation's
+`rtp` with a fixed, rate-independent block MIDPOINT while giving its UTC as `second + peak/fs`.
+Those halves carry information about different things. The fold peak says where a real tick sits
+inside a nominal second, which is information about the TICK; turning it into "sample n had UTC t"
+needs the sample index at which the tick actually occurred. The mismatch inverts the sign of the
+rate any phase-and-rate filter recovers, measured as a true -60 ppm reading back as +59.997.
+
+The generator now pairs the tick's OWN sample index with its INTEGER second: `rtp` is the absolute
+index the peak fell on, and `utc_ns` is that integer second and nothing else. Simulated, the fixed
+pairing recovers -59.9985 and +59.9913 for a true -60 and +60. The unknown constant the corpus
+deliberately carries, propagation plus station identity, is untouched.
+
+This does not overturn the sign ruling above. The fold-peak slope really does equal the fractional
+offset; the generator expressed that same measurement as phase observations and combined its two
+halves inconsistently. Two individually correct quantities, wrongly paired, which is the third time
+this project has hit that shape.
+
+**Ruling R46 — selection needs the channel too.** For `nd-20260906` and the resampled corpus, three
+RF channels each tag the same subcarrier band string, so selecting on fixture and band alone merged
+three propagation paths into one series: +209.30 ppm merged against +0.048 for a single channel.
+Every row now carries a `channel` field and the acceptance rows select fixture, channel AND band.
+Filenames already carried the channel, but a row should be self-describing, and R2's lesson was
+that selection belongs on fields rather than on names.
+
+The expected values did not change. The rulers' true offsets are what they always were; the point
+of both fixes is that the estimator should recover exactly those.
+
+---
+
 ## Task 11: The library's own documentation
 
 **Files:**
