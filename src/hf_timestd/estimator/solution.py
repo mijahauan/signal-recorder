@@ -7,7 +7,9 @@ why an answer was withheld can act; one handed silence cannot.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Mapping
 
 from .clock_state import signed_rtp_delta
@@ -16,6 +18,18 @@ VERDICT_PUBLISH = "publish"
 VERDICT_WITHHOLD = "withhold"
 
 _NS_PER_S = 1_000_000_000
+
+
+def _check_float_finite(name: str, value: float) -> None:
+    """Raise ValueError if a float is NaN or infinite."""
+    if not math.isfinite(value):
+        raise ValueError(f"{name} is not finite: {value}")
+
+
+def _check_float_positive(name: str, value: float) -> None:
+    """Raise ValueError if a float is not strictly greater than zero."""
+    if value <= 0:
+        raise ValueError(f"{name} must be strictly positive: {value}")
 
 
 @dataclass(frozen=True)
@@ -39,6 +53,7 @@ class TimingSolution:
     generation: int
 
     def __post_init__(self) -> None:
+        # Validate verdict/refusal consistency
         if self.verdict == VERDICT_PUBLISH and self.refusal is not None:
             msg = f"a publishing solution carries a refusal: {self.refusal}"
             raise ValueError(msg)
@@ -48,9 +63,38 @@ class TimingSolution:
             msg = f"verdict {self.verdict!r} names neither outcome"
             raise ValueError(msg)
 
+        # Validate all float fields are finite
+        _check_float_finite("phase_ns", self.phase_ns)
+        _check_float_finite("sigma_phase_ns", self.sigma_phase_ns)
+        _check_float_finite("rate_ppm", self.rate_ppm)
+        _check_float_finite("sigma_rate_ppm", self.sigma_rate_ppm)
+        _check_float_finite(
+            "rate_samples_per_utc_sec", self.rate_samples_per_utc_sec
+        )
+        _check_float_finite("covariance[0]", self.covariance[0])
+        _check_float_finite("covariance[1]", self.covariance[1])
+        _check_float_finite("covariance[2]", self.covariance[2])
+        _check_float_finite("span_s", self.span_s)
+
+        # Validate rate is strictly positive (consumers divide by it)
+        _check_float_positive(
+            "rate_samples_per_utc_sec", self.rate_samples_per_utc_sec
+        )
+
+        # Deep-freeze witnesses at both levels
+        object.__setattr__(
+            self,
+            "witnesses",
+            MappingProxyType(
+                {
+                    str(tier): MappingProxyType(dict(tally))
+                    for tier, tally in self.witnesses.items()
+                }
+            ),
+        )
+
     def utc_ns_at(self, rtp: int) -> int:
-        """UTC of the sample at ``rtp``, through this plane and measured rate.
-        """
+        """UTC at sample ``rtp`` through plane and measured rate."""
         delta = signed_rtp_delta(self.rtp_ref, rtp)
         projection = _NS_PER_S * delta / self.rate_samples_per_utc_sec
         return self.utc_ref_ns + round(self.phase_ns) + round(projection)
