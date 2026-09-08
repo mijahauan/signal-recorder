@@ -38,9 +38,13 @@ what the hardware does. The fractional frequency error follows:
 
     y = (f_true - f_nom) / f_nom
 
-A converter running fast gives `y > 0`. That sign matches the judge's existing `RateEstimate.ppm`,
-whose docstring already reads "+ = ADC runs fast". The library inherits that convention rather
-than inventing a second one.
+A converter running fast gives `y > 0`. The Offset Judge already works that way, reasoning in
+`offset_judge.py` about what follows "if the ADC clock runs fast by r ppm". The library inherits
+that convention rather than inventing a second one.
+
+An earlier draft of this paragraph attributed a literal `"+ = ADC runs fast"` to
+`RateEstimate.ppm`'s docstring. No such line exists there. I took a paraphrase from a survey for a
+quotation, and a review caught it. The convention holds; the quotation never did.
 
 The estimator holds two numbers and no others:
 
@@ -261,9 +265,15 @@ already established. Seven of them:
 | 7 | `coarse_disagreement` | a wide-angle witness disagrees beyond three combined sigmas |
 | 8 | `rate_disagreement` | independent rate estimates differ by more than 1 ppm |
 
-One more refusal reaches a solution without passing through this table. The estimator raises
-`rate_not_positive` itself, because the gates never see the measured sample rate and cannot judge
-it. Nine refusals therefore exist, eight of them ordered here and one standing outside.
+One more refusal stands outside this table. The estimator checks `rate_not_positive` itself,
+second, before the gates run at all, because the gates never see the measured sample rate and
+cannot judge it. Nine refusals therefore exist, eight ordered here and one ahead of them.
+
+That ninth cannot fire today. A non-positive measured rate needs a rate state at or beyond a
+stopped clock, and `ClockState.f_meas` raises on that denominator first, which the estimator
+reports as `not_finite`. The refusal stays as defence in depth against a future change to that
+guard, and a caller will not meet it. A document that told an operator how to respond to it would
+be describing something that never happens.
 
 `not_finite` and `rate_not_positive` share a privilege the other seven lack: a solution carrying
 either may hold non-finite numbers, so the record can report the unusable number that caused it
