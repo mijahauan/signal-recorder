@@ -507,10 +507,22 @@ accepted phase residuals against the predicted plane, never from the rate state,
 coefficient at the stand-in for the declared ruler state so the filter can widen its memory but
 never narrow it below what the hardware supports.
 
-**Ten minutes of fixture bounds the long fit.** A random-walk coefficient wants hours. The
-replay tests will exercise the stand-in fallback more than the measured path, and the measured
-path stays partly unproven until a shadow run on a station provides span. §9 already defers
-that run, and this risk stays open until it happens.
+**Ten minutes of fixture bounds the long fit, and now there are numbers.** A random-walk
+coefficient wants hours, and a task review measured just how many. Fitting the coefficient from
+70 minute-marks of a governed ruler with 0.5 ms witnesses produced an Allan deviation at the
+longest available tau of 8.88e-07, against 9.02e-07 for pure witness white-phase noise alone. The
+ratio, 0.984, says the entire fitted coefficient was witness noise wearing the ruler's name, and
+it attributed roughly 3 parts per million per hour of wander to hardware specified at 0.01.
+
+The separation needs a day, not an hour. Witness white-phase noise falls as `sqrt(3)*sigma_x/tau`,
+so millisecond witnesses sit at 2.4e-07 at one hour and reach 1.0e-08, a governed ruler's own
+level, only near 86,400 s.
+
+So the estimator refuses a measured coefficient it cannot distinguish from its own witnesses: it
+compares the fitted deviation at the longest tau against that witness floor and keeps the stand-in
+unless the measurement clearly beats it. The rule needs no chosen time constant, only the sigma
+the witnesses already declare. The measured path stays unproven until a shadow run supplies real
+span, which §9 defers, and until then a station honestly reports `standin`.
 
 **A concordant quorum can still lie.** Two tiers reading the same misidentified station agree
 perfectly. The 800 ms marker addresses identity and lives in the acquirer, so this library's
