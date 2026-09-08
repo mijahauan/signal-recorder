@@ -133,19 +133,32 @@ def trace(
             # is not real drift, it is the SAME tick's ``peak`` measured
             # one cycle early or late. Only ``rtp`` moves to correct it,
             # by that whole multiple of ``fs`` -- ``second`` stays
-            # exactly what the block already said, so the fix never
-            # bleeds into how any later row is labelled.
+            # exactly what the block already said, so the LABEL never
+            # bleeds into how any later row is read. The CYCLE CHOICE is
+            # a different matter: it is the corrected ``rtp`` that seeds
+            # the next row's own prediction (below), so one wrong snap
+            # here does not stay local -- it shifts every later row of
+            # this band's series by that same whole number of seconds,
+            # because each later row is compared against this one, not
+            # against a fresh, independent reference.
             sample_naive = _sample_of_second(second, label0, fs)
             rtp = rtp0 + sample_naive + peak
             prev = last_by_band.get(band)
             if prev is not None:
                 last_rtp, last_second = prev
-                # ``second`` never moves -- it is already trustworthy. Only
-                # ``rtp`` (through ``peak``) carries the cycle ambiguity, so
-                # only ``rtp`` is corrected, by whole multiples of ``fs``,
-                # and the correction stays local to this one row: the next
-                # row reads its own fresh, independently reliable ``second``
-                # rather than inheriting this one.
+                # ``second`` never moves -- it is read fresh from the
+                # block every row, so THAT label never inherits an
+                # earlier row's mistake. ``rtp``'s CYCLE is not the same
+                # story: ``last_rtp`` below is the PRECEDING row's
+                # already-corrected value, so a wrong snap on one row
+                # becomes the reference the next row corrects against,
+                # and propagates for the rest of this band's series
+                # rather than washing out. (Measured on the auxiliary,
+                # low-SNR WWV channels this generator also emits: several
+                # adjacent steps of 450-472 ms, where a boundary snap is
+                # close to a coin flip.) The four rows the acceptance
+                # table actually selects sit at 2 ms and under -- see the
+                # per-series worst-step line ``main`` prints below.
                 expected_delta = (second - last_second) * fs
                 wraps = round((rtp - last_rtp - expected_delta) / fs)
                 rtp -= wraps * fs
@@ -169,6 +182,37 @@ def trace(
     return out
 
 
+def _worst_adjacent_steps(
+    rows: List[Dict[str, Any]], fs: int
+) -> Dict[str, float]:
+    """Worst adjacent-row jump in each band's implied correction, in ns.
+
+    The implied correction is ``utc_ns - rtp * 1e9 / fs``: a real ruler's
+    own drift moves it smoothly, so a single large step signals a wrong
+    whole-second cycle choice rather than genuine rate. Printed per band
+    so the risk from FINDING 3 above -- a cycle choice that turns out
+    wrong propagating through the rest of that band's series -- is
+    visible at generation time rather than only discoverable by re-reading
+    the corpus afterwards.
+    """
+    by_band: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        by_band.setdefault(r["band"], []).append(r)
+    worst: Dict[str, float] = {}
+    for band, band_rows in by_band.items():
+        band_rows = sorted(band_rows, key=lambda r: r["rtp"])
+        if len(band_rows) < 2:
+            worst[band] = 0.0
+            continue
+        corrections = [
+            r["utc_ns"] - r["rtp"] * 1_000_000_000.0 / fs
+            for r in band_rows
+        ]
+        steps = [abs(b - a) for a, b in zip(corrections, corrections[1:])]
+        worst[band] = max(steps)
+    return worst
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("fixture_dir", type=pathlib.Path)
@@ -190,9 +234,16 @@ def main() -> None:
         fixture = f"{args.fixture_dir.name}{suffix}"
         rows = trace(iq, meta, fixture)
         name = f"{fixture}-{meta['channel_name']}.jsonl"
-        text = "".join(json.dumps(r) + "\n" for r in rows)
-        (args.out_dir / name).write_text(text)
+        out_text = "".join(json.dumps(r) + "\n" for r in rows)
+        (args.out_dir / name).write_text(out_text)
         print(f"{name}: {len(rows)} observations")
+        for band, worst_ns in sorted(
+            _worst_adjacent_steps(rows, int(meta["sample_rate"])).items()
+        ):
+            print(
+                f"  band {band}: worst adjacent step"
+                f" {worst_ns / 1e6:.3f} ms"
+            )
 
 
 if __name__ == "__main__":
