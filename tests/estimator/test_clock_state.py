@@ -53,15 +53,26 @@ def test_the_projection_stays_exact_just_inside_the_wrap_horizon():
     assert st.utc_ns_at(rtp) == pytest.approx(analytic, abs=1)
 
 
-def test_predict_walks_phase_by_the_rate():
+def test_advance_folds_the_rate_into_the_plane():
+    """The rate's effect on phase is folded into the plane at fold time.
+
+    Replaces test_predict_walks_phase_by_the_rate: there is no longer a
+    standalone phase-only extrapolation step (controller ruling, Task 4
+    fix round 1, 2026-09-08) -- advance_to folds the whole offset, rate
+    included, into the integer reference in one motion.
+    """
     st = fresh(rate_ns_per_s=-1000.0)
-    st.predict(10.0, QUIET)
-    assert st.phase_ns == pytest.approx(-10_000.0)
+    before_utc_ref = st.utc_ref_ns
+    tau = st.advance_to(1_000_000 + 10 * F_NOM, QUIET)
+    assert tau == pytest.approx(10.0)
+    assert st.utc_ref_ns - before_utc_ref == 9_999_990_000
+    assert st.phase_ns == pytest.approx(0.0, abs=1e-6)
+    assert st.rate_ns_per_s == pytest.approx(-1000.0)
 
 
-def test_predict_grows_the_covariance_and_couples_phase_to_rate():
+def test_advance_grows_the_covariance_and_couples_phase_to_rate():
     st = fresh(p=np.diag([100.0, 4.0]))
-    st.predict(3.0, QUIET)
+    st.advance_to(1_000_000 + 3 * F_NOM, QUIET)
     # F P F' with F = [[1, tau], [0, 1]]
     assert st.p[PHASE, PHASE] == pytest.approx(100.0 + 9.0 * 4.0)
     assert st.p[PHASE, RATE] == pytest.approx(3.0 * 4.0)
@@ -70,7 +81,8 @@ def test_predict_grows_the_covariance_and_couples_phase_to_rate():
 
 def test_process_noise_widens_a_quiet_state():
     st = fresh(p=np.zeros((2, 2)))
-    st.predict(10.0, RulerNoise(q1=0.0, q2=2.0, source="standin"))
+    noise = RulerNoise(q1=0.0, q2=2.0, source="standin")
+    st.advance_to(1_000_000 + 10 * F_NOM, noise)
     assert st.p[RATE, RATE] == pytest.approx(20.0)
     assert st.p[PHASE, PHASE] == pytest.approx(2.0 * 1000.0 / 3.0)
 
@@ -93,8 +105,11 @@ def test_a_rate_observation_moves_rate_and_leaves_phase_near_where_it_was():
 def test_the_covariance_stays_symmetric_and_positive_through_many_updates():
     rng = np.random.default_rng(7)
     st = fresh(p=np.diag([1.0e8, 1.0e4]))
+    noise = RulerNoise(q1=1.0, q2=1e-3, source="standin")
+    rtp = 1_000_000
     for _ in range(500):
-        st.predict(1.0, RulerNoise(q1=1.0, q2=1e-3, source="standin"))
+        rtp += F_NOM
+        st.advance_to(rtp, noise)
         st.update(z=float(rng.normal(0.0, 1000.0)), index=PHASE, r=1.0e6)
     assert st.p[PHASE, RATE] == pytest.approx(st.p[RATE, PHASE])
     assert np.all(np.linalg.eigvals(st.p) > 0)
@@ -110,34 +125,56 @@ def test_innovation_does_not_mutate_the_state():
     assert np.allclose(st.p, before[2])
 
 
-def test_a_hundred_thousand_rebases_lose_no_nanoseconds():
-    """The reference plane must survive rebasing exactly (spec section 2)."""
+def test_many_small_advances_equal_one_big_advance():
+    """The no-double-count property. Nothing may extrapolate twice."""
+    # 100 ppm: a double count would be loud.
+    stepwise = fresh(rate_ns_per_s=-100_000.0)
+    single = fresh(rate_ns_per_s=-100_000.0)
+    end = 1_000_000 + 3600 * F_NOM
+    for k in range(1, 3601):
+        stepwise.advance_to(1_000_000 + k * F_NOM, QUIET)
+    single.advance_to(end, QUIET)
+    assert abs(stepwise.utc_ns_at(end) - single.utc_ns_at(end)) <= 1
+
+
+def test_a_consumer_dividing_by_the_published_rate_agrees_exactly():
+    """One arithmetic. The published rate must reproduce our own projection."""
+    st = fresh(rate_ns_per_s=-100_000.0)
+    for delta in (F_NOM, 60 * F_NOM, 3600 * F_NOM):
+        ours = st.utc_ns_at(1_000_000 + delta)
+        theirs = st.utc_ref_ns + round(st.phase_ns + 1e9 * delta / st.f_meas)
+        assert abs(ours - theirs) <= 1, f"delta={delta}"
+
+
+def test_a_hundred_thousand_advances_lose_no_nanoseconds():
+    """The reference plane must survive folding exactly (spec section 2)."""
     st = fresh(rate_ns_per_s=-1234.5)
     control = fresh(rate_ns_per_s=-1234.5)
 
     rtp = 1_000_000
-    # Not a whole second of samples, so the fractional-nanosecond carry bites.
-    # And small enough that 100,000 of them stay inside HALF a counter wrap:
-    # the control never rebases, so its own signed delta must remain
-    # unambiguous. 100,000 x 24,007 = 2.4007e9 samples exceeds 2**31 and
-    # aliases by exactly one wrap period (controller ruling R11, 2026-09-08).
+    # Not a whole second of samples, so the fractional-nanosecond carry
+    # bites. And small enough that 100,000 of them stay inside HALF a
+    # counter wrap: the control's own single big fold must remain
+    # unambiguous too. 100,000 x 24,007 = 2.4007e9 samples would exceed
+    # 2**31 and alias by exactly one wrap period (ruling R11, 2026-09-08).
     step = 12_007
     for _ in range(100_000):
         rtp += step
-        st.rebase(rtp)
+        st.advance_to(rtp, QUIET)
+    control.advance_to(rtp, QUIET)
 
-    # One nanosecond, not zero: the control's single projection is a float at
-    # ~1e14 ns, where float64 resolves near 0.015 ns, so it need not round
-    # identically to a sum of integers. A biased half-nanosecond error per
-    # rebase would reach 50 microseconds here, so 1 ns still proves no
-    # accumulation (controller ruling R4, 2026-09-08).
+    # One nanosecond, not zero: floats at ~1e14 ns resolve near 0.015 ns,
+    # so 100,000 small folds need not round identically to one big fold.
+    # A biased half-nanosecond error per fold would reach 50 microseconds
+    # here, so 1 ns still proves no accumulation (ruling R4, 2026-09-08).
     assert abs(st.utc_ns_at(rtp) - control.utc_ns_at(rtp)) <= 1
 
 
-def test_a_rebase_changes_no_belief():
+def test_a_zero_interval_advance_changes_no_belief():
+    """Replaces test_a_rebase_changes_no_belief: tau=0 gives F=I, Q=0."""
     st = fresh(p=np.array([[100.0, 5.0], [5.0, 2.0]]))
     before = st.p.copy()
-    st.rebase(1_000_000 + 5 * F_NOM)
+    st.advance_to(st.rtp_ref, QUIET)
     assert np.allclose(st.p, before)
 
 
