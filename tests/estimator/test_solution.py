@@ -168,3 +168,33 @@ def test_a_nan_still_fails_under_every_other_refusal(refusal: str) -> None:
             refusal=refusal,
             phase_ns=float("nan"),
         )
+
+
+def test_a_rate_not_positive_solution_may_carry_the_rate_that_refused_it():
+    """The estimator publishes every cycle, so this record must construct.
+
+    Refusing to build it made ``solve`` raise, which crashes a caller in a
+    loop rather than handing it a refusal (controller ruling R37).
+    """
+    sol = make(
+        verdict=VERDICT_WITHHOLD,
+        refusal="rate_not_positive",
+        rate_samples_per_utc_sec=-24000.0,
+    )
+    assert sol.refusal == "rate_not_positive"
+    assert sol.rate_samples_per_utc_sec == -24000.0
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    ["no_phase_witness", "counter_ambiguous", "stale_phase", "variance"],
+)
+def test_a_bad_rate_still_fails_under_every_other_refusal(
+    refusal: str,
+) -> None:
+    with pytest.raises(ValueError, match="strictly positive"):
+        make(
+            verdict=VERDICT_WITHHOLD,
+            refusal=refusal,
+            rate_samples_per_utc_sec=0.0,
+        )

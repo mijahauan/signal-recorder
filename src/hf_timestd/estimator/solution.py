@@ -17,6 +17,12 @@ from .clock_state import signed_rtp_delta
 VERDICT_PUBLISH = "publish"
 VERDICT_WITHHOLD = "withhold"
 
+# The refusals that mean the numbers THEMSELVES are unusable, rather than
+# that usable numbers arrived too late or disagreed. Under these two, and
+# only these two, this record carries whatever it was handed. Anything else
+# still requires finite floats and a strictly positive rate.
+UNUSABLE_NUMBER_REFUSALS = ("not_finite", "rate_not_positive")
+
 _NS_PER_S = 1_000_000_000
 
 
@@ -63,14 +69,21 @@ class TimingSolution:
             msg = f"verdict {self.verdict!r} names neither outcome"
             raise ValueError(msg)
 
-        # A withheld solution whose refusal is exactly ``not_finite`` is the
-        # one record permitted to carry a non-finite number. The gates resolve
-        # ``not_finite`` first, so a state carrying a NaN can reach no other
-        # refusal; if this record then refused the NaN, the only way to report
-        # that refusal at all would be to zero the numbers and call them real.
-        # Every other verdict and refusal still requires finite floats, and a
-        # strictly positive rate (controller ruling R28, 2026-09-08).
-        if self.verdict == VERDICT_WITHHOLD and self.refusal == "not_finite":
+        # A withheld solution whose refusal names its own numbers as
+        # unusable is the one record permitted to carry them. The gates
+        # resolve ``not_finite`` first, so a state carrying a NaN can reach
+        # no other refusal; if this record then refused the NaN, the only way
+        # to report that refusal at all would be to zero the numbers and call
+        # them real (controller ruling R28, 2026-09-08).
+        #
+        # ``rate_not_positive`` joined it on the same reasoning. Refusing to
+        # construct broke the contract that the estimator publishes a
+        # solution on EVERY cycle, so a caller in a loop crashed rather than
+        # reading a refusal (controller ruling R37, 2026-09-08).
+        if (
+            self.verdict == VERDICT_WITHHOLD
+            and self.refusal in UNUSABLE_NUMBER_REFUSALS
+        ):
             self._freeze_witnesses()
             return
 
