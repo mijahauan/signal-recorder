@@ -205,8 +205,7 @@ def _worst_adjacent_steps(
             worst[band] = 0.0
             continue
         corrections = [
-            r["utc_ns"] - r["rtp"] * 1_000_000_000.0 / fs
-            for r in band_rows
+            r["utc_ns"] - r["rtp"] * 1_000_000_000.0 / fs for r in band_rows
         ]
         steps = [abs(b - a) for a, b in zip(corrections, corrections[1:])]
         worst[band] = max(steps)
@@ -226,6 +225,28 @@ def main() -> None:
         if not binary.exists():
             continue
         meta = json.loads(sidecar.read_text())
+        # A gap is a hole in the sample stream, and this generator cannot
+        # see one. It walks the index axis at the nominal rate from block 0
+        # -- ``_sample_of_second`` and the per-band unwrap both assume that
+        # the sample count between two seconds is what the nominal rate
+        # says -- so a dropped block shifts every LATER block's rtp by the
+        # samples the recorder never wrote. The whole-second unwrap then
+        # snaps that shift onto the second lattice and mislabels the rest
+        # of the series without a murmur. Refuse the fixture rather than
+        # emit a corpus whose provenance nobody can reconstruct. The
+        # committed traces all came from sidecars reporting zero, so this
+        # guards future runs rather than repairing past ones.
+        if "gap_count" not in meta:
+            raise SystemExit(
+                f"{sidecar.name}: no gap_count, so completeness cannot be"
+                " checked; refusing to trace it"
+            )
+        if int(meta["gap_count"]) != 0:
+            raise SystemExit(
+                f"{sidecar.name}: gap_count={meta['gap_count']}, and this"
+                " generator extrapolates across a gap, mislabelling every"
+                " block after it; refusing to trace it"
+            )
         iq = read_iq(binary)
         suffix = ""
         if args.resample_ppm is not None:

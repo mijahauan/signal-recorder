@@ -1,4 +1,4 @@
-"""Six refusals, resolved in order, first match winning.
+"""Eight refusals, resolved in order, first match winning.
 
 The estimator publishes a solution every cycle and that solution carries a
 verdict. It never withholds silently and never corrects anything: the caller

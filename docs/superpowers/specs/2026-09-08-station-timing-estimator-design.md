@@ -178,7 +178,7 @@ already comes from `rtp`, so it carried no reader.
 
 **A rate observation** says the ruler runs fast or slow.
 
-    RateObservation(tier, ppm, sigma_ppm, span_s, n, source)
+    RateObservation(tier, ppm, sigma_ppm, span_s, n, plane, source)
 
 `T6ResidualRateEstimator` speaks this way today, in exactly these units, over a window of
 fifteen minutes. So does the judge's offset-slope regression.
