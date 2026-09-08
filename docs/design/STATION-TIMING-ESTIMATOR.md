@@ -291,15 +291,34 @@ The plane is also read before the clock moves. A host-plane phase observation re
 coarse gate and nothing else — the ruler clock included — because letting the network advance
 this estimator's own time base is the coupling §3 forbids.
 
-One case still survives, and it is the same one §4 already documented: a gap of very nearly a
-whole number of wrap periods aliases to a small delta of either sign, and nothing on a 32-bit
-counter tells that from a short interval. Witness innovations do.
+One case still survives, and the library documents it rather than papering over it. A gap of
+almost exactly a whole number of wrap periods aliases to a small delta of either sign. A small
+positive one reads as an ordinary short interval; a small negative one reads as an out-of-order
+arrival and gets refused. Neither reading detects the gap, and no arithmetic on a 32-bit counter
+could. Witness innovations do, because the implied error then runs to tens of hours and every
+witness rejects, loudly.
 
-One case survives even that, and it is documented rather than papered over. A gap of almost
-exactly a whole number of wrap periods aliases to a small positive delta, and no arithmetic on
-a 32-bit counter can tell that from a short interval. Nothing in the library detects it.
-Witness innovations do, because the implied error runs to tens of hours and every witness
-rejects, loudly.
+
+### 4.1 · Four things a consumer must know before wiring this up
+
+A final review probed the assembled estimator and surfaced these. None of them is a defect, and
+each would surprise someone reading the code alone.
+
+A tier known only from out-of-order refusals publishes its counts with neither a last residual
+nor a last sigma. Treat both keys as optional for any reason, not only for a rate-only tier.
+
+The rejected count merges outliers with out-of-order arrivals, and the last residual comes from
+the last judged observation of that tier. Only the verdict's reason separates the two, so a
+consumer diagnosing a station should read the reason rather than infer from the count.
+
+The out-of-order reason string does not appear in the package's public surface. Matching on it
+means importing the estimator module's own constant.
+
+And an unannounced backward counter step smaller than the staleness window no longer latches.
+Every later witness refuses, the plane freezes, and the station surfaces as a stale phase once
+solving continues at forward indices. A caller that keeps solving at ONE index never advances
+ruler time, so a frozen plane would publish indefinitely with no refusal at all. Drive the solve
+forward.
 
 ---
 
