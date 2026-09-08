@@ -131,3 +131,29 @@ def test_reset_clears_a_dwelling_candidate():
     assert a.step(now_s=10.0) is not None
     a.reset("timeline restarted")
     assert a.step(now_s=10.0) is None
+
+
+def test_a_dwelling_candidate_announces_itself_before_it_ripens():
+    """The estimator publishes ``step_pending`` while a quorum dwells."""
+    adm = Admitter(AdmissionPolicy())
+    assert adm.dwelling is False
+    for tier in ("T3", "T5"):
+        adm.judge(
+            50.0e6,
+            1.0e12,
+            PhaseObservation(
+                tier=tier,
+                rtp=1_000_000,
+                utc_ns=1_788_729_000_000_000_000,
+                sigma_ns=1.0e6,
+                plane=PLANE_LABEL,
+                source="synthetic",
+            ),
+            now_s=10.0,
+        )
+    assert adm.dwelling is True
+    assert adm.step(now_s=60.0) is None
+    # Past the dwell but still inside the freshness window.
+    assert adm.step(now_s=140.0) is not None
+    adm.clear_step()
+    assert adm.dwelling is False

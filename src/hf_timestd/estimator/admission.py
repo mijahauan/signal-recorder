@@ -115,6 +115,17 @@ class Admitter:
             return None
         return agreed
 
+    @property
+    def dwelling(self) -> bool:
+        """A candidate step is waiting out its dwell (spec section 4).
+
+        ``step`` returns nothing until the dwell elapses, so a caller that
+        must publish the ``step_pending`` refusal in the meantime needs this
+        separately. Recomputing concordance in the caller would put two
+        arithmetics on the one question this module exists to answer.
+        """
+        return self._candidate_since is not None
+
     def clear_step(self) -> None:
         self._dissent.clear()
         self._candidate_since = None
