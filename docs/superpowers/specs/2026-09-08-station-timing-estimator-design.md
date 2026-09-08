@@ -279,6 +279,31 @@ be describing something that never happens.
 either may hold non-finite numbers, so the record can report the unusable number that caused it
 rather than substituting a plausible one.
 
+### 5.2 · Amendment 2026-09-08 — magnitude decides what a negative delta means
+
+`counter_ambiguous` first latched on ANY negative sample delta. The final whole-branch review
+found the consequence: one witness reporting an index behind the last withheld every later
+solution until an announced epoch change, permanently, and two tiers on different cadences make
+that the ordinary case rather than an exotic one.
+
+Two of this document's own rulings had interacted. One argued a backward observation was already
+refused, which held while refusing meant a silent return. A later one turned that return into a
+permanent latch and never revisited the argument. No task-scoped review could see both halves.
+
+Magnitude separates the two cases, and the separation needs no new constant. A genuinely
+out-of-order arrival lies at most one staleness window behind, 300 s or 7,200,000 samples at
+24 kHz. An aliased gap lands near half a wrap, about 70,000 s. A factor of three hundred divides
+them. So a negative delta inside `max_phase_age_s` names an out-of-order arrival, which the
+estimator refuses and counts without latching and without touching the state, and anything beyond
+it latches as before. A review confirmed the boundary tracks the configured value rather than a
+hard-coded one.
+
+A host-plane observation now advances nothing at all. The estimator reads the plane before it
+moves the clock, because letting a network witness advance this estimator's own time base is the
+coupling §3 exists to forbid.
+
+---
+
 ### 5.1 · Amendment 2026-09-08 — this table fell two refusals behind its own code
 
 `counter_ambiguous` arrived with ruling R33 and `rate_not_positive` with R37, and I amended the
