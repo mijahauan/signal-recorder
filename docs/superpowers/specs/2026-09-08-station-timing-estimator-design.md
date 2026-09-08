@@ -302,6 +302,9 @@ The factor of 1e18 converts a dimensionless frequency to nanoseconds per second,
 seconds and a sample interval, and `identify_noise_type` names the slope, which the library uses
 to choose which region each fit belongs to.
 
+**The series must be the fixed-plane witness residual, never the filter's innovations.** §6.2
+records why, and it is the subtlest mistake in this document's history.
+
 A governed ruler measures a small deviation and the filter grows a long memory, so a
 sub-millisecond witness barely nudges a rate the hardware holds to four parts in ten million.
 A free-running converter measures a large deviation and the filter's memory shortens to
@@ -331,6 +334,37 @@ almost every witness that would correct it, and converges on nothing: measured, 
 | disciplined, measured | 0.0004 ppm | measured on AC0G-B4, 2026-08-16 |
 | disciplined, stand-in | 0.01 ppm | `t6_holdover.UNMEASURED_RATE_SIGMA_PPM` |
 | undisciplined, stand-in | 2.0 ppm | `UNMEASURED_RATE_SIGMA_PPM_A0` |
+
+### 6.2 · Amendment 2026-09-08 — a filter cannot measure what it has already removed
+
+The first draft fed the Allan deviation from the estimator's own innovations. A task review
+implemented that faithfully, measured it, and proved it degenerate: the fitted deviation tracked
+`sqrt(3) * sigma_x / tau` across eight taus from 60 s to 7680 s, flat to three per cent, which is
+the signature of pure white phase noise and nothing else.
+
+The reason is structural rather than numerical. An innovation is what the filter could NOT
+predict. The filter has already absorbed the ruler's wander into its rate state, so the residue
+carries the witnesses' noise and none of the ruler's. Asking a filter to measure the very quantity
+it exists to remove cannot work, however the fit is arranged.
+
+The series that does carry it is the classical clock difference: each witness's UTC minus the
+nominal ruler reading, both referenced to a plane FIXED at the seed and never rebased. Allan's
+second differences remove any constant offset and any constant frequency error, so no correction
+for the estimated rate is needed. Simulated against half-millisecond witnesses over ten hours, the
+ratio of that series' deviation to the witness floor at the longest tau runs:
+
+| ruler wander | ratio at the longest tau |
+|---|---|
+| 0.0035 ppm/hr | 1.03 |
+| 0.035 ppm/hr | 1.09 |
+| 0.35 ppm/hr | 6.5 |
+| 3.5 ppm/hr | 30 |
+
+Which is the honest division of labour. A governed ruler stays invisible and keeps its stand-in,
+whose 0.01 ppm is already tight. An undisciplined one, the case where adaptive process noise earns
+its place at all, announces itself loudly.
+
+---
 
 ### 6.1 · Amendment 2026-09-08 — the seed is not the wander
 
