@@ -1,3 +1,3 @@
-{"tier": "T3", "rtp": 316985297, "utc_ns": 1788742930405666666, "sigma_ns": 1000000.0, "plane": "label", "source": "fold-peak", "band": "1200", "snr": 1.521195145761498, "fixture": "b4-20260907"}
-{"tier": "T3", "rtp": 317945297, "utc_ns": 1788742970558916666, "sigma_ns": 1000000.0, "plane": "label", "source": "fold-peak", "band": "1000", "snr": 1.5662138056743382, "fixture": "b4-20260907"}
-{"tier": "T3", "rtp": 318905297, "utc_ns": 1788743010610750000, "sigma_ns": 1000000.0, "plane": "label", "source": "fold-peak", "band": "1000", "snr": 1.501952481772407, "fixture": "b4-20260907"}
+{"tier": "T3", "rtp": 316995033, "utc_ns": 1788742930000000000, "sigma_ns": 1000000.0, "plane": "label", "source": "fold-peak", "band": "1200", "channel": "WWV_20000", "snr": 1.521195145761498, "fixture": "b4-20260907"}
+{"tier": "T3", "rtp": 317958711, "utc_ns": 1788742970000000000, "sigma_ns": 1000000.0, "plane": "label", "source": "fold-peak", "band": "1000", "channel": "WWV_20000", "snr": 1.5662138056743382, "fixture": "b4-20260907"}
+{"tier": "T3", "rtp": 318919955, "utc_ns": 1788743010000000000, "sigma_ns": 1000000.0, "plane": "label", "source": "fold-peak", "band": "1000", "channel": "WWV_20000", "snr": 1.501952481772407, "fixture": "b4-20260907"}

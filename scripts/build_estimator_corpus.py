@@ -57,6 +57,7 @@ def trace(
     fs = int(meta["sample_rate"])
     label0 = float(meta["start_system_time"])
     rtp0 = int(meta["start_rtp_timestamp"])
+    channel = str(meta["channel_name"])
     out: List[Dict[str, Any]] = []
     block_len = block_s * fs
     for b in range(len(iq) // block_len):
@@ -73,18 +74,36 @@ def trace(
             snr = float(profile[peak] / (np.median(profile) + 1e-12))
             if snr < MIN_SNR:
                 continue
-            mid_rtp = rtp0 + (b * block_s + block_s // 2) * fs
+            # ``peak`` names the intra-second SAMPLE this block's tick
+            # folded onto -- which register of a nominal second the tick
+            # occupies, averaged over every repeat this block covered. That
+            # is information about the SAMPLE, not a correction to the
+            # tick's own UTC: WWV, WWVH and BPM all mark the start of a
+            # real second regardless of how fast or slow this receiver's
+            # ruler happens to run, so a tick's UTC is exactly the integer
+            # second it belongs to, nothing added. Folding ``peak`` into
+            # utc_ns (as this generator used to) reported that same
+            # sample-offset twice: once correctly, as where the tick sits
+            # in the index, and a second time, with the opposite sign's
+            # worth of consequence for a two-state (phase, rate) filter, as
+            # a shift in when the tick happened. One nominal second inside
+            # the block stands in for the whole block's fold -- the middle
+            # one, since the average is symmetric around it -- and ``peak``
+            # belongs entirely on that second's sample index.
             second = int(np.floor(label0 + b * block_s + block_s // 2))
-            utc_ns = second * 1_000_000_000 + peak * 1_000_000_000 // fs
+            sample_of_second = round((second - label0) * fs)
+            rtp = rtp0 + sample_of_second + peak
+            utc_ns = second * 1_000_000_000
             out.append(
                 {
                     "tier": "T3",
-                    "rtp": int(mid_rtp),
+                    "rtp": int(rtp),
                     "utc_ns": int(utc_ns),
                     "sigma_ns": SIGMA_NS,
                     "plane": "label",
                     "source": "fold-peak",
                     "band": band,
+                    "channel": channel,
                     "snr": snr,
                     "fixture": fixture,
                 }
