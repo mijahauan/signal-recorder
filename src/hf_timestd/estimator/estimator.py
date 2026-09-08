@@ -41,7 +41,7 @@ from hamsci_dsp.stability import (  # type: ignore[import-untyped]
 )
 
 from .admission import AdmissionPolicy, Admitter, Verdict
-from .clock_state import PHASE, RATE, ClockState
+from .clock_state import PHASE, RATE, ClockState, signed_rtp_delta
 from .gates import GateConfig, GateInputs, refusal
 from .observations import PhaseObservation, RateObservation
 from .process_noise import (
@@ -88,6 +88,20 @@ RESIDUAL_CAP = 4096
 # ragged periodicity of real witnesses and tight enough to reject a hole.
 _MAX_GAP_RATIO = 3.0
 
+# How far above the witnesses' own noise the fitted deviation must sit before
+# the fit gets to call itself measured. Two is a sigma multiple meaning
+# "clearly above the noise", not a time constant.
+_WITNESS_FLOOR_K = 2.0
+
+# White phase noise of standard deviation sigma_x has an Allan deviation of
+# sqrt(3) * sigma_x / tau. That is the whole criterion, and it needs no
+# constant this project chose: the witnesses declare sigma_x themselves.
+_WHITE_PHASE_ADEV = math.sqrt(3.0)
+
+# (ns/s)^2 per (s/s)^2, mirroring the conversion process_noise applies when
+# it turns a dimensionless deviation into q1 and q2.
+_DIMENSIONLESS_TO_NS2 = 1e18
+
 A_LEVEL_GOVERNED = "A1"
 A_LEVEL_FREE = "A0"
 
@@ -133,7 +147,10 @@ class StationTimingEstimator:
         self._last_phase_at_s: float | None = None
         self._n_updates = 0
         self._seed_s = 0.0
-        self._residuals: deque[tuple[float, float]] = deque(
+        # (ruler_s, residual_s, sigma_ns). The sigma rides along so the
+        # Allan fit can be measured against the noise of exactly the
+        # witnesses that produced it, and falls off the back with them.
+        self._residuals: deque[tuple[float, float, float]] = deque(
             maxlen=RESIDUAL_CAP
         )
         self._since_refit = 0
@@ -146,6 +163,11 @@ class StationTimingEstimator:
         self._sigma_by_tier: dict[str, float] = {}
         self._surviving_rate: tuple[float, float] | None = None
         self._counter_ambiguous = False
+        # The Allan feed's plane, fixed at the seed and never rebased. The
+        # state's plane cannot serve: it moves with every solve, and folding
+        # it forward is what removes the very wander the fit must see.
+        self._adev_seed_rtp: int | None = None
+        self._adev_seed_utc_ns = 0
 
     @property
     def generation(self) -> int:
@@ -223,6 +245,8 @@ class StationTimingEstimator:
         self._n_updates = 0
         self._coarse = None
         self._residuals.clear()
+        self._adev_seed_rtp = None
+        self._adev_seed_utc_ns = 0
         self._since_refit = 0
         self._sigma_by_tier.clear()
         self._rate_counts.clear()
@@ -267,7 +291,7 @@ class StationTimingEstimator:
             state.update(z, PHASE, r)
             self._last_phase_at_s = self._ruler_s
             self._n_updates += 1
-            self._note_residual(nu)
+            self._note_residual(state, obs)
         return verdict
 
     def _observe_rate(self, obs: RateObservation) -> Verdict:
@@ -347,6 +371,8 @@ class StationTimingEstimator:
             rate_ns_per_s=rate,
             p=p,
         )
+        self._adev_seed_rtp = int(obs.rtp)
+        self._adev_seed_utc_ns = int(obs.utc_ns)
         self._seed_s = self._ruler_s
         self._last_phase_at_s = self._ruler_s
         self._n_updates = 1
@@ -354,8 +380,49 @@ class StationTimingEstimator:
 
     # ---- process noise from the ruler's own residuals -------------------
 
-    def _note_residual(self, nu_ns: float) -> None:
-        self._residuals.append((self._ruler_s, float(nu_ns) / _NS_PER_S))
+    def _note_residual(self, state: ClockState, obs: PhaseObservation) -> None:
+        """Append the classical clock difference against the fixed plane.
+
+        NOT the innovation. An innovation is what the filter could not
+        predict, and the filter has already absorbed the ruler's wander into
+        its rate state, so the residue carries the witnesses' noise and none
+        of the ruler's. Measured: that series' deviation sat at 1.001 to
+        1.032 times the witness floor across eight taus from 60 s to 7680 s,
+        flat, so no span could ever separate the two. Asking a filter to
+        measure the quantity it exists to remove cannot work (controller
+        ruling R38, 2026-09-08).
+
+        What does carry the wander is each witness's UTC minus the NOMINAL
+        ruler reading, both against a plane fixed at the seed. Allan's second
+        differences remove any constant offset and any constant frequency
+        error, so no correction for the estimated rate is needed and the
+        accumulated linear trend does no harm.
+        """
+        anchor = self._adev_seed_rtp
+        if anchor is None:
+            return
+        delta = signed_rtp_delta(anchor, obs.rtp)
+        if delta < 0:
+            # The fixed plane has outrun half a wrap period, about 24.9 hours
+            # at 24 kHz, so its projection would alias by a whole wrap. Move
+            # the anchor to here and start again. The fit loses its history
+            # roughly daily, which caps the longest tau it can reach; that
+            # beats feeding it a number that is 49.7 hours wrong.
+            self._adev_seed_rtp = int(obs.rtp)
+            self._adev_seed_utc_ns = int(obs.utc_ns)
+            self._residuals.clear()
+            return
+        # Associated so the integers cancel first. Absolute UTC in
+        # nanoseconds exceeds 1.7e18, where a double's granularity is 256 ns,
+        # so adding the projection to the anchor BEFORE subtracting would
+        # quantise a half-millisecond witness to a quarter of a microsecond.
+        # Spec section 2 is the same point about the state's own plane.
+        x_ns = float(int(obs.utc_ns) - self._adev_seed_utc_ns) - (
+            _NS_PER_S * state.nominal_seconds(delta)
+        )
+        self._residuals.append(
+            (self._ruler_s, x_ns / _NS_PER_S, float(obs.sigma_ns))
+        )
         self._since_refit += 1
         if self._since_refit < self.config.adev_refit_every:
             return
@@ -370,13 +437,32 @@ class StationTimingEstimator:
         noise as well as the ruler's, and ``noise_from_adev`` fits q1 at the
         SHORTEST tau -- exactly where witness noise dominates most. Measured
         on a governed ruler with 0.5 ms witnesses, that fit returned
-        q1 = 1.25e10 ns^2/s, crediting the hardware with 866 microseconds of
+        q1 = 1.49e10 ns^2/s, crediting the hardware with 866 microseconds of
         phase wander a minute where its true wander is nanoseconds, and phase
-        sigma then parked at 446 microseconds instead of averaging down. At
+        sigma then parked at 451 microseconds instead of averaging down. At
         long tau the ruler's random walk rises while witness white noise
-        averages down, so the long-tau fit is trustworthy and the short-tau
-        fit is contaminated. Take q2 from the fit, keep q1 at the declared
-        floor (controller ruling R34, 2026-09-08).
+        averages down, so the long-tau fit is the trustworthy one and the
+        short-tau fit is contaminated. Take q2 from the fit, keep q1 at the
+        declared floor (controller ruling R34, 2026-09-08).
+
+        **And only when the fit beats the witnesses.** Keeping q1 at the
+        floor was not enough: the surviving q2 was itself almost entirely
+        witness noise. White phase noise of standard deviation ``sigma_x``
+        has an Allan deviation of ``sqrt(3) * sigma_x / tau``, so the
+        witnesses declare their own floor and this criterion needs no
+        constant anybody chose. Compare the deviation the fitted q2 implies
+        at the longest tau the fit used against that floor, and accept the
+        fit only when it clears twice it. Otherwise keep the stand-in
+        entirely, and keep saying ``standin``, because a coefficient that is
+        98 percent witness noise wearing the ruler's name is a false label
+        (controller ruling R36, 2026-09-08).
+
+        This is why a governed ruler reads ``standin`` on every span this
+        project can currently supply, and that is the honest answer rather
+        than a shortcoming. Separating a hundredth of a part per million from
+        half-millisecond witnesses needs a tau near 86,400 s, because that is
+        where the ruler's own random walk finally rises above witness noise
+        that falls as 1/tau. Our spans run to hundreds of seconds.
 
         **And only from a roughly uniform series.** ``compute_phase_adev``
         assumes uniform spacing, and a median gap is hole-blind: a 10,800 s
@@ -388,7 +474,7 @@ class StationTimingEstimator:
         The floor is what lets the filter widen its memory and never narrow
         it below what the declared hardware supports (spec section 10).
         """
-        times = [t for t, _ in self._residuals]
+        times = [t for t, _, _ in self._residuals]
         gaps = [b - a for a, b in zip(times, times[1:]) if b > a]
         if not gaps:
             return
@@ -397,13 +483,49 @@ class StationTimingEstimator:
             # No refit and no reset of the counter, so the fit is retried
             # once the hole has aged out of the bounded series.
             return
-        phase = np.array([v for _, v in self._residuals], dtype=float)
+
+        phase = np.array([v for _, v, _ in self._residuals], dtype=float)
         taus, adev = compute_phase_adev(phase, tau0)
+        # Filtered here rather than left to ``noise_from_adev``, which
+        # applies the same mask privately, so ``tau_max`` below is exactly
+        # the tau the q2 fit used and the comparison is against the right
+        # point on the curve.
+        taus = np.asarray(taus, dtype=float)
+        adev = np.asarray(adev, dtype=float)
+        good = (
+            np.isfinite(taus) & np.isfinite(adev) & (taus > 0.0) & (adev > 0.0)
+        )
+        if not bool(good.any()):
+            return
+        taus, adev = taus[good], adev[good]
+        longest = int(taus.argmax())
+        tau_max, measured_adev = float(taus[longest]), float(adev[longest])
+
+        self._since_refit = 0
         fitted = noise_from_adev(taus, adev, floor=self._standin)
+        sigma_x_s = (
+            statistics.median(sig for _, _, sig in self._residuals) / _NS_PER_S
+        )
+        witness_adev = _WHITE_PHASE_ADEV * sigma_x_s / tau_max
+        # Against the MEASURED deviation at the longest tau, not against the
+        # deviation the stored q2 implies. The two are the same number while
+        # the fit stands on its own -- inverting ``noise_from_adev``'s
+        # ``q2 = 3 * adev^2 / tau * 1e18`` returns exactly ``adev`` -- but
+        # that function floors q2 at the stand-in and still stamps it
+        # "measured". Inverting the FLOOR then answers a question about the
+        # stand-in: a 300 ns witness made the "observed" floor read 5.5 times
+        # its own noise and passed, with no measurement in it anywhere.
+        if measured_adev <= _WITNESS_FLOOR_K * witness_adev:
+            return
+        # And the fit must actually have moved the coefficient. If the floor
+        # won, the stored q2 IS the stand-in, and calling that "measured"
+        # says the ruler was measured and returned its own declared
+        # fallback.
+        if fitted.q2 <= self._standin.q2:
+            return
         self._noise = RulerNoise(
             q1=self._standin.q1, q2=fitted.q2, source=fitted.source
         )
-        self._since_refit = 0
 
     # ---- the step, and the gates ---------------------------------------
 

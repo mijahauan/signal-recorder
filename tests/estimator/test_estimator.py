@@ -5,6 +5,8 @@ million and a witness that reports the true UTC of a named sample with a
 chosen sigma. Everything the estimator learns, it learns from those reports.
 """
 
+import math
+
 import numpy as np
 import pytest
 
@@ -282,7 +284,15 @@ def test_the_a_level_describes_the_ruler_and_nothing_branches_on_it():
     assert est2.solve(minute_marks(31)[-1]).a_level == "A1"
 
 
-def test_the_process_noise_source_turns_measured_once_the_span_allows():
+def test_a_quiet_ruler_cannot_be_told_from_its_witnesses_and_says_so():
+    """Was ``..._turns_measured_once_the_span_allows``.
+
+    Span is not what gates the label; the witnesses are. A governed ruler's
+    own deviation sits below half-millisecond witnesses at every tau this
+    project can supply -- separating 0.01 ppm from them needs a tau near
+    86,400 s -- so the honest answer is the stand-in, and it stays the
+    stand-in however long the run (controller ruling R36, 2026-09-08).
+    """
     st = Station(ppm=0.0)
     est = StationTimingEstimator(f_nom=F_NOM, ruler_provenance="observed")
     rng = np.random.default_rng(11)
@@ -291,7 +301,9 @@ def test_the_process_noise_source_turns_measured_once_the_span_allows():
     for rtp in minute_marks(90):
         est.observe(st.phase(rtp, sigma_ns=0.5 * MS, rng=rng))
         est.advance(rtp)
-    assert est.solve(minute_marks(90)[-1]).q_source == "measured"
+    sol = est.solve(minute_marks(90)[-1])
+    assert sol.q_source == "standin"
+    assert est._noise is est._standin
 
 
 # ---- ruling R31: the rate path carries the same innovation test ----------
@@ -388,7 +400,12 @@ def test_the_residual_series_stops_at_its_cap_and_still_fits_after():
     # Reaching past the public surface on purpose: the cap exists to stop
     # unbounded growth, and only the length can witness that.
     assert len(est._residuals) == RESIDUAL_CAP
-    assert est.solve(marks[-1]).q_source == "measured"
+    # And fitting still runs after the deque has wrapped: the counter resets
+    # on every attempted fit, so a small value proves one was attempted
+    # within the last ``adev_refit_every`` accepted witnesses.
+    assert est._since_refit < est.config.adev_refit_every
+    # This ruler is quiet, so the honest label is the stand-in.
+    assert est.solve(marks[-1]).q_source == "standin"
 
 
 # ---- ruling R33: an ambiguous counter delta latches, never passes -------
@@ -476,41 +493,132 @@ def test_a_stale_coarse_disagreement_expires_and_publishing_resumes():
     assert sol.verdict == VERDICT_PUBLISH
 
 
-# ---- ruling R34: the Allan fit takes q2 only, from a uniform series -----
+# ---- rulings R34/R36/R38: the fit, and what it may call measured -------
 
 
-def watch(est, st, marks, sigma_ns=0.5 * MS, rng=None):
+class WanderingRuler:
+    """A ruler whose frequency random-walks, with honest witnesses.
+
+    ``ppm_per_hour`` is the standard deviation of the rate after one hour of
+    walking, so the per-step kick is that divided by the square root of the
+    steps in an hour. 3.5 ppm/hr is the wander this pair is built on: it
+    clears the witness floor by more than an order of magnitude at ten hours
+    of minute-marks, and it stays inside what the innovation gate will admit
+    for a ruler DECLARED undisciplined. Both halves of that matter. Declare
+    the same ruler ``observed`` and its 0.01 ppm stand-in keeps the gate so
+    tight that 522 of 599 witnesses are rejected and the series never grows;
+    push the wander to 12 ppm/hr and even ``assumed`` locks out. An
+    undisciplined ruler is the only case where adaptive process noise earns
+    its place, and this is the shape of that case.
+    """
+
+    def __init__(
+        self,
+        rng,
+        ppm_per_hour: float,
+        spacing_s: int = 60,
+        rtp0: int = 1_000_000,
+    ):
+        self.rng = rng
+        self.step_ppm = ppm_per_hour / math.sqrt(3600.0 / spacing_s)
+        self.spacing_s, self.rtp0 = spacing_s, rtp0
+        self.utc: dict[int, int] = {}
+        self._rate_ppm = 0.0
+        self._phase_ns = 0.0
+
+    def marks(self, n: int, skip_after: int = -1, skip_s: int = 0):
+        out, extra = [], 0
+        for m in range(n):
+            if m == skip_after + 1:
+                extra = skip_s
+            offset_s = m * self.spacing_s + extra
+            rtp = self.rtp0 + offset_s * F_NOM
+            if m:
+                self._rate_ppm += float(self.rng.normal(0.0, self.step_ppm))
+                self._phase_ns += self._rate_ppm * 1000.0 * self.spacing_s
+            self.utc[rtp] = T0_NS + round(offset_s * 1e9 + self._phase_ns)
+            out.append(rtp)
+        return out
+
+    def phase(self, rtp: int, sigma_ns: float, rng=None) -> PhaseObservation:
+        noise = 0.0 if rng is None else float(rng.normal(0.0, sigma_ns))
+        return PhaseObservation(
+            tier="T6",
+            rtp=int(rtp),
+            utc_ns=self.utc[rtp] + round(noise),
+            sigma_ns=sigma_ns,
+            plane=PLANE_LABEL,
+            source="wandering",
+        )
+
+
+def drive_wandering(marks, ruler, est, sigma_ns=0.5 * MS, seed=1023):
+    rng = np.random.default_rng(seed)
     for rtp in marks:
-        est.observe(st.phase(rtp, sigma_ns=sigma_ns, rng=rng))
+        est.observe(ruler.phase(rtp, sigma_ns, rng=rng))
         est.advance(rtp)
-    return marks[-1]
+    return est.solve(marks[-1])
 
 
-def test_a_uniform_series_fits_and_leaves_q1_at_the_declared_floor():
-    st = Station(ppm=0.0)
-    est = StationTimingEstimator(f_nom=F_NOM, ruler_provenance="observed")
-    rng = np.random.default_rng(19)
-    last = watch(est, st, minute_marks(70), rng=rng)
-    sol = est.solve(last)
+def test_a_wandering_ruler_announces_itself_and_the_fit_takes_q2_only():
+    ruler = WanderingRuler(np.random.default_rng(41), ppm_per_hour=3.5)
+    est = StationTimingEstimator(f_nom=F_NOM, ruler_provenance="assumed")
+    sol = drive_wandering(ruler.marks(900), ruler, est)
 
     assert sol.q_source == "measured"
-    # q1 is the witnesses' noise, not the ruler's, so it never leaves the
-    # floor. q2 is read off the long tau, where the ruler dominates.
+    # Above the declared stand-in, or the label would report that the ruler
+    # was measured and returned its own fallback. All seven seeds tried
+    # clear it, by between 1.05 and 16 times.
+    assert est._noise.q2 > est._standin.q2
+    # q1 is the witnesses' noise, never the ruler's, so it stays at the floor.
     assert est._noise.q1 == est._standin.q1
-    assert est._noise.q2 >= est._standin.q2
 
 
-def test_a_holed_series_refuses_to_fit_and_keeps_the_standin():
+def test_a_holed_series_refuses_to_fit_even_when_the_ruler_is_wandering():
+    """The hole, not the quiet, is what refuses this one.
+
+    Built on the same wandering ruler that reads "measured" above, so the
+    only difference is a three-hour hole among sixty-second spacings.
+    ``compute_phase_adev`` assumes uniform spacing and a median gap is
+    hole-blind, which is what the guard is for.
+
+    The hole sits before the first refit deliberately. Put it later and the
+    guard still refuses every fit that straddles it, but a clean fit taken
+    earlier has already set the label -- correctly, since the guard exists to
+    stop a bad fit overwriting, not to revoke a good one.
+    """
+    ruler = WanderingRuler(np.random.default_rng(41), ppm_per_hour=3.5)
+    est = StationTimingEstimator(f_nom=F_NOM, ruler_provenance="assumed")
+    marks = ruler.marks(900, skip_after=30, skip_s=3 * 3600)
+    sol = drive_wandering(marks, ruler, est)
+
+    assert sol.q_source == "standin"
+    assert est._noise is est._standin
+
+
+def test_a_quiet_ruler_with_fine_witnesses_is_not_flattered_by_the_floor():
+    """Fine witnesses must not flatter the stand-in into a false label.
+
+    ``noise_from_adev`` floors q2 at the stand-in and still stamps it
+    "measured". Judging the fit by the deviation that STORED q2 implies then
+    asks a question about the stand-in rather than about the ruler: fine
+    witnesses have a low floor, so the "observed" stand-in read 5.51 times
+    its own noise and passed, with no measurement in it anywhere.
+
+    Two guards stand between that and the label -- comparing the MEASURED
+    deviation instead of the stored one, and requiring the fit to have moved
+    off the floor -- and they overlap. Whenever the floor wins, the second
+    refuses first, so no test can separate them: the loophole is unreachable
+    while the off-the-floor check stands. Mutating either alone leaves this
+    suite green; mutating BOTH turns this test and the wandering-ruler test
+    red. They are jointly load-bearing, and the first is defence in depth.
+    """
     st = Station(ppm=0.0)
     est = StationTimingEstimator(f_nom=F_NOM, ruler_provenance="observed")
-    rng = np.random.default_rng(19)
-    early = minute_marks(30)
-    # A three-hour hole among sixty-second spacings.
-    hole = early[-1] + 3 * HOUR
-    late = [hole + m * 60 * F_NOM for m in range(41)]
-    last = watch(est, st, early + late, rng=rng)
-    sol = est.solve(last)
+    rng = np.random.default_rng(29)
+    for rtp in minute_marks(160):
+        est.observe(st.phase(rtp, sigma_ns=300.0, rng=rng))
+        est.advance(rtp)
 
-    assert sol.n_updates >= 60
-    assert sol.q_source == "standin"
+    assert est.solve(minute_marks(160)[-1]).q_source == "standin"
     assert est._noise is est._standin

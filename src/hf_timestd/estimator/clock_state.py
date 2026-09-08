@@ -139,24 +139,31 @@ class ClockState:
         sigma_ns_per_s = math.sqrt(max(float(self.p[RATE, RATE]), 0.0))
         return sigma_ns_per_s / _NS_PER_S_PER_PPM
 
-    def _nominal_seconds(self, delta_samples: int) -> float:
+    def nominal_seconds(self, delta_samples: int) -> float:
         """Nominal elapsed time over a sample count.
 
         The one line in this package that divides by the nominal rate. The
         ruler's actual rate enters through the phase state instead, which is
         what the two-state clock model and its Allan-variance Q assume.
+
+        Public because a caller may need to project from a plane that is NOT
+        this state's: the Allan-deviation feed measures the classical clock
+        difference against a plane fixed at the seed, and the alternative
+        would be a second division by the nominal rate, which the package's
+        own boundary guard would rightly stop (controller ruling R38,
+        2026-09-08).
         """
         return delta_samples / self.f_nom  # THE ONE NOMINAL DIVISION
 
     def elapsed_s(self, rtp_from: int, rtp_to: int) -> float:
         """Nominal seconds between two samples."""
-        return self._nominal_seconds(signed_rtp_delta(rtp_from, rtp_to))
+        return self.nominal_seconds(signed_rtp_delta(rtp_from, rtp_to))
 
     # ---- projection -----------------------------------------------------
 
     def _offset_ns_at(self, rtp: int) -> float:
         """Nanoseconds from the plane's integer reference to UTC at ``rtp``."""
-        tau = self._nominal_seconds(signed_rtp_delta(self.rtp_ref, rtp))
+        tau = self.nominal_seconds(signed_rtp_delta(self.rtp_ref, rtp))
         return self.phase_ns + (_NS_PER_S + self.rate_ns_per_s) * tau
 
     def utc_ns_at(self, rtp: int) -> int:
@@ -202,7 +209,7 @@ class ClockState:
         same interval. Refuses to run backwards.
         """
         delta = signed_rtp_delta(self.rtp_ref, rtp_now)
-        tau = self._nominal_seconds(delta)
+        tau = self.nominal_seconds(delta)
         if tau < 0.0:
             raise ValueError(f"advance_to went backwards by {-tau} s")
         total = self._offset_ns_at(rtp_now)
