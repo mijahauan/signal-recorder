@@ -115,3 +115,19 @@ def test_clear_step_forgets_the_candidate():
     assert a.step(now_s=10.0) is not None
     a.clear_step()
     assert a.step(now_s=10.0) is None
+
+
+def test_a_backward_judge_raises():
+    a = Admitter(AdmissionPolicy())
+    a.judge(nu=50.0 * MS, s=(1.0 * MS) ** 2, obs=obs("T3"), now_s=100.0)
+    with pytest.raises(ValueError, match="went backwards in ruler time"):
+        a.judge(nu=50.0 * MS, s=(1.0 * MS) ** 2, obs=obs("T5"), now_s=10.0)
+
+
+def test_reset_clears_a_dwelling_candidate():
+    a = Admitter(AdmissionPolicy(dwell_s=0.0))
+    for tier in ("T3", "T5"):
+        a.judge(nu=50.0 * MS, s=(1.0 * MS) ** 2, obs=obs(tier), now_s=0.0)
+    assert a.step(now_s=10.0) is not None
+    a.reset("timeline restarted")
+    assert a.step(now_s=10.0) is None

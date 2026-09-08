@@ -3,6 +3,14 @@
 A lone witness never moves it, however confident. A quorum that agrees with
 itself may, and only after a dwell. And a step, once accepted, changes phase
 and never rate (spec section 4).
+
+Tier independence: The quorum counts distinct tier strings. Each tier string
+must correspond to one independent witness (e.g., one antenna and its
+measurement chain). If the same physical antenna drives two tier strings, or
+if two adapters feed the same source, that defeats the quorum guarantee. This
+module cannot verify independence—only the caller knows the physical topology.
+A violated contract hands the system a fabricated consensus from a single
+source, which violates the spec that a single witness may never move the plane.
 """
 
 from __future__ import annotations
@@ -52,16 +60,30 @@ class Admitter:
     _counts: dict[str, dict[str, int]] = field(default_factory=dict)
     _dissent: dict[str, _Dissent] = field(default_factory=dict)
     _candidate_since: float | None = None
+    _last_now_s: float | None = None
 
     def judge(
         self, nu: float, s: float, obs: PhaseObservation, now_s: float
     ) -> Verdict:
-        tally = self._counts.setdefault(
-            obs.tier, {"accepted": 0, "rejected": 0}
-        )
+        """Judge an observation for admission.
+
+        Each tier string must correspond to one independent witness.
+        See module docstring for the tier independence contract.
+        """
+        now = float(now_s)
+        if self._last_now_s is not None and now < self._last_now_s:
+            raise ValueError(
+                f"judge went backwards in ruler time, {now} after"
+                f" {self._last_now_s}"
+            )
+        self._last_now_s = now
 
         if not obs.is_label_plane:
             return Verdict(False, "host_plane", float(nu), float(s))
+
+        tally = self._counts.setdefault(
+            obs.tier, {"accepted": 0, "rejected": 0}
+        )
 
         self.last_residual_ns[obs.tier] = float(nu)
         if s <= 0.0 or not math.isfinite(s):
@@ -71,14 +93,12 @@ class Admitter:
         if abs(nu) <= self.policy.k_accept * math.sqrt(s):
             tally["accepted"] += 1
             self._dissent.pop(obs.tier, None)
-            self._reconsider_candidate(now_s)
+            self._reconsider_candidate(now)
             return Verdict(True, "accepted", float(nu), float(s))
 
         tally["rejected"] += 1
-        self._dissent[obs.tier] = _Dissent(
-            float(nu), float(obs.sigma_ns), float(now_s)
-        )
-        self._reconsider_candidate(now_s)
+        self._dissent[obs.tier] = _Dissent(float(nu), float(obs.sigma_ns), now)
+        self._reconsider_candidate(now)
         return Verdict(False, "outlier", float(nu), float(s))
 
     def counts(self) -> dict[str, dict[str, int]]:
@@ -86,18 +106,37 @@ class Admitter:
 
     def step(self, now_s: float) -> StepProposal | None:
         """A concordant quorum that has dwelled long enough, or nothing."""
-        agreed = self._concordant(now_s)
+        now = float(now_s)
+        if self._last_now_s is not None and now < self._last_now_s:
+            raise ValueError(
+                f"step went backwards in ruler time, {now} after"
+                f" {self._last_now_s}"
+            )
+        self._last_now_s = now
+
+        agreed = self._concordant(now)
         if agreed is None:
             return None
         if self._candidate_since is None:
             return None
-        if (float(now_s) - self._candidate_since) < self.policy.dwell_s:
+        if (now - self._candidate_since) < self.policy.dwell_s:
             return None
         return agreed
 
     def clear_step(self) -> None:
         self._dissent.clear()
         self._candidate_since = None
+
+    def reset(self, why: str) -> None:
+        """Forget every count and dissent. A caller whose ruler time restarts
+        must call this: stale dissents carry stamps from a timeline that no
+        longer exists.
+        """
+        self.last_residual_ns.clear()
+        self._counts.clear()
+        self._dissent.clear()
+        self._candidate_since = None
+        self._last_now_s = None
 
     # ---- internals ------------------------------------------------------
 
