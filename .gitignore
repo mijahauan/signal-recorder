@@ -125,3 +125,6 @@ config/timestd-config.toml
 
 # transient shim created by tests/test_deploy_unit_parsing.py
 .awkshim/
+
+# subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/
