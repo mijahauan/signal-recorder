@@ -20,6 +20,7 @@ from hf_timestd.estimator.observations import (
     PhaseObservation,
     RateObservation,
 )
+from hf_timestd.estimator.process_noise import RulerNoise
 from hf_timestd.estimator.solution import VERDICT_PUBLISH, VERDICT_WITHHOLD
 
 F_NOM = 24000
@@ -376,6 +377,43 @@ def test_a_reasonable_rate_witness_is_accepted_and_moves_the_rate():
     assert verdict.reason == "accepted"
     assert after.witnesses["T6"]["accepted"] == 1
     assert after.rate_ppm > before.rate_ppm
+
+
+def test_the_published_witnesses_carry_a_last_residual_and_a_last_sigma():
+    """Spec section 7 promised both per tier, and neither was published.
+
+    Counts alone do not diagnose a station. Two tiers rejecting in the same
+    direction by the same amount name a plane step; one tier rejecting alone
+    at nineteen sigma names a lattice confusion. The residual is what tells
+    those apart.
+    """
+    st, est, rtp = settled()
+    late = minute_marks(12)[-1]
+    est.observe(
+        st.phase(late, tier="T5", sigma_ns=2.0 * MS, error_ns=40.0 * MS)
+    )
+    est.observe(st.phase(late, tier="T3"))
+    est.observe(rate_obs(ppm=0.0, sigma_ppm=0.2, tier="T6"))
+    sol = est.solve(late)
+
+    dissenter = sol.witnesses["T5"]
+    assert dissenter["rejected"] == 1
+    assert dissenter["last_residual_ns"] == pytest.approx(
+        40.0 * MS, abs=0.5 * MS
+    )
+    assert dissenter["last_sigma_ns"] == 2.0 * MS
+
+    agreeing = sol.witnesses["T3"]
+    assert abs(agreeing["last_residual_ns"]) < 1.0 * MS
+    assert agreeing["last_sigma_ns"] == 1.0 * MS
+
+    # A tier that has only ever spoken about rate carries neither: its
+    # innovation is nanoseconds per second and its sigma parts per million,
+    # so filing them under these names would put two units under one word.
+    rate_only = sol.witnesses["T6"]
+    assert rate_only["accepted"] == 1
+    assert "last_residual_ns" not in rate_only
+    assert "last_sigma_ns" not in rate_only
 
 
 def test_a_host_plane_rate_witness_reaches_nothing_at_all():
@@ -741,6 +779,34 @@ def test_a_holed_series_refuses_to_fit_even_when_the_ruler_is_wandering():
 
     assert sol.q_source == "standin"
     assert est._noise is est._standin
+
+
+def test_q_source_describes_the_coefficient_in_use_not_a_past_fit():
+    """A provenance field that can disagree with its own value is a lie.
+
+    ``RulerNoise.source`` travels with the coefficient and outlives the fit
+    that set it, so publishing the stored string could name a measurement
+    while the filter ran on the declared floor. The label is derived from q2
+    now, so the two cannot part.
+
+    Reaching past the public surface on purpose: the point is that a
+    coefficient AT the floor reads ``standin`` whatever it calls itself, and
+    only planting such a coefficient can witness that.
+    """
+    st = Station(ppm=0.0)
+    est = StationTimingEstimator(f_nom=F_NOM, ruler_provenance="assumed")
+    est.observe(st.phase(st.rtp0))
+
+    est._noise = RulerNoise(
+        q1=est._standin.q1, q2=est._standin.q2, source="measured"
+    )
+    assert est.solve(st.rtp0).q_source == "standin"
+
+    # And a coefficient that really did move off the floor still says so.
+    est._noise = RulerNoise(
+        q1=est._standin.q1, q2=est._standin.q2 * 4.0, source="measured"
+    )
+    assert est.solve(st.rtp0).q_source == "measured"
 
 
 def test_a_quiet_ruler_with_fine_witnesses_is_not_flattered_by_the_floor():

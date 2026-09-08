@@ -50,7 +50,11 @@ class TimingSolution:
     covariance: tuple[float, float, float]
     verdict: str
     refusal: str | None
-    witnesses: Mapping[str, Mapping[str, int]]
+    # Per tier: ``accepted`` and ``rejected`` counts, and -- for a tier that
+    # has supplied at least one phase observation -- ``last_residual_ns``
+    # and ``last_sigma_ns``. Floats, because the last two are, and a mapping
+    # whose value type depended on the key would be worse (spec section 7).
+    witnesses: Mapping[str, Mapping[str, float]]
     a_level: str
     ruler_provenance: str
     q_source: str

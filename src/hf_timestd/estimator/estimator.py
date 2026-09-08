@@ -11,12 +11,15 @@ every age, dwell and span on it, so no host clock reaches any decision.
 **The counter wrap, and what it can still hide.** A 32-bit sample counter
 resolves a true interval only while two readings sit within half a wrap of
 each other: 2**31 samples, about 24.9 hours at 24 kHz. Past that a forward
-gap aliases to a NEGATIVE delta, indistinguishable from a backward step, and
-``advance`` latches ``counter_ambiguous`` rather than guessing. One case
-survives even that: a gap of almost exactly a whole number of wrap periods
-aliases to a small POSITIVE delta, which no arithmetic on a 32-bit counter
-can tell from a short interval. Nothing here detects it. Witness innovations
-do, because the implied error is tens of hours and every witness rejects.
+gap aliases to a NEGATIVE delta, carrying the same sign as an out-of-order
+arrival, and MAGNITUDE is what separates them: within the staleness window
+of ``gates.max_phase_age_s`` the reading arrived late, and beyond it -- near
+minus half a wrap, some 70,000 s -- the counter aliased. Only the second
+latches ``counter_ambiguous``; see ``_behind_s``. One case survives even
+that: a gap of almost exactly a whole number of wrap periods aliases to a
+SMALL delta of either sign, which no arithmetic on a 32-bit counter can tell
+from a short interval. Nothing here detects it. Witness innovations do,
+because the implied error is tens of hours and every witness rejects.
 
 **The independence obligation.** ``Admitter`` counts distinct tier strings,
 and one tier string must mean one independent witness. Neither it nor this
@@ -97,10 +100,6 @@ _WITNESS_FLOOR_K = 2.0
 # sqrt(3) * sigma_x / tau. That is the whole criterion, and it needs no
 # constant this project chose: the witnesses declare sigma_x themselves.
 _WHITE_PHASE_ADEV = math.sqrt(3.0)
-
-# (ns/s)^2 per (s/s)^2, mirroring the conversion process_noise applies when
-# it turns a dimensionless deviation into q1 and q2.
-_DIMENSIONLESS_TO_NS2 = 1e18
 
 A_LEVEL_GOVERNED = "A1"
 A_LEVEL_FREE = "A0"
@@ -493,9 +492,10 @@ class StationTimingEstimator:
     def _refit_noise(self) -> None:
         """Read q2 off the accepted residuals' Allan deviation.
 
-        **q2 only.** The series is innovations, so it carries the witnesses'
-        noise as well as the ruler's, and ``noise_from_adev`` fits q1 at the
-        SHORTEST tau -- exactly where witness noise dominates most. Measured
+        **q2 only.** The series is the classical clock difference of
+        ``_note_residual``, never the innovations, and it carries the
+        witnesses' noise as well as the ruler's. ``noise_from_adev`` fits q1
+        at the SHORTEST tau -- exactly where witness noise dominates. Measured
         on a governed ruler with 0.5 ms witnesses, that fit returned
         q1 = 1.49e10 ns^2/s, crediting the hardware with 866 microseconds of
         phase wander a minute where its true wander is nanoseconds, and phase
@@ -628,19 +628,40 @@ class StationTimingEstimator:
             self._n_updates += 1
         return self._admitter.dwelling
 
-    def _witness_counts(self) -> dict[str, dict[str, int]]:
+    def _witness_counts(self) -> dict[str, dict[str, float]]:
         """Every witness this estimator judged, phase and rate alike.
 
         The admitter tallies phase observations; the rate path tallies its
         own, because a rejected rate witness must stay out of the quorum
         machinery. A tier that speaks both ways appears once, and its tally
         counts observations rather than kinds (controller ruling R31).
+
+        Each tier also carries the last phase residual the admitter judged
+        for it and the sigma that tier last declared, which spec section 7
+        promised and nothing published. That pair is the diagnosis an
+        operator wants: two tiers rejecting in the same direction by the
+        same amount name a plane step, and one tier rejecting alone at
+        nineteen sigma names a lattice confusion, and counts alone
+        distinguish neither.
+
+        A tier that has only ever spoken about RATE carries neither key.
+        Its innovation lives in nanoseconds per second and its sigma in
+        parts per million, so filing them under names that mean nanoseconds
+        would put two units under one word. Absent beats mislabelled.
         """
-        counts = self._admitter.counts()
+        judged = self._admitter.counts()
+        counts: dict[str, dict[str, float]] = {
+            tier: dict(tally) for tier, tally in judged.items()
+        }
         for tier, tally in self._rate_counts.items():
             merged = counts.setdefault(tier, {"accepted": 0, "rejected": 0})
             merged["accepted"] += tally["accepted"]
             merged["rejected"] += tally["rejected"]
+        for tier, residual_ns in self._admitter.last_residual_ns.items():
+            counts[tier]["last_residual_ns"] = float(residual_ns)
+        for tier, sigma_ns in self._sigma_by_tier.items():
+            if tier in counts:
+                counts[tier]["last_sigma_ns"] = float(sigma_ns)
         return counts
 
     def _fresh_cutoff(self) -> float:
@@ -668,6 +689,26 @@ class StationTimingEstimator:
         if len(fresh) < 2:
             return None
         return max(fresh) - min(fresh)
+
+    def _q_source(self) -> str:
+        """Where the coefficient CURRENTLY IN USE came from.
+
+        Derived from the coefficient rather than carried alongside it. The
+        stored ``source`` string travels with a ``RulerNoise`` and outlives
+        the fit that set it, so reading it published a label about a
+        measurement rather than about the number the filter is running on.
+        Whenever q2 sits at the declared floor the answer is the stand-in,
+        whatever a past fit called itself: a published provenance field that
+        can disagree with the value it describes undoes the honesty the rest
+        of this design rests on.
+
+        Only q2 is asked about. ``_refit_noise`` holds q1 at the floor on
+        every path, so a q1 test would always answer "standin" and would say
+        nothing about the ruler.
+        """
+        if self._noise.q2 <= self._standin.q2:
+            return self._standin.source
+        return self._noise.source
 
     def _a_level(self, rate_ppm: float, sigma_rate_ppm: float) -> str:
         """Diagnosis only. Nothing in this class branches on it."""
@@ -732,10 +773,13 @@ class StationTimingEstimator:
             # property itself, so both guards must already have been bypassed
             # to arrive here. Named for what actually happened anyway, rather
             # than dressed up as ``not_finite``, which would be a lie about a
-            # perfectly finite number. ``TimingSolution`` will then refuse to
-            # carry it -- ruling R28's exemption covers only ``not_finite``
-            # -- so an impossible state raises loudly instead of publishing a
-            # fabrication.
+            # perfectly finite number. ``TimingSolution`` carries the
+            # offending rate rather than refusing it: ruling R37 widened
+            # R28's exemption to cover ``rate_not_positive`` too, because
+            # refusing to construct made ``solve`` raise and crashed a
+            # caller in a loop where a refusal would have served it. So the
+            # solution withholds and names the divergence, and the record
+            # holds the unusable number that caused it.
             reason = "rate_not_positive"
         else:
             reason = refusal(inputs, self.config.gates)
@@ -753,7 +797,7 @@ class StationTimingEstimator:
             witnesses=self._witness_counts(),
             a_level=self._a_level(rate_ppm, sigma_rate_ppm),
             ruler_provenance=self.ruler_provenance,
-            q_source=self._noise.source,
+            q_source=self._q_source(),
             span_s=span_s,
             n_updates=self._n_updates,
             generation=self._generation,
@@ -784,7 +828,7 @@ class StationTimingEstimator:
             witnesses=self._admitter.counts(),
             a_level=A_LEVEL_FREE,
             ruler_provenance=self.ruler_provenance,
-            q_source=self._noise.source,
+            q_source=self._q_source(),
             span_s=0.0,
             n_updates=0,
             generation=self._generation,

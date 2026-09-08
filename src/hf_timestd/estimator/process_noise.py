@@ -40,7 +40,7 @@ class RulerNoise:
         tau = float(tau_s)
         q1_elem = self.q1 * tau + self.q2 * tau**3 / 3.0
         q2_elem = self.q2 * tau**2 / 2.0
-        return np.array(  # noqa: E501
+        return np.array(
             [[q1_elem, q2_elem], [q2_elem, self.q2 * tau]], dtype=float
         )
 
@@ -52,7 +52,7 @@ def standin_sigma_ppm(provenance: str) -> float:
     return SIGMA_PPM_UNDISCIPLINED_STANDIN
 
 
-def noise_from_standin(  # noqa: E501
+def noise_from_standin(
     sigma_ppm: float, horizon_s: float = 3600.0
 ) -> RulerNoise:
     """Floor noise so rate uncertainty regrows to stand-in over horizon.
@@ -77,7 +77,7 @@ def noise_from_adev(
     tau_arr = np.asarray(taus, dtype=float)
     adev_arr = np.asarray(adev, dtype=float)
     good = (
-        np.isfinite(tau_arr)  # noqa: E501
+        np.isfinite(tau_arr)
         & np.isfinite(adev_arr)
         & (tau_arr > 0)
         & (adev_arr > 0)
@@ -92,10 +92,23 @@ def noise_from_adev(
     tau_short, adev_short = float(tau_arr[0]), float(adev_arr[0])
     tau_long, adev_long = float(tau_arr[-1]), float(adev_arr[-1])
 
+    # This q1 reaches no assembled system, and that is deliberate rather
+    # than an oversight. ``noise_from_standin`` floors q1 at zero, and
+    # ``StationTimingEstimator._refit_noise`` keeps that floor and takes
+    # only q2 from the fit -- so the value computed here is discarded on
+    # every path the estimator uses. The short tau is exactly where witness
+    # white phase noise dominates and the ruler's own contribution is
+    # smallest, so a q1 read there measures the witnesses. Measured on a
+    # governed ruler with 0.5 ms witnesses: q1 = 1.49e10 ns^2/s, crediting
+    # the hardware with 866 microseconds of phase wander a minute where its
+    # true wander is nanoseconds, and phase sigma then parked at 451
+    # microseconds instead of averaging down (controller ruling R34,
+    # 2026-09-08). The fit stays here, honest about what it found, for a
+    # caller that wants the whole curve.
     q1 = adev_short**2 * tau_short * _DIMENSIONLESS_TO_NS
     q2 = 3.0 * adev_long**2 / tau_long * _DIMENSIONLESS_TO_NS
     if not (math.isfinite(q1) and math.isfinite(q2)):
         return floor
-    return RulerNoise(  # noqa: E501
+    return RulerNoise(
         q1=max(q1, floor.q1), q2=max(q2, floor.q2), source="measured"
     )

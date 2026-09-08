@@ -3,7 +3,7 @@
 `src/hf_timestd/estimator/` holds one estimator that maps a sample index to Coordinated
 Universal Time (UTC). It runs on the sample counter alone. No host clock reaches it, no service
 constructs it, and neither AC0G-ND nor AC0G-B4 receives anything from it. It ships as a library
-with 188 tests and no consumers, deliberately, so that its arithmetic and its refusals could be
+with 199 tests and no consumers, deliberately, so that its arithmetic and its refusals could be
 proven against recorded failure before any of it touched a live plane.
 
 Its companion, the design spec at
@@ -172,6 +172,16 @@ library only tells the truth about its own state, and a withheld solution still 
 number it has, because a consumer that can see why an answer was withheld can act while one
 handed silence cannot.
 
+The solution's `witnesses` mapping carries four numbers per tier, not two: the accepted and
+rejected counts, and — for any tier that has supplied at least one phase observation — the last
+residual the admitter judged for it and the sigma it last declared. Counts alone do not diagnose
+a station. Two tiers rejecting in the same direction by the same amount name a plane step; one
+tier rejecting alone at nineteen sigma names a lattice confusion. The residual is what tells
+those apart, so a consumer diagnosing a station reads it there. A tier that has only ever spoken
+about rate carries neither of the last two, because its innovation lives in nanoseconds per
+second and its sigma in parts per million, and filing those under names that mean nanoseconds
+would put two units under one word.
+
 Refusals resolve in order, first match winning, following the shape `registration_refusal`
 already established. Eight of them sit in `gates.REFUSAL_ORDER`:
 
@@ -240,7 +250,7 @@ aliases by a full wrap period without raising anything.
 
 The estimator folds its plane forward on every solve, so no working station approaches the
 horizon. A station that stops does. A paused daemon or a recorder outage resumes with a forward
-gap that aliases to a negative delta, indistinguishable from a backward step. The first design
+gap that aliases to a negative delta, carrying the same sign as a backward step. The first design
 said `advance` should refuse a negative delta by returning without change, and silently. A
 review measured what that produced: a thirty-hour gap published with no refusal at all and a
 UTC wrong by one whole wrap period, 178,956.97 s, with ruler time frozen so `stale_phase` never
@@ -252,6 +262,38 @@ counter-epoch change through `note_counter_epoch_change`, because only a fresh s
 re-establishes the plane. A station that legitimately idles more than a day must therefore
 re-seed rather than resume, which is the correct behaviour for an instrument that cannot prove
 how long it slept.
+
+### What a negative delta means, and why magnitude decides
+
+Latching on every negative delta was itself a fault, and a worse one. Two tiers on different
+cadences report out of order as a matter of course, so one witness naming a sample index one
+second behind the last one is ordinary integration. Latching on that withheld every later
+solution, permanently, on an announced-epoch-change-only reprieve. Measured: a healthy plane,
+then one witness a second behind, and every later solve returned `withhold /
+counter_ambiguous` forever.
+
+The two cases differ by magnitude, by roughly three hundred to one, and the bound needs no
+constant anybody chose. A genuinely late arrival can only be so late and still matter: a phase
+observation older than `gates.max_phase_age_s` is what `stale_phase` already refuses, 300 s,
+which is 7,200,000 samples at 24 kHz. An aliased gap comes back near minus half a wrap, about
+-70,000 s. So:
+
+| magnitude of a negative delta | reading | what happens |
+|---|---|---|
+| within `max_phase_age_s` | an out-of-order arrival | that one observation is refused as `out_of_order` and counted against its tier; the state, the plane and the latch are untouched, and later solutions publish |
+| beyond it | an aliased gap | `counter_ambiguous` latches, exactly as above |
+
+An out-of-order refusal is counted through `Admitter.note_rejection`, which bumps the tally and
+files no dissent. A late arrival says nothing about where the plane sits, so it must never help
+a quorum license a step.
+
+The plane is also read before the clock moves. A host-plane phase observation reaches the
+coarse gate and nothing else — the ruler clock included — because letting the network advance
+this estimator's own time base is the coupling §3 forbids.
+
+One case still survives, and it is the same one §4 already documented: a gap of very nearly a
+whole number of wrap periods aliases to a small delta of either sign, and nothing on a 32-bit
+counter tells that from a short interval. Witness innovations do.
 
 One case survives even that, and it is documented rather than papered over. A gap of almost
 exactly a whole number of wrap periods aliases to a small positive delta, and no arithmetic on
@@ -445,6 +487,14 @@ The measured path still does real work, though. On a ruler wandering 3.5 ppm per
 fitted deviation runs 19 to 163 times the witness floor and `q_source` reads `measured` on
 every seed, and it reads `standin` again the moment a three-hour hole enters the same ruler's
 series.
+
+`q_source` describes the coefficient the filter is currently running on, and it is derived from
+that coefficient rather than carried beside it. A `RulerNoise`'s own `source` string travels
+with the number and outlives the fit that set it, so reading the stored string published a label
+about a past measurement instead of about the value in use. Whenever the random-walk coefficient
+sits at the declared floor the answer is `standin`, whatever an earlier fit called itself. A
+published provenance field that can disagree with the value it describes undoes the honesty the
+rest of this design rests on, and one derived from the value cannot.
 
 ### A high rejection rate against a declared-disciplined ruler means the declaration is false
 
