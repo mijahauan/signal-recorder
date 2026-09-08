@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from hf_timestd.estimator.solution import (
@@ -136,3 +138,33 @@ def test_zero_rate_is_refused():
 def test_negative_rate_is_refused():
     with pytest.raises(ValueError, match="strictly positive"):
         make(rate_samples_per_utc_sec=-24000.0)
+
+
+def test_a_not_finite_withholding_solution_may_carry_a_nan():
+    """The one place a non-finite float is the honest answer.
+
+    The gates' first refusal names a state that carries a NaN. If the record
+    that reports that refusal cannot itself hold the NaN, the only way to
+    publish the refusal is to zero the numbers and call them real, which is
+    the one thing this instrument must never do (controller ruling R28).
+    """
+    sol = make(
+        verdict=VERDICT_WITHHOLD,
+        refusal="not_finite",
+        phase_ns=float("nan"),
+    )
+    assert sol.refusal == "not_finite"
+    assert math.isnan(sol.phase_ns)
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    ["no_phase_witness", "stale_phase", "step_pending", "variance"],
+)
+def test_a_nan_still_fails_under_every_other_refusal(refusal: str) -> None:
+    with pytest.raises(ValueError, match="not finite"):
+        make(
+            verdict=VERDICT_WITHHOLD,
+            refusal=refusal,
+            phase_ns=float("nan"),
+        )

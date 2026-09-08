@@ -63,6 +63,17 @@ class TimingSolution:
             msg = f"verdict {self.verdict!r} names neither outcome"
             raise ValueError(msg)
 
+        # A withheld solution whose refusal is exactly ``not_finite`` is the
+        # one record permitted to carry a non-finite number. The gates resolve
+        # ``not_finite`` first, so a state carrying a NaN can reach no other
+        # refusal; if this record then refused the NaN, the only way to report
+        # that refusal at all would be to zero the numbers and call them real.
+        # Every other verdict and refusal still requires finite floats, and a
+        # strictly positive rate (controller ruling R28, 2026-09-08).
+        if self.verdict == VERDICT_WITHHOLD and self.refusal == "not_finite":
+            self._freeze_witnesses()
+            return
+
         # Validate all float fields are finite
         _check_float_finite("phase_ns", self.phase_ns)
         _check_float_finite("sigma_phase_ns", self.sigma_phase_ns)
@@ -81,6 +92,9 @@ class TimingSolution:
             "rate_samples_per_utc_sec", self.rate_samples_per_utc_sec
         )
 
+        self._freeze_witnesses()
+
+    def _freeze_witnesses(self) -> None:
         # Deep-freeze witnesses at both levels
         object.__setattr__(
             self,
