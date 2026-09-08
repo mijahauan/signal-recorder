@@ -13,6 +13,7 @@ CFG = GateConfig()
 
 def clean(**kw) -> GateInputs:
     args = dict(
+        counter_ambiguous=False,
         has_phase=True,
         phase_age_s=10.0,
         step_pending=False,
@@ -83,6 +84,25 @@ def test_the_order_is_fixed_and_the_earliest_reason_wins():
     assert REFUSAL_ORDER[0] == "not_finite"
 
 
+def test_an_ambiguous_counter_outranks_every_reason_but_a_bad_number():
+    """A plane read through an aliased delta is unmoored, not merely stale."""
+    inputs = clean(
+        counter_ambiguous=True,
+        has_phase=False,
+        phase_age_s=1e9,
+        step_pending=True,
+        sigma_phase_ns=9e9,
+    )
+    assert refusal(inputs, CFG) == "counter_ambiguous"
+    assert REFUSAL_ORDER.index("counter_ambiguous") == 1
+    assert REFUSAL_ORDER.index("counter_ambiguous") < REFUSAL_ORDER.index(
+        "no_phase_witness"
+    )
+    # A bad number still wins, because it may be the reason for the rest.
+    worse = clean(counter_ambiguous=True, phase_age_s=float("nan"))
+    assert refusal(worse, CFG) == "not_finite"
+
+
 def test_step_pending_outranks_variance():
     inputs = clean(step_pending=True, sigma_phase_ns=9e9)
     assert refusal(inputs, CFG) == "step_pending"
@@ -95,6 +115,7 @@ def test_every_named_refusal_can_actually_fire():
     fired = set()
     for inputs in (
         clean(phase_age_s=float("nan")),
+        clean(counter_ambiguous=True),
         clean(has_phase=False),
         clean(phase_age_s=1e9),
         clean(step_pending=True),

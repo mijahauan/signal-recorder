@@ -8,6 +8,16 @@ Every notion of time here arrives as a sample index inside an observation.
 The estimator accumulates its own ``_ruler_s`` from those indices and runs
 every age, dwell and span on it, so no host clock reaches any decision.
 
+**The counter wrap, and what it can still hide.** A 32-bit sample counter
+resolves a true interval only while two readings sit within half a wrap of
+each other: 2**31 samples, about 24.9 hours at 24 kHz. Past that a forward
+gap aliases to a NEGATIVE delta, indistinguishable from a backward step, and
+``advance`` latches ``counter_ambiguous`` rather than guessing. One case
+survives even that: a gap of almost exactly a whole number of wrap periods
+aliases to a small POSITIVE delta, which no arithmetic on a 32-bit counter
+can tell from a short interval. Nothing here detects it. Witness innovations
+do, because the implied error is tens of hours and every witness rejects.
+
 **The independence obligation.** ``Admitter`` counts distinct tier strings,
 and one tier string must mean one independent witness. Neither it nor this
 class can check that: only whoever wires the adapters knows whether two tier
@@ -73,6 +83,11 @@ SEED_RATE_SIGMA_PPM = 100.0
 # recent ruler rather than averaging in a day that has already ended.
 RESIDUAL_CAP = 4096
 
+# How far the widest gap in the residual series may stray from the median
+# before an Allan fit means nothing. Three is loose enough to tolerate the
+# ragged periodicity of real witnesses and tight enough to reject a hole.
+_MAX_GAP_RATIO = 3.0
+
 A_LEVEL_GOVERNED = "A1"
 A_LEVEL_FREE = "A0"
 
@@ -122,11 +137,15 @@ class StationTimingEstimator:
             maxlen=RESIDUAL_CAP
         )
         self._since_refit = 0
-        self._coarse: tuple[float, float] | None = None
-        self._rates: dict[str, float] = {}
+        # (delta_ns, sigma_ns, ruler_s) and {source: (ppm, ruler_s)}.
+        # Both carry a stamp so a dead source's last claim cannot vote
+        # forever; see _fresh_coarse and _rate_spread_ppm.
+        self._coarse: tuple[float, float, float] | None = None
+        self._rates: dict[str, tuple[float, float]] = {}
         self._rate_counts: dict[str, dict[str, int]] = {}
         self._sigma_by_tier: dict[str, float] = {}
         self._surviving_rate: tuple[float, float] | None = None
+        self._counter_ambiguous = False
 
     @property
     def generation(self) -> int:
@@ -147,15 +166,24 @@ class StationTimingEstimator:
 
         One call does both the prediction and the rebase, because two
         extrapolation mechanisms counted the ruler's rate twice (ruling
-        R13). A request to run backwards changes nothing rather than
-        raising: an out-of-order arrival is a caller's ordering problem, not
-        a timing fault, and the state it would corrupt is the thing worth
-        protecting.
+        R13).
+
+        A negative delta leaves the state alone AND latches
+        ``counter_ambiguous``, which withholds every later solution until an
+        announced epoch change. It must not return silently: a forward gap
+        past half a wrap period aliases to exactly the same negative delta as
+        a backward step, so the silent path took a resuming daemon and
+        published a plane a whole wrap period wrong -- 178,956.97 seconds at
+        24 kHz -- with ruler time frozen, so ``stale_phase`` never fired
+        either. Measured: a 24-hour gap resolves, 25 hours and beyond
+        aliases. "Ambiguous" rather than "backward" because we genuinely
+        cannot tell the two apart (controller ruling R33, 2026-09-08).
         """
         state = self._state
         if state is None:
             return
         if state.elapsed_s(state.rtp_ref, rtp) < 0.0:
+            self._counter_ambiguous = True
             return
         self._ruler_s += state.advance_to(rtp, self._noise)
 
@@ -198,8 +226,15 @@ class StationTimingEstimator:
         self._since_refit = 0
         self._sigma_by_tier.clear()
         self._rate_counts.clear()
-        # Rate observations describe the oscillator, which the epoch change
-        # did not touch, so the rate-spread gate keeps its witnesses.
+        self._rates.clear()
+        # Only here. A fresh seed is the one thing that re-establishes the
+        # plane, so it is the one thing entitled to forgive an ambiguous
+        # counter delta: nothing else can tell whether the old plane still
+        # describes this counter space.
+        self._counter_ambiguous = False
+        # ``q_source`` would otherwise describe a residual series this same
+        # method just cleared.
+        self._noise = self._standin
         self._admitter.reset(why)
 
     # ---- observations ---------------------------------------------------
@@ -224,7 +259,7 @@ class StationTimingEstimator:
         if not obs.is_label_plane:
             # Wide-angle network time feeds the coarse gate and nothing
             # else. Newest reading only (spec section 5).
-            self._coarse = (residual_ns, float(obs.sigma_ns))
+            self._coarse = (residual_ns, float(obs.sigma_ns), self._ruler_s)
             return verdict
 
         self._sigma_by_tier[obs.tier] = float(obs.sigma_ns)
@@ -252,7 +287,7 @@ class StationTimingEstimator:
         # Recorded before the gate, deliberately. The rate-spread gate
         # alarms on what witnesses CLAIM, and a witness this filter just
         # rejected is exactly the disagreement worth publishing.
-        self._rates[obs.source] = float(obs.ppm)
+        self._rates[obs.source] = (float(obs.ppm), self._ruler_s)
         state = self._state
         if state is None:
             return Verdict(False, REASON_NO_PLANE, 0.0, r)
@@ -329,24 +364,45 @@ class StationTimingEstimator:
         self._refit_noise()
 
     def _refit_noise(self) -> None:
-        """Read q1 and q2 off the accepted residuals' Allan deviation.
+        """Read q2 off the accepted residuals' Allan deviation.
 
-        Two honesty points. ``compute_phase_adev`` assumes a uniformly
-        sampled series and these observations are only roughly periodic, so
-        the median spacing stands in for a sample interval the series does
-        not really have. And every coefficient is floored at the stand-in
-        for the declared ruler, so the filter can widen its memory but never
-        narrow it below what the declared hardware supports (spec section
-        10).
+        **q2 only.** The series is innovations, so it carries the witnesses'
+        noise as well as the ruler's, and ``noise_from_adev`` fits q1 at the
+        SHORTEST tau -- exactly where witness noise dominates most. Measured
+        on a governed ruler with 0.5 ms witnesses, that fit returned
+        q1 = 1.25e10 ns^2/s, crediting the hardware with 866 microseconds of
+        phase wander a minute where its true wander is nanoseconds, and phase
+        sigma then parked at 446 microseconds instead of averaging down. At
+        long tau the ruler's random walk rises while witness white noise
+        averages down, so the long-tau fit is trustworthy and the short-tau
+        fit is contaminated. Take q2 from the fit, keep q1 at the declared
+        floor (controller ruling R34, 2026-09-08).
+
+        **And only from a roughly uniform series.** ``compute_phase_adev``
+        assumes uniform spacing, and a median gap is hole-blind: a 10,800 s
+        hole among 60 s spacings still reported a measured fit, from second
+        differences straddling it that mean nothing. Refuse the fit unless
+        the widest gap sits within ``_MAX_GAP_RATIO`` of the median, and
+        leave the stand-in in place.
+
+        The floor is what lets the filter widen its memory and never narrow
+        it below what the declared hardware supports (spec section 10).
         """
         times = [t for t, _ in self._residuals]
         gaps = [b - a for a, b in zip(times, times[1:]) if b > a]
         if not gaps:
             return
         tau0 = statistics.median(gaps)
+        if max(gaps) > _MAX_GAP_RATIO * tau0:
+            # No refit and no reset of the counter, so the fit is retried
+            # once the hole has aged out of the bounded series.
+            return
         phase = np.array([v for _, v in self._residuals], dtype=float)
         taus, adev = compute_phase_adev(phase, tau0)
-        self._noise = noise_from_adev(taus, adev, floor=self._standin)
+        fitted = noise_from_adev(taus, adev, floor=self._standin)
+        self._noise = RulerNoise(
+            q1=self._standin.q1, q2=fitted.q2, source=fitted.source
+        )
         self._since_refit = 0
 
     # ---- the step, and the gates ---------------------------------------
@@ -354,18 +410,17 @@ class StationTimingEstimator:
     def _settle_step(self, state: ClockState, rtp: int) -> bool:
         """Apply a ripe step proposal; report whether one still dwells."""
         proposal = self._admitter.step(self._ruler_s)
-        sigmas = [
-            self._sigma_by_tier[t]
-            for t in (() if proposal is None else proposal.tiers)
-            if t in self._sigma_by_tier
-        ]
-        # Every dissenting tier reached ``judge`` through ``_observe_phase``,
-        # which records its sigma, so an empty list contradicts the
-        # admitter's own bookkeeping. Refuse the step rather than reseed on
-        # a zero variance, which would claim perfect phase knowledge; the
-        # candidate stays dwelling and the solution keeps saying so.
-        if proposal is not None and sigmas:
-            sigma_ns = max(proposal.spread_ns, min(sigmas))
+        if proposal is not None:
+            # Every dissenting tier reached ``judge`` through
+            # ``_observe_phase``, which records its sigma, so ``min`` cannot
+            # see an empty sequence. If it ever does, raising is the honest
+            # answer to an impossible state: the earlier guard here left
+            # ``dwelling`` latched True and wedged the estimator on
+            # ``step_pending`` forever, which is worse than no guard.
+            sigma_ns = max(
+                proposal.spread_ns,
+                min(self._sigma_by_tier[t] for t in proposal.tiers),
+            )
             state.reseed_phase(
                 utc_ns=state.utc_ns_at(rtp) + round(proposal.implied_error_ns),
                 rtp=rtp,
@@ -395,11 +450,31 @@ class StationTimingEstimator:
             merged["rejected"] += tally["rejected"]
         return counts
 
-    def _rate_spread_ppm(self) -> float | None:
-        if len(self._rates) < 2:
+    def _fresh_cutoff(self) -> float:
+        """Ruler time before which a witness's last claim stops voting.
+
+        Mirrors the admitter's dissents, which already expire. Two rate
+        witnesses 5 ppm apart for one minute used to withhold the station's
+        whole timing product for as long as it ran, surviving an epoch change
+        and a reseed, because neither record carried a stamp. Silence from a
+        witness is not agreement, so it must not count as disagreement
+        either; noticing a dead witness belongs to whoever wired it
+        (controller ruling R35, 2026-09-08).
+        """
+        return self._ruler_s - self.config.admission.freshness_s
+
+    def _fresh_coarse(self) -> tuple[float, float] | None:
+        coarse = self._coarse
+        if coarse is None or coarse[2] < self._fresh_cutoff():
             return None
-        values = list(self._rates.values())
-        return max(values) - min(values)
+        return coarse[0], coarse[1]
+
+    def _rate_spread_ppm(self) -> float | None:
+        cutoff = self._fresh_cutoff()
+        fresh = [ppm for ppm, at_s in self._rates.values() if at_s >= cutoff]
+        if len(fresh) < 2:
+            return None
+        return max(fresh) - min(fresh)
 
     def _a_level(self, rate_ppm: float, sigma_rate_ppm: float) -> str:
         """Diagnosis only. Nothing in this class branches on it."""
@@ -434,8 +509,9 @@ class StationTimingEstimator:
             if self._last_phase_at_s is None
             else self._ruler_s - self._last_phase_at_s
         )
-        coarse = self._coarse
+        coarse = self._fresh_coarse()
         inputs = GateInputs(
+            counter_ambiguous=self._counter_ambiguous,
             has_phase=self._last_phase_at_s is not None,
             phase_age_s=age_s,
             step_pending=step_pending,
@@ -455,8 +531,19 @@ class StationTimingEstimator:
             sigma_rate_ppm,
             span_s,
         ) + covariance
-        if any(not math.isfinite(v) for v in derived) or f_meas <= 0.0:
+        if any(not math.isfinite(v) for v in derived):
             reason: str | None = "not_finite"
+        elif f_meas <= 0.0:
+            # Unreachable: ``ClockState`` refuses a non-positive ``f_nom`` at
+            # construction and refuses a denominator at or below zero in the
+            # property itself, so both guards must already have been bypassed
+            # to arrive here. Named for what actually happened anyway, rather
+            # than dressed up as ``not_finite``, which would be a lie about a
+            # perfectly finite number. ``TimingSolution`` will then refuse to
+            # carry it -- ruling R28's exemption covers only ``not_finite``
+            # -- so an impossible state raises loudly instead of publishing a
+            # fabrication.
+            reason = "rate_not_positive"
         else:
             reason = refusal(inputs, self.config.gates)
         return TimingSolution(
@@ -497,6 +584,9 @@ class StationTimingEstimator:
             rate_samples_per_utc_sec=float(self.f_nom),
             covariance=(0.0, 0.0, 0.0),
             verdict=VERDICT_WITHHOLD,
+            # Never ``counter_ambiguous`` here: the latch is only set while a
+            # state exists, and the only thing that drops the state clears
+            # the latch in the same call.
             refusal="no_phase_witness",
             witnesses=self._admitter.counts(),
             a_level=A_LEVEL_FREE,

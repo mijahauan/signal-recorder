@@ -389,3 +389,128 @@ def test_the_residual_series_stops_at_its_cap_and_still_fits_after():
     # unbounded growth, and only the length can witness that.
     assert len(est._residuals) == RESIDUAL_CAP
     assert est.solve(marks[-1]).q_source == "measured"
+
+
+# ---- ruling R33: an ambiguous counter delta latches, never passes -------
+
+WRAP = 2**32
+HOUR = 3600 * F_NOM
+
+
+def test_a_gap_past_half_a_wrap_latches_ambiguous_instead_of_publishing():
+    """The resuming-daemon fault: 30 hours aliased to a backward step."""
+    st, est, rtp = settled()
+    far = (rtp + 30 * HOUR) % WRAP
+    est.advance(far)
+    sol = est.solve(far)
+
+    assert sol.verdict == VERDICT_WITHHOLD
+    assert sol.refusal == "counter_ambiguous"
+    # And it stays latched: a later, perfectly ordinary sample does not
+    # forgive it, because nothing but a fresh seed re-establishes the plane.
+    assert est.solve(rtp).refusal == "counter_ambiguous"
+
+
+def test_a_gap_inside_half_a_wrap_still_advances():
+    st, est, rtp = settled()
+    far = (rtp + 20 * HOUR) % WRAP
+    est.advance(far)
+    sol = est.solve(far)
+
+    assert sol.refusal == "stale_phase"
+    assert sol.rtp_ref == far
+    assert sol.span_s == pytest.approx(20 * 3600 + 600, abs=1.0)
+
+
+def test_an_announced_epoch_change_clears_the_ambiguity():
+    st, est, rtp = settled()
+    est.advance((rtp + 30 * HOUR) % WRAP)
+    assert est.solve(rtp).refusal == "counter_ambiguous"
+
+    est.note_counter_epoch_change("recorder announced a new counter space")
+    st2 = Station(ppm=0.0, rtp0=5_000_000)
+    est.observe(st2.phase(st2.rtp0))
+    assert est.solve(st2.rtp0).refusal is None
+
+
+# ---- ruling R35: a dead witness stops voting ----------------------------
+
+
+def age_out(st, est, from_minute: int, to_minute: int) -> int:
+    """Keep the phase witness fresh while older claims expire."""
+    for rtp in minute_marks(to_minute)[from_minute:]:
+        est.observe(st.phase(rtp))
+        est.advance(rtp)
+    return minute_marks(to_minute)[-1]
+
+
+def test_a_stale_rate_disagreement_expires_and_publishing_resumes():
+    st, est, rtp = settled(n_minutes=6)
+    for ppm, source in ((+0.0, "t6-residual"), (+5.0, "fold-drift")):
+        est.observe(rate_obs(ppm=ppm, sigma_ppm=0.1, source=source))
+    assert est.solve(rtp).refusal == "rate_disagreement"
+
+    last = age_out(st, est, 6, 12)
+    sol = est.solve(last)
+    assert sol.refusal is None
+    assert sol.verdict == VERDICT_PUBLISH
+
+
+def test_a_stale_coarse_disagreement_expires_and_publishing_resumes():
+    st, est, rtp = settled(n_minutes=6)
+    est.observe(
+        PhaseObservation(
+            tier="T2",
+            rtp=rtp,
+            utc_ns=st.true_utc_ns(rtp) + round(400.0 * MS),
+            sigma_ns=25.0 * MS,
+            plane=PLANE_HOST,
+            source="ntp-pool",
+        )
+    )
+    assert est.solve(rtp).refusal == "coarse_disagreement"
+
+    last = age_out(st, est, 6, 12)
+    sol = est.solve(last)
+    assert sol.refusal is None
+    assert sol.verdict == VERDICT_PUBLISH
+
+
+# ---- ruling R34: the Allan fit takes q2 only, from a uniform series -----
+
+
+def watch(est, st, marks, sigma_ns=0.5 * MS, rng=None):
+    for rtp in marks:
+        est.observe(st.phase(rtp, sigma_ns=sigma_ns, rng=rng))
+        est.advance(rtp)
+    return marks[-1]
+
+
+def test_a_uniform_series_fits_and_leaves_q1_at_the_declared_floor():
+    st = Station(ppm=0.0)
+    est = StationTimingEstimator(f_nom=F_NOM, ruler_provenance="observed")
+    rng = np.random.default_rng(19)
+    last = watch(est, st, minute_marks(70), rng=rng)
+    sol = est.solve(last)
+
+    assert sol.q_source == "measured"
+    # q1 is the witnesses' noise, not the ruler's, so it never leaves the
+    # floor. q2 is read off the long tau, where the ruler dominates.
+    assert est._noise.q1 == est._standin.q1
+    assert est._noise.q2 >= est._standin.q2
+
+
+def test_a_holed_series_refuses_to_fit_and_keeps_the_standin():
+    st = Station(ppm=0.0)
+    est = StationTimingEstimator(f_nom=F_NOM, ruler_provenance="observed")
+    rng = np.random.default_rng(19)
+    early = minute_marks(30)
+    # A three-hour hole among sixty-second spacings.
+    hole = early[-1] + 3 * HOUR
+    late = [hole + m * 60 * F_NOM for m in range(41)]
+    last = watch(est, st, early + late, rng=rng)
+    sol = est.solve(last)
+
+    assert sol.n_updates >= 60
+    assert sol.q_source == "standin"
+    assert est._noise is est._standin

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 REFUSAL_ORDER = (
     "not_finite",
+    "counter_ambiguous",
     "no_phase_witness",
     "stale_phase",
     "step_pending",
@@ -33,6 +34,7 @@ class GateConfig:
 
 @dataclass(frozen=True)
 class GateInputs:
+    counter_ambiguous: bool
     has_phase: bool
     phase_age_s: float
     step_pending: bool
@@ -63,6 +65,15 @@ def refusal(inputs: GateInputs, config: GateConfig) -> str | None:
     ]
     if any(not math.isfinite(float(v)) for v in numbers):
         return "not_finite"
+
+    # Second, and above every other reason, because a plane read through an
+    # ambiguous counter delta is not stale or wide -- it is unmoored. A gap
+    # past half a wrap period aliases to a negative delta, indistinguishable
+    # from a backward step, so the caller's clock state may sit a whole wrap
+    # period away from the truth: 49.7 hours at 24 kHz. Nothing downstream of
+    # here can be trusted while it stands.
+    if inputs.counter_ambiguous:
+        return "counter_ambiguous"
 
     if not inputs.has_phase:
         return "no_phase_witness"
