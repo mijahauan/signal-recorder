@@ -126,7 +126,13 @@ def test_innovation_does_not_mutate_the_state():
 
 
 def test_many_small_advances_equal_one_big_advance():
-    """The no-double-count property. Nothing may extrapolate twice."""
+    """The no-double-count property. Nothing may extrapolate twice.
+
+    Detects path-dependence (a fold losing or gaining ns across many small
+    steps). Blind to a rate*tau double count: that defect is linear, so it
+    scales identically whether folded once or many times, and this test
+    cannot see it.
+    """
     # 100 ppm: a double count would be loud.
     stepwise = fresh(rate_ns_per_s=-100_000.0)
     single = fresh(rate_ns_per_s=-100_000.0)
@@ -138,12 +144,40 @@ def test_many_small_advances_equal_one_big_advance():
 
 
 def test_a_consumer_dividing_by_the_published_rate_agrees_exactly():
-    """One arithmetic. The published rate must reproduce our own projection."""
+    """One arithmetic. The published rate must reproduce our own projection.
+
+    Detects f_meas and utc_ns_at disagreeing with EACH OTHER. Blind to both
+    being wrong the same way: it compares the module against itself, so a
+    build that applies the rate twice in both places still agrees with
+    itself.
+    """
     st = fresh(rate_ns_per_s=-100_000.0)
     for delta in (F_NOM, 60 * F_NOM, 3600 * F_NOM):
         ours = st.utc_ns_at(1_000_000 + delta)
         theirs = st.utc_ref_ns + round(st.phase_ns + 1e9 * delta / st.f_meas)
         assert abs(ours - theirs) <= 1, f"delta={delta}"
+
+
+def test_the_projection_matches_an_analytic_truth_from_the_physical_rate():
+    """The expectation comes from f_true, not from what this module computes.
+
+    Both of the other rate tests compare the module against itself, so a
+    consistently wrong pair satisfies them. This one starts from a physical
+    sample rate, computes the truth in exact rational arithmetic, and would
+    catch a build that applied the rate twice by 36 ms over an hour
+    (controller ruling R16, 2026-09-08).
+    """
+    from fractions import Fraction
+
+    f_true = Fraction(2_400_024, 100)  # 24000.24 exactly, i.e. +10 ppm
+    rate_ns_per_s = 10**9 * (Fraction(F_NOM, 1) / f_true - 1)
+
+    st = fresh(rate_ns_per_s=float(rate_ns_per_s))
+    delta = 3600 * F_NOM  # one hour of samples
+    truth_ns = round(Fraction(10**9) * delta / f_true)
+
+    span = st.utc_ns_at(1_000_000 + delta) - st.utc_ns_at(1_000_000)
+    assert span == truth_ns
 
 
 def test_a_hundred_thousand_advances_lose_no_nanoseconds():
@@ -191,3 +225,38 @@ def test_reseeding_phase_leaves_rate_and_its_variance_alone():
     assert st.p[PHASE, RATE] == 0.0
     assert st.p[PHASE, PHASE] == pytest.approx((2.0e6) ** 2)
     assert st.phase_ns == pytest.approx(50_000_000.0, abs=1.0)
+
+
+def test_reseed_phase_accepts_now_and_refuses_backwards():
+    """reseed_phase inherits advance_to's refusal to run backwards.
+
+    At or after the current reference works: a step proposal's median
+    innovation already lives at the current reference, so there is never a
+    reason to reseed earlier than it. Reaching backwards raises, naming
+    the direction.
+    """
+    st = fresh(rate_ns_per_s=-750.0, p=np.array([[10.0, 3.0], [3.0, 9.0]]))
+    st.reseed_phase(
+        utc_ns=st.utc_ns_at(1_000_000) + 1_000_000,
+        rtp=1_000_000,
+        sigma_ns=1.0e6,
+    )
+    assert st.rate_ns_per_s == pytest.approx(-750.0)
+
+    earlier = fresh(
+        rate_ns_per_s=-750.0,
+        p=np.array([[10.0, 3.0], [3.0, 9.0]]),
+    )
+    earlier.advance_to(1_000_000 + F_NOM, QUIET)
+    with pytest.raises(ValueError, match="backwards"):
+        earlier.reseed_phase(utc_ns=0, rtp=1_000_000, sigma_ns=1.0e6)
+
+
+def test_f_meas_refuses_a_stopped_or_reversed_clock():
+    """A rate at or past -1e9 ns/s stops or reverses the clock; only a
+    diverged filter reaches it, so f_meas names the rate and raises rather
+    than dividing by zero or returning a negative rate.
+    """
+    st = fresh(rate_ns_per_s=-1_000_000_000.0)
+    with pytest.raises(ValueError, match="-1000000000"):
+        st.f_meas

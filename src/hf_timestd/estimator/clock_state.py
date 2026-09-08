@@ -90,8 +90,18 @@ class ClockState:
         how one arithmetic quietly becomes two: over an hour at 100 ppm the
         gap reaches 36 microseconds. A consumer dividing by this value
         reproduces ``utc_ns_at`` to the nanosecond.
+
+        Refuses a rate at or past -1e9 ns/s: that stops or reverses the
+        clock, which only a diverged filter reaches, and dividing by the
+        resulting zero or negative denominator would otherwise raise an
+        incidental ``ZeroDivisionError`` or return a negative rate.
         """
-        return self.f_nom * _NS_PER_S / (_NS_PER_S + self.rate_ns_per_s)
+        denom = _NS_PER_S + self.rate_ns_per_s
+        if denom <= 0.0:
+            raise ValueError(
+                f"rate {self.rate_ns_per_s!r} ns/s stops or reverses the clock"
+            )
+        return self.f_nom * _NS_PER_S / denom
 
     @property
     def sigma_phase_ns(self) -> float:
@@ -186,6 +196,12 @@ class ClockState:
         and its variance survive a reseed untouched (spec section 4). The
         internal fold uses zero process noise so the interval crossed to
         reach ``rtp`` cannot grow the rate's variance either.
+
+        Inherits ``advance_to``'s refusal to run backwards: ``rtp`` must sit
+        at or after the current reference. A step proposal's median
+        innovation already lives at the current reference, so there is no
+        reason to reseed earlier than it; a caller that tries raises
+        ``ValueError`` naming the direction.
         """
         self.advance_to(rtp, _ZERO_NOISE)
         self.x[PHASE] = float(int(utc_ns) - self.utc_ref_ns)
