@@ -112,12 +112,16 @@ anyone, and fetches nothing itself.
 
 **A phase observation** says that the sample at a named index carried a given UTC.
 
-    PhaseObservation(tier, rtp, utc_ns, sigma_ns, plane, source, seq)
+    PhaseObservation(tier, rtp, utc_ns, sigma_ns, plane, source)
 
 The pulse-per-second edge, the LBE per-arrival pairing and the tick registration all speak this
 way. Wide-angle network time speaks this way too, once a caller pairs a disciplined host reading
 with an arrival index, and it declares itself host-plane, which routes it to the gate of §5 and
 keeps it out of the state.
+
+The field `seq` appeared here in the first draft and left again on 2026-09-08, during the
+pre-flight scan of the implementation plan. Nothing in this document consumed it, and ordering
+already comes from `rtp`, so it carried no reader.
 
 **A rate observation** says the ruler runs fast or slow.
 
