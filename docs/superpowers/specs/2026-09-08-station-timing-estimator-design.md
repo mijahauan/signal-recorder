@@ -472,13 +472,23 @@ over twenty-second blocks. The strong band in each fixture gives:
 
 | fixture | strong band | measured ruler | fit residual |
 |---|---|---|---|
-| `nd-20260906` | 1000 Hz | +0.03 ppm | 0.15 ms over 600 s |
-| `nd-20260906-bad` | 1200 Hz | +0.12 ppm | 0.07 ms over 600 s |
-| `b4-20260906-day` | 1000 Hz | -0.16 ppm | 0.05 ms over 300 s |
+| `nd-20260906` | 1000 Hz | -0.03 ppm | 0.15 ms over 600 s |
+| `nd-20260906-bad` | 1200 Hz | -0.12 ppm | 0.07 ms over 600 s |
+| `b4-20260906-day` | 1000 Hz | +0.16 ppm | 0.05 ms over 300 s |
 
 The method's own slope uncertainty sits near 0.15 ppm at these spans, so all three readings mean
 one thing: a governed ruler. The `nd-20260906` figure also corroborates that fixture's sidecar,
-which recorded -0.043 ppm. A ruler fifty parts per million off would have dragged the fold peak
+which recorded -0.043 ppm, and agrees with it in sign as well as magnitude.
+
+**Sign correction, 2026-09-08.** The three rows above first carried the opposite signs. My
+measuring script mapped the fold-peak slope to parts per million as `-slope`, and the correct
+mapping is `+slope`: a fast converter accumulates sample indices faster than real time, so a fixed
+real tick lands on a larger index and therefore LATER within a nominal second, and the peak moves
+forward. Task 9's generator recovered -60.13 ppm from a fixture resampled by an exact -60, which
+closes the loop end to end, and a synthetic tick train reproduces `+slope` exactly in both
+directions. Only the signs were wrong; every magnitude and every conclusion drawn from them stands,
+because the finding was that all three rulers sit within a few tenths of a part per million of
+nominal. A ruler fifty parts per million off would have dragged the fold peak
 30 ms across the window, against a residual of 0.15 ms, so the fixtures exclude that decisively.
 
 The 2026-09-07 figures of -51 ppm from the judge and -84 ppm from the anchor-term series
@@ -490,9 +500,9 @@ Acceptance, stated as numbers the run must produce:
 
 | corpus | requirement |
 |---|---|
-| `nd-20260906` | rate within 0.2 ppm of +0.03; phase self-consistent within 2 ms |
-| `nd-20260906-bad` | rate within 0.2 ppm of +0.12, and the band disagreement raises no rate alarm |
-| `b4-20260906-day` | rate within 0.2 ppm of -0.16, the governed ruler |
+| `nd-20260906` | rate within 0.2 ppm of -0.03; phase self-consistent within 2 ms |
+| `nd-20260906-bad` | rate within 0.2 ppm of -0.12, and the band disagreement raises no rate alarm |
+| `b4-20260906-day` | rate within 0.2 ppm of +0.16, the governed ruler |
 | `nd-20260906` resampled by -60 ppm | recovers -60 ppm within 1 ppm from ten minutes of signal |
 | every corpus | lattice steps of 18.7, 34 and 50 ms injected on one tier never move the plane |
 

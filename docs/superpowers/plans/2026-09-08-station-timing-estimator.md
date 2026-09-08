@@ -2162,8 +2162,15 @@ corpus measures rate honestly and measures absolute phase not at all. Every acce
 Task 10 respects that limit.
 
 **Method, verified on 2026-09-08.** Twenty-second blocks on the ND and B4 fixtures gave
-+0.03 ppm, +0.12 ppm and -0.16 ppm with fit residuals of 0.05 to 0.15 ms, so the approach works
+-0.03 ppm, -0.12 ppm and +0.16 ppm with fit residuals of 0.05 to 0.15 ms, so the approach works
 and its slope uncertainty sits near 0.15 ppm at these spans.
+
+The parts-per-million figure equals `+slope`, not `-slope`. A fast converter accumulates sample
+indices faster than real time, so a fixed real tick lands on a larger index and therefore later
+within a nominal second. Task 9 recovered -60.13 from a -60 ppm resample, which closes the loop,
+and a synthetic tick train reproduces it in both directions (controller ruling R43, 2026-09-08).
+Only the strong band of each fixture anchors an acceptance row: the 20 MHz and 25 MHz channels
+scatter by hundreds of milliseconds and carry no usable slope.
 
 - [ ] **Step 1: Write the generator**
 
@@ -2351,9 +2358,9 @@ F_NOM = 24000
 
 # fixture stem, band, the ruler measured from the signal on 2026-09-08, tolerance
 ROWS = [
-    ("nd-20260906", "1000", +0.03, 0.2),
-    ("nd-20260906-bad", "1200", +0.12, 0.2),
-    ("b4-20260906-day", "1000", -0.16, 0.2),
+    ("nd-20260906", "1000", -0.03, 0.2),
+    ("nd-20260906-bad", "1200", -0.12, 0.2),
+    ("b4-20260906-day", "1000", +0.16, 0.2),
     ("nd-20260906-resampled-60ppm", "1000", -60.0, 1.0),
 ]
 
