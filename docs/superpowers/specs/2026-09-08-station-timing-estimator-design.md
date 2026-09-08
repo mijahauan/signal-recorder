@@ -558,6 +558,15 @@ unless the measurement clearly beats it. The rule needs no chosen time constant,
 the witnesses already declare. The measured path stays unproven until a shadow run supplies real
 span, which §9 defers, and until then a station honestly reports `standin`.
 
+**And for a governed ruler the ceiling is structural, not merely current.** The fixed plane of
+§6.2 cannot outlive half a counter wrap, 24.86 hours at 24 kHz, so it re-anchors and the series
+starts again. A review measured the reachable longest tau at 0.29 of the span, putting the ceiling
+near seven hours. The 86,400 s tau that would separate a 0.01 ppm ruler from millisecond witnesses
+therefore lies beyond what this architecture can reach at all, on any station, however long it
+runs. A governed ruler will report `standin` permanently, and that is the correct label rather
+than a temporary one. Only a station with far finer witnesses, which means a pulse-per-second
+input, could ever measure its own ruler here.
+
 **A concordant quorum can still lie.** Two tiers reading the same misidentified station agree
 perfectly. The 800 ms marker addresses identity and lives in the acquirer, so this library's
 quorum defends against a lone confident witness and not against a shared delusion. Approach B
