@@ -29,8 +29,8 @@ follows:
 
     y = (f_true - f_nom) / f_nom
 
-A converter running fast gives `y > 0`. That sign matches the judge's existing
-`RateEstimate.ppm`, whose docstring already reads "+ = ADC runs fast". The library inherits
+A converter running fast gives `y > 0`. The Offset Judge already works that way, reasoning in
+`offset_judge.py` about what follows if the ADC clock runs fast by r ppm. The library inherits
 that convention rather than inventing a second one.
 
 The estimator holds two numbers and no others:
@@ -173,8 +173,7 @@ number it has, because a consumer that can see why an answer was withheld can ac
 handed silence cannot.
 
 Refusals resolve in order, first match winning, following the shape `registration_refusal`
-already established. Eight of them sit in `gates.REFUSAL_ORDER`, and a ninth comes from the
-estimator itself:
+already established. Eight of them sit in `gates.REFUSAL_ORDER`:
 
 1. `not_finite` — some number the caller supplied, or some number the estimator derived from
    it, is not a finite value. The record carries the actual NaN rather than a zero dressed up
@@ -198,13 +197,20 @@ estimator itself:
 8. `rate_disagreement` — two fresh rate witnesses differ by more than 1 ppm. Alarm. The
    threshold matches the judge's existing `rate_alarm_ppm` default, so a station does not
    carry two different opinions about what a rate disagreement means.
-9. `rate_not_positive` — the published samples-per-UTC-second went to zero or below, which
-   only a diverged filter reaches. A caller should discard the estimator and seed a new one;
-   the state has no remaining meaning.
+A ninth refusal stands outside that order. The estimator checks `rate_not_positive` itself,
+second, before the gates run at all, because the gates never see the measured sample rate and
+cannot judge it.
 
-The spec's §5 table lists seven of those. Execution added `counter_ambiguous` and
-`rate_not_positive` afterwards and the table never caught up, which this document records
-rather than hides.
+That ninth cannot fire today. A non-positive measured rate needs a rate state at or beyond a
+stopped clock, and `ClockState.f_meas` raises on that denominator first, which the estimator
+reports as `not_finite`. It stays as defence in depth against a future change to that guard. So
+the honest caller guidance runs the other way: nobody will meet it, and whoever does should
+suspect the estimator's own invariants before anything else, because the guard upstream has
+changed.
+
+`not_finite` and `rate_not_positive` share a privilege the other seven lack. A solution carrying
+either may hold non-finite numbers, so the record reports the unusable number that caused the
+refusal rather than substituting a plausible one.
 
 An unstated ruler does not refuse. A ruler whose discipline nobody observed or attested counts
 as undisciplined, which widens the sigma and shows in the published diagnosis. It does not
