@@ -636,6 +636,13 @@ git commit -m "feat(estimator): process noise off the measured Allan deviation, 
 of sample indices takes a signed 32-bit wrap, exactly as `core/native_anchor.py` does it:
 `delta = ((b - a + 2**31) % 2**32) - 2**31`. Do not import that module; write the three lines.
 
+That formula carries a horizon, and the horizon is load-bearing. It resolves a difference only
+while the two indices sit within HALF a wrap period of each other. At 24 kHz half a wrap runs
+2**31 samples, close to 24.9 hours, and a projection past it aliases by a full wrap period
+without complaint. The estimator rebases on every `solve`, so a caller that emits solutions at
+any sane cadence never approaches it. `signed_rtp_delta` must say so in its docstring, and one
+test must pin exactness just inside the horizon (controller ruling R12, 2026-09-08).
+
 - [ ] **Step 1: Write the failing test**
 
 Create `tests/estimator/test_clock_state.py`:
@@ -746,7 +753,12 @@ def test_a_hundred_thousand_rebases_lose_no_nanoseconds():
     control = fresh(rate_ns_per_s=-1234.5)
 
     rtp = 1_000_000
-    step = 24_007  # deliberately not a whole second of samples
+    # Not a whole second of samples, so the fractional-nanosecond carry bites.
+    # And small enough that 100,000 of them stay inside HALF a counter wrap:
+    # the control never rebases, so its own signed delta must remain
+    # unambiguous. 100,000 x 24,007 = 2.4007e9 samples exceeds 2**31 and
+    # aliases by exactly one wrap period (controller ruling R11, 2026-09-08).
+    step = 12_007
     for _ in range(100_000):
         rtp += step
         st.rebase(rtp)
