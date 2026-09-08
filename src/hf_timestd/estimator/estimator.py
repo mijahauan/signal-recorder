@@ -110,6 +110,10 @@ REASON_NO_PLANE = "no_plane"
 REASON_HOST_PLANE = "host_plane"
 REASON_ACCEPTED = "accepted"
 REASON_OUTLIER = "outlier"
+REASON_OUT_OF_ORDER = "out_of_order"
+# Named for the refusal every later solution will now carry, so a caller
+# reading the verdict and a caller reading the solution read one word.
+REASON_COUNTER_AMBIGUOUS = "counter_ambiguous"
 
 
 @dataclass(frozen=True)
@@ -190,24 +194,57 @@ class StationTimingEstimator:
         extrapolation mechanisms counted the ruler's rate twice (ruling
         R13).
 
-        A negative delta leaves the state alone AND latches
-        ``counter_ambiguous``, which withholds every later solution until an
-        announced epoch change. It must not return silently: a forward gap
-        past half a wrap period aliases to exactly the same negative delta as
-        a backward step, so the silent path took a resuming daemon and
+        A negative delta never moves the state, and its MAGNITUDE decides
+        what it means. See ``_behind_s``: within the staleness window it is
+        an out-of-order arrival, beyond it a gap past half a wrap period,
+        and only the second latches ``counter_ambiguous``. A forward gap
+        past half a wrap aliases to exactly the same SIGN as a backward
+        step, so the originally silent path took a resuming daemon and
         published a plane a whole wrap period wrong -- 178,956.97 seconds at
         24 kHz -- with ruler time frozen, so ``stale_phase`` never fired
         either. Measured: a 24-hour gap resolves, 25 hours and beyond
         aliases. "Ambiguous" rather than "backward" because we genuinely
-        cannot tell the two apart (controller ruling R33, 2026-09-08).
+        cannot tell those two apart (controller ruling R33, 2026-09-08).
         """
         state = self._state
         if state is None:
             return
-        if state.elapsed_s(state.rtp_ref, rtp) < 0.0:
-            self._counter_ambiguous = True
+        behind_s = self._behind_s(state, rtp)
+        if behind_s is not None:
+            if behind_s > self.config.gates.max_phase_age_s:
+                self._counter_ambiguous = True
             return
         self._ruler_s += state.advance_to(rtp, self._noise)
+
+    def _behind_s(self, state: ClockState, rtp: int) -> float | None:
+        """Seconds ``rtp`` sits behind the plane, or None if it sits ahead.
+
+        The caller reads the magnitude, because magnitude is what separates
+        the two things a negative delta can mean, and the separation is
+        roughly three hundred to one:
+
+        * An OUT-OF-ORDER ARRIVAL. Two tiers on different cadences are the
+          normal case, so a witness reporting a sample index behind the last
+          one is ordinary integration rather than a fault. It can only be so
+          far behind and still matter: a phase observation older than
+          ``gates.max_phase_age_s`` is what ``stale_phase`` already refuses,
+          300 s by default, which is 7,200,000 samples at 24 kHz. That bound
+          is the staleness window itself, not a constant chosen here.
+        * An ALIASED GAP. A forward gap past half a wrap period comes back
+          as a delta near minus half a wrap, about -70,000 s at 24 kHz. Two
+          hundred and thirty times the staleness window, so no arithmetic
+          confuses the two.
+
+        The one case the magnitude cannot separate stays undetectable and
+        stays documented: a gap of very nearly a whole number of wrap
+        periods aliases to a SMALL delta of either sign, and nothing on a
+        32-bit counter tells that from a short interval. Witness
+        innovations do, because the implied error runs to tens of hours.
+        """
+        tau = state.elapsed_s(state.rtp_ref, rtp)
+        if tau >= 0.0:
+            return None
+        return -tau
 
     def solve(self, rtp: int) -> TimingSolution:
         """The solution at ``rtp``, published or withheld, always reasoned."""
@@ -216,7 +253,7 @@ class StationTimingEstimator:
         if state is None:
             return self._empty_solution(rtp)
 
-        step_pending = self._settle_step(state, rtp)
+        step_pending = self._settle_step(state)
         return self._build_solution(state, step_pending)
 
     def note_counter_epoch_change(self, why: str) -> None:
@@ -274,7 +311,30 @@ class StationTimingEstimator:
             self._seed(obs)
             return Verdict(True, REASON_SEEDED, 0.0, r)
 
-        self.advance(obs.rtp)
+        if obs.is_label_plane:
+            # The plane decides BEFORE the clock moves. A host-plane witness
+            # only ever feeds the coarse gate, so letting it advance the
+            # ruler would give the network a say in this estimator's own
+            # time base -- the very coupling section 3 forbids.
+            behind_s = self._behind_s(state, obs.rtp)
+            if behind_s is not None:
+                back = float(obs.utc_ns - state.utc_ns_at(obs.rtp))
+                nu, s = state.innovation(back + state.phase_ns, PHASE, r)
+                if behind_s > self.config.gates.max_phase_age_s:
+                    # An aliased gap. ``advance`` is the one path entitled
+                    # to latch, so route it there rather than latching here.
+                    self.advance(obs.rtp)
+                    return Verdict(False, REASON_COUNTER_AMBIGUOUS, nu, s)
+                # An out-of-order arrival, which two tiers on different
+                # cadences produce as a matter of course. Refuse this one
+                # observation, count it against its tier, and leave the
+                # state and the latch alone: withholding every later
+                # solution over an ordinary reordering disabled the
+                # estimator permanently.
+                self._admitter.note_rejection(obs.tier)
+                return Verdict(False, REASON_OUT_OF_ORDER, nu, s)
+            self.advance(obs.rtp)
+
         residual_ns = float(obs.utc_ns - state.utc_ns_at(obs.rtp))
         z = residual_ns + state.phase_ns
         nu, s = state.innovation(z, PHASE, r)
@@ -529,8 +589,16 @@ class StationTimingEstimator:
 
     # ---- the step, and the gates ---------------------------------------
 
-    def _settle_step(self, state: ClockState, rtp: int) -> bool:
-        """Apply a ripe step proposal; report whether one still dwells."""
+    def _settle_step(self, state: ClockState) -> bool:
+        """Apply a ripe step proposal; report whether one still dwells.
+
+        Reseeds at the state's OWN reference rather than at the sample
+        ``solve`` was called with. ``solve`` has already advanced the plane
+        to that sample, so in the ordinary case the two are the same index;
+        they part only when the sample sat behind the plane, and then
+        ``reseed_phase`` -- which refuses to run backwards -- would raise
+        out of the one call a consumer makes every cycle.
+        """
         proposal = self._admitter.step(self._ruler_s)
         if proposal is not None:
             # Every dissenting tier reached ``judge`` through
@@ -543,9 +611,12 @@ class StationTimingEstimator:
                 proposal.spread_ns,
                 min(self._sigma_by_tier[t] for t in proposal.tiers),
             )
+            here = state.rtp_ref
             state.reseed_phase(
-                utc_ns=state.utc_ns_at(rtp) + round(proposal.implied_error_ns),
-                rtp=rtp,
+                utc_ns=(
+                    state.utc_ns_at(here) + round(proposal.implied_error_ns)
+                ),
+                rtp=here,
                 sigma_ns=sigma_ns,
             )
             self._admitter.clear_step()

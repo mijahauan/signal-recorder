@@ -101,6 +101,19 @@ class Admitter:
         self._reconsider_candidate(now)
         return Verdict(False, "outlier", float(nu), float(s))
 
+    def note_rejection(self, tier: str) -> None:
+        """Count one rejection that carries no evidence about the plane.
+
+        ``judge`` files a rejected observation as a DISSENT, which is what
+        lets a concordant quorum ripen into a step. An observation refused
+        for arriving out of order says nothing about where the plane sits --
+        only that it reached the estimator behind a sample index already
+        seen -- so it must be counted and must not vote. Ruler time does not
+        advance here either, so this method takes no ``now_s``.
+        """
+        tally = self._counts.setdefault(tier, {"accepted": 0, "rejected": 0})
+        tally["rejected"] += 1
+
     def counts(self) -> dict[str, dict[str, int]]:
         return {tier: dict(v) for tier, v in self._counts.items()}
 

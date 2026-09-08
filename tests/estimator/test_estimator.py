@@ -149,21 +149,40 @@ def test_no_lattice_confusion_from_one_tier_moves_the_plane(lattice_ms):
 
 
 def test_a_concordant_quorum_moves_the_plane_and_spares_the_rate():
+    """The POSITIVE half of the step rule, asserted on the plane itself.
+
+    A verdict of ``publish`` and an unchanged rate say only that nothing
+    broke. Delete the ``reseed_phase`` call in ``_settle_step`` and both
+    still hold, because a quorum that never ripens publishes an untouched
+    plane at an untouched rate. What separates the two is where the plane
+    ENDS UP, so this measures it against the offset the quorum injected.
+    """
     st = Station(ppm=-20.0)
     est = StationTimingEstimator(f_nom=F_NOM)
     for rtp in minute_marks(8):
         est.observe(st.phase(rtp, tier="T3"))
         est.advance(rtp)
-    settled = est.solve(minute_marks(8)[-1])
+    eighth = minute_marks(8)[-1]
+    settled = est.solve(eighth)
+    # Before the quorum speaks the plane sits on the truth.
+    assert settled.utc_ns_at(eighth) - st.true_utc_ns(eighth) == pytest.approx(
+        0.0, abs=0.5 * MS
+    )
 
     # Two tiers now agree that the plane sits 40 ms out, for five minutes.
     for rtp in minute_marks(14)[8:]:
         for tier in ("T3", "T5"):
             est.observe(st.phase(rtp, tier=tier, error_ns=40.0 * MS))
         est.advance(rtp)
-    after = est.solve(minute_marks(14)[-1])
+    last = minute_marks(14)[-1]
+    after = est.solve(last)
 
     assert after.verdict == VERDICT_PUBLISH
+    # The plane MOVED, by what the quorum said and not by rather less.
+    assert after.utc_ns_at(last) - st.true_utc_ns(last) == pytest.approx(
+        40.0 * MS, abs=0.5 * MS
+    )
+    # And the rate learned nothing from the step.
     assert abs(after.rate_ppm - settled.rate_ppm) < 0.1
 
 
@@ -359,6 +378,45 @@ def test_a_reasonable_rate_witness_is_accepted_and_moves_the_rate():
     assert after.rate_ppm > before.rate_ppm
 
 
+def test_a_host_plane_rate_witness_reaches_nothing_at_all():
+    """Spec section 3, and the path that helped walk ND on 2026-09-07.
+
+    The judge's offset-slope witness rides on whichever bench the judge
+    selected; on the host bench it imports host error as ruler rate. No
+    other test builds a host-plane ``RateObservation``, so deleting the
+    guard in ``_observe_rate`` left the whole suite green.
+
+    Two things must not happen, and each is asserted separately. It must
+    not reach the filter or its tally -- so its tier appears nowhere in the
+    published witnesses -- and it must not reach the rate-spread gate
+    either, so a label-plane witness disagreeing with it by 50 ppm still
+    raises no ``rate_disagreement``.
+    """
+    st, est, rtp = settled()
+    before = est.solve(rtp)
+
+    verdict = est.observe(
+        rate_obs(
+            ppm=+50.0,
+            sigma_ppm=0.2,
+            tier="T4",
+            plane=PLANE_HOST,
+            source="judge-offset-slope",
+        )
+    )
+    est.observe(
+        rate_obs(ppm=0.0, sigma_ppm=0.2, tier="T6", source="t6-residual")
+    )
+    after = est.solve(rtp)
+
+    assert verdict.accepted is False
+    assert verdict.reason == "host_plane"
+    assert "T4" not in after.witnesses
+    assert after.refusal is None
+    assert after.witnesses["T6"]["accepted"] == 1
+    assert abs(after.rate_ppm - before.rate_ppm) < 1.0
+
+
 def test_rejected_rate_witnesses_never_license_a_step_of_the_plane():
     """A rate dissent is not a phase step, however concordant it looks."""
     st, est, rtp = settled()
@@ -442,6 +500,95 @@ def test_a_gap_inside_half_a_wrap_still_advances():
 def test_an_announced_epoch_change_clears_the_ambiguity():
     st, est, rtp = settled()
     est.advance((rtp + 30 * HOUR) % WRAP)
+    assert est.solve(rtp).refusal == "counter_ambiguous"
+
+    est.note_counter_epoch_change("recorder announced a new counter space")
+    st2 = Station(ppm=0.0, rtp0=5_000_000)
+    est.observe(st2.phase(st2.rtp0))
+    assert est.solve(st2.rtp0).refusal is None
+
+
+# ---- an out-of-order arrival is not an aliased gap ----------------------
+#
+# The two arrive as the same SIGN and differ only in MAGNITUDE, by roughly
+# three hundred to one. Latching on both took one witness reporting a sample
+# index behind the last -- ordinary integration with two tiers on different
+# cadences -- and withheld every later solution, permanently.
+
+
+def test_an_out_of_order_witness_is_refused_without_latching():
+    st, est, rtp = settled()
+    before = est.solve(rtp)
+    assert before.refusal is None
+
+    # A second tier reports the sample one second behind the newest one.
+    verdict = est.observe(st.phase(rtp - F_NOM, tier="T5"))
+
+    assert verdict.accepted is False
+    assert verdict.reason == "out_of_order"
+    # The state did not move, and nothing latched.
+    still = est.solve(rtp)
+    assert still.refusal is None
+    assert still.utc_ns_at(st.rtp0) == before.utc_ns_at(st.rtp0)
+    assert still.rtp_ref == before.rtp_ref
+    # The refusal is counted against the tier that arrived late.
+    assert still.witnesses["T5"] == {"accepted": 0, "rejected": 1}
+
+
+def test_later_solves_still_publish_after_an_out_of_order_witness():
+    """The regression: one stale arrival used to end the timing product."""
+    st, est, rtp = settled()
+    est.observe(st.phase(rtp - F_NOM, tier="T5"))
+
+    last = rtp
+    for minute in range(11, 16):
+        last = minute_marks(minute + 1)[-1]
+        est.observe(st.phase(last))
+        est.advance(last)
+    after = est.solve(last)
+
+    assert after.verdict == VERDICT_PUBLISH
+    assert after.refusal is None
+
+
+def test_a_host_plane_witness_never_advances_the_ruler_clock():
+    """The plane is read BEFORE the clock moves (spec section 3)."""
+    st, est, rtp = settled()
+    before = est.solve(rtp)
+
+    far = rtp + 600 * F_NOM
+    est.observe(
+        PhaseObservation(
+            tier="T2",
+            rtp=far,
+            utc_ns=st.true_utc_ns(far),
+            sigma_ns=25.0 * MS,
+            plane=PLANE_HOST,
+            source="ntp-pool",
+        )
+    )
+    after = est.solve(rtp)
+
+    assert after.rtp_ref == before.rtp_ref
+    assert after.span_s == pytest.approx(before.span_s, abs=1e-9)
+    assert after.refusal is None
+
+
+def test_a_witness_a_wrap_behind_the_plane_still_latches_ambiguous():
+    """Magnitude is the discriminant, so the aliased gap must still latch."""
+    st, est, rtp = settled()
+    far = (rtp + 30 * HOUR) % WRAP
+
+    verdict = est.observe(st.phase(far))
+
+    assert verdict.accepted is False
+    assert verdict.reason == "counter_ambiguous"
+    assert est.solve(rtp).refusal == "counter_ambiguous"
+
+
+def test_an_epoch_change_clears_a_latch_set_by_an_observation():
+    st, est, rtp = settled()
+    est.observe(st.phase((rtp + 30 * HOUR) % WRAP))
     assert est.solve(rtp).refusal == "counter_ambiguous"
 
     est.note_counter_epoch_change("recorder announced a new counter space")
