@@ -70,8 +70,8 @@ def test_an_unstated_ruler_does_not_refuse():
 
 def test_the_order_is_fixed_and_the_earliest_reason_wins():
     both = clean(
+        phase_age_s=float("nan"),
         has_phase=False,
-        phase_age_s=9e9,
         step_pending=True,
         sigma_phase_ns=9e9,
         coarse_delta_ns=9e9,
@@ -79,6 +79,8 @@ def test_the_order_is_fixed_and_the_earliest_reason_wins():
         rate_spread_ppm=9e9,
     )
     assert refusal(both, CFG) == REFUSAL_ORDER[0]
+    # not_finite must be first
+    assert REFUSAL_ORDER[0] == "not_finite"
 
 
 def test_step_pending_outranks_variance():
@@ -92,6 +94,7 @@ def test_step_pending_outranks_variance():
 def test_every_named_refusal_can_actually_fire():
     fired = set()
     for inputs in (
+        clean(phase_age_s=float("nan")),
         clean(has_phase=False),
         clean(phase_age_s=1e9),
         clean(step_pending=True),
@@ -103,6 +106,25 @@ def test_every_named_refusal_can_actually_fire():
         assert reason is not None
         fired.add(reason)
     assert fired == set(REFUSAL_ORDER)
+
+
+NAN_INF_CASES = [
+    ("phase_age_s", float("nan")),
+    ("phase_age_s", float("inf")),
+    ("sigma_phase_ns", float("nan")),
+    ("sigma_phase_ns", float("inf")),
+    ("coarse_delta_ns", float("nan")),
+    ("coarse_delta_ns", float("inf")),
+    ("coarse_sigma_ns", float("nan")),
+    ("coarse_sigma_ns", float("inf")),
+    ("rate_spread_ppm", float("nan")),
+    ("rate_spread_ppm", float("inf")),
+]
+
+
+@pytest.mark.parametrize("field,value", NAN_INF_CASES)
+def test_not_finite_refusal_on_nan_and_infinity(field, value):
+    assert refusal(clean(**{field: value}), CFG) == "not_finite"
 
 
 COARSE_PARAMS = [(None, 25.0 * MS), (100.0 * MS, None)]

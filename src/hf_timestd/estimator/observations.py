@@ -31,6 +31,11 @@ def _check_sigma(sigma: float, what: str) -> None:
         raise ValueError(f"{what} sigma {sigma!r} carries no information")
 
 
+def _check_finite(value: float, what: str) -> None:
+    if not math.isfinite(value):
+        raise ValueError(f"{what} {value!r} is not finite")
+
+
 @dataclass(frozen=True)
 class PhaseObservation:
     """The sample at ``rtp`` carried UTC ``utc_ns``, to within ``sigma_ns``."""
@@ -68,6 +73,7 @@ class RateObservation:
 
     def __post_init__(self) -> None:
         _check_plane(self.plane)
+        _check_finite(self.ppm, "ppm")
         _check_sigma(self.sigma_ppm, "rate")
 
     @property

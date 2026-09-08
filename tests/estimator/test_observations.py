@@ -92,6 +92,20 @@ def test_a_useless_sigma_is_refused(sigma):
         )
 
 
+@pytest.mark.parametrize("ppm", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_ppm_is_refused(ppm):
+    with pytest.raises(ValueError, match="ppm"):
+        RateObservation(
+            tier="T6",
+            ppm=ppm,
+            sigma_ppm=0.5,
+            span_s=900.0,
+            n=900,
+            plane=PLANE_LABEL,
+            source="x",
+        )
+
+
 def test_observations_are_frozen():
     obs = PhaseObservation(
         tier="T3",

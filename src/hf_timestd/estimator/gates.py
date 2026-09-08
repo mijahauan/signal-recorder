@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass
 
 REFUSAL_ORDER = (
+    "not_finite",
     "no_phase_witness",
     "stale_phase",
     "step_pending",
@@ -43,6 +44,26 @@ class GateInputs:
 
 def refusal(inputs: GateInputs, config: GateConfig) -> str | None:
     """The first reason this solution may not be published, or None."""
+    # NaN and infinity must be caught first, before any comparison. A NaN in
+    # phase_age_s, sigma_phase_ns, or any rate/coarse field makes every
+    # comparison return False, silently publishing a clean verdict for the
+    # worst possible failure mode. This module's job is deciding whether to
+    # publish a timing answer: a silent pass on invalid data is the opposite
+    # of that job. Name the actual fault (not_finite) rather than dressing it
+    # up as some other refusal.
+    numbers = [inputs.phase_age_s, inputs.sigma_phase_ns]
+    numbers += [
+        v
+        for v in (
+            inputs.coarse_delta_ns,
+            inputs.coarse_sigma_ns,
+            inputs.rate_spread_ppm,
+        )
+        if v is not None
+    ]
+    if any(not math.isfinite(float(v)) for v in numbers):
+        return "not_finite"
+
     if not inputs.has_phase:
         return "no_phase_witness"
 
