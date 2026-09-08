@@ -10,6 +10,8 @@ import ast
 import pathlib
 import re
 
+import pytest
+
 import hf_timestd.estimator  # type: ignore[import-untyped]
 
 PKG_DIR = pathlib.Path(hf_timestd.estimator.__file__).parent
@@ -28,6 +30,14 @@ FORBIDDEN_CLOCKS = (
     "datetime.now(",
     "utcnow(",
     "chronyc",
+)
+
+# Exactly one line may divide by f_nom (the sanctioned line to compute rate).
+# Pattern requires dots between attribute segments, so it rejects underscore-
+# joined false positives like half_f_nom or buf_nom.
+NOMINAL_DIVISION = re.compile(
+    r"/\s*float\(\s*(?:[A-Za-z_]\w*\.)*f_nom\s*\)"
+    r"|/\s*(?:[A-Za-z_]\w*\.)*f_nom\b"
 )
 
 
@@ -122,16 +132,11 @@ def test_only_one_line_divides_by_the_nominal_rate():
     state carrying a non-zero rate whose projection still matches the nominal
     rate fails outright.
     """
-    # Match any division by an f_nom attribute path: f_nom, self.f_nom,
-    # self.config.f_nom, params.f_nom, with or without float() wrapper
-    pattern = re.compile(
-        r"/\s*float\(\s*[\w.]*f_nom\s*\)|/\s*[\w.]*f_nom\b"
-    )
     offenders = []
     sanctioned = 0
     for path in _sources():
         for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            if not pattern.search(line):
+            if not NOMINAL_DIVISION.search(line):
                 continue
             if "THE ONE NOMINAL DIVISION" in line:
                 sanctioned += 1
@@ -141,3 +146,47 @@ def test_only_one_line_divides_by_the_nominal_rate():
     assert sanctioned <= 1, (
         f"{sanctioned} lines claim to be the one nominal division"
     )
+
+
+@pytest.mark.parametrize(
+    "line,should_match,reason",
+    [
+        # MUST match: bare f_nom
+        ("        return 1e9 * delta / f_nom", True, "bare f_nom"),
+        # MUST match: self.f_nom
+        ("        return 1e9 * delta / self.f_nom", True, "self.f_nom"),
+        # MUST match: self.config.f_nom
+        (
+            "        return 1e9 * delta / self.config.f_nom",
+            True,
+            "self.config.f_nom",
+        ),
+        # MUST match: float(self.f_nom)
+        (
+            "        return 1e9 * delta / float(self.f_nom)",
+            True,
+            "float wrapper",
+        ),
+        # MUST NOT match: underscore-joined prefix
+        ("        return samples / half_f_nom", False, "no dot before f_nom"),
+        # MUST NOT match: substring match trap
+        ("        return samples / buf_nom", False, "nom ≠ f_nom"),
+        # MUST NOT match: similar name, different segment
+        ("        return samples / f_nominal", False, "nominal ≠ f_nom"),
+        # MUST NOT match: different attribute chain
+        ("        return samples / self.f_meas", False, "f_meas ≠ f_nom"),
+    ],
+)
+def test_nominal_division_pattern(line, should_match, reason):
+    """Unit test the NOMINAL_DIVISION regex pattern directly.
+
+    Ensures the pattern correctly identifies f_nom divisions and rejects
+    false positives (underscore-joined names, substring matches, and similar
+    names). Each test case documents why the pattern should or should not
+    match.
+    """
+    match = NOMINAL_DIVISION.search(line)
+    if should_match:
+        assert match is not None, f"Expected to match {reason}: {line}"
+    else:
+        assert match is None, f"Should not match {reason}: {line}"
