@@ -383,6 +383,7 @@ git commit -m "feat(estimator): a witness says one of two things, and names its 
 - Consumes: nothing from earlier tasks.
 - Produces:
   - `RulerNoise(q1: float, q2: float, source: str)` where `q1` has units ns²/s, `q2` has units ns²/s³, and `source` is `"measured"` or `"standin"`.
+  - `RulerNoise.q_matrix(tau_s: float) -> np.ndarray`, the 2x2 process covariance over `tau_s`. Task 4 calls it.
   - `standin_sigma_ppm(provenance: str) -> float`
   - `noise_from_standin(sigma_ppm: float, horizon_s: float = 3600.0) -> RulerNoise`
   - `noise_from_adev(taus, adev, floor: RulerNoise) -> RulerNoise`
@@ -629,6 +630,7 @@ git commit -m "feat(estimator): process noise off the measured Allan deviation, 
   - `rebase(rtp_now: int) -> None`
   - `reseed_phase(utc_ns: int, rtp: int, sigma_ns: float) -> None`
   - `PHASE, RATE = 0, 1`
+  - module-level `signed_rtp_delta(rtp_from: int, rtp_to: int) -> int`, the signed distance across a 32-bit counter wrap. Task 7 consumes it.
 
 **Background the implementer needs.** The RTP counter is 32 bits and wraps, so every difference
 of sample indices takes a signed 32-bit wrap, exactly as `core/native_anchor.py` does it:
@@ -749,7 +751,12 @@ def test_a_hundred_thousand_rebases_lose_no_nanoseconds():
         rtp += step
         st.rebase(rtp)
 
-    assert st.utc_ns_at(rtp) == control.utc_ns_at(rtp)
+    # One nanosecond, not zero: the control's single projection is a float at
+    # ~1e14 ns, where float64 resolves near 0.015 ns, so it need not round
+    # identically to a sum of integers. A biased half-nanosecond error per
+    # rebase would reach 50 microseconds here, so 1 ns still proves no
+    # accumulation (controller ruling R4, 2026-09-08).
+    assert abs(st.utc_ns_at(rtp) - control.utc_ns_at(rtp)) <= 1
 
 
 def test_a_rebase_changes_no_belief():
@@ -2108,7 +2115,11 @@ git commit -m "feat(estimator): one estimator per station, three verbs, and the 
 - Consumes: nothing from the estimator package. This script may import `hf_timestd.core`, because
   it holds no production role and does not ship inside the package.
 - Produces: one JSON-lines file per fixture channel, each line
-  `{"tier": "T3", "rtp": <int>, "utc_ns": <int>, "sigma_ns": <float>, "plane": "label", "source": "fold-peak", "band": "1000"}`.
+  `{"tier": "T3", "rtp": <int>, "utc_ns": <int>, "sigma_ns": <float>, "plane": "label",
+  "source": "fold-peak", "band": "1000", "fixture": "nd-20260906"}`.
+  The `fixture` field carries the fixture name plus any resampling suffix, and Task 10 selects on
+  it rather than on the filename. Filename prefixes cross-match: a glob for `nd-20260906` also
+  catches `nd-20260906-bad` and `nd-20260906-resampled-60ppm` (controller ruling R2, 2026-09-08).
 
 **What the generator measures, and what it cannot.** It folds the tick envelope in short blocks
 and takes the peak position. That gives phase against the ruler up to one unknown constant, the
@@ -2172,7 +2183,7 @@ def resample_ppm(iq: np.ndarray, ppm: float) -> np.ndarray:
     )
 
 
-def trace(iq: np.ndarray, meta: dict, block_s: int = BLOCK_S):
+def trace(iq: np.ndarray, meta: dict, fixture: str, block_s: int = BLOCK_S):
     fs = int(meta["sample_rate"])
     label0 = float(meta["start_system_time"])
     rtp0 = int(meta["start_rtp_timestamp"])
@@ -2200,6 +2211,7 @@ def trace(iq: np.ndarray, meta: dict, block_s: int = BLOCK_S):
                     "source": "fold-peak",
                     "band": band,
                     "snr": snr,
+                    "fixture": fixture,
                 }
             )
     return out
@@ -2223,8 +2235,9 @@ def main() -> None:
         if args.resample_ppm is not None:
             iq = resample_ppm(iq, args.resample_ppm)
             suffix = f"-resampled{args.resample_ppm:+g}ppm"
-        rows = trace(iq, meta)
-        name = f"{args.fixture_dir.name}-{meta['channel_name']}{suffix}.jsonl"
+        fixture = f"{args.fixture_dir.name}{suffix}"
+        rows = trace(iq, meta, fixture)
+        name = f"{fixture}-{meta['channel_name']}.jsonl"
         (args.out_dir / name).write_text(
             "".join(json.dumps(r) + "\n" for r in rows)
         )
@@ -2312,14 +2325,19 @@ ROWS = [
 
 
 def load(stem: str, band: str) -> list[PhaseObservation]:
-    matches = sorted(CORPUS.glob(f"{stem}*.jsonl"))
-    if not matches:
-        pytest.skip(f"corpus {stem} absent; run scripts/build_estimator_corpus.py")
+    """Rows for one fixture and one band, selected on the row's own fields.
+
+    Never select on the filename: a prefix glob for ``nd-20260906`` also
+    catches ``nd-20260906-bad`` and the resampled corpus.
+    """
+    paths = sorted(CORPUS.glob("*.jsonl"))
+    if not paths:
+        pytest.skip("no corpus; run scripts/build_estimator_corpus.py")
     rows = []
-    for path in matches:
+    for path in paths:
         for line in path.read_text().splitlines():
             row = json.loads(line)
-            if row.get("band") == band:
+            if row.get("fixture") == stem and row.get("band") == band:
                 rows.append(row)
     if len(rows) < 8:
         pytest.skip(f"corpus {stem} band {band} holds {len(rows)} rows, too few")
@@ -2350,7 +2368,7 @@ def test_the_estimator_recovers_each_corpus_ruler(stem, band, expected_ppm, tole
 @pytest.mark.parametrize("stem,band", [(r[0], r[1]) for r in ROWS])
 def test_the_accepted_witnesses_stay_self_consistent(stem, band):
     observations = load(stem, band)
-    est, sol = drive(observations)
+    _, sol = drive(observations)
     residuals = [
         obs.utc_ns - sol.utc_ns_at(obs.rtp) for obs in observations
     ]
