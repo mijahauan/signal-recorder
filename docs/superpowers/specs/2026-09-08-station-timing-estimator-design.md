@@ -228,18 +228,26 @@ never withholds silently and it never corrects anything. The caller decides what
 and withdraws. The library only tells the truth about its own state.
 
 Refusals resolve in order, first match winning, following the shape `registration_refusal`
-already established:
+already established. Seven of them:
 
 | order | reason | condition |
 |---|---|---|
-| 1 | `no_phase_witness` | no phase observation has ever been accepted |
-| 2 | `stale_phase` | newest accepted phase observation older than 300 s |
-| 3 | `step_pending` | a concordant quorum dwells, per §4 |
-| 4 | `variance` | phase sigma above the publish ceiling, 5 ms by default |
-| 5 | `coarse_disagreement` | a wide-angle witness disagrees beyond three combined sigmas |
-| 6 | `rate_disagreement` | independent rate estimates differ by more than 1 ppm |
+| 1 | `not_finite` | any numeric input the caller supplied is not a finite number |
+| 2 | `no_phase_witness` | no phase observation has ever been accepted |
+| 3 | `stale_phase` | newest accepted phase observation older than 300 s |
+| 4 | `step_pending` | a concordant quorum dwells, per §4 |
+| 5 | `variance` | phase sigma above the publish ceiling, 5 ms by default |
+| 6 | `coarse_disagreement` | a wide-angle witness disagrees beyond three combined sigmas |
+| 7 | `rate_disagreement` | independent rate estimates differ by more than 1 ppm |
 
-Reasons 5 and 6 deserve their mandatory character. Wide-angle network time and the WWV ticks
+`not_finite` arrived on 2026-09-08, from a task review that probed the gates with NaN. Every
+comparison against NaN evaluates false, so a NaN cleared all six original refusals and published a
+clean verdict. The path was real rather than hypothetical: a rate observation validates its sigma
+and never validated its parts-per-million value, so one NaN at the boundary reached the decision
+point and passed. A module whose whole job is deciding whether to publish must fail closed, and it
+must name the actual fault rather than dress a NaN up as staleness.
+
+Reasons 6 and 7 deserve their mandatory character. Wide-angle network time and the WWV ticks
 both trace to GPS. When they disagree by more than the network's own budget, the fault lies with
 this instrument, and the honest act consists of refusing to publish and saying so loudly. The
 1 ppm threshold matches the judge's existing `rate_alarm_ppm` default, so a station does not
