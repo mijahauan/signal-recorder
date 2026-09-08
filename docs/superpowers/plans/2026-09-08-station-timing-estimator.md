@@ -2095,7 +2095,16 @@ wrong:
   `state.update(obs.ns_per_s, RATE, obs.sigma_ns_per_s**2)`.
 - `note_counter_epoch_change` keeps `state.x[RATE]` and `state.p[RATE, RATE]`, drops everything
   else by setting `_state = None` and stashing the surviving rate so the next seed restores it,
-  and increments `_generation`.
+  and increments `_generation`. It ALSO resets `_ruler_s` to zero and calls
+  `self._admitter.reset(why)`. Both halves are load-bearing: the next seed restarts ruler time, so
+  an admitter still holding dissents stamped on the old timeline would see time run backwards, and
+  `Admitter.judge` now refuses that outright (controller ruling R19, 2026-09-08).
+- **The independence obligation.** `Admitter` counts distinct tier strings, and one tier string
+  must mean one independent witness. It cannot check this, and neither can the estimator; only
+  whoever wires the adapters knows whether two tier strings name two antennas or one. Two adapters
+  reading a single source would agree perfectly, pass concordance, and let a lone witness move the
+  plane. The estimator therefore does not deduplicate either, and Task 11's document must state the
+  obligation plainly as something integration carries (controller ruling R20, 2026-09-08).
 - `solve(rtp)` advances to `rtp`, handles a step proposal, rebases, builds `GateInputs`, calls
   `refusal`, and returns the frozen solution with `witnesses=self._admitter.counts()`.
 
