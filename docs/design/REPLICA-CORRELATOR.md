@@ -64,15 +64,49 @@ something — came to **0.05 ppm at B4 and 0.15 ppm at ND**, against the fold me
 ⚡ Those two ND readings, from windows 9.2 hours apart, also say the converter's ruler sat within
 0.08 ppm of nominal at two different times of day. The GPSDO held lock across that span.
 
-## 4 · Four limits, each measured rather than assumed
+## 4 · Resolving the second of the minute
 
-**The whole-second ambiguity SURVIVES.** A replica was expected to end it, and does not. The
-minute-unique features — the 800 ms marker and the missing ticks at 29 and 59 — do not outweigh
-the 1 s tick train's energy, so the correlation peak still slips whole seconds. Rate survives
-regardless, because a rate needs only consistency between minutes, so the lag series unwraps on
-the second lattice. **Absolute second-of-minute needs a dedicated marker-and-gap match over 60
-discrete hypotheses, which this module does not attempt.** So the correlator buys rate, not
-absolute time.
+`second_of_minute.py` answers what the correlation lag cannot. A lag is ambiguous modulo one
+second, because the tick train repeats every second — measured, the peak slipped whole seconds
+between minutes on two of four fixtures. Rate survives that, needing only consistency between
+minutes, but no absolute claim does, and a wrong choice costs a **whole second**.
+
+What breaks the tie is the structure a second does not have: second 0's 800 ms marker, and the
+missing ticks at 29 and 59. Binned to one number per second, a minute has a signature, and the
+ambiguity becomes a choice among 60 cyclic shifts.
+
+The decision rests on the **margin** — the winning shift's cosine minus the runner-up's — and
+not on the winning score itself. Pure noise scores a respectable 0.42 for its best shift, which
+any threshold set to admit a real minute would wave through; its margin is 0.13. Real minutes
+land at 0.95 to 1.02 even under noise as large as the signal, a tick train with the marker
+stripped out lands at 0.0000, and `MIN_MARGIN` sits at 0.5 between them.
+
+**Accumulating minutes is what makes it work on real signal.** Every minute shares the same
+offset, so the marker builds up while noise does not. From one minute, only ND's 21:10 Z channel
+resolved (margin 0.936); the other two live channels refused, at 0.060 and 0.042, *despite
+correlation scores of 53 and 50* — the tick train can be strong while the marker has not
+survived the path. Over ten minutes all three resolve to the right second at margins of 0.99 to
+1.00. Each minute's vector is normalised before summing, or one very loud minute decides the
+answer alone.
+
+Two lessons the energy binning cost:
+
+- The floor must be the **median**, not the minimum. One negative excursion sets a minimum, and
+  subtracting it lifts the whole minute onto a pedestal that squaring then flattens. In testing
+  that let a single noiseless-but-wrong minute outvote nine noisy right ones.
+- ⛔ **Accumulation raises confidence whether or not there is anything to be confident about.**
+  On ND's WWV_20000 — correlation score 5.2, no usable structure — one minute refuses at 0.072
+  while ten reach **0.494 against a threshold of 0.5, naming the WRONG second.** Within one per
+  cent of a confident wrong answer. A hair's breadth is not a margin of safety.
+
+So the two gates compose, and `resolve_if_admissible` is the composition callers should use:
+`cc_snr` says whether a channel carries a minute at all, and `margin` says which one. **A channel
+can license a rate and not an absolute time.** No margin chosen against white noise would have
+caught that ND channel, because white noise lands at 0.02 to 0.06 however many minutes are
+summed — a dead HF channel is not white, and its AGC action, interference and other broadcasts
+correlate with themselves across minutes.
+
+## 5 · Three limits, each measured rather than assumed
 
 **The score does NOT identify the station.** WWV read through WWVH's band still scores 371.9
 against 103.1 in its own, because the leakage carries the same time structure and the score is
@@ -90,7 +124,7 @@ fixtures the apparent scale error ran from −6.3 % to +4.1 %, sign included, wh
 recovers synthetic signal to 0.009–0.094 ppm. An earlier reading of that ladder as "a 0.7 % scale
 bias" was wrong and is retracted. Repeatability across independent recordings replaces it.
 
-## 5 · The uncertainty
+## 6 · The uncertainty
 
 Fading and path drift move a lag **smoothly**, and a smooth drift is degenerate with a slope:
 no fit can tell one from the other over a short span. Least squares assuming independent
@@ -105,10 +139,11 @@ says the noise alternates, which licenses no more confidence than independence w
 `MIN_POINTS` is 4: two points fit a line exactly, a third leaves one degree of freedom, and a
 fourth is the fewest that can show an autocorrelation at all.
 
-## 6 · What it does not do
+## 7 · What it does not do
 
 No consumer constructs it. It emits no `PhaseObservation` and no `RateObservation`, so nothing
-reaches the estimator from here yet.
+reaches the estimator from here yet — the remaining step is to wire it as a witness, and the
+resolver of §4 is what would let such a witness make an ABSOLUTE claim rather than only a rate.
 
 ⛔ **When something does wire it up:** a replica correlator and a fold-peak witness on the SAME
 channel share one antenna, one converter and one propagation path. They are **not** independent

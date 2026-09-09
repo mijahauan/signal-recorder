@@ -13,6 +13,16 @@ Provenance: the template's structure is read off Phil Karn's ``wwvsim``
 
 from .correlate import MIN_CC_SNR, Correlation, correlate_minute
 from .rate import MIN_POINTS, RateEstimate, fit_rate
+from .second_of_minute import (
+    MIN_MARGIN,
+    SECONDS,
+    SecondOfMinute,
+    accumulate_energy,
+    per_second_energy,
+    resolve_from_energy,
+    resolve_if_admissible,
+    resolve_second_of_minute,
+)
 from .template import (
     MARKER_MS,
     NO_TICK_SECONDS,
@@ -23,12 +33,20 @@ from .template import (
 __all__ = [
     "MARKER_MS",
     "MIN_CC_SNR",
+    "MIN_MARGIN",
     "MIN_POINTS",
     "NO_TICK_SECONDS",
+    "SECONDS",
     "TICK_MS",
     "Correlation",
     "RateEstimate",
+    "SecondOfMinute",
+    "accumulate_energy",
     "correlate_minute",
     "fit_rate",
     "minute_template",
+    "per_second_energy",
+    "resolve_from_energy",
+    "resolve_if_admissible",
+    "resolve_second_of_minute",
 ]
