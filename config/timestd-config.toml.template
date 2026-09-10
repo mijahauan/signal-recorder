@@ -362,6 +362,13 @@ anchor_closure = false
 # Then watch `chronyc sources` for the FUSE line flipping between
 # `#-`/`#*` and `#?` on transitions, and `chronyc selectdata` for the N
 # option on FUSE while withdrawn.
+# ⛔ Keep `enabled = false`.  MEASUREMENT_MODEL.md §7.1.1 (2026-09-10) takes
+# T3 and T6 out of the host clock's electorate altogether: both refclock lines
+# in chrony-timestd-refclocks.conf now carry `noselect`, and an enabled gate
+# would re-offer FUSE with `selectopts -noselect` on its next state change.
+# AC0G-ND ran it enabled and the vote toggled twice in fourteen minutes on
+# 2026-09-10 (19:37Z withdrawn, 19:51Z re-offered).  The gate is due for
+# retirement; until then this flag is the switch.
 [timing.authority_manager.chrony_gate]
 enabled = false
 # sudo = true                       # run chronyc through `sudo -n` (see above)
