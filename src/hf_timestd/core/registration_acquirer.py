@@ -839,9 +839,27 @@ class Registration:
     whole_second_unresolved: bool = False
 
     def sample0_utc_for(self, start_rtp: int) -> float:
-        return self.utc_ref + (int(start_rtp) - int(self.rtp_ref)) / float(
-            self.sample_rate
-        )
+        """UTC of the sample at ``start_rtp``, across a counter wrap.
+
+        The RTP counter holds 32 bits, so at 24 kHz it returns to zero every
+        2**32/24000 = 178,956.97 s (49.7 h).  A raw subtraction reads that
+        return as 49.7 hours of travel backwards: ND wrapped at ~11:00:56Z on
+        2026-09-09 and four channels published a correction of -178,956.5 s
+        while still reporting ACQUIRED and verified.  Take the difference in
+        the counter's own modular arithmetic instead, exactly as
+        ``buffer_timing._rtp_delta_signed``, ``ring_buffer_reader`` and
+        ``native_anchor`` already do, and as ``test_t6_rtp_wrap_continuity``
+        has required of the T6 anchor since before this plane existed.
+
+        The signed reading assumes the two counter values lie within 2**31
+        samples of each other -- 24.85 h at 24 kHz.  Every caller asks about
+        the minute in hand against a registration the staleness gate keeps
+        under 300 s, so that bound sits four orders of magnitude away.
+        """
+        delta = (int(start_rtp) - int(self.rtp_ref)) & 0xFFFFFFFF
+        if delta > 0x7FFFFFFF:
+            delta -= 0x100000000
+        return self.utc_ref + delta / float(self.sample_rate)
 
 
 class RegistrationAcquirer:
