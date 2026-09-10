@@ -360,7 +360,65 @@ was. Second, the timing-independence loop opens without a separate fix: once
 data labels stop descending from the host clock, chrony's choice of reference
 stops feeding back into them, and the shadow benches recover their independence.
 Whether T6 should feed chrony at all becomes a question about the host clock's
-convenience rather than about the science.
+convenience rather than about the science. §7.1.1 answers it.
+
+### 7.1.1 The electorate rule (decided 2026-09-10)
+
+**A source recovered from the sample stream may not vote on the host clock.**
+
+The host clock's electorate comprises sources that arrive by some path other than
+the receiver's own samples — T5, T4, T2, T1, T0. T3 and T6 stay out of it.
+
+The reason lies one level below the obvious one. T3 and T6 both look like good
+candidates: T6 carries no ionosphere, and T3 sees a signal whose transmitter holds
+UTC better than anything on the station. But both are *recovered in sample time*,
+so both inherit the converter's rate — and a source that inherits the quantity it
+would check cannot check it.
+
+That inheritance is not theoretical. Fusion locks a one-second tick and therefore
+measures modulo one second, so an integer-second offset stays invisible to it, and
+so does any rate error that has accumulated past a second. AC0G-ND's LB-Mini sat at
+8 mA drive, its 27 MHz never took over the RX888's reference, and the board sampled
+~350 ppm fast. Chrony believed the fused refclock, drove the clock 374 ppm fast, and
+walked it **twelve seconds** off UTC while marking three honest WAN servers
+falsetickers. `chronyc tracking` reported stratum 1 at 380 µs throughout. Fusion's
+self-gating stayed honest and blind at the same time.
+
+⇒ Fusion cannot earn the vote by being accurate, because the error class that
+matters is the one it cannot see.
+
+**What the station gives up: nothing the measurement uses.** Once the registration
+places the second (§1, §3), no data product consults the host clock — §7.2 already
+removes it from the label arithmetic. The host clock's remaining duties are naming
+the minute and ordering files, and a network source at tens of milliseconds
+discharges both with four orders of magnitude to spare.
+
+**Two conditions, and the first gates the change.**
+
+1. **Every consumer must read the registration before the host clock is demoted.**
+   psk-recorder, wspr-recorder, the magnetometer path and sigmond still fall back to
+   the host clock; wspr-recorder logs the dependency explicitly, warning that WAV
+   minute timestamps go wrong if chrony moves the system clock by much over 100 µs.
+   Demoting the host clock ahead of that migration breaks WSPR labelling to fix a
+   metrology loop. Contract §18.5 carries the migration.
+2. **Chrony must never run sourceless.** Whole-second integrity becomes load-bearing
+   once the registration carries the precision, and a free-running host clock at the
+   60-80 ppm these boards show crosses a whole second in under four hours. Keep the
+   pool reachable, and keep the whole second gated rather than assumed — a channel
+   carrying no usable structure reached a 0.494 margin against a 0.5 threshold over
+   ten accumulated minutes and named the wrong second.
+
+**What stays.** FUSE and HPPS remain configured as `noselect` refclocks: measured,
+logged, visible in `sourcestats`, never selected. The station keeps the comparison
+and stops letting it steer. The asymmetric T3↔T2 gross-error rule gains from this,
+because the pool stops being marked falseticker and can witness again.
+
+**Which source names the second.** WWVB carries an unambiguous timecode, arrives by
+a path whose delay computes rather than models, and fails in a way uncorrelated with
+the HF channels. Measured at AC0G-ND across 1191 frames it misidentified no minute at
+all, its only fault being a 2.4 % rate of stale repeats that a freshness check
+removes, and it held that through the day's 24.5 dB SNR trough. It stays inside the
+sample stream, so it never joins the electorate; it does not need to.
 
 ### 7.2 The label
 
@@ -473,6 +531,7 @@ the gate.
 | `METROLOGY.md` §3 ("Steel Ruler" philosophy) | **retained and generalised.** §3.1's formulation stands correct and §2–§4 above give it a measurement model. Of §3.2's three layers, Layer 1 characterises the ruler against a transmitter and belongs to axis A by its own account — *"how fast time is passing, but not what time it is"*; Layers 2 and 3 estimate `t₀` and belong to axis T |
 | `METROLOGY.md` §4.3 (RTP as authoritative reference) | **retained in intent, corrected in form.** The pair carries the host clock; §7.2 supplies the arithmetic the section was reaching for |
 | `METROLOGY.md` §4.5 (uniform offset application) | **superseded.** §8 above replaces the scalar with the map, and consumers read uncertainty rather than branching on a tier or on nothing |
+| `METROLOGY.md` §4.6 (`trust` on the FUSE refclock, the T3-only station) | **superseded.** §7.1.1 removes T3 and T6 from the electorate entirely, so the narrower question of whether fusion earns `trust` no longer arises. The section's diagnosis stays correct and its conclusion no longer applies |
 | `METROLOGY.md` §4.5 (the A / T axis tables) | **retained, redefined.** §2 and §3 above keep the levels and restate what they rank |
 | `METROLOGY.md` §6 (GUM budget) | **retained for the fusion chain.** §6 above supplies the payload-anchored chain's own budget; neither replaces the other |
 | `TIMING_AUTHORITY_TWO_AXIS.md` | **derives.** §1's Class A / Class B distinction and §3's two axes both follow from §1–§4 above; §5's prohibition stands, and §6.2 above shows why a budget term does not violate it |
@@ -506,8 +565,11 @@ Naming these keeps them from re-emerging as surprises.
    The chain travels; the uncertainty travels; the tier stays local shorthand,
    and a station publishing a shorter chain with a wider uncertainty keeps its
    data comparable with ours.
-7. **Whether T6 should feed chrony at all.** §7.1 makes it a question about host
-   clock convenience. Deliberately left open.
+7. ~~**Whether T6 should feed chrony at all.**~~ **SETTLED 2026-09-10, §7.1.1.**
+   Neither T6 nor T3 feeds chrony. A source recovered from the sample stream
+   inherits the converter's rate and may not vote on the host clock; the electorate
+   comes from outside the sample stream. The change waits on the consumer migration
+   (contract §18.5) and on chrony never running sourceless.
 8. **The software applies a 10 µs modulator correction that no measurement
    supports.** `delay_budget_ns` defaults to 10,000 in `core_recorder_v2.py`
    and every T6 anchor carries it; the designer puts the modulator under
