@@ -395,12 +395,31 @@ discharges both with four orders of magnitude to spare.
 
 **Two conditions, and the first gates the change.**
 
-1. **Every consumer must read the registration before the host clock is demoted.**
-   psk-recorder, wspr-recorder, the magnetometer path and sigmond still fall back to
-   the host clock; wspr-recorder logs the dependency explicitly, warning that WAV
-   minute timestamps go wrong if chrony moves the system clock by much over 100 µs.
-   Demoting the host clock ahead of that migration breaks WSPR labelling to fix a
-   metrology loop. Contract §18.5 carries the migration.
+1. **The consumers should read the registration before the host clock is demoted.**
+   Audited 2026-09-10, and the exposure is narrower than it first appeared. mag-recorder
+   and sigmond already consume the authority; sigmond only displays it. wspr-recorder
+   carries a full `authority_reader`. **psk-recorder declares `timing_authority_applied:
+   None`** in `contract.py` — §18.5 default mode, honestly reported — and meteor-scatter
+   reads no clock of its own.
+
+   Both recorders **anchor once and project by sample count**. psk-recorder takes one
+   anchor from `ka9q.rtp_to_wallclock(first_rtp, channel_info)` on its first batch and
+   thereafter computes every slot by sample arithmetic; wspr-recorder captures one
+   `first_wallclock` behind a chrony-settled gate and propagates `+ N×60 s`. Neither
+   tracks the host clock, so neither drifts with it.
+
+   ⇒ The exposure is therefore **a constant bias equal to the host clock's error at the
+   moment each recorder anchors**, not an accumulating error. Demoting the host clock
+   ahead of the migration would raise that bias from roughly a millisecond to roughly the
+   pool's tens of milliseconds. That degrades a science product; it does not break one.
+   ⚠ With one exception that matters here: **a recorder that restarts often re-anchors
+   often**, so on a station cycling its recorders several times a day the bias changes at
+   every restart rather than staying constant, and a changing bias is worse than a large
+   one. On such a station the migration comes first in practice.
+
+   Scope: one authority reader for psk-recorder, mirroring the tested one in
+   wspr-recorder, and a decision about whether wspr-recorder's single startup wallclock
+   should come from the anchor instead. Contract §18.5 carries the obligations.
 2. **Chrony must never run sourceless.** Whole-second integrity becomes load-bearing
    once the registration carries the precision, and a free-running host clock at the
    60-80 ppm these boards show crosses a whole second in under four hours. Keep the
