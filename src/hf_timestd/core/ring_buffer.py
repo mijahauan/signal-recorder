@@ -111,8 +111,19 @@ HOT_EPOCH_MIRROR      = 9   # equals HOT_EPOCH_COUNTER when anchor valid
 HOT_TOTAL_GAP_SAMPLES = 10  # cumulative gap samples (informational)
 HOT_LAST_BATCH_SIZE   = 11  # last batch sample count (informational)
 HOT_QUALITY_FLAGS     = 12  # reserved for per-batch quality flags
+HOT_RTP_BASE_CURSOR   = 13  # write_cursor where the CURRENT RTP numbering
+                            # began; content before it was written under a
+                            # previous numbering (radiod re-base, producer
+                            # restart) and no reader may address it.
 
 _SAMPLE_REGION_OFFSET = HEADER_SIZE
+
+#: An RTP step of at least this many seconds between consecutive batches
+#: is a change of numbering, not packet loss.  Lost packets move RTP
+#: forward by tens of milliseconds and the per-batch anchor absorbs them;
+#: a radiod restart moves it by seconds to hours (ND 2026-09-10: +27,963 s)
+#: and every sample already in the ring belongs to the old numbering.
+RTP_REBASE_THRESHOLD_S = 1.0
 
 
 # ─── errors ────────────────────────────────────────────────────────────────
@@ -283,6 +294,8 @@ class RingBuffer:
         rb = cls(config, shm, created=created)
         if created:
             rb._init_hot_fields()
+        else:
+            rb._seed_expectation_from_header()
 
         logger.info(
             f"RingBuffer[{channel_name}]: SysV key=0x{key:08x} "
@@ -405,6 +418,20 @@ class RingBuffer:
                 f"channel name mismatch: segment={name!r} expected={channel_name!r}"
             )
 
+    def _seed_expectation_from_header(self) -> None:
+        """An adopting producer inherits the ring's (cursor <-> RTP) relation
+        so its FIRST batch is judged for continuity like every later one.
+        Without this the adopter's first write cannot tell a continuing
+        counter from a re-based one, and content written by the previous
+        producer stays addressable in a numbering it never had (AC0G-ND,
+        2026-09-10 23:19Z)."""
+        cursor = int(self._hot[HOT_WRITE_CURSOR])
+        if cursor == 0:
+            return
+        batch_rtp = int(self._hot[HOT_BATCH_FIRST_RTP])
+        batch_pos = int(self._hot[HOT_BATCH_CURSOR_POS])
+        self._expected_next_rtp = (batch_rtp + (cursor - batch_pos)) & 0xFFFFFFFF
+
     def _init_hot_fields(self) -> None:
         """Zero the hot region and stamp producer identity (create path only)."""
         self._hot[:] = 0
@@ -471,11 +498,27 @@ class RingBuffer:
                 and (batch_first_rtp & 0xFFFFFFFF)
                 != (self._expected_next_rtp & 0xFFFFFFFF)
             ):
+                step = (batch_first_rtp - self._expected_next_rtp) & 0xFFFFFFFF
+                if step > 0x7FFFFFFF:
+                    step -= 0x100000000
                 logger.warning(
                     f"RingBuffer[{self._config.channel_name}]: RTP discontinuity "
                     f"expected={self._expected_next_rtp & 0xFFFFFFFF} "
-                    f"got={batch_first_rtp & 0xFFFFFFFF}"
+                    f"got={batch_first_rtp & 0xFFFFFFFF} (step {step:+d} samples)"
                 )
+                if abs(step) >= int(RTP_REBASE_THRESHOLD_S * self._config.sample_rate):
+                    # The counter was re-based.  Everything already in the
+                    # ring carries the OLD numbering; readers map indices
+                    # to RTP from the newest batch, so from here on that
+                    # content would read as negative RTP masked to 2**32-x
+                    # (ND 2026-09-10: 4,292,916,186 = -2,051,110).  Publish
+                    # the cursor as the floor of the current numbering.
+                    self._hot[HOT_RTP_BASE_CURSOR] = cursor
+                    logger.warning(
+                        f"RingBuffer[{self._config.channel_name}]: RTP numbering "
+                        f"re-based at cursor {cursor}; {cursor} samples of ring "
+                        f"history are unreadable from here on"
+                    )
             self._expected_next_rtp = (batch_first_rtp + n) & 0xFFFFFFFF
 
             # Publish per-batch RTP anchor BEFORE the cursor so readers
@@ -552,6 +595,12 @@ class RingBuffer:
         )
 
     # ─── introspection ─────────────────────────────────────────────────
+    @property
+    def rtp_base_cursor(self) -> int:
+        """Write-cursor position where the current RTP numbering began (0 =
+        the whole ring history shares one numbering)."""
+        return int(self._hot[HOT_RTP_BASE_CURSOR])
+
     @property
     def channel_name(self) -> str:
         return self._config.channel_name

@@ -202,6 +202,18 @@ changes whenever it observes a re-base, and no consumer may extrapolate across a
 change in that identifier. `coast_ruler_intact()` already detects the event by
 watching the arrival-floor offset jump.
 
+The rule reaches the sample ring as well. The ring keeps ~180 s of samples and
+outlives a recorder restart; after a re-base the samples already in it belong to
+the old numbering, while a reader maps every index to RTP from the newest batch.
+Left alone, that arithmetic hands back a negative RTP masked to `2**32 − x`, and
+on 2026-09-10 one such minute registered AC0G-ND's T3 plane 49.7 hours wrong
+(`rtp_ref = 4,292,916,186`, verified). The ring now publishes the cursor where
+the current numbering began (`HOT_RTP_BASE_CURSOR`) whenever consecutive batches
+step by a second or more, or an adopting producer fails to continue the
+inherited numbering, and the reader refuses any window before it
+(`RingBufferBeforeBaseError`, carrying the first readable UTC). History before
+a re-base stays in the ring; nothing may address it.
+
 ---
 
 ## 4 · The composition law

@@ -33,6 +33,7 @@ independently of metrology latency.
 import dataclasses
 import fcntl
 import logging
+import math
 import os
 import time
 import json
@@ -65,6 +66,23 @@ from hf_timestd.core.wwv_constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+
+def resync_minute_after(exc: Exception, head_utc: float, jump_min: int) -> int:
+    """The next minute to process after the ring refused a window.
+
+    An overwritten window: jump ``jump_min`` minutes back from the head and
+    continue.  A window that predates the current RTP numbering
+    (``RingBufferBeforeBaseError``): the ring names where readable history
+    starts, so go to the first whole minute at or after it.  Two minutes back
+    from the head could still sit before that base for a while after a radiod
+    restart, and every such attempt would raise again.
+    """
+    first_valid = getattr(exc, "first_valid_utc", None)
+    if first_valid is not None:
+        return int(math.ceil(float(first_valid) / 60.0)) * 60
+    return (int(head_utc) // 60) * 60 - int(jump_min) * 60
 
 
 class MetrologyService:
@@ -590,9 +608,8 @@ class MetrologyService:
                         duration_sec=60.0,
                     )
                 except RingBufferOverrunError as exc:
-                    new_next = (
-                        (int(head_utc) // 60) * 60
-                        - self._RING_OVERRUN_JUMP_MIN * 60
+                    new_next = resync_minute_after(
+                        exc, head_utc=head_utc, jump_min=self._RING_OVERRUN_JUMP_MIN
                     )
                     logger.warning(
                         f"[{self.channel_name}] overrun on minute {next_minute}: "

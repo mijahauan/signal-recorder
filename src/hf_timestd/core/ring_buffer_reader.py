@@ -40,6 +40,7 @@ from .ring_buffer import (
     HOT_EPOCH_MIRROR,
     HOT_HEARTBEAT_NS,
     HOT_PRODUCER_PID,
+    HOT_RTP_BASE_CURSOR,
     HOT_WRITE_CURSOR,
     RingBufferError,
     RingBufferIncompatibleError,
@@ -54,6 +55,22 @@ from .ring_buffer import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class RingBufferBeforeBaseError(RingBufferOverrunError):
+    """The window starts before the current RTP numbering began.
+
+    Content there was written under a previous numbering (radiod re-base,
+    producer restart).  Mapping it through the newest batch yields negative
+    RTP masked to ``2**32 - x``, and one such minute registered AC0G-ND's
+    T3 plane 49.7 hours wrong on 2026-09-10.  A subclass of the overrun
+    error so every consumer's resync path already handles it;
+    ``first_valid_utc`` names where readable history starts.
+    """
+
+    def __init__(self, message: str, first_valid_utc: Optional[float] = None) -> None:
+        super().__init__(message)
+        self.first_valid_utc = first_valid_utc
 
 # GPS epoch (Unix seconds at 1980-01-06 00:00:00 UTC)
 GPS_EPOCH_UNIX = 315964800
@@ -362,6 +379,18 @@ class RingBufferReader:
             raise RingBufferError(
                 f"RingBufferReader[{self._channel_name}]: interval not yet "
                 f"written (need up to sample {s_end}, cursor={w1})"
+            )
+        base = int(self._hot[HOT_RTP_BASE_CURSOR])
+        if s_start < base:
+            first_valid_utc = self._rtp_to_utc(
+                self._sample_to_rtp(base, batch_rtp, batch_pos), gps_ns, rtp_snap
+            )
+            raise RingBufferBeforeBaseError(
+                f"RingBufferReader[{self._channel_name}]: requested window "
+                f"predates the current RTP numbering (s_start={s_start}, "
+                f"base={base}, cursor={w1}); readable history starts at "
+                f"utc={first_valid_utc:.3f}",
+                first_valid_utc=first_valid_utc,
             )
         min_safe_start = w1 - self._ring_size_samples + self._overrun_margin
         if s_start < min_safe_start:

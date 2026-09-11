@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — ring content from a previous RTP numbering can no longer register a plane (2026-09-11)
+
+AC0G-ND, 2026-09-10 23:18–23:20Z. radiod restarted and re-based its RTP
+counter by +27,963 s; the core recorder restarted 50 s later and adopted the
+six SysV rings, each still holding ~180 s of samples written under the old
+numbering. The fresh metrology processes bootstrapped two minutes back from
+the ring head, into that content. `RingBufferReader` maps an index to RTP
+from the newest batch and masks to 32 bits, so a minute 85 s older than the
+new numbering came back as `rtp_ref = 4,292,916,186` (−2,051,110 masked).
+`RegistrationAcquirer` registered SHARED_5000 on it, verified; five siblings
+adopted it; every raw subtraction downstream read 2**32/24000 = 178,956.97 s,
+and the Offset Judge refused T3 for two hours at 500 log lines a minute.
+
+`RingBuffer` now publishes `HOT_RTP_BASE_CURSOR`, the write-cursor position
+where the current numbering began: set when consecutive batches step by
+`RTP_REBASE_THRESHOLD_S` (1 s) or more in either direction, and by an
+adopting producer whose first batch does not continue the numbering the ring's
+header records (packet loss under a second keeps the history). The reader
+raises `RingBufferBeforeBaseError` (a `RingBufferOverrunError`, so every
+consumer's resync path already handles it) for any window before the base and
+names the first readable UTC; `metrology_service.resync_minute_after` jumps
+there instead of two minutes back from the head. Ten tests, watched red first;
+five mutants killed. MEASUREMENT_MODEL.md §3 carries the rule.
+
 ### Removed — the chrony refclock gate (2026-09-11)
 
 `core/chrony_refclock_gate.py` offered and withdrew the FUSE refclock with
