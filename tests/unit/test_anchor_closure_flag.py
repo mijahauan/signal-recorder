@@ -7,7 +7,7 @@ followed FUSE and slewed the host the wrong way.  Until the closure has
 passed a live acceptance it must be OFF unless a station asks for it, and
 "off" has to mean off at every one of the four surfaces the registration
 reaches -- the ring, authority.json §18, the archive sidecar, and the
-FUSE chrony feed -- plus the refclock gate's own rule.
+FUSE chrony feed.
 
 Every test here states the same thing twice: what the surface does with
 the flag false, and that the answer matches what the code did at
@@ -27,7 +27,6 @@ from hf_timestd.core.anchor_closure import (
     anchor_closure_enabled,
     closure_from_config,
 )
-from hf_timestd.core.chrony_refclock_gate import ChronyRefclockGate
 from hf_timestd.core.offset_judge import (
     BenchReading,
     LABEL_PLANE_ANCHOR_KEY,
@@ -338,45 +337,6 @@ def test_section18_keeps_the_judged_pair_with_the_flag_off(tmp_path):
         assert (got is not None) is closure
 
 
-# ── the refclock gate ────────────────────────────────────────────────
-
-
-def _runner_ok(*a, **k):
-    import subprocess
-
-    return subprocess.CompletedProcess(a[0] if a else [], 0, "", "")
-
-
-def test_the_gate_keeps_the_legacy_withdrawal_rule_with_the_flag_off():
-    """``suspect`` withdraws FUSE again, whatever fusion_status.json says.
-
-    Legacy (c7b2106): ``WITHDRAW_VERDICTS = ("suspect", "fault")`` and no
-    regime was read at all.  With the closure off the regime cannot be
-    ``anchor`` in the first place -- but a stale fusion_status.json from
-    a previously-enabled run could still say so, and the gate must not
-    believe it.
-    """
-    gate = ChronyRefclockGate(
-        refid="FUSE", runner=_runner_ok, feed_regime_fn=lambda: "anchor"
-    )
-    res = gate.apply("T3", host_clock_verdict="suspect")
-    assert res.target_state == "disabled"
-    assert gate.host_clock_withdrawn is True
-    assert "host_clock:suspect" in res.reason
-
-
-def test_the_gate_honours_the_anchor_rule_with_the_flag_on():
-    gate = ChronyRefclockGate(
-        refid="FUSE",
-        runner=_runner_ok,
-        feed_regime_fn=lambda: "anchor",
-        anchor_closure=True,
-    )
-    res = gate.apply("T3", host_clock_verdict="suspect")
-    assert res.target_state == "enabled"
-    assert gate.host_clock_withdrawn is False
-
-
 # ── the recorder's provider, the single wiring point for 1-3 ─────────
 
 
@@ -430,7 +390,7 @@ def test_the_summary_is_still_published_and_still_authoritative(tmp_path):
 
 
 def test_the_whole_chain_stays_legacy_with_the_flag_off(tmp_path):
-    """Judge → fusion_status.json → refclock gate, through the real code.
+    """Judge → fusion_status.json, through the real code.
 
     The four surfaces are gated in three different processes, so the
     per-surface tests above can each pass while the chain between them
@@ -459,9 +419,6 @@ def test_the_whole_chain_stays_legacy_with_the_flag_off(tmp_path):
     writer.update(None, chrony_fed=False, skip_reasons=[], anchor_sample=anchor_sample)
     assert fsw.read_feed_regime(status) == fsw.LEGACY_REGIME
 
-    gate = ChronyRefclockGate(
-        refid="FUSE",
-        runner=_runner_ok,
-        feed_regime_fn=lambda: fsw.read_feed_regime(status),
-    )
-    assert gate.apply("T3", host_clock_verdict="suspect").target_state == "disabled"
+    # The gate that once read this regime retired on 2026-09-11 (§7.1.1);
+    # the regime itself stays published for readers of fusion_status.json.
+

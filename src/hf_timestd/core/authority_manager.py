@@ -39,7 +39,6 @@ from hf_timestd.core.host_clock_integrity import (
 )
 
 if TYPE_CHECKING:
-    from hf_timestd.core.chrony_refclock_gate import ChronyRefclockGate
     from hf_timestd.core.mdns_fusion_advertiser import MdnsFusionAdvertiser
     from hf_timestd.io.authority_snapshot_store import AuthoritySnapshotStore
     from hf_timestd.core.frontend_probe import FrontendProbe
@@ -205,7 +204,6 @@ class AuthorityManager:
         upgrade_hysteresis: int = 3,
         pair_thresholds_ms: Optional[Dict[frozenset, float]] = None,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-        chrony_gate: Optional["ChronyRefclockGate"] = None,
         governor_radiod_provider: Optional[Callable[[], Optional[str]]] = None,
         mdns_advertiser: Optional["MdnsFusionAdvertiser"] = None,
         snapshot_store: Optional["AuthoritySnapshotStore"] = None,
@@ -245,7 +243,6 @@ class AuthorityManager:
             else DEFAULT_PAIR_THRESHOLDS_MS
         )
         self.now_fn = now_fn
-        self.chrony_gate = chrony_gate
         self.governor_radiod_provider = governor_radiod_provider
         self.mdns_advertiser = mdns_advertiser
         # V1 fix layer 4 — long-term observability.  When configured,
@@ -336,7 +333,6 @@ class AuthorityManager:
                                   host_clock=host_clock)
         self._write_state(state)
         self._write_snapshot(state, results)
-        self._apply_chrony_gate(state.t_level_active, host_clock)
         self._apply_mdns_advertiser(state)
         return state
 
@@ -365,35 +361,6 @@ class AuthorityManager:
         elif result.reason and result.reason != "no change":
             log.warning(
                 "mDNS advertiser unapplied: target=%s reason=%s",
-                result.target_state, result.reason,
-            )
-
-    def _apply_chrony_gate(
-        self,
-        t_level_active: Optional[str],
-        host_clock: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Update chrony's view of the Fusion SHM refclock from the active
-        T-level (§4.6) and the host-clock verdict (HOST_CLOCK_INTEGRITY.md,
-        step 0.5): a suspect or fault verdict withdraws the refclock
-        whatever the tier."""
-        if self.chrony_gate is None:
-            return
-        verdict = host_clock.get("verdict") if host_clock else None
-        try:
-            result = self.chrony_gate.apply(t_level_active, verdict)
-        except Exception as e:
-            log.exception("Chrony refclock gate raised: %s", e)
-            return
-        if result.applied:
-            level = log.warning if "host_clock:" in result.reason else log.info
-            level("Chrony refclock gate: %s (%s)", result.target_state, result.reason)
-        elif result.reason and not result.reason.startswith("no change"):
-            # Soft failures (chronyc not found, timeout, permission denied)
-            # are worth flagging once per transition; noisy in steady state
-            # otherwise so we rely on the "no change" fast-path above.
-            log.warning(
-                "Chrony refclock gate unapplied: target=%s reason=%s",
                 result.target_state, result.reason,
             )
 

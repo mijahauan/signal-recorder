@@ -243,7 +243,7 @@ So a pipeline offset correction **is** needed — or better, do not use the pair
 > | T5 (USB-delivered GPS+PPS) | ✅ | LBE-1421 USB-NMEA is consumed by hf-timestd for second-of-day disambiguation (alongside T6) and as the standalone source when T6 is unavailable. Precision is USB-bus-jitter floored at µs-to-ms class. **Upgrade path:** wire the TS-1 PPS OUT jack to a host GPIO / RS232 input with kernel PPS-API support — that adds a *second* ns-class path alongside T6 (for continuous §8 chain-delay cross-validation), but does not promote T5 itself, since the T5 definition is the USB transport. |
 > | **T6 BPSK-PPS injection / detection** | ✅ | TS-1 HF-injected BPSK PPS coupled into the RX path, decoded sample-precise from the IQ stream (HPPS matched-filter; the HFPS diff calibrator, once wired but never enabled, left the code 2026-09-04). Live on bee1. The chrony-facade calibration has known weaknesses (one-shot disambig is sensitive to host-clock state at calibration moment — see [TIMING-PIPELINE-WIRING.md](TIMING-PIPELINE-WIRING.md) and the chrony-tuning notes); the **annotation product** (per-sample tier + offset + uncertainty) is operational and is the deployed best tier. |
 > | Authority manager + `/run/hf-timestd/authority.json` v1 | ✅ | `AuthoritySnapshotStore` + `AuthorityManager` live; per-cycle records persisted to `/var/lib/timestd/authority_history.db`. |
-> | `chronyc selectopts` runtime gating | ✅ | `ChronyRefclockGate` is wired into the AuthorityRunner and invoked every tick (`AuthorityManager._apply_chrony_gate`); enabled per `[timing.authority_manager.chrony_gate]` (`dry_run` available for staged rollout). |
+> | `chronyc selectopts` runtime gating | ⛔ retired 2026-09-11 | `ChronyRefclockGate` offered and withdrew FUSE with the tier and the host-clock verdict. MEASUREMENT_MODEL.md §7.1.1 (2026-09-10) settled the question it answered: a source recovered from the sample stream never votes on the host clock. Both refclock lines carry `noselect`; the gate, its config table and the sudoers grant left the code. |
 > | mDNS TXT-record extension | ✅ | `MdnsFusionAdvertiser` is wired into the AuthorityRunner and applied every tick (`AuthorityManager._apply_mdns_advertiser`); enabled per `[timing.authority_manager.mdns]` (`dry_run` logs the TXT without forking avahi). |
 >
 > Treat the rest of §4.5 / §4.6 as the **contract** an authority
@@ -632,15 +632,20 @@ The live refids are 4-char ASCII `HPPS` (HF BPSK-PPS, SHM 2) and `FUSE` (HF mult
 
 **Per-sample precision** (dynamic, via the SHM segment): Fusion already publishes `precision_l1` / `precision_l2` per cycle based on the current uncertainty (see `multi_broadcast_fusion.py` SHM update logic). This reflects the authority's current quality without needing to restart chrony.
 
-**Runtime gating** (authority-manager-driven, via `chronyc selectopts`):
-
-| Active T-level | Gate action | Effect |
-|---|---|---|
-| T6 or T3 | `-noselect` | Refclock offered as upstream; may be used to discipline the local clock and served to LAN peers |
-| T5 / T4 / T2 / T1 / T0 or no active | `+noselect` | Refclock visible in `chronyc sources` for diagnostics; not used for discipline and not served to LAN |
-| any tier, `host_clock.verdict` ∈ {suspect, fault} | `+noselect` | Step 0.5 (2026-09-04, `docs/design/HOST_CLOCK_INTEGRITY.md`): FUSE measures the clock chrony steers with it, so a walking host clock makes FUSE read "on time"; the verdict sees the walk from independent witnesses and the gate withdraws FUSE until `ok` has held for `host_clock_clear_sec` (600 s) |
-
-The gate fires only on transitions — steady state makes no `chronyc` calls. This gives us the critical safety property from §4.5: **if Fusion breaks, we stop offering our refclock as an authoritative source within one authority cycle, regardless of the static stratum**. A Fusion host that has lost its HF signals cannot silently poison consumers on the LAN.
+**Runtime gating — retired 2026-09-11.** From 2026-08 to 2026-09-10 the
+authority manager drove `chronyc selectopts FUSE ±noselect` every tick: offered
+while the active tier read T3 or T6, withdrawn otherwise, and from 2026-09-04
+withdrawn whenever the host-clock verdict read suspect or fault. The measurement
+model retired the whole idea. `MEASUREMENT_MODEL.md` §7.1.1 states the electorate
+rule: FUSE and HPPS derive from the sample stream, so they inherit the converter's
+rate and may not vote on the host clock. Both refclock lines now carry `noselect`
+permanently (`config/chrony-timestd-refclocks.conf`); chrony keeps measuring them
+and shows them in `chronyc sources` and `sourcestats`, and the electorate comes
+from NTP servers outside the stream. The safety property the gate provided
+(§4.5: a broken Fusion stops offering itself within one cycle) holds trivially
+now, because Fusion never offers itself. Validate warns on a leftover
+`[timing.authority_manager.chrony_gate]` table. `docs/design/HOST_CLOCK_INTEGRITY.md`
+keeps the record of what the gate did on 2026-09-04.
 
 Dynamic stratum / refid mutation would require either multiple pre-configured refclock lines with different stratum values (switched via selectopts) or a chrony upstream feature that does not currently exist. Operators who want this behavior today can install multiple refclock lines (e.g., one at stratum 1 `HFSN` and one at stratum 2 `HFSN2` with the same SHM unit) and extend the gate to toggle between them; the current implementation supports a single refid and treats stratum as install-time.
 

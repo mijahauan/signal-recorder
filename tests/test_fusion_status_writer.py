@@ -129,3 +129,25 @@ class TestFusionStatusWriter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadFeedRegimeRobustnessTests(unittest.TestCase):
+    """``read_feed_regime`` answers None, never raises, for a missing,
+    unparsable, pre-regime or foreign-schema status file.  (Moved from the
+    retired gate's test module on 2026-09-11; the reader outlived the gate.)"""
+
+    def test_unreadable_status_reads_as_no_regime(self):
+        import json, tempfile
+        from pathlib import Path
+        from hf_timestd.core.fusion_status_writer import read_feed_regime
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            self.assertIsNone(read_feed_regime(tmp / "missing.json"))
+            bad = tmp / "bad.json"; bad.write_text("{not json")
+            self.assertIsNone(read_feed_regime(bad))
+            old = tmp / "old.json"
+            old.write_text(json.dumps({"schema": "v1", "chrony_gate": {"last_fed": True}}))
+            self.assertIsNone(read_feed_regime(old))
+            wrong = tmp / "wrong.json"
+            wrong.write_text(json.dumps({"schema": "v99", "chrony_gate": {"feed_regime": "anchor"}}))
+            self.assertIsNone(read_feed_regime(wrong))

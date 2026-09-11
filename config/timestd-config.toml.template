@@ -340,44 +340,12 @@ anchor_closure = false
 # u_ns = 3000
 # method = "12.3 m LMR-400 at 0.85 VF + preamp datasheet, 2026-09-10"
 
-# The chrony refclock gate (core/chrony_refclock_gate.py; METROLOGY.md §4.6).
-# Every authority tick it sets `chronyc selectopts <refid> ±noselect` on the
-# FUSE refclock: offered (-noselect) while the active tier is T3 or T6,
-# withdrawn (+noselect) otherwise.  Since 2026-09-04 (step 0.5 of the
-# host-clock program, docs/design/HOST_CLOCK_INTEGRITY.md) it also withdraws
-# FUSE while the host_clock verdict above reads suspect or fault, whatever
-# the tier, and re-offers it only after `ok` has held for
-# host_clock_clear_sec.  FUSE measures the clock chrony steers with it; the
-# verdict comes from witnesses that do not.  Withdrawing FUSE lets chrony
-# follow them instead of the walk.
-#
-# Off by default: `chronyc selectopts` needs chrony's command socket, and
-# the timestd user cannot reach it on a stock install.  Membership in
-# _chrony (which install.sh grants) does NOT help on Debian 13: the chrony
-# unit keeps /run/chrony at 0700 and chronyd makes chronyd.sock owner-only,
-# and chrony 4 takes privileged commands over that socket only.  The
-# supported path is `sudo = true` here plus the two-command grant
-# install.sh puts at /etc/sudoers.d/timestd-chrony-gate (refid FUSE is
-# spelled out in that file; a different refid needs a matching edit).
-# Then watch `chronyc sources` for the FUSE line flipping between
-# `#-`/`#*` and `#?` on transitions, and `chronyc selectdata` for the N
-# option on FUSE while withdrawn.
-# ⛔ Keep `enabled = false`.  MEASUREMENT_MODEL.md §7.1.1 (2026-09-10) takes
-# T3 and T6 out of the host clock's electorate altogether: both refclock lines
-# in chrony-timestd-refclocks.conf now carry `noselect`, and an enabled gate
-# would re-offer FUSE with `selectopts -noselect` on its next state change.
-# AC0G-ND ran it enabled and the vote toggled twice in fourteen minutes on
-# 2026-09-10 (19:37Z withdrawn, 19:51Z re-offered).  The gate is due for
-# retirement; until then this flag is the switch.
-[timing.authority_manager.chrony_gate]
-enabled = false
-# sudo = true                       # run chronyc through `sudo -n` (see above)
-# refid = "FUSE"                    # must match the refclock line in
-#                                   # chrony-timestd-refclocks.conf
-# dry_run = false                   # log the decision, call nothing
-# withdraw_on_host_clock = true     # step 0.5; false restores the pure tier rule
-# host_clock_clear_sec = 600.0      # `ok` must hold this long before FUSE returns
-
+# The chrony refclock gate retired on 2026-09-11.  MEASUREMENT_MODEL.md §7.1.1
+# keeps FUSE and HPPS out of the host clock's electorate with a permanent
+# `noselect` in chrony-timestd-refclocks.conf; a source that never votes needs
+# no gate.  A leftover `[timing.authority_manager.chrony_gate]` table draws a
+# warning from `hf-timestd validate`; delete it, and delete
+# /etc/sudoers.d/timestd-chrony-gate (install.sh removes it on the next run).
 
 [timing.fusion_metrics]
 enabled = true

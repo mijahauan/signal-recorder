@@ -129,6 +129,11 @@ station with no LAN stratum-1 the pool loses to a refclock that reports
 its clock was stepped.  A refclock that follows the clock will always
 look better than the servers that measure it.
 
+> **Retired 2026-09-11.** The gate below left the code once MEASUREMENT_MODEL.md
+> §7.1.1 put `noselect` on FUSE and HPPS for good: a refclock that never votes
+> needs no gate to withdraw it. The paragraphs stay as the record of the
+> mechanism and of the night it worked.
+
 So the chrony refclock gate (`core/chrony_refclock_gate.py`, METROLOGY
 §4.6) now takes the verdict beside the tier.  While the verdict reads
 `suspect` or `fault` the gate sets `+noselect` on FUSE whatever the

@@ -327,51 +327,38 @@ def retired_key_issues(cfg):
 HOST_CLOCK_RATE_RESOLUTION_PPM = 17.0
 
 
-def chrony_gate_issues(cfg):
-    """Warn-level contract issues for ``[timing.authority_manager.chrony_gate]``.
+RETIRED_SECTIONS = {
+    'timing.authority_manager.chrony_gate': (
+        'retired 2026-09-11: MEASUREMENT_MODEL.md §7.1.1 keeps FUSE and HPPS out '
+        'of the host clock\'s electorate with a permanent `noselect`, so nothing '
+        'may re-offer them; the gate that did is gone. Remove the section and '
+        '/etc/sudoers.d/timestd-chrony-gate'),
+}
 
-    The gate (chrony_refclock_gate.py) offers or withdraws the FUSE
-    refclock through ``chronyc selectopts``.  Since 2026-09-04 it also
-    withdraws FUSE while the host-clock verdict reads suspect or fault
-    (HOST_CLOCK_INTEGRITY.md, step 0.5).  Warn when an enabled gate has
-    that rule switched off, when ``host_clock_clear_sec`` is not a
-    non-negative number, and when ``refid`` is not the four ASCII
-    characters chrony uses.
+
+def retired_section_issues(cfg):
+    """Warn-level contract issues, one per retired TABLE the config carries.
+
+    :func:`retired_key_issues` handles scalar keys and skips tables on
+    purpose; this handles the tables.  Deployed configs keep a retired
+    section until their next edit, and a validator that went quiet on it
+    would let a station believe it still had a switch.
     """
     issues = []
-    timing = cfg.get('timing', {}) or {}
-    auth = timing.get('authority_manager', None)
-    if not isinstance(auth, dict):
-        return issues
-    gate = auth.get('chrony_gate', None)
-    if not isinstance(gate, dict):
-        return issues
-
-    def _warn(key, value, why):
+    for section, note in RETIRED_SECTIONS.items():
+        table = cfg
+        for part in section.split('.'):
+            table = table.get(part, None) if isinstance(table, dict) else None
+        if not isinstance(table, dict):
+            continue
         issues.append({
             'severity': 'warn',
             'instance': 'default',
             'message': (
-                f'[timing.authority_manager.chrony_gate] {key} = {value!r} {why}'
+                f'[{section}] is a retired section ({note}); '
+                f'remove the section from the config'
             ),
         })
-
-    enabled = bool(gate.get('enabled', False))
-    if enabled and gate.get('withdraw_on_host_clock', True) is False:
-        _warn('withdraw_on_host_clock', False,
-              'leaves FUSE selectable while the host-clock verdict reads '
-              'suspect/fault -- the 2026-09-04 walk guard is off')
-    if 'host_clock_clear_sec' in gate:
-        v = gate['host_clock_clear_sec']
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
-            _warn('host_clock_clear_sec', v, 'must be a number of seconds')
-        elif v < 0:
-            _warn('host_clock_clear_sec', v, 'must be >= 0')
-    if 'refid' in gate:
-        r = gate['refid']
-        if not isinstance(r, str) or len(r) != 4 or not r.isascii():
-            _warn('refid', r, 'must be the 4-character ASCII refid of the refclock line '
-                              '(FUSE in chrony-timestd-refclocks.conf)')
     return issues
 
 
@@ -689,7 +676,7 @@ def _handle_validate_contract(args):
             issues.extend(retired_key_issues(cfg))
             issues.extend(host_clock_issues(cfg))
             issues.extend(provenance_issues(cfg))
-            issues.extend(chrony_gate_issues(cfg))
+            issues.extend(retired_section_issues(cfg))
 
             recorder = cfg.get('recorder', {}) or {}
             channels_count = sum(

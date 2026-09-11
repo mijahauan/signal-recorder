@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Removed — the chrony refclock gate (2026-09-11)
+
+`core/chrony_refclock_gate.py` offered and withdrew the FUSE refclock with
+`chronyc selectopts` as the active tier and the host-clock verdict moved.
+MEASUREMENT_MODEL.md §7.1.1 (2026-09-10) settled the question it answered:
+a source recovered from the sample stream inherits the converter's rate and
+never votes on the host clock, so both refclock lines carry `noselect` for
+good and nothing may re-offer them. AC0G-ND ran the gate enabled on 2026-09-10
+and it toggled FUSE's vote twice in fourteen minutes against that rule. Gone
+with it: the `[timing.authority_manager.chrony_gate]` table (validate now
+warns on a leftover table and names the sudoers file to remove), the
+`chrony_gate=` argument of `AuthorityManager`, `config/sudoers-timestd-chrony-gate`
+and the grant install.sh placed at `/etc/sudoers.d/timestd-chrony-gate`
+(install.sh now removes an existing one). `fusion_status.json` keeps its
+`chrony_gate` block: it describes the FUSE feed regime, which the fusion
+process still publishes; the name stays for readers already parsing it.
+
 ### Added — the T6 coarse stage folds coherently; the nightly lock cliff moves down by 17.8 dB (2026-09-05)
 
 AC0G-B4 lost T6 every evening: at 48-57 dB-Hz the coarse matched filter,

@@ -21,7 +21,6 @@ from hf_timestd.core.authority_manager import (
 )
 from hf_timestd.core.anchor_closure import anchor_closure_enabled
 from hf_timestd.core.bpsk_pps_probe import BpskPpsProbe
-from hf_timestd.core.chrony_refclock_gate import ChronyRefclockGate
 from hf_timestd.core.mdns_fusion_advertiser import MdnsFusionAdvertiser
 from hf_timestd.core.chrony_tracking_probe import (
     ChronyTrackingProbe,
@@ -174,11 +173,6 @@ def build_authority_runner_from_config(
         [timing.authority_manager.t3]
         min_stations = 2
         freshness_sec = 60.0
-
-        [timing.authority_manager.chrony_gate]
-        enabled = true
-        refid = "HFSN"           # must match the chrony.conf refclock entry
-        dry_run = false
 
         [timing.authority_manager.gpsdo]
         enabled = true           # read gpsdo-monitor's /run/gpsdo/*.json
@@ -384,20 +378,6 @@ def build_authority_runner_from_config(
             max_error_ms=_opt_float(t2_cfg.get("max_error_ms")),
         ))
 
-    chrony_gate = None
-    gate_cfg = auth_cfg.get("chrony_gate", {}) or {}
-    if gate_cfg.get("enabled"):
-        chrony_gate = ChronyRefclockGate(
-            refid=str(gate_cfg.get("refid", "FUSE")),
-            dry_run=bool(gate_cfg.get("dry_run", False)),
-            withdraw_on_host_clock=bool(gate_cfg.get("withdraw_on_host_clock", True)),
-            host_clock_clear_sec=float(gate_cfg.get("host_clock_clear_sec", 600.0)),
-            sudo=bool(gate_cfg.get("sudo", False)),
-            # Task 17a: the anchor-direct withdrawal rule applies only
-            # while the registration anchor closure does.
-            anchor_closure=anchor_closure_enabled(config),
-        )
-
     mdns_advertiser = None
     mdns_cfg = auth_cfg.get("mdns", {}) or {}
     if mdns_cfg.get("enabled"):
@@ -467,7 +447,6 @@ def build_authority_runner_from_config(
         output_path=authority_output_path,
         a_level_provider=a_level_provider,
         upgrade_hysteresis=hysteresis,
-        chrony_gate=chrony_gate,
         governor_radiod_provider=governor_radiod_provider,
         mdns_advertiser=mdns_advertiser,
         snapshot_store=snapshot_store,

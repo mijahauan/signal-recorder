@@ -439,38 +439,6 @@ class TestAuthorityManager(unittest.TestCase):
         s = mgr.tick()
         self.assertIsNone(s.t_level_active)
 
-    def test_chrony_gate_called_with_active_t_level(self) -> None:
-        from hf_timestd.core.chrony_refclock_gate import ChronyRefclockGate
-
-        class _RecordingGate(ChronyRefclockGate):
-            def __init__(self):
-                super().__init__(refid="HFSN", dry_run=True)
-                self.calls = []
-            def apply(self, t_level_active, host_clock_verdict=None):
-                self.calls.append(t_level_active)
-                self.verdicts = getattr(self, "verdicts", []) + [host_clock_verdict]
-                return super().apply(t_level_active, host_clock_verdict)
-
-        gate = _RecordingGate()
-        probe = FakeProbe("T3", _measure("T3", 0.5, 0.3))
-        mgr = AuthorityManager(
-            probes=[probe],
-            output_path=self.out,
-            a_level_provider=lambda: "A1",
-            upgrade_hysteresis=1,
-            now_fn=self.clock,
-            chrony_gate=gate,
-        )
-        mgr.tick()
-        self.assertEqual(gate.calls, ["T3"])
-        # Flip to unavailable; gate should now see None.
-        probe.set(_unavail("T3"))
-        mgr.tick()
-        self.assertEqual(gate.calls, ["T3", None])
-        # The gate sees the host-clock verdict beside the tier every tick.
-        self.assertEqual(len(gate.verdicts), 2)
-        self.assertTrue(all(v in ("ok", "unwitnessed", "suspect", "fault") for v in gate.verdicts))
-
     def test_governor_radiod_surfaced_in_authority_json(self) -> None:
         probe = FakeProbe("T3", _measure("T3", 0.5, 0.3))
         mgr = AuthorityManager(

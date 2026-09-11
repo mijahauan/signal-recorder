@@ -78,10 +78,10 @@ def read_feed_regime(
     ``None`` — no file, unreadable, or a writer too old to say; every
     caller must then behave exactly as it did before the regime existed.
 
-    Read by :class:`~hf_timestd.core.chrony_refclock_gate.ChronyRefclockGate`
-    (fix round 1, review finding C-2): the host-clock withdrawal rule was
-    written for a feed that FOLLOWED the host clock, and the anchor-direct
-    feed does not.
+    The chrony refclock gate read this until it retired on 2026-09-11
+    (MEASUREMENT_MODEL.md §7.1.1: FUSE never votes, so nothing withdraws
+    it).  The regime stays published for anyone reading fusion_status.json;
+    the ``chrony_gate`` key name is historical.
     """
     try:
         with open(path, "r", encoding="utf-8") as f:

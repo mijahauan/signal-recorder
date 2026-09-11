@@ -180,15 +180,18 @@ again.  On 2026-09-04 that loop carried AC0G-B4 11.6 s from UTC over thirteen
 hours while every internal figure read "on time"
 (`reference_fuse_walk_mechanism`, `HOST_CLOCK_INTEGRITY.md`).
 
-Three guards now stand around the loop.  The host-clock verdict compares the
-host against witnesses that share no frame with it: the LB-1421's GPS second
-and radiod's pair.  The chrony refclock gate withdraws FUSE from selection
-while that verdict reads suspect or fault, and also whenever the active tier
-leaves T3 or T6.  And `trust` no longer decorates FUSE in any station's
-chrony configuration, so the pool can outvote it.  The gate earned its keep on
-AC0G-ND on the night of 2026-09-04: it withdrew FUSE twice on a suspect
-verdict and once when T3 fell away at 02:34Z, and the host stayed within a
-millisecond of the pool while FUSE read minus 96 ms by morning.
+Two guards now stand around the loop, and one rule closes it.  The host-clock
+verdict compares the host against witnesses that share no frame with it: the
+LB-1421's GPS second and radiod's pair.  `trust` no longer decorates FUSE in any
+station's chrony configuration, so the pool can outvote it.  And since
+2026-09-10 (`MEASUREMENT_MODEL.md` §7.1.1) FUSE and HPPS carry `noselect` for
+good: chrony measures them and never steers by them, so the loop in the figure
+never closes through chronyd.  A refclock gate used to withdraw FUSE from
+selection while the verdict read suspect or fault; it earned its keep on
+AC0G-ND on the night of 2026-09-04 (two withdrawals on a suspect verdict, one
+when T3 fell away at 02:34Z, the host within a millisecond of the pool while
+FUSE read minus 96 ms by morning) and retired on 2026-09-11, because a source
+that never votes needs no gate.
 
 ```mermaid
 flowchart LR
@@ -196,11 +199,9 @@ flowchart LR
     LABELS --> MET[metrology: arrival vs model]
     MET --> DCLK[d_clock]
     DCLK -->|"reference = system − d_clock"| CHRONY[chronyd]
-    CHRONY -->|steers| HOST
-    GATE{refclock gate} -.withdraws FUSE.-> CHRONY
+    CHRONY -. "noselect: measured, never steered by" .-> HOST
     WIT[witnesses outside the frame:<br/>LB-1421 GPS second, radiod pair] --> VERDICT[host-clock verdict]
-    VERDICT --> GATE
-    style GATE fill:#fdd,stroke:#900
+    VERDICT --> AUTH[authority.json host_clock verdict]
 ```
 
 ---
